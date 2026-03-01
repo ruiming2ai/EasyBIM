@@ -16,4 +16,10 @@ except Exception:
 # Show the start message once per document open.  If we couldn't acquire a
 # document (doc is None), force the message so users still see it.  Pass
 # open_worksets_after=True to open the Worksets dialog after the alert.
-show_start_message(doc=doc, force=(doc is None), open_worksets_after=True)
+# run_coord_report_after=True prints the coordination summary afterwards.
+show_start_message(
+    doc=doc,
+    force=(doc is None),
+    open_worksets_after=True,
+    run_coord_report_after=True,
+)
