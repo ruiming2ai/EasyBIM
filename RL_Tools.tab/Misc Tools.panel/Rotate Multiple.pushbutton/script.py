@@ -48,7 +48,7 @@ def _prompt_settings():
     dialog = WinForms.Form()
     dialog.Text = __title__
     dialog.Width = 520
-    dialog.Height = 250
+    dialog.Height = 300
     dialog.StartPosition = WinForms.FormStartPosition.CenterScreen
     dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
     dialog.MinimizeBox = False
@@ -66,40 +66,62 @@ def _prompt_settings():
     angle_tb.Width = 290
     angle_tb.Text = "90"
 
-    zaxis_cb = WinForms.CheckBox()
-    zaxis_cb.Text = "Rotate in Z-axis"
-    zaxis_cb.Left = 200
-    zaxis_cb.Top = 58
-    zaxis_cb.Width = 200
-    zaxis_cb.Checked = False
+    front_back_cb = WinForms.CheckBox()
+    front_back_cb.Text = "Vertical rotate (Front/Back elevation plane)"
+    front_back_cb.Left = 200
+    front_back_cb.Top = 58
+    front_back_cb.Width = 290
+    front_back_cb.Checked = False
+
+    left_right_cb = WinForms.CheckBox()
+    left_right_cb.Text = "Vertical rotate (Left/Right elevation plane)"
+    left_right_cb.Left = 200
+    left_right_cb.Top = 84
+    left_right_cb.Width = 290
+    left_right_cb.Checked = False
+
+    def _on_front_back_changed(sender, args):
+        del sender, args
+        if front_back_cb.Checked:
+            left_right_cb.Checked = False
+
+    def _on_left_right_changed(sender, args):
+        del sender, args
+        if left_right_cb.Checked:
+            front_back_cb.Checked = False
+
+    front_back_cb.CheckedChanged += _on_front_back_changed
+    left_right_cb.CheckedChanged += _on_left_right_changed
 
     note_lbl = WinForms.Label()
     note_lbl.Left = 20
-    note_lbl.Top = 90
+    note_lbl.Top = 122
     note_lbl.Width = 470
-    note_lbl.Height = 56
+    note_lbl.Height = 80
     note_lbl.Text = (
-        "Off: plan-style rotation around global Z.\n"
-        "On: elevation-style rotation around active view direction."
+        "Choose one vertical mode for 3D rotation:\n"
+        "Front/Back uses global X axis. Left/Right uses global Y axis.\n"
+        "Leave both unchecked for normal plan rotation (global Z axis)."
     )
 
     run_btn = WinForms.Button()
     run_btn.Text = "Run"
     run_btn.DialogResult = WinForms.DialogResult.OK
     run_btn.Left = 325
-    run_btn.Top = 155
+    run_btn.Top = 210
     run_btn.Width = 80
 
     cancel_btn = WinForms.Button()
     cancel_btn.Text = "Cancel"
     cancel_btn.DialogResult = WinForms.DialogResult.Cancel
     cancel_btn.Left = 410
-    cancel_btn.Top = 155
+    cancel_btn.Top = 210
     cancel_btn.Width = 80
 
     dialog.Controls.Add(angle_lbl)
     dialog.Controls.Add(angle_tb)
-    dialog.Controls.Add(zaxis_cb)
+    dialog.Controls.Add(front_back_cb)
+    dialog.Controls.Add(left_right_cb)
     dialog.Controls.Add(note_lbl)
     dialog.Controls.Add(run_btn)
     dialog.Controls.Add(cancel_btn)
@@ -111,7 +133,8 @@ def _prompt_settings():
 
     return {
         "angle_text": angle_tb.Text,
-        "rotate_in_zaxis": bool(zaxis_cb.Checked),
+        "rotate_front_back": bool(front_back_cb.Checked),
+        "rotate_left_right": bool(left_right_cb.Checked),
     }
 
 
@@ -164,14 +187,13 @@ def _get_rotation_center(element, active_view):
     return None
 
 
-def _axis_direction(rotate_in_zaxis, active_view):
-    if rotate_in_zaxis:
-        try:
-            direction = active_view.ViewDirection
-            if direction and direction.GetLength() > EPS:
-                return direction.Normalize()
-        except Exception:
-            pass
+def _axis_direction(rotate_front_back, rotate_left_right):
+    # Front/Back elevation-like rotation plane: YZ plane => axis X
+    if rotate_front_back:
+        return DB.XYZ.BasisX
+    # Left/Right elevation-like rotation plane: XZ plane => axis Y
+    if rotate_left_right:
+        return DB.XYZ.BasisY
     return DB.XYZ.BasisZ
 
 
@@ -202,7 +224,10 @@ def run():
         return
 
     active_view = uidoc.ActiveView
-    axis_dir = _axis_direction(settings["rotate_in_zaxis"], active_view)
+    axis_dir = _axis_direction(
+        settings["rotate_front_back"],
+        settings["rotate_left_right"],
+    )
     if not axis_dir or axis_dir.GetLength() < EPS:
         forms.alert("Could not determine rotation axis.", title=__title__)
         return
@@ -256,8 +281,12 @@ def run():
                 if len(sample_errors) < 20:
                     sample_errors.append("id {} -> {}".format(elem_id, ex))
 
-    mode = "Elevation-style (active view direction)" \
-        if settings["rotate_in_zaxis"] else "Plan-style (global Z)"
+    if settings["rotate_front_back"]:
+        mode = "Vertical (Front/Back elevation plane, global X axis)"
+    elif settings["rotate_left_right"]:
+        mode = "Vertical (Left/Right elevation plane, global Y axis)"
+    else:
+        mode = "Plan (global Z axis)"
     lines = [
         "Rotate Multiple completed.",
         "Angle: {} deg".format(round(angle_deg, 6)),
