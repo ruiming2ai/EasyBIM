@@ -634,6 +634,12 @@ def _get_uiapp():
     try:
         return __revit__
     except Exception:
+        pass
+
+    try:
+        from pyrevit import HOST_APP
+        return HOST_APP.uiapp
+    except Exception:
         return None
 
 
@@ -726,3 +732,4 @@ def _open_worksets_dialog_safely():
     except Exception:
         # If this ever fails (older Revit, custom environment), we simply skip.
         pass
+
