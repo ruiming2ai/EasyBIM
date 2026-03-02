@@ -4,9 +4,8 @@ RL Tools messages.py
 
 This module centralizes the startup message and helpers.  Both your
 `doc-opened.py` hook and the ribbon button call into `show_start_message`
-to present the onboarding reminder.  It also optionally opens the native
-Revit Worksets dialog after the alert and can print a Coordination Review
-summary report.
+to present the onboarding reminder.  It can also show an RL Tools Active
+Workset picker after the alert and print a Coordination Review summary.
 
 Engine notes:
   * In Rocket Mode (CPython), `pyrevit.forms` is unavailable.  We therefore
@@ -24,8 +23,8 @@ Parameters:
     doc (Document or None): The active Revit document; the helper uses it
         to decide if the message should display.  If None, the message
         will show when force is True.
-    open_worksets_after (bool): When True, the native Worksets dialog will
-        open automatically after the user closes the alert.
+    open_worksets_after (bool): When True, an Active Workset picker window
+        will open automatically after the user closes the alert.
     run_coord_report_after (bool): When True, a Coordination Review summary
         report is printed after startup actions complete.
 """
@@ -46,11 +45,9 @@ START_MESSAGE = (
 _UNMAPPED_LINK_KEY = "__UNMAPPED__"
 _INSTANCE_LIST_CAP = 200
 
-# Timeout while waiting for Worksets command to become postable.
+# Timeout while waiting for the target document to become active/ready for
+# the Active Workset picker.
 _WORKSETS_POST_TIMEOUT_SEC = 45.0
-# Idling resumes only after modal Worksets closes. A short delay prevents
-# running report on the same cycle as command posting.
-_WORKSETS_POST_SETTLE_SEC = 0.15
 _STARTUP_JOB_MAX_AGE_SEC = 300.0
 _STARTUP_STATE_ENVVAR = "RLTOOLS_STARTUP_QUEUE_STATE"
 
@@ -128,7 +125,7 @@ def _enqueue_startup_actions(doc, open_worksets_after, run_coord_report_after):
 
     # Fallback path only when env-var state cannot be used.
     if open_worksets_after:
-        _open_worksets_dialog_safely()
+        _show_workset_picker_for_doc(doc)
     if run_coord_report_after:
         _print_coordination_review_report(doc)
 
@@ -193,14 +190,18 @@ def _process_startup_job(uiapp, job, now):
         job["stage"] = "run_report"
         stage = "run_report"
 
-    if stage == "post_worksets":
+    if stage == "show_workset_picker":
         if not job.get("open_worksets_after", False):
             job["stage"] = "run_report"
             return False
 
+        candidate_doc = target_doc
+        if not _is_doc_valid(candidate_doc) and not has_identity:
+            candidate_doc = active_doc
+
         doc_is_workshared = job.get("doc_is_workshared")
-        if doc_is_workshared is None and _is_doc_valid(target_doc):
-            doc_is_workshared = bool(getattr(target_doc, "IsWorkshared", False))
+        if doc_is_workshared is None and _is_doc_valid(candidate_doc):
+            doc_is_workshared = bool(getattr(candidate_doc, "IsWorkshared", False))
             job["doc_is_workshared"] = doc_is_workshared
 
         if doc_is_workshared is False:
@@ -208,28 +209,21 @@ def _process_startup_job(uiapp, job, now):
             return False
 
         if _is_doc_valid(target_doc) and not _is_same_doc(target_doc, active_doc):
-            # Keep waiting for this document to become active before posting.
+            # Keep waiting for this document to become active before showing picker.
             _refresh_worksets_deadline(job, now)
             return False
 
-        if _try_post_worksets_command(uiapp):
-            job["stage"] = "wait_after_worksets"
-            job["posted_at"] = now
-            return False
-
-        if has_identity and not _is_doc_valid(target_doc):
+        if not _is_doc_valid(candidate_doc):
             if now >= float(job.get("post_deadline", now)):
                 job["stage"] = "run_report"
             return False
 
         if now >= float(job.get("post_deadline", now)):
             job["stage"] = "run_report"
-        return False
+            return False
 
-    if stage == "wait_after_worksets":
-        posted_at = job.get("posted_at", now)
-        if (now - posted_at) >= _WORKSETS_POST_SETTLE_SEC:
-            job["stage"] = "run_report"
+        _show_workset_picker_for_doc(candidate_doc)
+        job["stage"] = "run_report"
         return False
 
     if stage == "run_report":
@@ -295,7 +289,7 @@ def _enqueue_startup_job(doc, open_worksets_after, run_coord_report_after):
     now = time.time()
     job_id = _next_startup_job_id(state)
 
-    stage = "post_worksets" if open_worksets_after else "run_report"
+    stage = "show_workset_picker" if open_worksets_after else "run_report"
     job = {
         "id": job_id,
         "doc_path": _get_doc_path(doc),
@@ -451,32 +445,210 @@ def _refresh_worksets_deadline(job, now):
     job["post_deadline"] = max(current, proposed)
 
 
-def _try_post_worksets_command(uiapp):
-    """Try posting Worksets command; returns True only if command was posted."""
+def _show_workset_picker_for_doc(doc):
+    """Show Active Workset picker for a workshared model and apply on OK."""
+    if not _is_doc_valid(doc):
+        return False
+
+    if not _get_doc_is_workshared(doc):
+        return False
+
+    worksets = _collect_user_worksets(doc)
+    if not worksets:
+        return False
+
+    selected_workset_id = _show_workset_picker_dialog(doc, worksets)
+    if selected_workset_id is None:
+        return False
+
+    return _set_active_workset_id(doc, selected_workset_id)
+
+
+def _collect_user_worksets(doc):
+    if not _is_doc_valid(doc):
+        return []
+
     try:
-        from Autodesk.Revit.UI import RevitCommandId, PostableCommand
+        from Autodesk.Revit.DB import FilteredWorksetCollector, WorksetKind
 
-        if uiapp is None:
-            return False
+        collector = FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset)
+        if hasattr(collector, "ToWorksets"):
+            worksets = collector.ToWorksets()
+        else:
+            worksets = list(collector)
+    except Exception:
+        worksets = []
 
-        cmd_id = RevitCommandId.LookupPostableCommandId(PostableCommand.Worksets)
-        if not cmd_id:
-            return False
+    rows = []
+    for workset in worksets or []:
+        ws_int = _to_int_elementid(getattr(workset, "Id", None))
+        if ws_int is None:
+            continue
+        ws_name = _safe_text(getattr(workset, "Name", "")).strip()
+        if not ws_name:
+            ws_name = "Workset {}".format(ws_int)
+        rows.append({"id": ws_int, "name": ws_name})
 
-        can_post = True
-        if hasattr(uiapp, "CanPostCommand"):
-            try:
-                can_post = bool(uiapp.CanPostCommand(cmd_id))
-            except Exception:
-                can_post = True
+    rows.sort(key=lambda x: x.get("name", "").lower())
+    return rows
 
-        if not can_post:
-            return False
 
-        uiapp.PostCommand(cmd_id)
+def _get_active_workset_id(doc):
+    if not _is_doc_valid(doc):
+        return None
+
+    try:
+        table = doc.GetWorksetTable()
+    except Exception:
+        table = None
+
+    if table is not None and hasattr(table, "GetActiveWorksetId"):
+        try:
+            return _to_int_elementid(table.GetActiveWorksetId())
+        except Exception:
+            pass
+
+    try:
+        from Autodesk.Revit.DB import WorksetTable
+        return _to_int_elementid(WorksetTable.GetActiveWorksetId(doc))
+    except Exception:
+        return None
+
+
+def _set_active_workset_id(doc, workset_id_int):
+    if not _is_doc_valid(doc):
+        return False
+
+    try:
+        from Autodesk.Revit.DB import WorksetId
+        target_id = WorksetId(int(workset_id_int))
+    except Exception:
+        return False
+
+    try:
+        table = doc.GetWorksetTable()
+    except Exception:
+        table = None
+
+    if table is not None and hasattr(table, "SetActiveWorksetId"):
+        try:
+            table.SetActiveWorksetId(target_id)
+            return True
+        except Exception:
+            pass
+
+    try:
+        from Autodesk.Revit.DB import WorksetTable
+        WorksetTable.SetActiveWorksetId(doc, target_id)
         return True
     except Exception:
         return False
+
+
+def _show_workset_picker_dialog(doc, worksets):
+    """Show modal picker and return selected workset id, or None."""
+    if not worksets:
+        return None
+
+    active_ws_id = _get_active_workset_id(doc)
+
+    try:
+        import clr
+        clr.AddReference("PresentationFramework")
+        clr.AddReference("PresentationCore")
+        clr.AddReference("WindowsBase")
+
+        from System.Windows import Window, WindowStartupLocation, SizeToContent, HorizontalAlignment, Thickness
+        from System.Windows.Controls import StackPanel, TextBlock, Button, ComboBox, Orientation
+
+        window = Window()
+        window.Title = "RL Tools - Workset"
+        window.SizeToContent = SizeToContent.WidthAndHeight
+        window.WindowStartupLocation = WindowStartupLocation.CenterScreen
+        window.MinWidth = 420
+        window.Topmost = True
+
+        root = StackPanel()
+        root.Margin = Thickness(20)
+
+        doc_text = TextBlock()
+        doc_text.Text = "Document: {}".format(_get_doc_title(doc))
+        doc_text.TextWrapping = True
+        root.Children.Add(doc_text)
+
+        label = TextBlock()
+        label.Text = "Active Workset"
+        label.Margin = Thickness(0, 12, 0, 6)
+        root.Children.Add(label)
+
+        combo = ComboBox()
+        combo.MinWidth = 320
+
+        selected_index = 0
+        for idx, row in enumerate(worksets):
+            combo.Items.Add(row.get("name", ""))
+            if row.get("id") == active_ws_id:
+                selected_index = idx
+
+        if combo.Items.Count > 0:
+            combo.SelectedIndex = selected_index
+        root.Children.Add(combo)
+
+        btn_row = StackPanel()
+        btn_row.Orientation = Orientation.Horizontal
+        btn_row.Margin = Thickness(0, 16, 0, 0)
+        btn_row.HorizontalAlignment = HorizontalAlignment.Right
+
+        ok_btn = Button()
+        ok_btn.Content = "OK"
+        ok_btn.MinWidth = 90
+        ok_btn.Margin = Thickness(0, 0, 8, 0)
+
+        cancel_btn = Button()
+        cancel_btn.Content = "Cancel"
+        cancel_btn.MinWidth = 90
+
+        result = {"selected_id": None, "confirmed": False}
+
+        def _close_ok(sender, args):
+            del sender, args
+            idx = int(combo.SelectedIndex)
+            if idx < 0:
+                idx = 0
+            if idx >= len(worksets):
+                idx = len(worksets) - 1
+            if idx >= 0:
+                result["selected_id"] = worksets[idx].get("id")
+                result["confirmed"] = True
+            try:
+                window.DialogResult = True
+            except Exception:
+                pass
+            window.Close()
+
+        def _close_cancel(sender, args):
+            del sender, args
+            try:
+                window.DialogResult = False
+            except Exception:
+                pass
+            window.Close()
+
+        ok_btn.Click += _close_ok
+        cancel_btn.Click += _close_cancel
+
+        btn_row.Children.Add(ok_btn)
+        btn_row.Children.Add(cancel_btn)
+        root.Children.Add(btn_row)
+
+        window.Content = root
+        window.ShowDialog()
+
+        if result.get("confirmed"):
+            return result.get("selected_id")
+        return None
+    except Exception:
+        return None
 
 
 def _print_coordination_review_report(doc):
@@ -969,21 +1141,4 @@ def _alert_wpf_with_bold(title, message):
 
     except Exception:
         return False
-
-
-def _open_worksets_dialog_safely():
-    """Open the native Revit Worksets dialog by posting the built-in command.
-    We guard in a try/except so a missing command never crashes your script.
-    """
-    try:
-        from Autodesk.Revit.UI import RevitCommandId, PostableCommand
-        app = _get_uiapp()
-        if app is None:
-            return
-        cmd_id = RevitCommandId.LookupPostableCommandId(PostableCommand.Worksets)
-        if cmd_id:
-            app.PostCommand(cmd_id)
-    except Exception:
-        # If this ever fails (older Revit, custom environment), we simply skip.
-        pass
 
