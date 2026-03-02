@@ -47,14 +47,13 @@ _UNMAPPED_LINK_KEY = "__UNMAPPED__"
 _INSTANCE_LIST_CAP = 200
 
 # Timeout while waiting for Worksets command to become postable.
-_WORKSETS_POST_TIMEOUT_SEC = 10.0
+_WORKSETS_POST_TIMEOUT_SEC = 45.0
 # Idling resumes only after modal Worksets closes. A short delay prevents
 # running report on the same cycle as command posting.
 _WORKSETS_POST_SETTLE_SEC = 0.15
+_STARTUP_JOB_MAX_AGE_SEC = 300.0
+_STARTUP_STATE_ENVVAR = "RLTOOLS_STARTUP_QUEUE_STATE"
 
-_STARTUP_JOBS = {}
-_STARTUP_JOB_SEQ = 0
-_IDLING_HANDLER_ATTACHED = False
 
 
 def show_start_message(
@@ -115,103 +114,115 @@ def _should_show_for_doc(doc):
 
 
 def _enqueue_startup_actions(doc, open_worksets_after, run_coord_report_after):
-    """Queue post-dialog actions and process them in UIApplication.Idling.
-
-    This avoids command-race timing right after document open.
-    """
-    global _STARTUP_JOB_SEQ
-
-    _STARTUP_JOB_SEQ += 1
-    job_id = _STARTUP_JOB_SEQ
-
-    stage = "post_worksets" if open_worksets_after else "run_report"
-    now = time.time()
-    _STARTUP_JOBS[job_id] = {
-        "id": job_id,
-        "doc": doc,
-        "open_worksets_after": bool(open_worksets_after),
-        "run_coord_report_after": bool(run_coord_report_after),
-        "stage": stage,
-        "created_at": now,
-        "post_deadline": now + _WORKSETS_POST_TIMEOUT_SEC,
-        "posted_at": None,
-    }
-
-    if _ensure_idling_handler():
+    """Queue post-dialog actions to be processed by hooks/app-idling.py."""
+    if not (open_worksets_after or run_coord_report_after):
         return
 
-    # Fallback path if idling could not be hooked in current environment.
+    job_id = _enqueue_startup_job(
+        doc=doc,
+        open_worksets_after=open_worksets_after,
+        run_coord_report_after=run_coord_report_after,
+    )
+    if job_id is not None:
+        return
+
+    # Fallback path only when env-var state cannot be used.
     if open_worksets_after:
         _open_worksets_dialog_safely()
     if run_coord_report_after:
         _print_coordination_review_report(doc)
-    _STARTUP_JOBS.pop(job_id, None)
 
 
-def _ensure_idling_handler():
-    global _IDLING_HANDLER_ATTACHED
-
-    if _IDLING_HANDLER_ATTACHED:
-        return True
-
-    uiapp = _get_uiapp()
+def process_startup_jobs(uiapp=None):
+    """Process queued startup jobs. Called from hooks/app-idling.py."""
+    uiapp = uiapp or _get_uiapp()
     if not uiapp:
-        return False
-
-    try:
-        uiapp.Idling += _on_uiapp_idling
-        _IDLING_HANDLER_ATTACHED = True
-        return True
-    except Exception:
-        return False
-
-
-def _detach_idling_handler():
-    global _IDLING_HANDLER_ATTACHED
-
-    if not _IDLING_HANDLER_ATTACHED:
         return
 
-    uiapp = _get_uiapp()
-    if not uiapp:
-        _IDLING_HANDLER_ATTACHED = False
+    state = _load_startup_state()
+    jobs = state.get("jobs", [])
+    if not jobs:
         return
 
-    try:
-        uiapp.Idling -= _on_uiapp_idling
-    except Exception:
-        pass
-    _IDLING_HANDLER_ATTACHED = False
-
-
-def _on_uiapp_idling(sender, args):
     now = time.time()
-    done_job_ids = []
-    for job_id, job in list(_STARTUP_JOBS.items()):
+    remaining = []
+    changed = False
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            changed = True
+            continue
+
+        before = (
+            job.get("stage"),
+            job.get("posted_at"),
+            job.get("post_deadline"),
+            job.get("doc_is_workshared"),
+        )
         try:
-            if _process_startup_job(sender, job, now):
-                done_job_ids.append(job_id)
+            done = _process_startup_job(uiapp, job, now)
         except Exception:
-            done_job_ids.append(job_id)
+            done = True
 
-    for job_id in done_job_ids:
-        _STARTUP_JOBS.pop(job_id, None)
+        if done:
+            changed = True
+            continue
 
-    if not _STARTUP_JOBS:
-        _detach_idling_handler()
+        remaining.append(job)
+        after = (
+            job.get("stage"),
+            job.get("posted_at"),
+            job.get("post_deadline"),
+            job.get("doc_is_workshared"),
+        )
+        if after != before:
+            changed = True
+
+    if changed or len(remaining) != len(jobs):
+        state["jobs"] = remaining
+        _save_startup_state(state)
 
 
 def _process_startup_job(uiapp, job, now):
     stage = job.get("stage")
-    doc = job.get("doc")
+    target_doc = _resolve_doc_from_job(uiapp, job)
+    active_doc = _get_active_doc_from_uiapp(uiapp)
+    has_identity = _job_has_doc_identity(job)
+    job_age = now - float(job.get("created_at", now))
+    if job_age > _STARTUP_JOB_MAX_AGE_SEC:
+        job["stage"] = "run_report"
+        stage = "run_report"
 
     if stage == "post_worksets":
+        if not job.get("open_worksets_after", False):
+            job["stage"] = "run_report"
+            return False
+
+        doc_is_workshared = job.get("doc_is_workshared")
+        if doc_is_workshared is None and _is_doc_valid(target_doc):
+            doc_is_workshared = bool(getattr(target_doc, "IsWorkshared", False))
+            job["doc_is_workshared"] = doc_is_workshared
+
+        if doc_is_workshared is False:
+            job["stage"] = "run_report"
+            return False
+
+        if _is_doc_valid(target_doc) and not _is_same_doc(target_doc, active_doc):
+            # Keep waiting for this document to become active before posting.
+            _refresh_worksets_deadline(job, now)
+            return False
+
         if _try_post_worksets_command(uiapp):
             job["stage"] = "wait_after_worksets"
             job["posted_at"] = now
             return False
 
-        if now >= job.get("post_deadline", now):
+        if has_identity and not _is_doc_valid(target_doc):
+            if now >= float(job.get("post_deadline", now)):
+                job["stage"] = "run_report"
+            return False
+
+        if now >= float(job.get("post_deadline", now)):
             job["stage"] = "run_report"
         return False
 
@@ -223,11 +234,221 @@ def _process_startup_job(uiapp, job, now):
 
     if stage == "run_report":
         if job.get("run_coord_report_after", False):
-            _print_coordination_review_report(doc)
+            report_doc = target_doc
+            if not _is_doc_valid(report_doc) and not has_identity:
+                report_doc = active_doc
+            _print_coordination_review_report(report_doc)
         job["stage"] = "done"
         return True
 
     return True
+
+
+def _load_startup_state():
+    default_state = {"next_id": 1, "jobs": []}
+
+    try:
+        from pyrevit import script
+        raw_state = script.get_envvar(_STARTUP_STATE_ENVVAR)
+    except Exception:
+        return default_state
+
+    if not isinstance(raw_state, dict):
+        return default_state
+
+    state = dict(default_state)
+    jobs = raw_state.get("jobs", [])
+    if isinstance(jobs, list):
+        state["jobs"] = [job for job in jobs if isinstance(job, dict)]
+
+    try:
+        next_id = int(raw_state.get("next_id", 1))
+    except Exception:
+        next_id = 1
+    state["next_id"] = max(next_id, 1)
+
+    return state
+
+
+def _save_startup_state(state):
+    try:
+        from pyrevit import script
+        script.set_envvar(_STARTUP_STATE_ENVVAR, state)
+        return True
+    except Exception:
+        return False
+
+
+def _next_startup_job_id(state):
+    try:
+        next_id = int(state.get("next_id", 1))
+    except Exception:
+        next_id = 1
+
+    next_id = max(next_id, 1)
+    state["next_id"] = next_id + 1
+    return next_id
+
+
+def _enqueue_startup_job(doc, open_worksets_after, run_coord_report_after):
+    state = _load_startup_state()
+    now = time.time()
+    job_id = _next_startup_job_id(state)
+
+    stage = "post_worksets" if open_worksets_after else "run_report"
+    job = {
+        "id": job_id,
+        "doc_path": _get_doc_path(doc),
+        "doc_title": _get_doc_title_for_key(doc),
+        "doc_is_workshared": _get_doc_is_workshared(doc),
+        "open_worksets_after": bool(open_worksets_after),
+        "run_coord_report_after": bool(run_coord_report_after),
+        "stage": stage,
+        "created_at": now,
+        "post_deadline": now + _WORKSETS_POST_TIMEOUT_SEC,
+        "posted_at": None,
+    }
+
+    try:
+        state_jobs = list(state.get("jobs", []))
+    except Exception:
+        state_jobs = []
+    state_jobs.append(job)
+    state["jobs"] = state_jobs
+
+    try:
+        saved = _save_startup_state(state)
+        if not saved:
+            return None
+        return job_id
+    except Exception:
+        return None
+
+
+def _resolve_doc_from_job(uiapp, job):
+    if not uiapp or not isinstance(job, dict):
+        return None
+
+    app = getattr(uiapp, "Application", None)
+    docs = getattr(app, "Documents", None)
+    if docs is None:
+        return None
+
+    doc_path = _normalize_path(job.get("doc_path"))
+    doc_title = _normalize_title(job.get("doc_title"))
+
+    docs_list = []
+    try:
+        for doc in docs:
+            docs_list.append(doc)
+    except Exception:
+        return None
+
+    if doc_path:
+        for doc in docs_list:
+            if _normalize_path(_get_doc_path(doc)) == doc_path:
+                return doc
+
+    if doc_title:
+        for doc in docs_list:
+            if _normalize_title(_get_doc_title_for_key(doc)) == doc_title:
+                return doc
+
+    return None
+
+
+def _job_has_doc_identity(job):
+    if not isinstance(job, dict):
+        return False
+    if _normalize_path(job.get("doc_path")):
+        return True
+    if _normalize_title(job.get("doc_title")):
+        return True
+    return False
+
+
+def _get_active_doc_from_uiapp(uiapp):
+    if not uiapp:
+        return None
+    try:
+        uidoc = uiapp.ActiveUIDocument
+    except Exception:
+        uidoc = None
+    if uidoc is None:
+        return None
+    try:
+        return uidoc.Document
+    except Exception:
+        return None
+
+
+def _is_same_doc(doc_a, doc_b):
+    if not _is_doc_valid(doc_a) or not _is_doc_valid(doc_b):
+        return False
+    try:
+        if doc_a.Equals(doc_b):
+            return True
+    except Exception:
+        pass
+    path_a = _normalize_path(_get_doc_path(doc_a))
+    path_b = _normalize_path(_get_doc_path(doc_b))
+    if path_a and path_b:
+        return path_a == path_b
+    title_a = _normalize_title(_get_doc_title_for_key(doc_a))
+    title_b = _normalize_title(_get_doc_title_for_key(doc_b))
+    return bool(title_a and title_b and title_a == title_b)
+
+
+def _get_doc_path(doc):
+    if not _is_doc_valid(doc):
+        return ""
+    try:
+        path = getattr(doc, "PathName", "") or ""
+    except Exception:
+        path = ""
+    return _safe_text(path).strip()
+
+
+def _get_doc_title_for_key(doc):
+    if not _is_doc_valid(doc):
+        return ""
+    try:
+        title = getattr(doc, "Title", "") or ""
+    except Exception:
+        title = ""
+    return _safe_text(title).strip()
+
+
+def _get_doc_is_workshared(doc):
+    if not _is_doc_valid(doc):
+        return None
+    try:
+        return bool(getattr(doc, "IsWorkshared", False))
+    except Exception:
+        return None
+
+
+def _normalize_path(path_text):
+    text = _safe_text(path_text).strip()
+    if not text:
+        return ""
+    return text.lower()
+
+
+def _normalize_title(title_text):
+    text = _safe_text(title_text).strip()
+    if not text:
+        return ""
+    return text.lower()
+
+
+def _refresh_worksets_deadline(job, now):
+    try:
+        current = float(job.get("post_deadline", 0.0))
+    except Exception:
+        current = 0.0
+    proposed = now + _WORKSETS_POST_TIMEOUT_SEC
+    job["post_deadline"] = max(current, proposed)
 
 
 def _try_post_worksets_command(uiapp):
@@ -264,12 +485,45 @@ def _print_coordination_review_report(doc):
 
     if output:
         try:
+            _set_output_always_on_top(output)
+        except Exception:
+            pass
+        try:
             _render_report_html(output, report)
             return
         except Exception:
             pass
 
     _render_report_text(report)
+
+
+def _set_output_always_on_top(output):
+    if output is None:
+        return
+
+    try:
+        output.show()
+    except Exception:
+        pass
+
+    win = None
+    try:
+        win = output.window
+    except Exception:
+        win = None
+
+    if win is None:
+        return
+
+    try:
+        win.Topmost = True
+    except Exception:
+        pass
+
+    try:
+        win.Activate()
+    except Exception:
+        pass
 
 
 def _build_coordination_report(doc):
