@@ -50,6 +50,10 @@ def _xyz(x, y, z):
     return DB.XYZ(float(x), float(y), float(z))
 
 
+def _is_valid_api_object(obj):
+    return bool(obj) and bool(getattr(obj, "IsValidObject", True))
+
+
 def _xyz_add(a, b):
     return _xyz(a.X + b.X, a.Y + b.Y, a.Z + b.Z)
 
@@ -446,12 +450,42 @@ def _set_label_line_length(viewport, value):
         return False, "Failed setting title line length: {}".format(ex)
 
 
+def _match_viewport_type(target_viewport, reference_viewport):
+    if not _is_valid_api_object(target_viewport):
+        return False, "Target viewport is invalid."
+    if not _is_valid_api_object(reference_viewport):
+        return False, "Reference viewport is invalid."
+
+    try:
+        ref_type_id = reference_viewport.GetTypeId()
+    except Exception as ex:
+        return False, "Could not read reference viewport type: {}".format(ex)
+
+    if _eid_int(ref_type_id) in (None, -1):
+        return False, "Reference viewport type is unavailable."
+
+    try:
+        current_type_id = target_viewport.GetTypeId()
+    except Exception:
+        current_type_id = None
+
+    if _eid_int(current_type_id) == _eid_int(ref_type_id):
+        return True, ""
+
+    try:
+        target_viewport.ChangeTypeId(ref_type_id)
+        return True, ""
+    except Exception as ex:
+        return False, "Failed matching viewport type: {}".format(ex)
+
+
 class AlignmentOptions(object):
-    def __init__(self, match_title_position, match_title_line_length, assign_scope_box, assign_crop_region):
+    def __init__(self, match_title_position, match_title_line_length, assign_scope_box, assign_crop_region, match_viewport_type):
         self.match_title_position = bool(match_title_position)
         self.match_title_line_length = bool(match_title_line_length)
         self.assign_scope_box = bool(assign_scope_box)
         self.assign_crop_region = bool(assign_crop_region)
+        self.match_viewport_type = bool(match_viewport_type)
 
 
 class ReferenceSelection(object):
@@ -478,6 +512,7 @@ class RunStats(object):
         self.title_line_matched = 0
         self.scope_assigned = 0
         self.crop_assigned = 0
+        self.viewport_type_matched = 0
         self.pinned_unpinned = 0
         self.pinned_restored = 0
         self.skip_records = []
@@ -569,6 +604,7 @@ class ViewAlignWindow(forms.WPFWindow):
         self.match_title_line_cb.IsChecked = True
         self.assign_scope_cb.IsChecked = False
         self.assign_crop_cb.IsChecked = False
+        self.match_viewport_type_cb.IsChecked = False
 
     def _set_status(self, text):
         self.status_tb.Text = _safe_text(text)
@@ -1017,6 +1053,7 @@ class ViewAlignWindow(forms.WPFWindow):
             "Title line length matched: {}".format(stats.title_line_matched),
             "Scope box assigned: {}".format(stats.scope_assigned),
             "Crop region assigned: {}".format(stats.crop_assigned),
+            "Viewport type matched: {}".format(stats.viewport_type_matched),
             "Pinned unpinned: {}".format(stats.pinned_unpinned),
             "Pinned restored: {}".format(stats.pinned_restored),
             "Skipped / warnings: {}".format(len(stats.skip_records)),
@@ -1061,6 +1098,7 @@ class ViewAlignWindow(forms.WPFWindow):
             match_title_line_length=self.match_title_line_cb.IsChecked,
             assign_scope_box=self.assign_scope_cb.IsChecked,
             assign_crop_region=self.assign_crop_cb.IsChecked,
+            match_viewport_type=self.match_viewport_type_cb.IsChecked,
         )
 
         if options.assign_scope_box and options.assign_crop_region:
@@ -1114,8 +1152,8 @@ class ViewAlignWindow(forms.WPFWindow):
                         stats.add_skip(viewport_id_int, "<unknown>", "<unknown>", "Viewport is not in target pool.")
                         continue
 
-                    viewport = self.active_doc.GetElement(DB.ElementId(viewport_id_int))
-                    if not viewport:
+                    viewport = getattr(row, "viewport", None)
+                    if not _is_valid_api_object(viewport):
                         stats.add_skip(
                             viewport_id_int,
                             row.sheet_label,
@@ -1125,7 +1163,7 @@ class ViewAlignWindow(forms.WPFWindow):
                         continue
 
                     view = self.active_doc.GetElement(viewport.ViewId)
-                    if not view:
+                    if not _is_valid_api_object(view):
                         stats.add_skip(
                             viewport_id_int,
                             row.sheet_label,
@@ -1162,6 +1200,18 @@ class ViewAlignWindow(forms.WPFWindow):
                                     row.sheet_label,
                                     row.view_name,
                                     scope_reason,
+                                )
+
+                        if options.match_viewport_type:
+                            ok_type, type_reason = _match_viewport_type(viewport, ref_viewport)
+                            if ok_type:
+                                stats.viewport_type_matched += 1
+                            else:
+                                stats.add_skip(
+                                    viewport_id_int,
+                                    row.sheet_label,
+                                    row.view_name,
+                                    type_reason,
                                 )
 
                         if options.assign_crop_region:

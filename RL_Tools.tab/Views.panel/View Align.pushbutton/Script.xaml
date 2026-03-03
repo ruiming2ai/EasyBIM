@@ -115,7 +115,8 @@
                             <CheckBox x:Name="match_title_pos_cb" Content="Match view title position" Margin="0,0,0,8"/>
                             <CheckBox x:Name="match_title_line_cb" Content="Match view title line length" Margin="0,0,0,8"/>
                             <CheckBox x:Name="assign_scope_cb" Content="Assign Scope Box" Margin="0,0,0,8" Click="assign_scope_clicked"/>
-                            <CheckBox x:Name="assign_crop_cb" Content="Assign Crop View Region" Click="assign_crop_clicked"/>
+                            <CheckBox x:Name="assign_crop_cb" Content="Assign Crop View Region" Margin="0,0,0,8" Click="assign_crop_clicked"/>
+                            <CheckBox x:Name="match_viewport_type_cb" Content="Match viewport type"/>
                         </StackPanel>
                     </Border>
 
