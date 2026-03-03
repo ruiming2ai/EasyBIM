@@ -147,6 +147,57 @@ def _normalized_view_type_label(view):
     return normalize.get(vt, vt)
 
 
+def _get_view_cropbox_center_in_model(view):
+    if not view:
+        return None, "View is missing."
+
+    try:
+        crop_box = view.CropBox
+    except Exception:
+        crop_box = None
+
+    if not crop_box:
+        return None, "Reference view has no crop box."
+
+    try:
+        local_center = _xyz(
+            (crop_box.Min.X + crop_box.Max.X) * 0.5,
+            (crop_box.Min.Y + crop_box.Max.Y) * 0.5,
+            (crop_box.Min.Z + crop_box.Max.Z) * 0.5,
+        )
+    except Exception:
+        return None, "Reference crop box bounds are unavailable."
+
+    try:
+        trf = crop_box.Transform
+    except Exception:
+        trf = None
+
+    if trf:
+        try:
+            return trf.OfPoint(local_center), ""
+        except Exception as ex:
+            return None, "Failed transforming crop box center to model coordinates: {}".format(ex)
+
+    return local_center, ""
+
+
+def _map_reference_point_to_host(model_point_in_ref_doc, doc_option):
+    if not model_point_in_ref_doc:
+        return None, "Reference model point is missing."
+    if not doc_option:
+        return model_point_in_ref_doc, ""
+
+    trf = getattr(doc_option, "doc_to_host_transform", None)
+    if not trf:
+        return model_point_in_ref_doc, ""
+
+    try:
+        return trf.OfPoint(model_point_in_ref_doc), ""
+    except Exception as ex:
+        return None, "Failed converting linked reference model point to host coordinates: {}".format(ex)
+
+
 def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
     if not viewport:
         return None, "Viewport is missing."
@@ -159,21 +210,6 @@ def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
     ok, reason = _is_supported_view_type(view)
     if not ok:
         return None, reason
-
-    if hasattr(viewport, "HasViewTransforms"):
-        try:
-            if not viewport.HasViewTransforms():
-                return None, "Viewport has no model transforms."
-        except Exception:
-            pass
-
-    if hasattr(viewport, "GetProjectionToSheetTransform"):
-        try:
-            trf = viewport.GetProjectionToSheetTransform()
-            if trf:
-                return trf.OfPoint(model_point), ""
-        except Exception:
-            pass
 
     try:
         origin = view.Origin
@@ -314,6 +350,19 @@ def _extract_crop_settings(source_view):
 
 
 def _set_scope_box(view, scope_box_id):
+    ok, reason = _can_set_scope_box(view)
+    if not ok:
+        return False, reason
+
+    target_eid = scope_box_id if scope_box_id else INVALID_EID
+    try:
+        view.get_Parameter(SCOPE_BOX_BIP).Set(target_eid)
+        return True, ""
+    except Exception as ex:
+        return False, "Failed setting scope box: {}".format(ex)
+
+
+def _can_set_scope_box(view):
     if SCOPE_BOX_BIP is None:
         return False, "Scope box parameter is not available in this Revit version."
 
@@ -327,13 +376,7 @@ def _set_scope_box(view, scope_box_id):
 
     if param.IsReadOnly:
         return False, "Target scope box parameter is read-only."
-
-    target_eid = scope_box_id if scope_box_id else INVALID_EID
-    try:
-        param.Set(target_eid)
-        return True, ""
-    except Exception as ex:
-        return False, "Failed setting scope box: {}".format(ex)
+    return True, ""
 
 
 def _clear_scope_box(view):
@@ -390,6 +433,19 @@ def _copy_crop_settings(target_view, crop_settings):
     return True, ""
 
 
+def _can_copy_crop_settings(target_view):
+    if not target_view:
+        return False, "Target view is missing."
+
+    try:
+        shape_mgr = target_view.GetCropRegionShapeManager()
+    except Exception:
+        shape_mgr = None
+    if not shape_mgr:
+        return False, "Target view has no crop region manager."
+    return True, ""
+
+
 def _get_scope_box_id(view):
     if SCOPE_BOX_BIP is None:
         return None
@@ -429,6 +485,14 @@ def _set_label_offset(viewport, value):
         return False, "Failed setting title position: {}".format(ex)
 
 
+def _can_set_label_offset(viewport, value):
+    if value is None:
+        return False, "Reference label offset is unavailable."
+    if not hasattr(viewport, "LabelOffset"):
+        return False, "LabelOffset API is unavailable for this viewport."
+    return True, ""
+
+
 def _get_label_line_length(viewport):
     if hasattr(viewport, "LabelLineLength"):
         try:
@@ -448,6 +512,14 @@ def _set_label_line_length(viewport, value):
         return True, ""
     except Exception as ex:
         return False, "Failed setting title line length: {}".format(ex)
+
+
+def _can_set_label_line_length(viewport, value):
+    if value is None:
+        return False, "Reference label line length is unavailable."
+    if not hasattr(viewport, "LabelLineLength"):
+        return False, "LabelLineLength API is unavailable for this viewport."
+    return True, ""
 
 
 def _match_viewport_type(target_viewport, reference_viewport):
@@ -479,6 +551,28 @@ def _match_viewport_type(target_viewport, reference_viewport):
         return False, "Failed matching viewport type: {}".format(ex)
 
 
+def _can_match_viewport_type(target_viewport, ref_type_id):
+    if not _is_valid_api_object(target_viewport):
+        return False, "Target viewport is invalid."
+    if _eid_int(ref_type_id) in (None, -1):
+        return False, "Reference viewport type is unavailable."
+    try:
+        current_type_id = target_viewport.GetTypeId()
+    except Exception:
+        current_type_id = None
+
+    if _eid_int(current_type_id) == _eid_int(ref_type_id):
+        return True, ""
+
+    if hasattr(target_viewport, "IsValidType"):
+        try:
+            if not target_viewport.IsValidType(ref_type_id):
+                return False, "Target viewport cannot use the reference viewport type."
+        except Exception:
+            pass
+    return True, ""
+
+
 class AlignmentOptions(object):
     def __init__(self, match_title_position, match_title_line_length, assign_scope_box, assign_crop_region, match_viewport_type):
         self.match_title_position = bool(match_title_position)
@@ -489,17 +583,18 @@ class AlignmentOptions(object):
 
 
 class ReferenceSelection(object):
-    def __init__(self, doc_option, viewport_row, model_anchor_in_ref_doc):
+    def __init__(self, doc_option, viewport_row):
         self.doc_option = doc_option
         self.viewport_row = viewport_row
-        self.model_anchor_in_ref_doc = model_anchor_in_ref_doc
 
 
-class SkipRecord(object):
-    def __init__(self, element_id, sheet_label, view_label, reason):
-        self.element_id = element_id
+class IssueRecord(object):
+    def __init__(self, viewport_id, view_id, sheet_label, view_label, stage, reason):
+        self.viewport_id = viewport_id
+        self.view_id = view_id
         self.sheet_label = sheet_label
         self.view_label = view_label
+        self.stage = stage
         self.reason = reason
 
 
@@ -515,10 +610,10 @@ class RunStats(object):
         self.viewport_type_matched = 0
         self.pinned_unpinned = 0
         self.pinned_restored = 0
-        self.skip_records = []
+        self.issues = []
 
-    def add_skip(self, element_id, sheet_label, view_label, reason):
-        self.skip_records.append(SkipRecord(element_id, sheet_label, view_label, reason))
+    def add_issue(self, viewport_id, view_id, sheet_label, view_label, reason, stage):
+        self.issues.append(IssueRecord(viewport_id, view_id, sheet_label, view_label, stage, reason))
 
 
 class ReferenceDocOption(object):
@@ -822,8 +917,7 @@ class ViewAlignWindow(forms.WPFWindow):
 
         cached = self._reference_rows_by_doc_key.get(doc_option.key)
         if cached is None:
-            model_point = self._reference_model_anchor_point(doc_option)
-            cached = self._collect_candidate_viewport_rows(doc_option.doc, model_point=model_point)
+            cached = self._collect_candidate_viewport_rows(doc_option.doc, model_point=MODEL_ANCHOR_HOST)
             self._reference_rows_by_doc_key[doc_option.key] = cached
 
         sheet_map = defaultdict(list)
@@ -926,18 +1020,6 @@ class ViewAlignWindow(forms.WPFWindow):
             )
         )
 
-    def _reference_model_anchor_point(self, ref_doc_option):
-        if not ref_doc_option:
-            return MODEL_ANCHOR_HOST
-
-        trf = ref_doc_option.doc_to_host_transform
-        if trf:
-            try:
-                return trf.Inverse.OfPoint(MODEL_ANCHOR_HOST)
-            except Exception:
-                return MODEL_ANCHOR_HOST
-        return MODEL_ANCHOR_HOST
-
     def _iter_visible_child_nodes(self):
         roots = self.target_tv.ItemsSource or []
         for sheet_node in roots:
@@ -973,8 +1055,7 @@ class ViewAlignWindow(forms.WPFWindow):
         if not doc_option or not view_option:
             return None
 
-        model_anchor_in_ref_doc = self._reference_model_anchor_point(doc_option)
-        return ReferenceSelection(doc_option, view_option.row, model_anchor_in_ref_doc)
+        return ReferenceSelection(doc_option, view_option.row)
 
     def ref_doc_changed(self, sender, args):
         del sender, args
@@ -1043,9 +1124,30 @@ class ViewAlignWindow(forms.WPFWindow):
         del sender, args
         self.Close()
 
-    def _build_summary_text(self, stats):
+    def _add_issue(self, stats, row, reason, stage, viewport_id_int=None, view_id_int=None):
+        if row:
+            viewport_id = row.viewport_id_int if viewport_id_int is None else viewport_id_int
+            view_id = row.view_id_int if view_id_int is None else view_id_int
+            sheet_label = row.sheet_label
+            view_label = row.view_name
+        else:
+            viewport_id = viewport_id_int
+            view_id = view_id_int
+            sheet_label = "<unknown>"
+            view_label = "<unknown>"
+
+        stats.add_issue(
+            viewport_id=viewport_id,
+            view_id=view_id,
+            sheet_label=sheet_label,
+            view_label=view_label,
+            reason=reason,
+            stage=stage,
+        )
+
+    def _build_summary_text(self, stats, headline):
         lines = [
-            "View Align completed.",
+            headline,
             "Targets selected: {}".format(stats.targets_selected),
             "Targets processed: {}".format(stats.targets_processed),
             "Aligned by model coordinates: {}".format(stats.aligned),
@@ -1056,23 +1158,25 @@ class ViewAlignWindow(forms.WPFWindow):
             "Viewport type matched: {}".format(stats.viewport_type_matched),
             "Pinned unpinned: {}".format(stats.pinned_unpinned),
             "Pinned restored: {}".format(stats.pinned_restored),
-            "Skipped / warnings: {}".format(len(stats.skip_records)),
+            "Issues: {}".format(len(stats.issues)),
         ]
 
-        if stats.skip_records:
+        if stats.issues:
             lines.append("")
-            lines.append("Skipped / warning details (up to 160 rows):")
-            for row in stats.skip_records[:160]:
+            lines.append("Issue details (up to 200 rows):")
+            for row in stats.issues[:200]:
                 lines.append(
-                    "- id {} | {} | {} | {}".format(
-                        row.element_id,
+                    "- stage {} | viewport id {} | view id {} | {} | {} | {}".format(
+                        _safe_text(row.stage) or "<unknown>",
+                        _safe_text(row.viewport_id) or "<unknown>",
+                        _safe_text(row.view_id) or "<unknown>",
                         row.sheet_label,
                         row.view_label,
                         row.reason,
                     )
                 )
-            if len(stats.skip_records) > 160:
-                lines.append("... {} additional rows omitted.".format(len(stats.skip_records) - 160))
+            if len(stats.issues) > 200:
+                lines.append("... {} additional rows omitted.".format(len(stats.issues) - 200))
 
         return "\n".join(lines)
 
@@ -1112,10 +1216,33 @@ class ViewAlignWindow(forms.WPFWindow):
         ref_viewport = ref_row.viewport
         ref_view = ref_row.view
 
+        if not _is_valid_api_object(ref_viewport) or not _is_valid_api_object(ref_view):
+            forms.alert("Reference viewport/view is no longer valid.", title="View Align")
+            return
+
+        ref_model_anchor_in_ref_doc, ref_center_reason = _get_view_cropbox_center_in_model(ref_view)
+        if ref_model_anchor_in_ref_doc is None:
+            forms.alert(
+                "Could not compute reference model anchor from reference view center.\nReason: {}".format(ref_center_reason),
+                title="View Align",
+            )
+            return
+
+        global_model_anchor_host, host_anchor_reason = _map_reference_point_to_host(
+            ref_model_anchor_in_ref_doc,
+            reference.doc_option,
+        )
+        if global_model_anchor_host is None:
+            forms.alert(
+                "Could not convert reference anchor to host coordinates.\nReason: {}".format(host_anchor_reason),
+                title="View Align",
+            )
+            return
+
         ref_anchor, ref_anchor_reason = _try_compute_model_anchor_on_sheet(
             reference.doc_option.doc,
             ref_viewport,
-            reference.model_anchor_in_ref_doc,
+            ref_model_anchor_in_ref_doc,
         )
         if ref_anchor is None:
             forms.alert(
@@ -1140,166 +1267,218 @@ class ViewAlignWindow(forms.WPFWindow):
 
         ref_label_offset = _get_label_offset(ref_viewport) if options.match_title_position else None
         ref_label_line_length = _get_label_line_length(ref_viewport) if options.match_title_line_length else None
+        ref_viewport_type_id = None
+        ref_type_reason = ""
+        if options.match_viewport_type:
+            try:
+                ref_viewport_type_id = ref_viewport.GetTypeId()
+            except Exception as ex:
+                ref_type_reason = "Could not read reference viewport type: {}".format(ex)
 
         stats = RunStats()
         stats.targets_selected = len(target_ids)
 
-        with revit.TransactionGroup("View Align", doc=self.active_doc):
-            with revit.Transaction("Apply View Align", doc=self.active_doc, log_errors=False):
-                for viewport_id_int in target_ids:
-                    row = self._target_rows_by_id.get(viewport_id_int)
-                    if not row:
-                        stats.add_skip(viewport_id_int, "<unknown>", "<unknown>", "Viewport is not in target pool.")
-                        continue
+        if options.assign_scope_box and ref_scope_box_id is None:
+            self._add_issue(
+                stats,
+                ref_row,
+                "Reference view does not expose scope box parameter.",
+                "precheck",
+            )
 
-                    viewport = getattr(row, "viewport", None)
-                    if not _is_valid_api_object(viewport):
-                        stats.add_skip(
-                            viewport_id_int,
-                            row.sheet_label,
-                            row.view_name,
-                            "Viewport no longer exists.",
-                        )
-                        continue
+        if options.match_viewport_type:
+            if ref_type_reason:
+                self._add_issue(stats, ref_row, ref_type_reason, "precheck")
+            elif _eid_int(ref_viewport_type_id) in (None, -1):
+                self._add_issue(stats, ref_row, "Reference viewport type is unavailable.", "precheck")
 
-                    view = self.active_doc.GetElement(viewport.ViewId)
-                    if not _is_valid_api_object(view):
-                        stats.add_skip(
-                            viewport_id_int,
-                            row.sheet_label,
-                            row.view_name,
-                            "Target view no longer exists.",
-                        )
-                        continue
+        apply_context_rows = []
+        for viewport_id_int in target_ids:
+            row = self._target_rows_by_id.get(viewport_id_int)
+            if not row:
+                self._add_issue(
+                    stats,
+                    row=None,
+                    reason="Viewport is not in target pool.",
+                    stage="precheck",
+                    viewport_id_int=viewport_id_int,
+                    view_id_int=None,
+                )
+                continue
 
-                    stats.targets_processed += 1
-                    was_pinned = False
+            viewport = getattr(row, "viewport", None)
+            if not _is_valid_api_object(viewport):
+                self._add_issue(stats, row, "Viewport no longer exists.", "precheck")
+                continue
 
-                    try:
-                        if getattr(viewport, "Pinned", False):
-                            try:
-                                viewport.Pinned = False
-                                was_pinned = True
-                                stats.pinned_unpinned += 1
-                            except Exception as unpin_ex:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    "Failed to unpin target viewport: {}".format(unpin_ex),
-                                )
-                                continue
+            view = self.active_doc.GetElement(viewport.ViewId)
+            if not _is_valid_api_object(view):
+                self._add_issue(stats, row, "Target view no longer exists.", "precheck")
+                continue
 
-                        if options.assign_scope_box:
-                            ok_scope, scope_reason = _set_scope_box(view, ref_scope_box_id)
-                            if ok_scope:
-                                stats.scope_assigned += 1
-                            else:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    scope_reason,
-                                )
+            has_row_issue = False
 
-                        if options.match_viewport_type:
-                            ok_type, type_reason = _match_viewport_type(viewport, ref_viewport)
-                            if ok_type:
-                                stats.viewport_type_matched += 1
-                            else:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    type_reason,
-                                )
+            target_anchor, target_reason = _try_compute_model_anchor_on_sheet(
+                self.active_doc,
+                viewport,
+                global_model_anchor_host,
+            )
+            if target_anchor is None:
+                has_row_issue = True
+                self._add_issue(stats, row, "Model-coordinate solve failed: {}".format(target_reason), "precheck")
 
-                        if options.assign_crop_region:
-                            clear_ok, clear_reason = _clear_scope_box(view)
-                            if not clear_ok:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    "Scope clear before crop copy: {}".format(clear_reason),
-                                )
+            if options.assign_scope_box:
+                if _eid_int(ref_scope_box_id) not in (None, -1) and reference.doc_option.doc != self.active_doc:
+                    has_row_issue = True
+                    self._add_issue(
+                        stats,
+                        row,
+                        "Assign Scope Box requires a reference scope box from the active document.",
+                        "precheck",
+                    )
+                ok_scope, scope_reason = _can_set_scope_box(view)
+                if not ok_scope:
+                    has_row_issue = True
+                    self._add_issue(stats, row, scope_reason, "precheck")
 
-                            crop_ok, crop_reason = _copy_crop_settings(view, ref_crop_settings)
-                            if crop_ok:
-                                stats.crop_assigned += 1
-                            else:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    crop_reason,
-                                )
+            if options.assign_crop_region:
+                ok_crop, crop_reason = _can_copy_crop_settings(view)
+                if not ok_crop:
+                    has_row_issue = True
+                    self._add_issue(stats, row, crop_reason, "precheck")
 
-                        target_anchor, target_reason = _try_compute_model_anchor_on_sheet(
-                            self.active_doc,
-                            viewport,
-                            MODEL_ANCHOR_HOST,
-                        )
-                        if target_anchor is None:
-                            stats.add_skip(
-                                viewport_id_int,
-                                row.sheet_label,
-                                row.view_name,
-                                "Model-coordinate solve failed: {}".format(target_reason),
-                            )
-                            continue
+            if options.match_viewport_type:
+                ok_type, type_reason = _can_match_viewport_type(viewport, ref_viewport_type_id)
+                if not ok_type:
+                    has_row_issue = True
+                    self._add_issue(stats, row, type_reason, "precheck")
 
-                        delta = _xyz_sub(ref_anchor, target_anchor)
-                        current_center = viewport.GetBoxCenter()
-                        viewport.SetBoxCenter(_xyz_add(current_center, delta))
-                        stats.aligned += 1
+            if options.match_title_position:
+                ok_pos, pos_reason = _can_set_label_offset(viewport, ref_label_offset)
+                if not ok_pos:
+                    has_row_issue = True
+                    self._add_issue(stats, row, pos_reason, "precheck")
 
-                        if options.match_title_position:
-                            ok_pos, pos_reason = _set_label_offset(viewport, ref_label_offset)
-                            if ok_pos:
-                                stats.title_pos_matched += 1
-                            else:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    pos_reason,
-                                )
+            if options.match_title_line_length:
+                ok_len, len_reason = _can_set_label_line_length(viewport, ref_label_line_length)
+                if not ok_len:
+                    has_row_issue = True
+                    self._add_issue(stats, row, len_reason, "precheck")
 
-                        if options.match_title_line_length:
-                            ok_len, len_reason = _set_label_line_length(viewport, ref_label_line_length)
-                            if ok_len:
-                                stats.title_line_matched += 1
-                            else:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    len_reason,
-                                )
+            if has_row_issue:
+                continue
 
-                    except Exception as ex:
-                        stats.add_skip(
-                            viewport_id_int,
-                            row.sheet_label,
-                            row.view_name,
-                            "Unexpected failure: {}".format(ex),
-                        )
-                    finally:
-                        if was_pinned:
-                            try:
-                                viewport.Pinned = True
-                                stats.pinned_restored += 1
-                            except Exception as repin_ex:
-                                stats.add_skip(
-                                    viewport_id_int,
-                                    row.sheet_label,
-                                    row.view_name,
-                                    "Failed to restore pinned state: {}".format(repin_ex),
-                                )
+            apply_context_rows.append(
+                {
+                    "row": row,
+                    "viewport": viewport,
+                    "view": view,
+                    "target_anchor": target_anchor,
+                }
+            )
 
-        summary = self._build_summary_text(stats)
-        self._set_status("Done. Aligned {} of {} processed target viewport(s).".format(stats.aligned, stats.targets_processed))
+        if stats.issues:
+            summary = self._build_summary_text(stats, "View Align aborted before apply. No viewports were moved.")
+            self._set_status("Precheck failed. Fix reported issues and rerun.")
+            forms.alert(summary, title="View Align", warn_icon=True)
+            return
+
+        tx_group = DB.TransactionGroup(self.active_doc, "View Align")
+        tx = None
+        current_row = None
+        current_viewport = None
+        pinned_rows = []
+
+        try:
+            tx_group.Start()
+            tx = DB.Transaction(self.active_doc, "Apply View Align")
+            tx.Start()
+
+            for context in apply_context_rows:
+                current_row = context["row"]
+                current_viewport = context["viewport"]
+                current_view = context["view"]
+                target_anchor = context["target_anchor"]
+
+                stats.targets_processed += 1
+
+                if getattr(current_viewport, "Pinned", False):
+                    current_viewport.Pinned = False
+                    pinned_rows.append((current_row, current_viewport))
+                    stats.pinned_unpinned += 1
+
+                if options.assign_scope_box:
+                    ok_scope, scope_reason = _set_scope_box(current_view, ref_scope_box_id)
+                    if not ok_scope:
+                        raise Exception(scope_reason)
+                    stats.scope_assigned += 1
+
+                if options.match_viewport_type:
+                    ok_type, type_reason = _match_viewport_type(current_viewport, ref_viewport)
+                    if not ok_type:
+                        raise Exception(type_reason)
+                    stats.viewport_type_matched += 1
+
+                if options.assign_crop_region:
+                    clear_ok, clear_reason = _clear_scope_box(current_view)
+                    if not clear_ok:
+                        raise Exception("Scope clear before crop copy: {}".format(clear_reason))
+
+                    crop_ok, crop_reason = _copy_crop_settings(current_view, ref_crop_settings)
+                    if not crop_ok:
+                        raise Exception(crop_reason)
+                    stats.crop_assigned += 1
+
+                delta = _xyz_sub(ref_anchor, target_anchor)
+                current_center = current_viewport.GetBoxCenter()
+                current_viewport.SetBoxCenter(_xyz_add(current_center, delta))
+                stats.aligned += 1
+
+                if options.match_title_position:
+                    ok_pos, pos_reason = _set_label_offset(current_viewport, ref_label_offset)
+                    if not ok_pos:
+                        raise Exception(pos_reason)
+                    stats.title_pos_matched += 1
+
+                if options.match_title_line_length:
+                    ok_len, len_reason = _set_label_line_length(current_viewport, ref_label_line_length)
+                    if not ok_len:
+                        raise Exception(len_reason)
+                    stats.title_line_matched += 1
+
+            for row, viewport in pinned_rows:
+                current_row = row
+                current_viewport = viewport
+                viewport.Pinned = True
+                stats.pinned_restored += 1
+
+            tx.Commit()
+            tx_group.Assimilate()
+        except Exception as ex:
+            self._add_issue(
+                stats,
+                row=current_row,
+                reason="Apply failed: {}".format(ex),
+                stage="apply",
+                viewport_id_int=_eid_int(getattr(current_viewport, "Id", None)),
+            )
+            if tx:
+                try:
+                    tx.RollBack()
+                except Exception:
+                    pass
+            try:
+                tx_group.RollBack()
+            except Exception:
+                pass
+
+            summary = self._build_summary_text(stats, "View Align aborted during apply. Transaction rolled back.")
+            self._set_status("Apply failed and was rolled back.")
+            forms.alert(summary, title="View Align", warn_icon=True)
+            return
+
+        summary = self._build_summary_text(stats, "View Align completed.")
+        self._set_status("Done. Aligned {} of {} selected target viewport(s).".format(stats.aligned, stats.targets_selected))
         forms.alert(summary, title="View Align", warn_icon=False)
 
 

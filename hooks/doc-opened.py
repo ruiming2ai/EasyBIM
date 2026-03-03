@@ -4,16 +4,30 @@
 
 from rltools.messages import show_start_message
 
-# Try to get the current document.  In Rocket Mode, EXEC_PARAMS is unreliable,
-# so we grab the active UIDocument from __revit__.  If this fails, we'll
-# still show the message using force=True.
+# Try hook event args first (most reliable in hook context), then fall back
+# to active UIDocument. If both fail, we'll still show with force=True.
+doc = None
+
 try:
-    uidoc = __revit__.ActiveUIDocument
-    doc = uidoc.Document if uidoc else None
+    args = EXEC_PARAMS.event_args
+    doc = getattr(args, "Document", None) if args else None
 except Exception:
     doc = None
+
+if doc is None:
+    try:
+        uidoc = __revit__.ActiveUIDocument
+        doc = uidoc.Document if uidoc else None
+    except Exception:
+        doc = None
 
 # Show the start message once per document open.  If we couldn't acquire a
 # document (doc is None), force the message so users still see it.  Pass
 # open_worksets_after=True to open the Worksets dialog after the alert.
-show_start_message(doc=doc, force=(doc is None), open_worksets_after=True)
+# run_coord_report_after=True prints the coordination summary afterwards.
+show_start_message(
+    doc=doc,
+    force=(doc is None),
+    open_worksets_after=True,
+    run_coord_report_after=True,
+)
