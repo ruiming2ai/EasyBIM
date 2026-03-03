@@ -50,6 +50,10 @@ def _xyz(x, y, z):
     return DB.XYZ(float(x), float(y), float(z))
 
 
+def _is_valid_api_object(obj):
+    return bool(obj) and bool(getattr(obj, "IsValidObject", True))
+
+
 def _xyz_add(a, b):
     return _xyz(a.X + b.X, a.Y + b.Y, a.Z + b.Z)
 
@@ -1114,8 +1118,8 @@ class ViewAlignWindow(forms.WPFWindow):
                         stats.add_skip(viewport_id_int, "<unknown>", "<unknown>", "Viewport is not in target pool.")
                         continue
 
-                    viewport = self.active_doc.GetElement(DB.ElementId(viewport_id_int))
-                    if not viewport:
+                    viewport = getattr(row, "viewport", None)
+                    if not _is_valid_api_object(viewport):
                         stats.add_skip(
                             viewport_id_int,
                             row.sheet_label,
@@ -1125,7 +1129,7 @@ class ViewAlignWindow(forms.WPFWindow):
                         continue
 
                     view = self.active_doc.GetElement(viewport.ViewId)
-                    if not view:
+                    if not _is_valid_api_object(view):
                         stats.add_skip(
                             viewport_id_int,
                             row.sheet_label,
