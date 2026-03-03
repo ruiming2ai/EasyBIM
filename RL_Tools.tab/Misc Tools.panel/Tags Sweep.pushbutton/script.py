@@ -331,6 +331,22 @@ def _delete_orphans(doc, tags):
     return deleted, failed, samples
 
 
+def _build_summary_lines(found_count, deleted_count, failed_count, samples):
+    lines = [
+        "Tags Sweep completed.",
+        "Orphan tags found: {}".format(found_count),
+        "Deleted: {}".format(deleted_count),
+        "Failed: {}".format(failed_count),
+    ]
+
+    if samples:
+        lines.append("")
+        lines.append("Failure samples:")
+        lines.extend(samples)
+
+    return lines
+
+
 def run():
     doc = revit.doc
     uidoc = revit.uidoc
@@ -351,17 +367,7 @@ def run():
 
     deleted, failed, samples = _delete_orphans(doc, orphans)
 
-    lines = [
-        "Tags Sweep completed.",
-        "Orphan tags found: {}".format(len(orphans)),
-        "Deleted: {}".format(deleted),
-        "Failed: {}".format(failed),
-    ]
-
-    if samples:
-        lines.append("")
-        lines.append("Failure samples:")
-        lines.extend(samples)
+    lines = _build_summary_lines(len(orphans), deleted, failed, samples)
 
     forms.alert("\n".join(lines), title=__title__, warn_icon=False)
 
