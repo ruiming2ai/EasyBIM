@@ -200,6 +200,7 @@ def _tagged_element_missing_spatial(tag, doc):
 
 def _collect_orphan_tags(doc):
     orphans = []
+    orphan_ids = set()
 
     # IndependentTag
     try:
@@ -213,7 +214,10 @@ def _collect_orphan_tags(doc):
     for tag in indep_tags:
         try:
             if _tagged_element_missing_independent(tag, doc):
-                orphans.append(tag)
+                eid_int = _eid_int(tag.Id)
+                if eid_int is not None and eid_int not in orphan_ids:
+                    orphan_ids.add(eid_int)
+                    orphans.append(tag)
         except Exception as ex:
             logger.debug("IndependentTag host-check failed | id=%s | %s", _eid_int(tag.Id), ex)
 
@@ -229,7 +233,9 @@ def _collect_orphan_tags(doc):
     for tag in spatial_tags:
         try:
             if _tagged_element_missing_spatial(tag, doc):
-                if tag.Id not in [x.Id for x in orphans]:
+                eid_int = _eid_int(tag.Id)
+                if eid_int is not None and eid_int not in orphan_ids:
+                    orphan_ids.add(eid_int)
                     orphans.append(tag)
         except Exception as ex:
             logger.debug("SpatialElementTag host-check failed | id=%s | %s", _eid_int(tag.Id), ex)
