@@ -491,22 +491,60 @@ def _refresh_worksets_deadline(job, now):
 
 
 def _show_workset_picker_for_doc(doc):
-    """Show Active Workset picker for a workshared model and apply on OK."""
-    if not _is_doc_valid(doc):
+    """Show Active Workset picker and apply selected workset when possible."""
+    context = _resolve_workset_picker_context(doc)
+    shown, selected_workset_id = _show_workset_picker_dialog(context)
+    if not shown:
         return False
 
-    if not _get_doc_is_workshared(doc):
-        return False
-
-    worksets = _collect_user_worksets(doc)
-    if not worksets:
-        return False
-
-    selected_workset_id = _show_workset_picker_dialog(doc, worksets)
     if selected_workset_id is None:
         return False
 
-    return _set_active_workset_id(doc, selected_workset_id)
+    if not context.get("can_apply", False):
+        return False
+
+    target_doc = context.get("doc")
+    if not _is_doc_valid(target_doc):
+        return False
+
+    return _set_active_workset_id(target_doc, selected_workset_id)
+
+
+def _resolve_workset_picker_context(doc):
+    """Resolve picker context so empty states are explicit instead of silent."""
+    context = {
+        "doc": None,
+        "is_doc_valid": False,
+        "is_workshared": False,
+        "worksets": [],
+        "active_workset_id": None,
+        "can_apply": False,
+        "empty_reason": "",
+    }
+
+    if not _is_doc_valid(doc):
+        context["empty_reason"] = "No valid document context."
+        return context
+
+    context["doc"] = doc
+    context["is_doc_valid"] = True
+
+    is_workshared = bool(_get_doc_is_workshared(doc))
+    context["is_workshared"] = is_workshared
+    if not is_workshared:
+        context["empty_reason"] = "Document is not workshared."
+        return context
+
+    worksets = _collect_user_worksets(doc)
+    context["worksets"] = worksets
+    context["active_workset_id"] = _get_active_workset_id(doc)
+
+    if not worksets:
+        context["empty_reason"] = "No user worksets in this project."
+        return context
+
+    context["can_apply"] = True
+    return context
 
 
 def _collect_user_worksets(doc):
@@ -590,194 +628,95 @@ def _set_active_workset_id(doc, workset_id_int):
         return False
 
 
-def _show_workset_picker_dialog(doc, worksets):
-    """Show one modal picker and return selected workset id, or None."""
-    if not worksets:
-        return None
-
-    logger = _get_logger()
-    if _prefer_wpf_workset_picker():
-        primary_name = "WPF"
-        primary_func = _show_workset_picker_dialog_wpf
-        secondary_name = "WinForms"
-        secondary_func = _show_workset_picker_dialog_winforms
-    else:
-        primary_name = "WinForms"
-        primary_func = _show_workset_picker_dialog_winforms
-        secondary_name = "WPF"
-        secondary_func = _show_workset_picker_dialog_wpf
-
-    shown, selected_id = primary_func(doc, worksets)
-    if shown:
-        return selected_id
-
-    shown, selected_id = secondary_func(doc, worksets)
-    if shown:
-        return selected_id
-
-    if logger:
-        logger.warning(
-            "Workset picker failed to render on both %s and %s backends.",
-            primary_name,
-            secondary_name,
-        )
-    return None
+def _show_workset_picker_dialog(context):
+    """Show one modal picker and return (shown, selected_workset_id)."""
+    return _show_workset_picker_dialog_wpfwindow(context)
 
 
-def _show_workset_picker_dialog_wpf(doc, worksets):
-    """WPF modal picker. Returns (shown, selected_id)."""
-    if not worksets:
-        return False, None
+def _show_workset_picker_dialog_wpfwindow(context):
+    """Single pyRevit WPFWindow picker. Returns (shown, selected_id)."""
+    worksets = list((context or {}).get("worksets") or [])
+    active_ws_id = (context or {}).get("active_workset_id")
+    can_apply = bool((context or {}).get("can_apply", False)) and bool(worksets)
 
-    active_ws_id = _get_active_workset_id(doc)
-
-    try:
-        import clr
-        clr.AddReference("PresentationFramework")
-        clr.AddReference("PresentationCore")
-        clr.AddReference("WindowsBase")
-
-        from System.Windows import Window, WindowStartupLocation, SizeToContent, HorizontalAlignment, Thickness
-        from System.Windows.Controls import StackPanel, TextBlock, Button, ComboBox
-
-        window = Window()
-        window.Title = "Worksets"
-        window.SizeToContent = SizeToContent.WidthAndHeight
-        window.WindowStartupLocation = WindowStartupLocation.CenterScreen
-        window.MinWidth = 320
-        window.Topmost = True
-
-        root = StackPanel()
-        root.Margin = Thickness(12)
-
-        label = TextBlock()
-        label.Text = "Active workset:"
-        label.Margin = Thickness(0, 0, 0, 6)
-        root.Children.Add(label)
-
-        combo = ComboBox()
-        combo.MinWidth = 280
-
+    selected_index = -1
+    if worksets:
         selected_index = 0
         for idx, row in enumerate(worksets):
-            combo.Items.Add(row.get("name", ""))
             if row.get("id") == active_ws_id:
                 selected_index = idx
-
-        if combo.Items.Count > 0:
-            combo.SelectedIndex = selected_index
-        root.Children.Add(combo)
-
-        ok_btn = Button()
-        ok_btn.Content = "OK"
-        ok_btn.MinWidth = 90
-        ok_btn.Margin = Thickness(0, 12, 0, 0)
-        ok_btn.HorizontalAlignment = HorizontalAlignment.Right
-
-        result = {"selected_id": None, "confirmed": False}
-
-        def _close_ok(sender, args):
-            del sender, args
-            idx = int(combo.SelectedIndex)
-            if idx < 0:
-                idx = 0
-            if idx >= len(worksets):
-                idx = len(worksets) - 1
-            if idx >= 0:
-                result["selected_id"] = worksets[idx].get("id")
-                result["confirmed"] = True
-            try:
-                window.DialogResult = True
-            except Exception:
-                pass
-            window.Close()
-
-        ok_btn.Click += _close_ok
-
-        root.Children.Add(ok_btn)
-
-        window.Content = root
-        window.ShowDialog()
-
-        if result.get("confirmed"):
-            return True, result.get("selected_id")
-        return True, None
-    except Exception:
-        return False, None
-
-
-def _show_workset_picker_dialog_winforms(doc, worksets):
-    """WinForms modal picker. Returns (shown, selected_id)."""
-    if not worksets:
-        return False, None
-
-    active_ws_id = _get_active_workset_id(doc)
-    selected_index = 0
-    names = []
-    for idx, row in enumerate(worksets):
-        names.append(row.get("name", ""))
-        if row.get("id") == active_ws_id:
-            selected_index = idx
+                break
 
     try:
-        import clr
-        clr.AddReference("System.Windows.Forms")
-        clr.AddReference("System.Drawing")
-        import System.Windows.Forms as WinForms
-        import System.Drawing as Drawing
-
-        form = WinForms.Form()
-        form.Text = "Worksets"
-        form.StartPosition = WinForms.FormStartPosition.CenterScreen
-        form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
-        form.MinimizeBox = False
-        form.MaximizeBox = False
-        form.TopMost = True
-        form.ClientSize = Drawing.Size(340, 112)
-
-        label = WinForms.Label()
-        label.Text = "Active workset:"
-        label.Left = 12
-        label.Top = 12
-        label.AutoSize = True
-
-        combo = WinForms.ComboBox()
-        combo.Left = 12
-        combo.Top = 32
-        combo.Width = 316
-        combo.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
-        for name in names:
-            combo.Items.Add(name)
-        if combo.Items.Count > 0:
-            combo.SelectedIndex = max(0, min(selected_index, combo.Items.Count - 1))
-
-        ok_btn = WinForms.Button()
-        ok_btn.Text = "OK"
-        ok_btn.Width = 88
-        ok_btn.Height = 28
-        ok_btn.Left = 240
-        ok_btn.Top = 70
-        ok_btn.DialogResult = WinForms.DialogResult.OK
-
-        form.Controls.Add(label)
-        form.Controls.Add(combo)
-        form.Controls.Add(ok_btn)
-        form.AcceptButton = ok_btn
-
-        result = form.ShowDialog()
-        if result != WinForms.DialogResult.OK:
-            return True, None
-
-        idx = int(combo.SelectedIndex)
-        if idx < 0:
-            idx = 0
-        if idx >= len(worksets):
-            idx = len(worksets) - 1
-        if idx < 0:
-            return True, None
-        return True, worksets[idx].get("id")
+        import os
+        from pyrevit import forms
     except Exception:
+        logger = _get_logger()
+        if logger:
+            logger.warning("Workset picker window failed to load pyRevit WPF components.")
         return False, None
+
+    xaml_path = os.path.join(os.path.dirname(__file__), "ui", "workset_picker.xaml")
+    result = {"confirmed": False, "selected_id": None}
+
+    class _WorksetPickerWindow(forms.WPFWindow):
+        def __init__(self):
+            forms.WPFWindow.__init__(self, xaml_path)
+            self.Topmost = True
+            self._can_apply = can_apply
+            self._rows = worksets
+
+            for row in self._rows:
+                self.workset_cb.Items.Add(row.get("name", ""))
+
+            if selected_index >= 0 and self.workset_cb.Items.Count > selected_index:
+                self.workset_cb.SelectedIndex = selected_index
+            else:
+                self.workset_cb.SelectedIndex = -1
+
+            self._sync_ok_state()
+            self.workset_cb.SelectionChanged += self._on_selection_changed
+            self.ok_btn.Click += self._on_ok_click
+            self.cancel_btn.Click += self._on_cancel_click
+
+        def _selected_index(self):
+            try:
+                return int(self.workset_cb.SelectedIndex)
+            except Exception:
+                return -1
+
+        def _sync_ok_state(self):
+            self.ok_btn.IsEnabled = bool(self._can_apply and self._selected_index() >= 0)
+
+        def _on_selection_changed(self, sender, args):
+            del sender, args
+            self._sync_ok_state()
+
+        def _on_ok_click(self, sender, args):
+            del sender, args
+            idx = self._selected_index()
+            if idx < 0 or idx >= len(self._rows):
+                return
+            result["selected_id"] = self._rows[idx].get("id")
+            result["confirmed"] = True
+            self.Close()
+
+        def _on_cancel_click(self, sender, args):
+            del sender, args
+            self.Close()
+
+    try:
+        window = _WorksetPickerWindow()
+        window.ShowDialog()
+    except Exception as ex:
+        logger = _get_logger()
+        if logger:
+            logger.warning("Workset picker window failed to render: %s", ex)
+        return False, None
+
+    if result.get("confirmed"):
+        return True, result.get("selected_id")
+    return True, None
 
 
 def _print_coordination_review_report(doc):
@@ -1204,28 +1143,6 @@ def _get_uiapp():
         return HOST_APP.uiapp
     except Exception:
         return None
-
-
-def _get_revit_major_version():
-    uiapp = _get_uiapp()
-    if uiapp is not None:
-        app = getattr(uiapp, "Application", None)
-        if app is not None:
-            try:
-                return int(getattr(app, "VersionNumber", 0))
-            except Exception:
-                pass
-
-    try:
-        from pyrevit import HOST_APP
-        return int(getattr(HOST_APP, "version", 0))
-    except Exception:
-        return 0
-
-
-def _prefer_wpf_workset_picker():
-    version = _get_revit_major_version()
-    return version in (2023, 2024)
 
 
 def _alert_wpf_with_bold(title, message):
