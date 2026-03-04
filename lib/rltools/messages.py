@@ -82,11 +82,15 @@ def show_start_message(
             # Last resort: write to console so at least something is visible in logs
             print("[RL Tools] {}: {}".format(title, START_MESSAGE.replace("**", "")))
 
-    # 4) Optionally queue startup follow-up actions after user closes dialog.
+    # 4) Optionally run/queue startup follow-up actions after user closes dialog.
     if shown and (open_worksets_after or run_coord_report_after):
-        if _is_doc_valid(doc):
+        run_doc = doc if _is_doc_valid(doc) else None
+        if not _is_doc_valid(run_doc):
+            run_doc = _get_active_doc_from_uiapp(_get_uiapp())
+
+        if _is_doc_valid(run_doc):
             _run_startup_actions_now(
-                doc=doc,
+                doc=run_doc,
                 open_worksets_after=open_worksets_after,
                 run_coord_report_after=run_coord_report_after,
             )
@@ -139,17 +143,21 @@ def _enqueue_startup_actions(doc, open_worksets_after, run_coord_report_after):
 
 def _run_startup_actions_now(doc, open_worksets_after, run_coord_report_after):
     """Run post-alert actions immediately for current valid document context."""
+    logger = _get_logger()
+
     if open_worksets_after:
         try:
             _show_workset_picker_for_doc(doc)
-        except Exception:
-            pass
+        except Exception as ex:
+            if logger:
+                logger.warning("Workset picker failed after start message: %s", ex)
 
     if run_coord_report_after:
         try:
             _print_coordination_review_report(doc)
-        except Exception:
-            pass
+        except Exception as ex:
+            if logger:
+                logger.warning("Coordination report failed after start message: %s", ex)
 
 
 def process_startup_jobs(uiapp=None):
@@ -244,7 +252,12 @@ def _process_startup_job(uiapp, job, now):
             job["stage"] = "run_report"
             return False
 
-        _show_workset_picker_for_doc(candidate_doc)
+        try:
+            _show_workset_picker_for_doc(candidate_doc)
+        except Exception as ex:
+            logger = _get_logger()
+            if logger:
+                logger.warning("Queued workset picker failed: %s", ex)
         job["stage"] = "run_report"
         return False
 
@@ -569,6 +582,14 @@ def _set_active_workset_id(doc, workset_id_int):
 
 def _show_workset_picker_dialog(doc, worksets):
     """Show modal picker and return selected workset id, or None."""
+    selected_id = _show_workset_picker_dialog_wpf(doc, worksets)
+    if selected_id is not None:
+        return selected_id
+    return _show_workset_picker_dialog_winforms(doc, worksets)
+
+
+def _show_workset_picker_dialog_wpf(doc, worksets):
+    """WPF modal picker. Returns selected workset id, or None."""
     if not worksets:
         return None
 
@@ -645,6 +666,80 @@ def _show_workset_picker_dialog(doc, worksets):
         if result.get("confirmed"):
             return result.get("selected_id")
         return None
+    except Exception:
+        return None
+
+
+def _show_workset_picker_dialog_winforms(doc, worksets):
+    """WinForms fallback picker. Returns selected workset id, or None."""
+    if not worksets:
+        return None
+
+    active_ws_id = _get_active_workset_id(doc)
+    selected_index = 0
+    names = []
+    for idx, row in enumerate(worksets):
+        names.append(row.get("name", ""))
+        if row.get("id") == active_ws_id:
+            selected_index = idx
+
+    try:
+        import clr
+        clr.AddReference("System.Windows.Forms")
+        clr.AddReference("System.Drawing")
+        import System.Windows.Forms as WinForms
+        import System.Drawing as Drawing
+
+        form = WinForms.Form()
+        form.Text = "Worksets"
+        form.StartPosition = WinForms.FormStartPosition.CenterScreen
+        form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
+        form.MinimizeBox = False
+        form.MaximizeBox = False
+        form.TopMost = True
+        form.ClientSize = Drawing.Size(340, 112)
+
+        label = WinForms.Label()
+        label.Text = "Active workset:"
+        label.Left = 12
+        label.Top = 12
+        label.AutoSize = True
+
+        combo = WinForms.ComboBox()
+        combo.Left = 12
+        combo.Top = 32
+        combo.Width = 316
+        combo.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
+        for name in names:
+            combo.Items.Add(name)
+        if combo.Items.Count > 0:
+            combo.SelectedIndex = max(0, min(selected_index, combo.Items.Count - 1))
+
+        ok_btn = WinForms.Button()
+        ok_btn.Text = "OK"
+        ok_btn.Width = 88
+        ok_btn.Height = 28
+        ok_btn.Left = 240
+        ok_btn.Top = 70
+        ok_btn.DialogResult = WinForms.DialogResult.OK
+
+        form.Controls.Add(label)
+        form.Controls.Add(combo)
+        form.Controls.Add(ok_btn)
+        form.AcceptButton = ok_btn
+
+        result = form.ShowDialog()
+        if result != WinForms.DialogResult.OK:
+            return None
+
+        idx = int(combo.SelectedIndex)
+        if idx < 0:
+            idx = 0
+        if idx >= len(worksets):
+            idx = len(worksets) - 1
+        if idx < 0:
+            return None
+        return worksets[idx].get("id")
     except Exception:
         return None
 
@@ -1050,6 +1145,14 @@ def _get_output_window():
     try:
         from pyrevit import script
         return script.get_output()
+    except Exception:
+        return None
+
+
+def _get_logger():
+    try:
+        from pyrevit import script
+        return script.get_logger()
     except Exception:
         return None
 
