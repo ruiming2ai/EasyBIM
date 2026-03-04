@@ -102,6 +102,16 @@ def show_start_message(
             )
 
 
+def run_start_message_workflow(doc=None, force=False):
+    """Run the default RL Tools start-message workflow."""
+    return show_start_message(
+        doc=doc,
+        force=force,
+        open_worksets_after=True,
+        run_coord_report_after=True,
+    )
+
+
 # =============================
 #  Internals (helpers)
 # =============================
@@ -581,14 +591,43 @@ def _set_active_workset_id(doc, workset_id_int):
 
 
 def _show_workset_picker_dialog(doc, worksets):
-    """Show modal picker and return selected workset id, or None."""
-    return _show_workset_picker_dialog_wpf(doc, worksets)
+    """Show one modal picker and return selected workset id, or None."""
+    if not worksets:
+        return None
+
+    logger = _get_logger()
+    if _prefer_wpf_workset_picker():
+        primary_name = "WPF"
+        primary_func = _show_workset_picker_dialog_wpf
+        secondary_name = "WinForms"
+        secondary_func = _show_workset_picker_dialog_winforms
+    else:
+        primary_name = "WinForms"
+        primary_func = _show_workset_picker_dialog_winforms
+        secondary_name = "WPF"
+        secondary_func = _show_workset_picker_dialog_wpf
+
+    shown, selected_id = primary_func(doc, worksets)
+    if shown:
+        return selected_id
+
+    shown, selected_id = secondary_func(doc, worksets)
+    if shown:
+        return selected_id
+
+    if logger:
+        logger.warning(
+            "Workset picker failed to render on both %s and %s backends.",
+            primary_name,
+            secondary_name,
+        )
+    return None
 
 
 def _show_workset_picker_dialog_wpf(doc, worksets):
-    """WPF modal picker. Returns selected workset id, or None."""
+    """WPF modal picker. Returns (shown, selected_id)."""
     if not worksets:
-        return None
+        return False, None
 
     active_ws_id = _get_active_workset_id(doc)
 
@@ -661,10 +700,84 @@ def _show_workset_picker_dialog_wpf(doc, worksets):
         window.ShowDialog()
 
         if result.get("confirmed"):
-            return result.get("selected_id")
-        return None
+            return True, result.get("selected_id")
+        return True, None
     except Exception:
-        return None
+        return False, None
+
+
+def _show_workset_picker_dialog_winforms(doc, worksets):
+    """WinForms modal picker. Returns (shown, selected_id)."""
+    if not worksets:
+        return False, None
+
+    active_ws_id = _get_active_workset_id(doc)
+    selected_index = 0
+    names = []
+    for idx, row in enumerate(worksets):
+        names.append(row.get("name", ""))
+        if row.get("id") == active_ws_id:
+            selected_index = idx
+
+    try:
+        import clr
+        clr.AddReference("System.Windows.Forms")
+        clr.AddReference("System.Drawing")
+        import System.Windows.Forms as WinForms
+        import System.Drawing as Drawing
+
+        form = WinForms.Form()
+        form.Text = "Worksets"
+        form.StartPosition = WinForms.FormStartPosition.CenterScreen
+        form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
+        form.MinimizeBox = False
+        form.MaximizeBox = False
+        form.TopMost = True
+        form.ClientSize = Drawing.Size(340, 112)
+
+        label = WinForms.Label()
+        label.Text = "Active workset:"
+        label.Left = 12
+        label.Top = 12
+        label.AutoSize = True
+
+        combo = WinForms.ComboBox()
+        combo.Left = 12
+        combo.Top = 32
+        combo.Width = 316
+        combo.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
+        for name in names:
+            combo.Items.Add(name)
+        if combo.Items.Count > 0:
+            combo.SelectedIndex = max(0, min(selected_index, combo.Items.Count - 1))
+
+        ok_btn = WinForms.Button()
+        ok_btn.Text = "OK"
+        ok_btn.Width = 88
+        ok_btn.Height = 28
+        ok_btn.Left = 240
+        ok_btn.Top = 70
+        ok_btn.DialogResult = WinForms.DialogResult.OK
+
+        form.Controls.Add(label)
+        form.Controls.Add(combo)
+        form.Controls.Add(ok_btn)
+        form.AcceptButton = ok_btn
+
+        result = form.ShowDialog()
+        if result != WinForms.DialogResult.OK:
+            return True, None
+
+        idx = int(combo.SelectedIndex)
+        if idx < 0:
+            idx = 0
+        if idx >= len(worksets):
+            idx = len(worksets) - 1
+        if idx < 0:
+            return True, None
+        return True, worksets[idx].get("id")
+    except Exception:
+        return False, None
 
 
 def _print_coordination_review_report(doc):
@@ -1091,6 +1204,28 @@ def _get_uiapp():
         return HOST_APP.uiapp
     except Exception:
         return None
+
+
+def _get_revit_major_version():
+    uiapp = _get_uiapp()
+    if uiapp is not None:
+        app = getattr(uiapp, "Application", None)
+        if app is not None:
+            try:
+                return int(getattr(app, "VersionNumber", 0))
+            except Exception:
+                pass
+
+    try:
+        from pyrevit import HOST_APP
+        return int(getattr(HOST_APP, "version", 0))
+    except Exception:
+        return 0
+
+
+def _prefer_wpf_workset_picker():
+    version = _get_revit_major_version()
+    return version in (2023, 2024)
 
 
 def _alert_wpf_with_bold(title, message):
