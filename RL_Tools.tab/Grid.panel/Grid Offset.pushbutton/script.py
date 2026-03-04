@@ -104,11 +104,153 @@ def _parse_length_to_feet(value_text):
         raise ValueError("Unable to parse offset. Use formats like 1'-0\", 6\", or decimal feet.")
 
 
-def _prompt_settings(scopebox_selected):
+def _view_id_int(view):
+    try:
+        return int(get_elementid_value(view.Id))
+    except Exception:
+        return None
+
+
+def _build_view_rows(views):
+    rows = []
+    for view in views:
+        try:
+            vid = _view_id_int(view)
+            if vid is None:
+                continue
+            vname = view.Name if hasattr(view, "Name") else "<Unnamed View>"
+            vtype = str(view.ViewType)
+            rows.append(
+                {
+                    "id": vid,
+                    "name": vname,
+                    "type": vtype,
+                    "label": "{} [{} | ID:{}]".format(vname, vtype, vid),
+                }
+            )
+        except Exception:
+            continue
+
+    rows.sort(key=lambda x: (x["name"].lower(), x["type"], x["id"]))
+    return rows
+
+
+def _pick_views(view_rows, preselected_ids):
+    preselected_ids = set(preselected_ids or [])
+
+    form = WinForms.Form()
+    form.Text = "Select Views"
+    form.Width = 940
+    form.Height = 600
+    form.StartPosition = WinForms.FormStartPosition.CenterScreen
+    form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
+    form.AutoScaleMode = WinForms.AutoScaleMode.Dpi
+    form.MinimizeBox = False
+    form.MaximizeBox = False
+
+    bottom = WinForms.Panel()
+    bottom.Height = 56
+    bottom.Dock = WinForms.DockStyle.Bottom
+
+    btn_sel_all = WinForms.Button()
+    btn_sel_all.Text = "Select All"
+    btn_sel_all.AutoSize = True
+    btn_sel_all.Left = 12
+    btn_sel_all.Top = 12
+
+    btn_sel_none = WinForms.Button()
+    btn_sel_none.Text = "Select None"
+    btn_sel_none.AutoSize = True
+    btn_sel_none.Top = 12
+
+    ok = WinForms.Button()
+    ok.Text = "OK"
+    ok.DialogResult = WinForms.DialogResult.OK
+    ok.AutoSize = True
+    ok.Top = 12
+    ok.Anchor = WinForms.AnchorStyles.Top | WinForms.AnchorStyles.Right
+
+    cancel = WinForms.Button()
+    cancel.Text = "Cancel"
+    cancel.DialogResult = WinForms.DialogResult.Cancel
+    cancel.AutoSize = True
+    cancel.Top = 12
+    cancel.Anchor = WinForms.AnchorStyles.Top | WinForms.AnchorStyles.Right
+
+    def _layout(sender=None, args=None):
+        del sender, args
+        cancel.Left = bottom.Width - cancel.Width - 12
+        ok.Left = cancel.Left - ok.Width - 12
+        btn_sel_none.Left = btn_sel_all.Left + btn_sel_all.Width + 12
+
+    bottom.Resize += _layout
+    bottom.Controls.Add(btn_sel_all)
+    bottom.Controls.Add(btn_sel_none)
+    bottom.Controls.Add(ok)
+    bottom.Controls.Add(cancel)
+
+    lv = WinForms.ListView()
+    lv.View = WinForms.View.Details
+    lv.CheckBoxes = True
+    lv.FullRowSelect = True
+    lv.GridLines = True
+    lv.Dock = WinForms.DockStyle.Fill
+
+    lv.Columns.Add("Select", 80)
+    lv.Columns.Add("View Name", 540)
+    lv.Columns.Add("View Type", 250)
+
+    for row in view_rows:
+        item = WinForms.ListViewItem("")
+        item.SubItems.Add(row["name"] or "")
+        item.SubItems.Add(row["type"] or "")
+        item.Tag = row
+        item.Checked = row["id"] in preselected_ids
+        lv.Items.Add(item)
+
+    def _select_all(sender=None, args=None):
+        del sender, args
+        try:
+            for item in lv.Items:
+                item.Checked = True
+        except Exception:
+            pass
+
+    def _select_none(sender=None, args=None):
+        del sender, args
+        try:
+            for item in lv.Items:
+                item.Checked = False
+        except Exception:
+            pass
+
+    btn_sel_all.Click += _select_all
+    btn_sel_none.Click += _select_none
+
+    form.Controls.Add(bottom)
+    form.Controls.Add(lv)
+    form.AcceptButton = ok
+    form.CancelButton = cancel
+
+    _layout()
+    if form.ShowDialog() != WinForms.DialogResult.OK:
+        return None
+
+    selected = set()
+    for item in lv.Items:
+        try:
+            if item.Checked and item.Tag:
+                selected.add(int(item.Tag["id"]))
+        except Exception:
+            continue
+    return selected
+
+
+def _prompt_settings(scopebox_selected, view_rows):
     dialog = WinForms.Form()
     dialog.Text = "Grid Head Offset"
-    dialog.Width = 520
-    dialog.Height = 255
+    dialog.Width = 620
+    dialog.Height = 340
     dialog.StartPosition = WinForms.FormStartPosition.CenterScreen
     dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
     dialog.MinimizeBox = False
@@ -118,12 +260,12 @@ def _prompt_settings(scopebox_selected):
     lbl_source.Text = "Reference Region"
     lbl_source.Left = 20
     lbl_source.Top = 20
-    lbl_source.Width = 160
+    lbl_source.Width = 180
 
     source_cb = WinForms.ComboBox()
-    source_cb.Left = 190
+    source_cb.Left = 210
     source_cb.Top = 16
-    source_cb.Width = 285
+    source_cb.Width = 370
     source_cb.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
     source_cb.Items.Add("Crop View Region (per view)")
     source_cb.Items.Add("Selected Scope Box")
@@ -133,12 +275,12 @@ def _prompt_settings(scopebox_selected):
     lbl_mode.Text = "Offset Direction"
     lbl_mode.Left = 20
     lbl_mode.Top = 60
-    lbl_mode.Width = 160
+    lbl_mode.Width = 180
 
     mode_cb = WinForms.ComboBox()
-    mode_cb.Left = 190
+    mode_cb.Left = 210
     mode_cb.Top = 56
-    mode_cb.Width = 285
+    mode_cb.Width = 370
     mode_cb.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
     mode_cb.Items.Add("Out")
     mode_cb.Items.Add("In")
@@ -148,35 +290,103 @@ def _prompt_settings(scopebox_selected):
     lbl_offset.Text = "Offset (e.g. 1'-0\")"
     lbl_offset.Left = 20
     lbl_offset.Top = 100
-    lbl_offset.Width = 160
+    lbl_offset.Width = 180
 
     offset_tb = WinForms.TextBox()
-    offset_tb.Left = 190
+    offset_tb.Left = 210
     offset_tb.Top = 96
-    offset_tb.Width = 285
+    offset_tb.Width = 370
     offset_tb.Text = "1'-0\""
+
+    align_all_cb = WinForms.CheckBox()
+    align_all_cb.Text = "Align All"
+    align_all_cb.Left = 20
+    align_all_cb.Top = 134
+    align_all_cb.Width = 100
+    align_all_cb.Checked = True
+
+    select_views_btn = WinForms.Button()
+    select_views_btn.Text = "Select Views"
+    select_views_btn.Left = 210
+    select_views_btn.Top = 130
+    select_views_btn.Width = 140
+
+    views_status_lbl = WinForms.Label()
+    views_status_lbl.Left = 360
+    views_status_lbl.Top = 134
+    views_status_lbl.Width = 220
+    views_status_lbl.Height = 20
+
+    all_view_ids = set([int(row["id"]) for row in view_rows if row and "id" in row])
+    selected_view_ids = set(all_view_ids)
+
+    def _update_view_status():
+        if align_all_cb.Checked:
+            views_status_lbl.Text = "Views: All ({})".format(len(all_view_ids))
+        else:
+            views_status_lbl.Text = "Views: {} of {} selected".format(
+                len(selected_view_ids), len(all_view_ids)
+            )
+
+    def _align_all_changed(sender=None, args=None):
+        del sender, args
+        if align_all_cb.Checked:
+            selected_view_ids.clear()
+            selected_view_ids.update(all_view_ids)
+        _update_view_status()
+
+    def _select_views(sender=None, args=None):
+        del sender, args
+        # Rule: clicking Select Views turns Align All off.
+        align_all_cb.Checked = False
+        chosen = _pick_views(view_rows, selected_view_ids)
+        if chosen is not None:
+            selected_view_ids.clear()
+            selected_view_ids.update(chosen)
+        _update_view_status()
+
+    align_all_cb.CheckedChanged += _align_all_changed
+    select_views_btn.Click += _select_views
 
     note_lbl = WinForms.Label()
     note_lbl.Left = 20
-    note_lbl.Top = 132
-    note_lbl.Width = 455
-    note_lbl.Height = 38
-    note_lbl.Text = "Applies to all applicable views and visible line grids.\n" \
+    note_lbl.Top = 166
+    note_lbl.Width = 560
+    note_lbl.Height = 44
+    note_lbl.Text = "Applies to selected views and visible line grids.\n" \
                     "If crop/scope boundary is unavailable in a view, that view is skipped."
 
     run_btn = WinForms.Button()
     run_btn.Text = "Run"
-    run_btn.DialogResult = WinForms.DialogResult.OK
-    run_btn.Left = 310
-    run_btn.Top = 175
+    run_btn.Left = 415
+    run_btn.Top = 238
     run_btn.Width = 80
 
     cancel_btn = WinForms.Button()
     cancel_btn.Text = "Cancel"
     cancel_btn.DialogResult = WinForms.DialogResult.Cancel
-    cancel_btn.Left = 395
-    cancel_btn.Top = 175
+    cancel_btn.Left = 500
+    cancel_btn.Top = 238
     cancel_btn.Width = 80
+
+    def _run_click(sender=None, args=None):
+        del sender, args
+        # Rule: Align All checked overrides any prior selected subset.
+        if align_all_cb.Checked:
+            selected_view_ids.clear()
+            selected_view_ids.update(all_view_ids)
+        if (not align_all_cb.Checked) and (not selected_view_ids):
+            WinForms.MessageBox.Show(
+                "Please select at least one view.",
+                "Grid Head Offset",
+                WinForms.MessageBoxButtons.OK,
+                WinForms.MessageBoxIcon.Information,
+            )
+            return
+        dialog.DialogResult = WinForms.DialogResult.OK
+        dialog.Close()
+
+    run_btn.Click += _run_click
 
     dialog.Controls.Add(lbl_source)
     dialog.Controls.Add(source_cb)
@@ -184,21 +394,28 @@ def _prompt_settings(scopebox_selected):
     dialog.Controls.Add(mode_cb)
     dialog.Controls.Add(lbl_offset)
     dialog.Controls.Add(offset_tb)
+    dialog.Controls.Add(align_all_cb)
+    dialog.Controls.Add(select_views_btn)
+    dialog.Controls.Add(views_status_lbl)
     dialog.Controls.Add(note_lbl)
     dialog.Controls.Add(run_btn)
     dialog.Controls.Add(cancel_btn)
     dialog.AcceptButton = run_btn
     dialog.CancelButton = cancel_btn
 
+    _update_view_status()
     if dialog.ShowDialog() != WinForms.DialogResult.OK:
         return None
 
     source = "scopebox" if source_cb.SelectedIndex == 1 else "crop"
     mode = "out" if mode_cb.SelectedIndex == 0 else "in"
+    final_selected_ids = sorted(all_view_ids if align_all_cb.Checked else selected_view_ids)
     return {
         "source": source,
         "mode": mode,
         "offset_text": offset_tb.Text,
+        "align_all": bool(align_all_cb.Checked),
+        "selected_view_ids": final_selected_ids,
     }
 
 
@@ -480,7 +697,16 @@ def run():
     except Exception:
         selected_scopebox = None
 
-    settings = _prompt_settings(scopebox_selected=(selected_scopebox is not None))
+    all_views = _collect_target_views(doc)
+    if not all_views:
+        forms.alert("No applicable views found.")
+        return
+
+    view_rows = _build_view_rows(all_views)
+    settings = _prompt_settings(
+        scopebox_selected=(selected_scopebox is not None),
+        view_rows=view_rows,
+    )
     if not settings:
         return
 
@@ -504,9 +730,18 @@ def run():
         )
         return
 
-    views = _collect_target_views(doc)
+    if settings.get("align_all", True):
+        views = list(all_views)
+    else:
+        selected_view_ids = set([int(x) for x in settings.get("selected_view_ids", [])])
+        views = []
+        for view in all_views:
+            vid = _view_id_int(view)
+            if vid in selected_view_ids:
+                views.append(view)
+
     if not views:
-        forms.alert("No applicable views found.")
+        forms.alert("No views selected to process.")
         return
 
     updated = 0
