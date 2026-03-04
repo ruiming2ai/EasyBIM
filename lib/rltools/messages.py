@@ -50,6 +50,8 @@ _INSTANCE_LIST_CAP = 200
 _WORKSETS_POST_TIMEOUT_SEC = 45.0
 _STARTUP_JOB_MAX_AGE_SEC = 300.0
 _STARTUP_STATE_ENVVAR = "RLTOOLS_STARTUP_QUEUE_STATE"
+_FILE_OPEN_TRIGGER_ENVVAR = "RLTOOLS_FILE_OPEN_TRIGGER"
+_FILE_OPEN_TRIGGER_MAX_AGE_SEC = 90.0
 
 
 
@@ -110,6 +112,20 @@ def run_start_message_workflow(doc=None, force=False):
         open_worksets_after=True,
         run_coord_report_after=True,
     )
+
+
+def run_start_message_on_file_open(doc=None):
+    """Run Start Message for a qualifying opened file with context fallback."""
+    if _is_doc_eligible_for_file_open(doc):
+        _clear_file_open_trigger_pending()
+        return run_start_message_workflow(doc=doc, force=False)
+
+    # Only defer when hook timing did not provide a usable document context.
+    if not _is_doc_valid(doc):
+        _mark_file_open_trigger_pending()
+    else:
+        _clear_file_open_trigger_pending()
+    return None
 
 
 # =============================
@@ -175,6 +191,8 @@ def process_startup_jobs(uiapp=None):
     uiapp = uiapp or _get_uiapp()
     if not uiapp:
         return
+
+    _process_file_open_trigger_pending(uiapp=uiapp)
 
     state = _load_startup_state()
     jobs = state.get("jobs", [])
@@ -316,6 +334,86 @@ def _save_startup_state(state):
         return True
     except Exception:
         return False
+
+
+def _load_file_open_trigger_state():
+    default_state = {"pending": False, "created_at": 0.0}
+
+    try:
+        from pyrevit import script
+        raw_state = script.get_envvar(_FILE_OPEN_TRIGGER_ENVVAR)
+    except Exception:
+        return default_state
+
+    if not isinstance(raw_state, dict):
+        return default_state
+
+    state = dict(default_state)
+    state["pending"] = bool(raw_state.get("pending", False))
+    try:
+        state["created_at"] = float(raw_state.get("created_at", 0.0))
+    except Exception:
+        state["created_at"] = 0.0
+    if state["created_at"] < 0.0:
+        state["created_at"] = 0.0
+    return state
+
+
+def _save_file_open_trigger_state(state):
+    try:
+        from pyrevit import script
+        script.set_envvar(_FILE_OPEN_TRIGGER_ENVVAR, state)
+        return True
+    except Exception:
+        return False
+
+
+def _mark_file_open_trigger_pending():
+    state = _load_file_open_trigger_state()
+    state["pending"] = True
+    state["created_at"] = time.time()
+    _save_file_open_trigger_state(state)
+
+
+def _clear_file_open_trigger_pending():
+    state = {"pending": False, "created_at": 0.0}
+    _save_file_open_trigger_state(state)
+
+
+def _process_file_open_trigger_pending(uiapp=None):
+    state = _load_file_open_trigger_state()
+    if not state.get("pending", False):
+        return
+
+    now = time.time()
+    try:
+        created_at = float(state.get("created_at", 0.0))
+    except Exception:
+        created_at = 0.0
+    if created_at <= 0.0:
+        created_at = now
+        state["created_at"] = created_at
+        _save_file_open_trigger_state(state)
+
+    if (now - created_at) > _FILE_OPEN_TRIGGER_MAX_AGE_SEC:
+        _clear_file_open_trigger_pending()
+        return
+
+    uiapp = uiapp or _get_uiapp()
+    if not uiapp:
+        return
+
+    active_doc = _get_active_doc_from_uiapp(uiapp)
+    if not _is_doc_eligible_for_file_open(active_doc):
+        return
+
+    try:
+        run_start_message_workflow(doc=active_doc, force=False)
+        _clear_file_open_trigger_pending()
+    except Exception as ex:
+        logger = _get_logger()
+        if logger:
+            logger.warning("Deferred start-message run failed on file-open fallback: %s", ex)
 
 
 def _next_startup_job_id(state):
@@ -1113,6 +1211,16 @@ def _is_doc_valid(doc):
                 return False
         except Exception:
             return False
+    return True
+
+
+def _is_doc_eligible_for_file_open(doc):
+    if not _is_doc_valid(doc):
+        return False
+    if getattr(doc, "IsFamilyDocument", False):
+        return False
+    if hasattr(doc, "IsLinked") and doc.IsLinked:
+        return False
     return True
 
 
