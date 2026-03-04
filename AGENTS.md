@@ -50,10 +50,12 @@
 ## Git Worktree Manager Style
 
 - Naming: create worktree folders as `C:\Users\RML\Documents\GitHub\RL_Tools.extension-<BranchName>`.
+- Explicit-name override: if user provides a specific worktree name/path, create that exact folder and create/check out a branch with the exact same name as that worktree folder name.
 - One branch per worktree: never keep the same branch checked out in more than one worktree.
 - Branch conflict handling:
   - If a requested branch already has a worktree, reuse that worktree instead of creating a duplicate.
   - If that branch must move into primary, remove the secondary worktree and switch primary to that branch.
+- Do not auto-generate suffix branch names (for example `*-Worktree-1`) when user requests an explicit worktree name.
 - Primary branch movement:
   - No fixed fallback branch is enforced.
   - Primary branch switching is situational and user-directed.
@@ -78,6 +80,7 @@
 | 2026-03-04 | Standardize Git worktree manager style rules | Preserve consistent branch/worktree behavior across sessions | Reduces duplicate checkouts, path conflict churn, and deletion errors | Active |
 | 2026-03-04 | Adopt standard promotion pipeline (`branch -> primary worktree branch -> main`) | Ensure predictable delivery from worktrees to production branch | Reduces missed merges and branch drift | Active |
 | 2026-03-04 | Standardize shorthand phrase `update feature & main worktree` | Reduce ambiguity and typing for routine promotion requests | Faster communication and fewer git wording mistakes | Active |
+| 2026-03-04 | Enforce explicit-name worktree/branch parity | Match user-provided worktree names exactly and prevent unwanted auto-suffix branches | Eliminates naming drift for manually named worktrees | Active |
 
 ## Session Handoff Log
 
@@ -87,3 +90,4 @@
 | 2026-03-04 | Added Git Worktree Manager Style governance and mirrored rule intent for skills | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | `rg` keyword checks, focused `git diff`, `git status --short` scope check | Continue applying these defaults for all RL_Tools worktree operations |
 | 2026-03-04 | Added documented standard git promotion flow and linked `skills.md` process | `AGENTS.md`, `skills.md` | Doc-only update | Follow this process for routine feature promotion |
 | 2026-03-04 | Added shorthand workflow command definition and default semantics | `AGENTS.md`, `skills.md` | Doc-only update | Use `update feature & main worktree` for typical worktree promotion |
+| 2026-03-04 | Added explicit-name worktree/branch parity rule and removed auto-suffix creation behavior | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Worktree recreate + doc sync + status verification | Keep explicit worktree names and branch names identical when requested |
