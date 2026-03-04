@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Hide all categories in all views/sheets except user-selected categories."""
+"""Isolate selected categories in all views & sheets. Other categories will be hidden."""
+
+__title__ = "Isolate in All"
+__doc__ = "Isolate selected categories in all views & sheets. Other categories will be hidden."
 
 import clr
 
