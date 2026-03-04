@@ -15,7 +15,7 @@ from pyrevit import revit
 from pyrevit import script
 from pyrevit.compat import get_elementid_value_func
 
-__title__ = "Rotate Multiple"
+__title__ = "3D Rotate Multiple"
 
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
