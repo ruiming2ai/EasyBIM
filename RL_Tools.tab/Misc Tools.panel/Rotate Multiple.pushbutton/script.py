@@ -15,7 +15,7 @@ from pyrevit import revit
 from pyrevit import script
 from pyrevit.compat import get_elementid_value_func
 
-__title__ = "Rotate Multiple"
+__title__ = "3D Rotate Multiple"
 
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
@@ -47,8 +47,8 @@ def _parse_angle_degrees(value_text):
 def _prompt_settings():
     dialog = WinForms.Form()
     dialog.Text = __title__
-    dialog.Width = 520
-    dialog.Height = 300
+    dialog.Width = 900
+    dialog.Height = 360
     dialog.StartPosition = WinForms.FormStartPosition.CenterScreen
     dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
     dialog.MinimizeBox = False
@@ -58,26 +58,26 @@ def _prompt_settings():
     angle_lbl.Text = "Rotation angle (degrees)"
     angle_lbl.Left = 20
     angle_lbl.Top = 24
-    angle_lbl.Width = 170
+    angle_lbl.Width = 240
 
     angle_tb = WinForms.TextBox()
-    angle_tb.Left = 200
+    angle_tb.Left = 280
     angle_tb.Top = 20
-    angle_tb.Width = 290
+    angle_tb.Width = 590
     angle_tb.Text = "90"
 
     front_back_cb = WinForms.CheckBox()
     front_back_cb.Text = "Vertical rotate (Front/Back elevation plane)"
-    front_back_cb.Left = 200
+    front_back_cb.Left = 280
     front_back_cb.Top = 58
-    front_back_cb.Width = 290
+    front_back_cb.Width = 590
     front_back_cb.Checked = False
 
     left_right_cb = WinForms.CheckBox()
     left_right_cb.Text = "Vertical rotate (Left/Right elevation plane)"
-    left_right_cb.Left = 200
+    left_right_cb.Left = 280
     left_right_cb.Top = 84
-    left_right_cb.Width = 290
+    left_right_cb.Width = 590
     left_right_cb.Checked = False
 
     def _on_front_back_changed(sender, args):
@@ -96,8 +96,8 @@ def _prompt_settings():
     note_lbl = WinForms.Label()
     note_lbl.Left = 20
     note_lbl.Top = 122
-    note_lbl.Width = 470
-    note_lbl.Height = 80
+    note_lbl.Width = 850
+    note_lbl.Height = 90
     note_lbl.Text = (
         "Choose one vertical mode for 3D rotation:\n"
         "Front/Back uses global X axis. Left/Right uses global Y axis.\n"
@@ -107,15 +107,15 @@ def _prompt_settings():
     run_btn = WinForms.Button()
     run_btn.Text = "Run"
     run_btn.DialogResult = WinForms.DialogResult.OK
-    run_btn.Left = 325
-    run_btn.Top = 210
+    run_btn.Left = 705
+    run_btn.Top = 275
     run_btn.Width = 80
 
     cancel_btn = WinForms.Button()
     cancel_btn.Text = "Cancel"
     cancel_btn.DialogResult = WinForms.DialogResult.Cancel
-    cancel_btn.Left = 410
-    cancel_btn.Top = 210
+    cancel_btn.Left = 790
+    cancel_btn.Top = 275
     cancel_btn.Width = 80
 
     dialog.Controls.Add(angle_lbl)
