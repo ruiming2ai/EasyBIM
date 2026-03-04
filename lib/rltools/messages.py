@@ -84,11 +84,18 @@ def show_start_message(
 
     # 4) Optionally queue startup follow-up actions after user closes dialog.
     if shown and (open_worksets_after or run_coord_report_after):
-        _enqueue_startup_actions(
-            doc=doc,
-            open_worksets_after=open_worksets_after,
-            run_coord_report_after=run_coord_report_after,
-        )
+        if _is_doc_valid(doc):
+            _run_startup_actions_now(
+                doc=doc,
+                open_worksets_after=open_worksets_after,
+                run_coord_report_after=run_coord_report_after,
+            )
+        else:
+            _enqueue_startup_actions(
+                doc=doc,
+                open_worksets_after=open_worksets_after,
+                run_coord_report_after=run_coord_report_after,
+            )
 
 
 # =============================
@@ -128,6 +135,21 @@ def _enqueue_startup_actions(doc, open_worksets_after, run_coord_report_after):
         _show_workset_picker_for_doc(doc)
     if run_coord_report_after:
         _print_coordination_review_report(doc)
+
+
+def _run_startup_actions_now(doc, open_worksets_after, run_coord_report_after):
+    """Run post-alert actions immediately for current valid document context."""
+    if open_worksets_after:
+        try:
+            _show_workset_picker_for_doc(doc)
+        except Exception:
+            pass
+
+    if run_coord_report_after:
+        try:
+            _print_coordination_review_report(doc)
+        except Exception:
+            pass
 
 
 def process_startup_jobs(uiapp=None):
@@ -559,30 +581,25 @@ def _show_workset_picker_dialog(doc, worksets):
         clr.AddReference("WindowsBase")
 
         from System.Windows import Window, WindowStartupLocation, SizeToContent, HorizontalAlignment, Thickness
-        from System.Windows.Controls import StackPanel, TextBlock, Button, ComboBox, Orientation
+        from System.Windows.Controls import StackPanel, TextBlock, Button, ComboBox
 
         window = Window()
-        window.Title = "RL Tools - Workset"
+        window.Title = "Worksets"
         window.SizeToContent = SizeToContent.WidthAndHeight
         window.WindowStartupLocation = WindowStartupLocation.CenterScreen
-        window.MinWidth = 420
+        window.MinWidth = 320
         window.Topmost = True
 
         root = StackPanel()
-        root.Margin = Thickness(20)
-
-        doc_text = TextBlock()
-        doc_text.Text = "Document: {}".format(_get_doc_title(doc))
-        doc_text.TextWrapping = True
-        root.Children.Add(doc_text)
+        root.Margin = Thickness(12)
 
         label = TextBlock()
-        label.Text = "Active Workset"
-        label.Margin = Thickness(0, 12, 0, 6)
+        label.Text = "Active workset:"
+        label.Margin = Thickness(0, 0, 0, 6)
         root.Children.Add(label)
 
         combo = ComboBox()
-        combo.MinWidth = 320
+        combo.MinWidth = 280
 
         selected_index = 0
         for idx, row in enumerate(worksets):
@@ -594,19 +611,11 @@ def _show_workset_picker_dialog(doc, worksets):
             combo.SelectedIndex = selected_index
         root.Children.Add(combo)
 
-        btn_row = StackPanel()
-        btn_row.Orientation = Orientation.Horizontal
-        btn_row.Margin = Thickness(0, 16, 0, 0)
-        btn_row.HorizontalAlignment = HorizontalAlignment.Right
-
         ok_btn = Button()
         ok_btn.Content = "OK"
         ok_btn.MinWidth = 90
-        ok_btn.Margin = Thickness(0, 0, 8, 0)
-
-        cancel_btn = Button()
-        cancel_btn.Content = "Cancel"
-        cancel_btn.MinWidth = 90
+        ok_btn.Margin = Thickness(0, 12, 0, 0)
+        ok_btn.HorizontalAlignment = HorizontalAlignment.Right
 
         result = {"selected_id": None, "confirmed": False}
 
@@ -626,20 +635,9 @@ def _show_workset_picker_dialog(doc, worksets):
                 pass
             window.Close()
 
-        def _close_cancel(sender, args):
-            del sender, args
-            try:
-                window.DialogResult = False
-            except Exception:
-                pass
-            window.Close()
-
         ok_btn.Click += _close_ok
-        cancel_btn.Click += _close_cancel
 
-        btn_row.Children.Add(ok_btn)
-        btn_row.Children.Add(cancel_btn)
-        root.Children.Add(btn_row)
+        root.Children.Add(ok_btn)
 
         window.Content = root
         window.ShowDialog()
