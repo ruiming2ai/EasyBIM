@@ -17,8 +17,8 @@
 - Use shorthand command phrase `update feature & main worktree` for the standard promotion workflow.
 - Default meaning of that phrase:
   - Commit + push on active feature worktree branch first (example: `Dev` in `RL_Tools.extension-Dev`).
-  - Sync/push same branch in primary worktree when needed and possible.
-  - Merge that branch into `main` and push `main`.
+  - In primary worktree, merge/push active feature worktree branch into creator branch `Temp-Phase-and-View-2`.
+  - Merge creator branch `Temp-Phase-and-View-2` into `main` and push `main`.
 
 ## Commands
 
@@ -33,11 +33,13 @@
   - `git add <files>`
   - `git commit -m "<message>"`
   - `git push origin <branch>`
-  - `git checkout <branch>` (in primary worktree if branch handoff is required)
-  - `git pull origin <branch>`
-  - `git push origin <branch>`
+  - `git checkout Temp-Phase-and-View-2` (in primary worktree)
+  - `git pull origin Temp-Phase-and-View-2`
+  - `git merge --no-ff origin/<feature-branch>`
+  - `git push origin Temp-Phase-and-View-2`
   - `git checkout main`
-  - `git merge --no-ff <branch>`
+  - `git pull origin main`
+  - `git merge --no-ff Temp-Phase-and-View-2`
   - `git push origin main`
 
 ## Conventions
@@ -81,6 +83,7 @@
 | 2026-03-04 | Adopt standard promotion pipeline (`branch -> primary worktree branch -> main`) | Ensure predictable delivery from worktrees to production branch | Reduces missed merges and branch drift | Active |
 | 2026-03-04 | Standardize shorthand phrase `update feature & main worktree` | Reduce ambiguity and typing for routine promotion requests | Faster communication and fewer git wording mistakes | Active |
 | 2026-03-04 | Enforce explicit-name worktree/branch parity | Match user-provided worktree names exactly and prevent unwanted auto-suffix branches | Eliminates naming drift for manually named worktrees | Active |
+| 2026-03-04 | Standardize 3-stage promotion path (`feature branch -> Temp-Phase-and-View-2 -> main`) | Ensure primary worktree always stages feature deliveries through the creator branch before production merge | Improves promotion traceability and keeps primary integration flow consistent | Active |
 
 ## Session Handoff Log
 
@@ -91,3 +94,4 @@
 | 2026-03-04 | Added documented standard git promotion flow and linked `skills.md` process | `AGENTS.md`, `skills.md` | Doc-only update | Follow this process for routine feature promotion |
 | 2026-03-04 | Added shorthand workflow command definition and default semantics | `AGENTS.md`, `skills.md` | Doc-only update | Use `update feature & main worktree` for typical worktree promotion |
 | 2026-03-04 | Added explicit-name worktree/branch parity rule and removed auto-suffix creation behavior | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Worktree recreate + doc sync + status verification | Keep explicit worktree names and branch names identical when requested |
+| 2026-03-04 | Standardized primary-worktree 3-stage promotion flow via `Temp-Phase-and-View-2` before `main` | `AGENTS.md`, `skills.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Doc update for workflow governance | Use creator-branch staging as the default promotion path |
