@@ -74,8 +74,10 @@ def run_pushbutton():
         )
         return
 
+    doc_runtime_id = _get_doc_runtime_id(doc)
     state["view_sessions"][view_key] = {
         "doc_key": doc_key,
+        "doc_runtime_id": int(doc_runtime_id) if doc_runtime_id is not None else None,
         "view_id": view_id_int,
         "view_name": _safe_text(getattr(view, "Name", "")),
         "original_phase_id": int(original_phase_id),
@@ -147,19 +149,13 @@ def handle_doc_closing(uiapp=None, event_args=None):
         return
 
     state = _get_state()
+    uiapp = _get_uiapp(uiapp)
 
-    closing_doc = None
-    try:
-        closing_doc = event_args.Document
-    except Exception:
-        closing_doc = None
-
-    if not _is_doc_supported(closing_doc):
-        _save_state(state)
-        return
-
+    closing_doc = _resolve_doc_from_event_args(event_args, uiapp)
+    doc_runtime_id = _extract_doc_runtime_id(event_args, closing_doc)
     doc_key = _doc_key(closing_doc)
-    if not _has_doc_sessions(state, doc_key):
+
+    if not _has_doc_sessions(state, doc_key=doc_key, doc_runtime_id=doc_runtime_id):
         _save_state(state)
         return
 
@@ -167,15 +163,11 @@ def handle_doc_closing(uiapp=None, event_args=None):
         _save_state(state)
         return
 
-    pending = state.get("pending_doc_close")
-    if not isinstance(pending, dict) or _safe_text(pending.get("doc_key")) != doc_key:
-        state["pending_doc_close"] = {
-            "doc_key": doc_key,
-            "queued_at": time.time(),
-            "attempts": 0,
-            "next_try_at": time.time() + 0.05,
-            "dialog_shown": False,
-        }
+    _queue_pending_doc_close(
+        state=state,
+        doc_key=doc_key,
+        doc_runtime_id=doc_runtime_id,
+    )
     _save_state(state)
 
 
@@ -194,6 +186,28 @@ def handle_command_before_exec(uiapp=None, event_args=None):
 
     state = _get_state()
     _remember_command_name(state, command_name)
+
+    command_type = _classify_command(command_name)
+    if command_type == "close":
+        target_doc = _resolve_doc_from_event_args(event_args, uiapp)
+        if not _is_doc_supported(target_doc):
+            uidoc = getattr(uiapp, "ActiveUIDocument", None)
+            target_doc = getattr(uidoc, "Document", None) if uidoc else None
+
+        target_doc_runtime_id = _extract_doc_runtime_id(event_args, target_doc)
+        target_doc_key = _doc_key(target_doc)
+        if _has_doc_sessions(
+            state,
+            doc_key=target_doc_key,
+            doc_runtime_id=target_doc_runtime_id,
+        ):
+            if _cancel_event(event_args):
+                _queue_pending_doc_close(
+                    state=state,
+                    doc_key=target_doc_key,
+                    doc_runtime_id=target_doc_runtime_id,
+                )
+
     _save_state(state)
 
 
@@ -274,10 +288,13 @@ def _restore_session_for_view(doc, state, view_key, reason):
     return restored_ok
 
 
-def _restore_sessions_for_doc(doc, doc_key, reason, state=None):
+def _restore_sessions_for_doc(doc, doc_key, reason, state=None, doc_runtime_id=None):
     owns_state = state is None
     if state is None:
         state = _get_state()
+
+    if doc_runtime_id is None:
+        doc_runtime_id = _get_doc_runtime_id(doc)
 
     stale_keys = []
     to_restore = []
@@ -285,7 +302,11 @@ def _restore_sessions_for_doc(doc, doc_key, reason, state=None):
         if not isinstance(session, dict):
             stale_keys.append(view_key)
             continue
-        if _safe_text(session.get("doc_key")) != doc_key:
+        if not _session_matches_doc(
+            session=session,
+            doc_key=doc_key,
+            doc_runtime_id=doc_runtime_id,
+        ):
             continue
 
         view_id = session.get("view_id")
@@ -366,16 +387,18 @@ def _process_pending_command(state, uiapp):
         return False
 
     doc_key = _safe_text(pending.get("doc_key")).strip()
-    if not doc_key:
+    doc_runtime_id = _to_int(pending.get("doc_runtime_id"))
+    if not doc_key and doc_runtime_id is None:
         state["pending_command"] = None
         return True
 
     restored_count = 0
-    doc = _find_doc_by_key(uiapp, doc_key)
+    doc = _find_doc_by_identity(uiapp, doc_key=doc_key, doc_runtime_id=doc_runtime_id)
     if _is_doc_valid(doc):
         restored_ok, restored_count = _restore_sessions_for_doc(
             doc=doc,
             doc_key=doc_key,
+            doc_runtime_id=doc_runtime_id,
             reason="pending-close",
             state=state,
         )
@@ -383,7 +406,7 @@ def _process_pending_command(state, uiapp):
             return _retry_pending(state, pending, now)
     else:
         # Document likely already closed or not discoverable; clear tracked state.
-        _drop_sessions_for_doc(state, doc_key)
+        _drop_sessions_for_doc(state, doc_key=doc_key, doc_runtime_id=doc_runtime_id)
     state["pending_command"] = None
     _show_ok_dialog(
         "Temp Phase & View",
@@ -405,23 +428,25 @@ def _process_pending_doc_close(state, uiapp):
         return False
 
     doc_key = _safe_text(pending.get("doc_key")).strip()
-    if not doc_key:
+    doc_runtime_id = _to_int(pending.get("doc_runtime_id"))
+    if not doc_key and doc_runtime_id is None:
         state["pending_doc_close"] = None
         return True
 
     restored_count = 0
-    doc = _find_doc_by_key(uiapp, doc_key)
+    doc = _find_doc_by_identity(uiapp, doc_key=doc_key, doc_runtime_id=doc_runtime_id)
     if _is_doc_valid(doc):
         restored_ok, restored_count = _restore_sessions_for_doc(
             doc=doc,
             doc_key=doc_key,
+            doc_runtime_id=doc_runtime_id,
             reason="pending-doc-close",
             state=state,
         )
         if not restored_ok:
             return _retry_pending_doc_close(state, pending, now)
     else:
-        _drop_sessions_for_doc(state, doc_key)
+        _drop_sessions_for_doc(state, doc_key=doc_key, doc_runtime_id=doc_runtime_id)
 
     if not bool(pending.get("dialog_shown", False)):
         _show_ok_dialog(
@@ -476,13 +501,17 @@ def _lookup_command_id(command_name):
         return None
 
 
-def _drop_sessions_for_doc(state, doc_key):
+def _drop_sessions_for_doc(state, doc_key="", doc_runtime_id=None):
     for view_key, session in list((state.get("view_sessions") or {}).items()):
         if not isinstance(session, dict):
             state["view_sessions"].pop(view_key, None)
             state["last_seen_tvp"].pop(view_key, None)
             continue
-        if _safe_text(session.get("doc_key")) == doc_key:
+        if _session_matches_doc(
+            session=session,
+            doc_key=doc_key,
+            doc_runtime_id=doc_runtime_id,
+        ):
             state["view_sessions"].pop(view_key, None)
             state["last_seen_tvp"].pop(view_key, None)
 
@@ -499,6 +528,33 @@ def _find_doc_by_key(uiapp, doc_key):
                 return doc
     except Exception:
         return None
+    return None
+
+
+def _find_doc_by_runtime_id(uiapp, doc_runtime_id):
+    if doc_runtime_id is None:
+        return None
+
+    app = getattr(uiapp, "Application", None)
+    docs = getattr(app, "Documents", None)
+    if docs is None:
+        return None
+
+    try:
+        for doc in docs:
+            if _get_doc_runtime_id(doc) == doc_runtime_id:
+                return doc
+    except Exception:
+        return None
+    return None
+
+
+def _find_doc_by_identity(uiapp, doc_key="", doc_runtime_id=None):
+    doc = _find_doc_by_runtime_id(uiapp, doc_runtime_id)
+    if doc is not None:
+        return doc
+    if doc_key:
+        return _find_doc_by_key(uiapp, doc_key)
     return None
 
 
@@ -520,20 +576,20 @@ def _consume_repost_guard(state, doc_key, command_name):
 
 
 def _cancel_event(event_args):
-    cancellable = bool(getattr(event_args, "Cancellable", False))
-    if not cancellable:
-        return False
-
     try:
-        event_args.Cancel()
+        event_args.Cancel = True
         return True
     except Exception:
         pass
 
     try:
-        event_args.Cancel = True
+        event_args.Cancel()
         return True
     except Exception:
+        LOGGER.debug(
+            "Temp Phase & View could not cancel event. args_type=%s",
+            _safe_text(type(event_args)),
+        )
         return False
 
 
@@ -565,12 +621,92 @@ def _remember_command_name(state, command_name):
     state["debug_last_commands"] = recent
 
 
-def _has_doc_sessions(state, doc_key):
+def _has_doc_sessions(state, doc_key="", doc_runtime_id=None):
     for session in (state.get("view_sessions") or {}).values():
         if not isinstance(session, dict):
             continue
-        if _safe_text(session.get("doc_key")) == doc_key:
+        if _session_matches_doc(
+            session=session,
+            doc_key=doc_key,
+            doc_runtime_id=doc_runtime_id,
+        ):
             return True
+    return False
+
+
+def _queue_pending_doc_close(state, doc_key="", doc_runtime_id=None):
+    pending = state.get("pending_doc_close")
+    pending_doc_key = _safe_text(doc_key).strip()
+    pending_doc_runtime_id = _to_int(doc_runtime_id)
+    if isinstance(pending, dict):
+        same_runtime = _to_int(pending.get("doc_runtime_id")) == pending_doc_runtime_id
+        same_key = _safe_text(pending.get("doc_key")).strip() == pending_doc_key
+        if same_runtime or (pending_doc_runtime_id is None and same_key):
+            return
+
+    state["pending_doc_close"] = {
+        "doc_key": pending_doc_key,
+        "doc_runtime_id": pending_doc_runtime_id,
+        "queued_at": time.time(),
+        "attempts": 0,
+        "next_try_at": time.time() + 0.05,
+        "dialog_shown": False,
+    }
+
+
+def _resolve_doc_from_event_args(event_args, uiapp):
+    if event_args is None:
+        return None
+
+    try:
+        doc = event_args.Document
+        if _is_doc_valid(doc):
+            return doc
+    except Exception:
+        pass
+
+    get_doc = getattr(event_args, "GetDocument", None)
+    if callable(get_doc):
+        try:
+            doc = get_doc()
+            if _is_doc_valid(doc):
+                return doc
+        except Exception:
+            pass
+
+    doc_runtime_id = _extract_doc_runtime_id(event_args, None)
+    if doc_runtime_id is not None:
+        return _find_doc_by_runtime_id(uiapp, doc_runtime_id)
+
+    return None
+
+
+def _extract_doc_runtime_id(event_args, doc):
+    if _is_doc_valid(doc):
+        doc_runtime_id = _get_doc_runtime_id(doc)
+        if doc_runtime_id is not None:
+            return doc_runtime_id
+
+    if event_args is None:
+        return None
+
+    return _to_int(_getattr_safe(event_args, "DocumentId"))
+
+
+def _session_matches_doc(session, doc_key="", doc_runtime_id=None):
+    if not isinstance(session, dict):
+        return False
+
+    session_runtime_id = _to_int(session.get("doc_runtime_id"))
+    match_runtime = (doc_runtime_id is not None and session_runtime_id == doc_runtime_id)
+    if match_runtime:
+        return True
+
+    session_key = _safe_text(session.get("doc_key")).strip()
+    target_key = _safe_text(doc_key).strip()
+    if target_key and session_key == target_key:
+        return True
+
     return False
 
 
@@ -849,6 +985,25 @@ def _doc_key(doc):
     return "mem|{}|{}".format(title, hash_code)
 
 
+def _get_doc_runtime_id(doc):
+    if not _is_doc_valid(doc):
+        return None
+
+    for attr_name in ("DocumentId", "Id"):
+        try:
+            value = getattr(doc, attr_name)
+        except Exception:
+            value = None
+        value_int = _to_int(value)
+        if value_int is not None:
+            return value_int
+
+    try:
+        return _to_int(doc.GetHashCode())
+    except Exception:
+        return None
+
+
 def _is_doc_supported(doc):
     if not _is_doc_valid(doc):
         return False
@@ -969,6 +1124,15 @@ def _eid_to_int(element_id):
         pass
     try:
         return int(element_id)
+    except Exception:
+        return None
+
+
+def _to_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
     except Exception:
         return None
 
