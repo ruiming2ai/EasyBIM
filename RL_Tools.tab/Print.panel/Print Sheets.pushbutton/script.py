@@ -647,6 +647,10 @@ class PrintSheetsWindow(forms.WPFWindow):
     def include_placeholders(self):
         return self.indexspace_cb.IsChecked
 
+    @property
+    def color_revision_clouds(self):
+        return self.revcloudcolor_cb.IsChecked
+
     # print settings
     @property
     def selected_naming_format(self):
@@ -795,6 +799,252 @@ class PrintSheetsWindow(forms.WPFWindow):
                     and self.selected_print_setting.allows_variable_paper):
             self.disable_element(self.combine_cb)
             self.combine_cb.IsChecked = False
+
+    def _run_print_job(self, target_sheets):
+        if self.combine_print:
+            self._print_combined_sheets_in_order(target_sheets)
+        else:
+            if self.selected_doc.IsLinked:
+                self._print_linked_sheets_in_order(target_sheets)
+            else:
+                self._print_sheets_in_order(target_sheets)
+
+    def _add_unique_view(self, view, views, seen_ids):
+        if not view:
+            return
+
+        try:
+            if getattr(view, 'IsTemplate', False):
+                return
+        except Exception:
+            pass
+
+        view_id_val = get_elementid_value(view.Id)
+        if view_id_val is None:
+            return
+
+        try:
+            view_id_int = int(view_id_val)
+        except Exception:
+            return
+
+        if view_id_int in seen_ids:
+            return
+
+        seen_ids.add(view_id_int)
+        views.append(view)
+
+    def _collect_revision_cloud_views(self, target_sheets):
+        views = []
+        seen_ids = set()
+
+        for sheet in target_sheets:
+            if not sheet.printable:
+                continue
+
+            sheet_view = sheet.revit_sheet
+            self._add_unique_view(sheet_view, views, seen_ids)
+
+            placed_view_ids = []
+            if hasattr(sheet_view, 'GetAllPlacedViews'):
+                try:
+                    placed_view_ids = sheet_view.GetAllPlacedViews()
+                except Exception:
+                    placed_view_ids = []
+
+            for view_id in placed_view_ids:
+                try:
+                    placed_view = self.selected_doc.GetElement(view_id)
+                except Exception:
+                    placed_view = None
+                self._add_unique_view(placed_view, views, seen_ids)
+
+        return views
+
+    def _get_revision_cloud_category_id(self):
+        try:
+            revcloud_cat = self.selected_doc.Settings.Categories.get_Item(
+                DB.BuiltInCategory.OST_RevisionClouds
+            )
+            if revcloud_cat:
+                return revcloud_cat.Id
+        except Exception:
+            pass
+        return DB.ElementId(DB.BuiltInCategory.OST_RevisionClouds)
+
+    def _apply_temp_revision_cloud_color(self, target_sheets):
+        views = self._collect_revision_cloud_views(target_sheets)
+        if not views:
+            return {}
+
+        category_id = self._get_revision_cloud_category_id()
+        restore_items = []
+        red_color = DB.Color(255, 0, 0)
+
+        with revit.Transaction('Temp Colorize Revision Clouds',
+                               doc=self.selected_doc):
+            for view in views:
+                try:
+                    view_id_int = int(get_elementid_value(view.Id))
+                except Exception:
+                    continue
+
+                try:
+                    original_ogs = view.GetCategoryOverrides(category_id)
+                except Exception:
+                    continue
+
+                restore_items.append((view_id_int, original_ogs))
+
+                try:
+                    color_ogs = DB.OverrideGraphicSettings()
+                    try:
+                        color_ogs.SetProjectionLineColor(red_color)
+                    except Exception:
+                        pass
+                    try:
+                        color_ogs.SetCutLineColor(red_color)
+                    except Exception:
+                        pass
+                    view.SetCategoryOverrides(category_id, color_ogs)
+                except Exception as color_err:
+                    logger.warning(
+                        'Failed to color revision clouds in view %s: %s',
+                        view_id_int,
+                        color_err
+                    )
+
+        return {'category_id': category_id, 'items': restore_items}
+
+    def _restore_temp_revision_cloud_color(self, restore_state):
+        if not restore_state:
+            return
+
+        category_id = restore_state.get('category_id')
+        restore_items = restore_state.get('items', [])
+        if category_id is None or not restore_items:
+            return
+
+        with revit.Transaction('Restore Revision Cloud Overrides',
+                               doc=self.selected_doc):
+            for view_id_int, original_ogs in restore_items:
+                try:
+                    view = self.selected_doc.GetElement(DB.ElementId(view_id_int))
+                    if view:
+                        view.SetCategoryOverrides(category_id, original_ogs)
+                except Exception as restore_err:
+                    logger.warning(
+                        'Failed restoring revision cloud override in view %s: %s',
+                        view_id_int,
+                        restore_err
+                    )
+
+    def _resolve_print_setting(self, psetting_obj):
+        if not psetting_obj:
+            return None
+
+        print_setting = psetting_obj
+        try:
+            if hasattr(print_setting, 'print_settings'):
+                inner_setting = print_setting.print_settings
+                if inner_setting:
+                    print_setting = inner_setting
+        except Exception:
+            pass
+
+        try:
+            if hasattr(print_setting, 'item') and print_setting.item:
+                print_setting = print_setting.item
+        except Exception:
+            pass
+
+        return print_setting if hasattr(print_setting, 'PrintParameters') \
+            else None
+
+    def _collect_print_settings_for_color_force(self, target_sheets):
+        settings_to_check = []
+        per_sheet_psettings = \
+            self.selected_print_setting.allows_variable_paper \
+            if self.selected_print_setting else False
+
+        if self.combine_print or not per_sheet_psettings:
+            settings_to_check.append(self.selected_print_setting)
+        else:
+            for sheet in target_sheets:
+                if sheet.printable and sheet.print_settings:
+                    settings_to_check.append(sheet.print_settings)
+
+        unique_settings = {}
+        for psetting_obj in settings_to_check:
+            print_setting = self._resolve_print_setting(psetting_obj)
+            if not print_setting:
+                continue
+
+            setting_key = None
+            try:
+                setting_id = get_elementid_value(print_setting.Id)
+                if setting_id is not None:
+                    setting_key = int(setting_id)
+            except Exception:
+                pass
+
+            if setting_key is None:
+                setting_key = id(print_setting)
+
+            if setting_key not in unique_settings:
+                unique_settings[setting_key] = print_setting
+
+        return list(unique_settings.values())
+
+    def _force_color_depth_for_revision_clouds(self, print_settings):
+        if not print_settings:
+            return []
+
+        restore_state = []
+        with revit.Transaction('Force Color Depth For Revision Clouds',
+                               doc=self.selected_doc):
+            for print_setting in print_settings:
+                try:
+                    print_params = print_setting.PrintParameters
+                except Exception:
+                    continue
+                if not print_params:
+                    continue
+
+                try:
+                    original_depth = print_params.ColorDepth
+                except Exception:
+                    continue
+
+                restore_state.append((print_setting, original_depth))
+
+                try:
+                    if original_depth != DB.ColorDepthType.Color:
+                        print_params.ColorDepth = DB.ColorDepthType.Color
+                except Exception as set_err:
+                    logger.warning(
+                        'Failed forcing color depth on print setting %s: %s',
+                        getattr(print_setting, 'Name', '<unknown>'),
+                        set_err
+                    )
+
+        return restore_state
+
+    def _restore_color_depth_after_revision_clouds(self, restore_state):
+        if not restore_state:
+            return
+
+        with revit.Transaction('Restore Print Color Depth',
+                               doc=self.selected_doc):
+            for print_setting, original_depth in restore_state:
+                try:
+                    print_setting.PrintParameters.ColorDepth = original_depth
+                except Exception as restore_err:
+                    logger.warning(
+                        'Failed restoring color depth on print setting %s: %s',
+                        getattr(print_setting, 'Name', '<unknown>'),
+                        restore_err
+                    )
 
     def _setup_sheet_list(self):
         sheet_indices  = self._get_sheet_index_list()
@@ -1709,13 +1959,35 @@ class PrintSheetsWindow(forms.WPFWindow):
 
             # close window and submit print
             self.Close()
-            if self.combine_print:
-                self._print_combined_sheets_in_order(target_sheets)
-            else:
-                if self.selected_doc.IsLinked:
-                    self._print_linked_sheets_in_order(target_sheets)
-                else:
-                    self._print_sheets_in_order(target_sheets)
+            if not self.color_revision_clouds:
+                self._run_print_job(target_sheets)
+                return
+
+            if self.selected_doc.IsLinked:
+                forms.alert(
+                    'Revision cloud color output is not available for linked '
+                    'models. Printing with current settings.'
+                    )
+                self._run_print_job(target_sheets)
+                return
+
+            color_restore_state = None
+            cloud_restore_state = None
+            try:
+                cloud_restore_state = \
+                    self._apply_temp_revision_cloud_color(target_sheets)
+                color_restore_state = \
+                    self._force_color_depth_for_revision_clouds(
+                        self._collect_print_settings_for_color_force(
+                            target_sheets
+                            )
+                        )
+                self._run_print_job(target_sheets)
+            finally:
+                self._restore_color_depth_after_revision_clouds(
+                    color_restore_state
+                    )
+                self._restore_temp_revision_cloud_color(cloud_restore_state)
 
 
 def cleanup_sheetnumbers(doc):
