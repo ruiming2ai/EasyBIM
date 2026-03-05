@@ -98,6 +98,9 @@ def handle_app_idling(uiapp=None, event_args=None):
     state = _get_state()
     state_changed = False
 
+    if _process_pending_doc_close(state, uiapp):
+        state_changed = True
+
     if _process_pending_command(state, uiapp):
         state_changed = True
 
@@ -138,6 +141,44 @@ def handle_app_idling(uiapp=None, event_args=None):
         _save_state(state)
 
 
+def handle_doc_closing(uiapp=None, event_args=None):
+    """Hook handler for doc-closing."""
+    if event_args is None:
+        return
+
+    state = _get_state()
+
+    closing_doc = None
+    try:
+        closing_doc = event_args.Document
+    except Exception:
+        closing_doc = None
+
+    if not _is_doc_supported(closing_doc):
+        _save_state(state)
+        return
+
+    doc_key = _doc_key(closing_doc)
+    if not _has_doc_sessions(state, doc_key):
+        _save_state(state)
+        return
+
+    if not _cancel_event(event_args):
+        _save_state(state)
+        return
+
+    pending = state.get("pending_doc_close")
+    if not isinstance(pending, dict) or _safe_text(pending.get("doc_key")) != doc_key:
+        state["pending_doc_close"] = {
+            "doc_key": doc_key,
+            "queued_at": time.time(),
+            "attempts": 0,
+            "next_try_at": time.time() + 0.05,
+            "dialog_shown": False,
+        }
+    _save_state(state)
+
+
 def handle_command_before_exec(uiapp=None, event_args=None):
     """Hook handler for command-before-exec."""
     if event_args is None:
@@ -153,37 +194,6 @@ def handle_command_before_exec(uiapp=None, event_args=None):
 
     state = _get_state()
     _remember_command_name(state, command_name)
-
-    command_kind = _classify_command(command_name)
-    if command_kind != "close":
-        _save_state(state)
-        return
-
-    uidoc = getattr(uiapp, "ActiveUIDocument", None)
-    doc = getattr(uidoc, "Document", None) if uidoc else None
-    if not _is_doc_supported(doc):
-        _save_state(state)
-        return
-
-    doc_key = _doc_key(doc)
-    if not _has_doc_sessions(state, doc_key):
-        _save_state(state)
-        return
-
-    if not _cancel_event(event_args):
-        _save_state(state)
-        return
-
-    pending = state.get("pending_command")
-    if not isinstance(pending, dict) or _safe_text(pending.get("doc_key")) != doc_key:
-        state["pending_command"] = {
-            "doc_key": doc_key,
-            "command_name": command_name,
-            "kind": command_kind,
-            "attempts": 0,
-            "next_try_at": time.time() + 0.05,
-            "queued_at": time.time(),
-        }
     _save_state(state)
 
 
@@ -381,6 +391,63 @@ def _process_pending_command(state, uiapp):
         "File close was canceled.\n"
         "Click OK, then close the file again if you still want to close it.".format(restored_count),
     )
+    return True
+
+
+def _process_pending_doc_close(state, uiapp):
+    pending = state.get("pending_doc_close")
+    if not isinstance(pending, dict):
+        return False
+
+    now = time.time()
+    next_try = float(pending.get("next_try_at", 0.0) or 0.0)
+    if now < next_try:
+        return False
+
+    doc_key = _safe_text(pending.get("doc_key")).strip()
+    if not doc_key:
+        state["pending_doc_close"] = None
+        return True
+
+    restored_count = 0
+    doc = _find_doc_by_key(uiapp, doc_key)
+    if _is_doc_valid(doc):
+        restored_ok, restored_count = _restore_sessions_for_doc(
+            doc=doc,
+            doc_key=doc_key,
+            reason="pending-doc-close",
+            state=state,
+        )
+        if not restored_ok:
+            return _retry_pending_doc_close(state, pending, now)
+    else:
+        _drop_sessions_for_doc(state, doc_key)
+
+    if not bool(pending.get("dialog_shown", False)):
+        _show_ok_dialog(
+            "Temp Phase & View",
+            "All Temporary Phases are clear\n\n"
+            "Original phases were restored in {} view(s).\n"
+            "Please close the file again if you still want to close it.".format(restored_count),
+        )
+        pending["dialog_shown"] = True
+
+    state["pending_doc_close"] = None
+    return True
+
+
+def _retry_pending_doc_close(state, pending, now):
+    attempts = int(pending.get("attempts", 0)) + 1
+    pending["attempts"] = attempts
+    if attempts >= PENDING_POST_MAX_ATTEMPTS:
+        state["pending_doc_close"] = None
+        _show_alert(
+            "Temp Phase & View",
+            "Could not clear all temporary phases before close. "
+            "Close remains canceled; please try closing again.",
+        )
+    else:
+        pending["next_try_at"] = now + PENDING_POST_RETRY_SEC
     return True
 
 
@@ -843,6 +910,7 @@ def _get_state():
     state.setdefault("last_idling_ts", 0.0)
     state.setdefault("last_seen_tvp", {})
     state.setdefault("view_sessions", {})
+    state.setdefault("pending_doc_close", None)
     state.setdefault("pending_command", None)
     state.setdefault("repost_guard", None)
     state.setdefault("debug_last_commands", [])
