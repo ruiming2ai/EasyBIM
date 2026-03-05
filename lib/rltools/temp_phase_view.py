@@ -56,22 +56,38 @@ def run_pushbutton():
         )
         return
 
-    selected_phase_id = _show_phase_picker(doc, view, original_phase_id)
-    if selected_phase_id is None:
+    original_phase_filter_id = _phase_filter_from_session_or_view(existing, view)
+    if original_phase_filter_id is None:
+        _show_alert(
+            "Temp Phase & View",
+            "Active view does not support editable Phase Filter.",
+        )
+        return
+
+    selection = _show_phase_picker(doc, view, original_phase_id, original_phase_filter_id)
+    if selection is None:
         return
 
     template_id = _template_from_session_or_view(existing, view)
-    ok = _apply_selected_phase_transaction(
+    ok, fail_reason = _apply_selected_phase_transaction(
         doc=doc,
         view=view,
-        selected_phase_id=selected_phase_id,
+        selected_phase_id=selection["selected_phase_id"],
+        selected_phase_filter_id=selection["selected_phase_filter_id"],
         template_id=template_id,
     )
     if not ok:
-        _show_alert(
-            "Temp Phase & View",
-            "Could not apply selected phase while preserving Temporary View Properties.",
-        )
+        if fail_reason == "tvp-not-available":
+            _show_alert(
+                "Temp Phase & View",
+                "Temporary View Properties cannot be enabled for this view in its current state.\n"
+                "No phase changes were applied.",
+            )
+        else:
+            _show_alert(
+                "Temp Phase & View",
+                "Could not apply selected phase and phase filter while preserving Temporary View Properties.",
+            )
         return
 
     state["view_sessions"][view_key] = {
@@ -79,7 +95,9 @@ def run_pushbutton():
         "view_id": view_id_int,
         "view_name": _safe_text(getattr(view, "Name", "")),
         "original_phase_id": int(original_phase_id),
-        "selected_phase_id": int(selected_phase_id),
+        "original_phase_filter_id": int(original_phase_filter_id),
+        "selected_phase_id": int(selection["selected_phase_id"]),
+        "selected_phase_filter_id": int(selection["selected_phase_filter_id"]),
         "temp_template_id": int(template_id) if template_id is not None else None,
         "updated_at": time.time(),
     }
@@ -170,22 +188,20 @@ def handle_command_before_exec(uiapp=None, event_args=None):
         _save_state(state)
         return
 
-    if _consume_repost_guard(state, doc_key, command_name):
-        _save_state(state)
-        return
-
     if not _cancel_event(event_args):
         _save_state(state)
         return
 
-    state["pending_command"] = {
-        "doc_key": doc_key,
-        "command_name": command_name,
-        "kind": command_kind,
-        "attempts": 0,
-        "next_try_at": time.time() + 0.05,
-        "queued_at": time.time(),
-    }
+    pending = state.get("pending_command")
+    if not isinstance(pending, dict) or _safe_text(pending.get("doc_key")) != doc_key:
+        state["pending_command"] = {
+            "doc_key": doc_key,
+            "command_name": command_name,
+            "kind": command_kind,
+            "attempts": 0,
+            "next_try_at": time.time() + 0.05,
+            "queued_at": time.time(),
+        }
     _save_state(state)
 
 
@@ -196,6 +212,15 @@ def _phase_from_session_or_view(existing, view):
         except Exception:
             pass
     return _get_view_phase_id(view)
+
+
+def _phase_filter_from_session_or_view(existing, view):
+    if isinstance(existing, dict) and existing.get("original_phase_filter_id") is not None:
+        try:
+            return int(existing.get("original_phase_filter_id"))
+        except Exception:
+            pass
+    return _get_view_phase_filter_id(view)
 
 
 def _template_from_session_or_view(existing, view):
@@ -210,10 +235,10 @@ def _template_from_session_or_view(existing, view):
     return _eid_to_int(getattr(view, "Id", None))
 
 
-def _apply_selected_phase_transaction(doc, view, selected_phase_id, template_id):
+def _apply_selected_phase_transaction(doc, view, selected_phase_id, selected_phase_filter_id, template_id):
     DB = _get_db()
     if DB is None:
-        return False
+        return False, "api-unavailable"
 
     tx = DB.Transaction(doc, "Temp Phase & View: Apply Phase")
     started = False
@@ -221,21 +246,25 @@ def _apply_selected_phase_transaction(doc, view, selected_phase_id, template_id)
         tx.Start()
         started = True
 
-        _disable_tvp(view)
+        tvp_ready, tvp_reason = _ensure_tvp_active_for_apply(view, template_id)
+        if not tvp_ready:
+            raise Exception("TVP_NOT_AVAILABLE:{}".format(tvp_reason))
 
         if not _set_view_phase_id(view, selected_phase_id):
             raise Exception("Failed setting VIEW_PHASE")
 
-        if not _enable_tvp(view, template_id):
-            raise Exception("Failed re-enabling TVP")
+        if not _set_view_phase_filter_id(view, selected_phase_filter_id):
+            raise Exception("Failed setting VIEW_PHASE_FILTER")
 
         tx.Commit()
-        return True
+        return True, ""
     except Exception as ex:
         LOGGER.debug("Temp Phase & View apply failed: %s", ex)
         if started:
             _rollback_transaction(tx)
-        return False
+        if _safe_text(ex).startswith("TVP_NOT_AVAILABLE:"):
+            return False, "tvp-not-available"
+        return False, "apply-failed"
 
 
 def _restore_session_for_view(doc, state, view_key, reason):
@@ -255,15 +284,15 @@ def _restore_session_for_view(doc, state, view_key, reason):
         state["last_seen_tvp"].pop(view_key, None)
         return True
 
-    restored = _restore_views_transaction(
+    restored_ok, _ = _restore_views_transaction(
         doc=doc,
         sessions=[(view_key, session, view)],
         reason=reason,
     )
-    if restored:
+    if restored_ok:
         state["view_sessions"].pop(view_key, None)
         state["last_seen_tvp"].pop(view_key, None)
-    return restored
+    return restored_ok
 
 
 def _restore_sessions_for_doc(doc, doc_key, reason, state=None):
@@ -298,10 +327,10 @@ def _restore_sessions_for_doc(doc, doc_key, reason, state=None):
     if not to_restore:
         if owns_state:
             _save_state(state)
-        return True
+        return True, 0
 
-    restored = _restore_views_transaction(doc, to_restore, reason)
-    if restored:
+    restored_ok, restored_count = _restore_views_transaction(doc, to_restore, reason)
+    if restored_ok:
         for view_key, _, _ in to_restore:
             state["view_sessions"].pop(view_key, None)
             state["last_seen_tvp"].pop(view_key, None)
@@ -309,16 +338,17 @@ def _restore_sessions_for_doc(doc, doc_key, reason, state=None):
     if owns_state:
         _save_state(state)
 
-    return restored
+    return restored_ok, restored_count
 
 
 def _restore_views_transaction(doc, sessions, reason):
     DB = _get_db()
     if DB is None:
-        return False
+        return False, 0
 
     tx = DB.Transaction(doc, "Temp Phase & View: Restore Phase")
     started = False
+    restored_count = 0
     try:
         tx.Start()
         started = True
@@ -335,13 +365,20 @@ def _restore_views_transaction(doc, sessions, reason):
             if not _set_view_phase_id(view, int(original_phase)):
                 raise Exception("Failed restoring VIEW_PHASE")
 
+            original_filter = session.get("original_phase_filter_id")
+            if original_filter is not None:
+                if not _set_view_phase_filter_id(view, int(original_filter)):
+                    raise Exception("Failed restoring VIEW_PHASE_FILTER")
+
+            restored_count += 1
+
         tx.Commit()
-        return True
+        return True, restored_count
     except Exception as ex:
         LOGGER.debug("Temp Phase & View restore failed (%s): %s", reason, ex)
         if started:
             _rollback_transaction(tx)
-        return False
+        return False, 0
 
 
 def _process_pending_command(state, uiapp):
@@ -354,15 +391,15 @@ def _process_pending_command(state, uiapp):
     if now < next_try:
         return False
 
-    command_name = _safe_text(pending.get("command_name")).strip()
     doc_key = _safe_text(pending.get("doc_key")).strip()
-    if not command_name or not doc_key:
+    if not doc_key:
         state["pending_command"] = None
         return True
 
+    restored_count = 0
     doc = _find_doc_by_key(uiapp, doc_key)
     if _is_doc_valid(doc):
-        restored_ok = _restore_sessions_for_doc(
+        restored_ok, restored_count = _restore_sessions_for_doc(
             doc=doc,
             doc_key=doc_key,
             reason="pending-close",
@@ -373,33 +410,13 @@ def _process_pending_command(state, uiapp):
     else:
         # Document likely already closed or not discoverable; clear tracked state.
         _drop_sessions_for_doc(state, doc_key)
-
-    cmd_id = _lookup_command_id(command_name)
-    if cmd_id is None:
-        return _retry_pending(state, pending, now)
-
-    can_post = True
-    if hasattr(uiapp, "CanPostCommand"):
-        try:
-            can_post = bool(uiapp.CanPostCommand(cmd_id))
-        except Exception:
-            can_post = True
-
-    if not can_post:
-        return _retry_pending(state, pending, now)
-
-    state["repost_guard"] = {
-        "doc_key": doc_key,
-        "command_name": command_name,
-        "expires_at": now + REPOST_GUARD_SEC,
-    }
-    try:
-        uiapp.PostCommand(cmd_id)
-    except Exception as ex:
-        LOGGER.debug("Temp Phase & View repost failed: %s", ex)
-        return _retry_pending(state, pending, now)
-
     state["pending_command"] = None
+    _show_ok_dialog(
+        "Temp Phase & View",
+        "Temporary phase settings were restored in {} view(s).\n\n"
+        "File close was canceled.\n"
+        "Click OK, then close the file again if you still want to close it.".format(restored_count),
+    )
     return True
 
 
@@ -410,8 +427,8 @@ def _retry_pending(state, pending, now):
         state["pending_command"] = None
         _show_alert(
             "Temp Phase & View",
-            "Could not complete automatic phase restore before close. "
-            "Close is cancelled; try again.",
+            "Could not complete temporary phase restore before close. "
+            "Close remains canceled; try closing again.",
         )
     else:
         pending["next_try_at"] = now + PENDING_POST_RETRY_SEC
@@ -526,10 +543,15 @@ def _has_doc_sessions(state, doc_key):
     return False
 
 
-def _show_phase_picker(doc, view, current_phase_id):
+def _show_phase_picker(doc, view, current_phase_id, current_phase_filter_id):
     phases = _collect_document_phases(doc)
     if not phases:
         _show_alert("Temp Phase & View", "No phases are available in this document.")
+        return None
+
+    phase_filters = _collect_document_phase_filters(doc)
+    if not phase_filters:
+        _show_alert("Temp Phase & View", "No phase filters are available in this document.")
         return None
 
     try:
@@ -549,7 +571,7 @@ def _show_phase_picker(doc, view, current_phase_id):
     form.Text = "Temp Phase & View"
     form.StartPosition = WinForms.FormStartPosition.CenterScreen
     form.Width = 470
-    form.Height = 230
+    form.Height = 286
     form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
     form.MaximizeBox = False
     form.MinimizeBox = False
@@ -579,11 +601,36 @@ def _show_phase_picker(doc, view, current_phase_id):
         combo.SelectedIndex = selected_index
     form.Controls.Add(combo)
 
+    filter_lbl = WinForms.Label()
+    filter_lbl.Left = 14
+    filter_lbl.Top = 110
+    filter_lbl.Width = 430
+    filter_lbl.Height = 20
+    filter_lbl.Text = "Temporary Phase Filter:"
+    form.Controls.Add(filter_lbl)
+
+    filter_combo = WinForms.ComboBox()
+    filter_combo.Left = 14
+    filter_combo.Top = 132
+    filter_combo.Width = 430
+    filter_combo.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
+
+    phase_filter_ids = []
+    filter_selected_index = 0
+    for idx, filter_data in enumerate(phase_filters):
+        filter_combo.Items.Add("{} ({})".format(filter_data["name"], filter_data["id"]))
+        phase_filter_ids.append(int(filter_data["id"]))
+        if int(filter_data["id"]) == int(current_phase_filter_id):
+            filter_selected_index = idx
+    if phase_filter_ids:
+        filter_combo.SelectedIndex = filter_selected_index
+    form.Controls.Add(filter_combo)
+
     ok_btn = WinForms.Button()
     ok_btn.Text = "OK"
     ok_btn.DialogResult = WinForms.DialogResult.OK
     ok_btn.Left = 270
-    ok_btn.Top = 132
+    ok_btn.Top = 188
     ok_btn.Width = 84
     form.Controls.Add(ok_btn)
 
@@ -591,7 +638,7 @@ def _show_phase_picker(doc, view, current_phase_id):
     cancel_btn.Text = "Cancel"
     cancel_btn.DialogResult = WinForms.DialogResult.Cancel
     cancel_btn.Left = 360
-    cancel_btn.Top = 132
+    cancel_btn.Top = 188
     cancel_btn.Width = 84
     form.Controls.Add(cancel_btn)
 
@@ -605,7 +652,15 @@ def _show_phase_picker(doc, view, current_phase_id):
     index = int(combo.SelectedIndex)
     if index < 0 or index >= len(phase_ids):
         return None
-    return int(phase_ids[index])
+
+    filter_index = int(filter_combo.SelectedIndex)
+    if filter_index < 0 or filter_index >= len(phase_filter_ids):
+        return None
+
+    return {
+        "selected_phase_id": int(phase_ids[index]),
+        "selected_phase_filter_id": int(phase_filter_ids[filter_index]),
+    }
 
 
 def _collect_document_phases(doc):
@@ -628,6 +683,29 @@ def _collect_document_phases(doc):
     return result
 
 
+def _collect_document_phase_filters(doc):
+    result = []
+    DB = _get_db()
+    if DB is None or not _is_doc_valid(doc):
+        return result
+
+    try:
+        collector = DB.FilteredElementCollector(doc).OfClass(DB.PhaseFilter)
+        for phase_filter in collector:
+            filter_id = _eid_to_int(getattr(phase_filter, "Id", None))
+            if filter_id is None:
+                continue
+            result.append(
+                {
+                    "id": int(filter_id),
+                    "name": _safe_text(getattr(phase_filter, "Name", "")) or "Phase Filter {}".format(filter_id),
+                }
+            )
+    except Exception:
+        return []
+    return result
+
+
 def _get_view_phase_param(view):
     DB = _get_db()
     if DB is None or not _is_view_valid(view):
@@ -643,11 +721,6 @@ def _get_view_phase_id(view):
     if param is None:
         return None
     try:
-        if bool(param.IsReadOnly):
-            return None
-    except Exception:
-        pass
-    try:
         return _eid_to_int(param.AsElementId())
     except Exception:
         return None
@@ -659,14 +732,42 @@ def _set_view_phase_id(view, phase_id_int):
     param = _get_view_phase_param(view)
     if param is None:
         return False
-    try:
-        if bool(param.IsReadOnly):
-            return False
-    except Exception:
-        pass
 
     try:
         return bool(param.Set(_int_to_eid(phase_id_int)))
+    except Exception:
+        return False
+
+
+def _get_view_phase_filter_param(view):
+    DB = _get_db()
+    if DB is None or not _is_view_valid(view):
+        return None
+    try:
+        return view.get_Parameter(DB.BuiltInParameter.VIEW_PHASE_FILTER)
+    except Exception:
+        return None
+
+
+def _get_view_phase_filter_id(view):
+    param = _get_view_phase_filter_param(view)
+    if param is None:
+        return None
+    try:
+        return _eid_to_int(param.AsElementId())
+    except Exception:
+        return None
+
+
+def _set_view_phase_filter_id(view, phase_filter_id_int):
+    if phase_filter_id_int is None:
+        return False
+    param = _get_view_phase_filter_param(view)
+    if param is None:
+        return False
+
+    try:
+        return bool(param.Set(_int_to_eid(phase_filter_id_int)))
     except Exception:
         return False
 
@@ -728,6 +829,26 @@ def _is_tvp_active(view):
     return False
 
 
+def _ensure_tvp_active_for_apply(view, template_id):
+    if _is_tvp_active(view):
+        return True, ""
+
+    can_enable = True
+    checker = getattr(view, "CanEnableTemporaryViewPropertiesMode", None)
+    if callable(checker):
+        try:
+            can_enable = bool(checker())
+        except Exception:
+            can_enable = True
+
+    if not can_enable:
+        return False, "can-enable-false"
+
+    if _enable_tvp(view, template_id):
+        return True, ""
+    return False, "enable-failed"
+
+
 def _disable_tvp(view):
     DB = _get_db()
     if DB is None or not _is_view_valid(view):
@@ -768,6 +889,26 @@ def _show_alert(title, message):
         except Exception:
             pass
     print("[Temp Phase & View] {}: {}".format(title, message))
+
+
+def _show_ok_dialog(title, message):
+    try:
+        import clr
+
+        clr.AddReference("System.Windows.Forms")
+        import System.Windows.Forms as WinForms
+
+        WinForms.MessageBox.Show(
+            message,
+            title,
+            WinForms.MessageBoxButtons.OK,
+            WinForms.MessageBoxIcon.Information,
+        )
+        return
+    except Exception:
+        pass
+
+    _show_alert(title, message)
 
 
 def _view_key(doc_key, view_id_int):
