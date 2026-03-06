@@ -100,12 +100,6 @@ def handle_app_idling(uiapp=None, event_args=None):
     state = _get_state()
     state_changed = False
 
-    # Close interception now lives in rltools.file_close_guard. Clear any
-    # stale legacy close-intercept state so old envvar data can not surface
-    # duplicate dialogs after a reload.
-    if _clear_legacy_close_intercept_state(state):
-        state_changed = True
-
     now = time.time()
     last_idle = float(state.get("last_idling_ts", 0.0) or 0.0)
     if (now - last_idle) < IDLE_THROTTLE_SEC:
@@ -209,59 +203,6 @@ def handle_command_before_exec(uiapp=None, event_args=None):
                 )
 
     _save_state(state)
-
-
-def prepare_doc_for_close(uiapp=None, doc=None, doc_key="", doc_runtime_id=None):
-    """Restore tracked temp-phase state for one document before close."""
-    del uiapp  # reserved for signature stability
-
-    state = _get_state()
-    doc_key = _safe_text(doc_key).strip() or _doc_key(doc)
-    if doc_runtime_id is None:
-        doc_runtime_id = _get_doc_runtime_id(doc)
-
-    had_sessions = _has_doc_sessions(
-        state,
-        doc_key=doc_key,
-        doc_runtime_id=doc_runtime_id,
-    )
-    if not had_sessions:
-        return {
-            "had_sessions": False,
-            "restored_ok": True,
-            "restored_count": 0,
-            "message": "",
-        }
-
-    if not _is_doc_valid(doc):
-        return {
-            "had_sessions": True,
-            "restored_ok": False,
-            "restored_count": 0,
-            "message": "Could not resolve the document for temporary phase cleanup.",
-        }
-
-    restored_ok, restored_count = _restore_sessions_for_doc(
-        doc=doc,
-        doc_key=doc_key,
-        doc_runtime_id=doc_runtime_id,
-        reason="file-close-guard",
-        state=state,
-    )
-    _save_state(state)
-
-    message = ""
-    if restored_ok and restored_count > 0:
-        message = "Original phases were restored in {} view(s).".format(restored_count)
-    elif not restored_ok:
-        message = "Could not restore temporary phase settings before close."
-
-    return {
-        "had_sessions": True,
-        "restored_ok": bool(restored_ok),
-        "restored_count": int(restored_count),
-        "message": message,
-    }
 
 
 def _phase_from_session_or_view(existing, view):
@@ -468,15 +409,6 @@ def _process_pending_command(state, uiapp):
         "Click OK, then close the file again if you still want to close it.".format(restored_count),
     )
     return True
-
-
-def _clear_legacy_close_intercept_state(state):
-    changed = False
-    for key in ("pending_doc_close", "pending_command", "repost_guard"):
-        if state.get(key) is not None:
-            state[key] = None
-            changed = True
-    return changed
 
 
 def _process_pending_doc_close(state, uiapp):
