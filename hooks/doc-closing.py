@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Temp Phase & View document closing hook."""
+"""RL Tools document closing hook."""
 
-from rltools import temp_phase_view
+from rltools import file_close_guard
 
 
 try:
@@ -10,4 +10,4 @@ except Exception:
     _EVENT_ARGS = None
 
 
-temp_phase_view.handle_doc_closing(event_args=_EVENT_ARGS)
+file_close_guard.handle_doc_closing(event_args=_EVENT_ARGS)
