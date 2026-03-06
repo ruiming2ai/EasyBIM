@@ -6,6 +6,7 @@ from __future__ import print_function
 import time
 
 from pyrevit import script
+from rltools import temp_phase_view
 
 
 LOGGER = script.get_logger()
@@ -13,8 +14,10 @@ LOGGER = script.get_logger()
 STATE_ENVVAR = "RLTOOLS_CLOSE_STOP_STATE"
 ALLOW_CLOSE_SEC = 10.0
 MAX_DEBUG_COMMANDS = 12
-TITLE_STOP = "Stop Close File"
-TITLE_CLOSE = "Close File Now"
+TITLE_DIALOG = "Close Stop"
+RESTORE_LINK_TEXT = "Restore all Temporary View Properties before closing"
+CLOSE_FILE_LINK_TEXT = "Close File"
+MAX_MAIN_CONTENT_VIEWS = 8
 FALLBACK_COMMAND_NAMES = (
     "ID_REVIT_FILE_CLOSE",
     "ID_FILE_CLOSE",
@@ -28,7 +31,7 @@ def run_pushbutton(uiapp=None):
     uiapp = _get_uiapp(uiapp)
     doc = _get_active_project_doc(uiapp)
     if not _is_doc_supported(doc):
-        _show_alert("Close Stop", "Open a project document to use Close Stop.")
+        _show_alert(TITLE_DIALOG, "Open a project document to use Close Stop.")
         return
 
     state = _get_state()
@@ -108,6 +111,11 @@ def handle_command_before_exec(uiapp=None, event_args=None):
         _save_state(state)
         return
 
+    summary = _get_close_summary(uiapp, closing_doc)
+    if not bool(summary.get("has_restore_work")):
+        _save_state(state)
+        return
+
     cancellable = _is_event_cancellable(event_args)
     pending = state.get("pending_close")
     if isinstance(pending, dict):
@@ -181,6 +189,11 @@ def handle_doc_closing(uiapp=None, event_args=None):
     doc_runtime_id = _extract_doc_runtime_id(event_args, closing_doc)
 
     if _consume_allow_close_once(state, doc_key, doc_runtime_id):
+        _save_state(state)
+        return
+
+    summary = _get_close_summary(uiapp, closing_doc)
+    if not bool(summary.get("has_restore_work")):
         _save_state(state)
         return
 
@@ -282,23 +295,43 @@ def _process_pending_close(state, uiapp):
 
 
 def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
-    del source  # reserved for future diagnostics
-
     if uiapp is None or not _is_doc_supported(doc):
         return False
 
-    if not _show_action_dialog(
-        title=TITLE_STOP,
-        button_text="OK",
-        instruction_text="Click OK to continue.",
-    ):
-        return False
+    summary = _get_close_summary(uiapp, doc)
+    needs_restore = bool(summary.get("has_restore_work"))
+    restore_result = {
+        "ok": True,
+        "restored_phase_views": 0,
+        "disabled_untracked_tvp_views": 0,
+        "failed_views": [],
+        "message": "",
+    }
 
-    if not _show_action_dialog(
-        title=TITLE_CLOSE,
-        button_text="Close",
-        instruction_text="Click Close to close the file.",
-    ):
+    if needs_restore:
+        if bool(summary.get("has_blocking_views")):
+            if not _show_restore_dialog(summary):
+                return False
+
+        restore_result = temp_phase_view.restore_close_summary(
+            uiapp=uiapp,
+            doc=doc,
+            summary=summary,
+        )
+        if not bool(restore_result.get("ok")):
+            _show_alert(
+                TITLE_DIALOG,
+                _safe_text(restore_result.get("message")).strip()
+                or "RL Tools could not restore Temporary View Properties before close.",
+            )
+            return False
+
+    close_instruction, close_message = _build_close_prompt_message(
+        needs_restore,
+        restore_result,
+        source,
+    )
+    if not _show_close_file_prompt(close_instruction, close_message):
         return False
 
     command_name, command_id = _resolve_close_command(
@@ -330,7 +363,7 @@ def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
         state["allow_close_once"] = None
         _save_state(state)
         _show_alert(
-            TITLE_CLOSE,
+            TITLE_DIALOG,
             "RL Tools could not repost the close command.\n\n{}".format(ex),
         )
         return False
@@ -361,90 +394,135 @@ def _resolve_close_command(uiapp, doc, preferred_command_name, state):
     return "", None
 
 
-def _show_action_dialog(title, button_text, instruction_text=""):
-    try:
-        import clr
+def _build_close_prompt_message(needs_restore, restore_result, source):
+    restored_phase_views = int(restore_result.get("restored_phase_views", 0) or 0)
+    disabled_untracked = int(restore_result.get("disabled_untracked_tvp_views", 0) or 0)
 
-        clr.AddReference("System.Windows.Forms")
-        clr.AddReference("System.Drawing")
-        import System.Drawing as Drawing
-        import System.Windows.Forms as WinForms
-    except Exception:
-        if button_text == "OK":
-            return _show_ok_messagebox(title, instruction_text or title)
-        return False
-
-    result = {"confirmed": False}
-
-    form = WinForms.Form()
-    form.Text = title
-    form.StartPosition = WinForms.FormStartPosition.CenterScreen
-    form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
-    form.MaximizeBox = False
-    form.MinimizeBox = False
-    form.ShowInTaskbar = False
-    form.TopMost = True
-    form.ClientSize = Drawing.Size(400, 155)
-
-    title_lbl = WinForms.Label()
-    title_lbl.Left = 14
-    title_lbl.Top = 16
-    title_lbl.Width = 372
-    title_lbl.Height = 32
-    title_lbl.Text = title
-    title_lbl.Font = Drawing.Font(title_lbl.Font.FontFamily, 12, Drawing.FontStyle.Bold)
-    form.Controls.Add(title_lbl)
-
-    info_lbl = WinForms.Label()
-    info_lbl.Left = 14
-    info_lbl.Top = 58
-    info_lbl.Width = 372
-    info_lbl.Height = 34
-    info_lbl.Text = instruction_text or ""
-    form.Controls.Add(info_lbl)
-
-    action_btn = WinForms.Button()
-    action_btn.Text = button_text
-    action_btn.Width = 96
-    action_btn.Height = 30
-    action_btn.Left = 290
-    action_btn.Top = 108
-
-    def _confirm(sender, args):
-        del sender, args
-        result["confirmed"] = True
-        form.Close()
-
-    action_btn.Click += _confirm
-    form.AcceptButton = action_btn
-    form.Controls.Add(action_btn)
-
-    try:
-        form.ShowDialog()
-    except Exception as ex:
-        LOGGER.warning("Close Stop dialog failed to render: %s", ex)
-        return False
-
-    return bool(result.get("confirmed", False))
-
-
-def _show_ok_messagebox(title, message):
-    try:
-        import clr
-
-        clr.AddReference("System.Windows.Forms")
-        import System.Windows.Forms as WinForms
-
-        WinForms.MessageBox.Show(
-            message,
-            title,
-            WinForms.MessageBoxButtons.OK,
-            WinForms.MessageBoxIcon.Information,
+    instruction = "Temporary View Properties were restored."
+    lines = []
+    if needs_restore:
+        lines.append(
+            "Original phases were restored in {} view(s).".format(restored_phase_views)
         )
+        lines.append(
+            "Temporary View Properties were turned off in {} additional view(s).".format(
+                disabled_untracked
+            )
+        )
+        lines.append("")
+        lines.append("The file is still open.")
+        lines.append("Click Close File to continue with Revit's normal close process.")
+    elif _safe_text(source).strip() == "pushbutton":
+        instruction = "No Temporary View Properties cleanup is needed."
+        lines.append("No Temporary View Properties cleanup is needed.")
+        lines.append("")
+        lines.append("Click Close File to continue with Revit's normal close process.")
+    else:
+        instruction = "The file is still open."
+        lines.append("Cleanup is complete.")
+        lines.append("")
+        lines.append("Click Close File to continue with Revit's normal close process.")
+
+    return instruction, "\n".join(lines)
+
+
+def _show_restore_dialog(summary):
+    lines = list(summary.get("dialog_view_lines") or [])
+    if not lines:
         return True
-    except Exception:
-        _show_alert(title, message)
-        return True
+
+    main_content = "\n".join(lines[:MAX_MAIN_CONTENT_VIEWS])
+    expanded_content = ""
+    if len(lines) > MAX_MAIN_CONTENT_VIEWS:
+        expanded_content = "\n".join(lines)
+
+    details = (
+        "RL Tools tracked temp-phase views will be restored to their original phase.\n"
+        "Other discoverable TVP-enabled views will only have TVP turned off.\n"
+        "The file will remain open after restore until you click Close File."
+    )
+    if expanded_content:
+        details = "{}\n\nAll affected views:\n{}".format(details, expanded_content)
+
+    return _show_task_dialog_with_command_link(
+        title=TITLE_DIALOG,
+        main_instruction="Temporary View Properties are still on in this file.",
+        main_content=main_content,
+        command_text=RESTORE_LINK_TEXT,
+        expanded_content=details,
+    )
+
+
+def _show_close_file_prompt(main_instruction, message):
+    return _show_task_dialog_with_command_link(
+        title=TITLE_DIALOG,
+        main_instruction=main_instruction,
+        main_content=message,
+        command_text=CLOSE_FILE_LINK_TEXT,
+    )
+
+
+def _show_task_dialog_with_command_link(
+    title,
+    main_instruction,
+    main_content,
+    command_text,
+    expanded_content="",
+):
+    UI = _get_ui()
+    if UI is None:
+        _show_alert(title, "{}\n\n{}".format(main_instruction, main_content).strip())
+        return False
+
+    try:
+        dialog = UI.TaskDialog(title)
+        if hasattr(dialog, "TitleAutoPrefix"):
+            dialog.TitleAutoPrefix = False
+        if hasattr(dialog, "AllowCancellation"):
+            dialog.AllowCancellation = True
+
+        dialog.MainInstruction = _safe_text(main_instruction)
+        dialog.MainContent = _safe_text(main_content)
+        if expanded_content:
+            dialog.ExpandedContent = _safe_text(expanded_content)
+        dialog.CommonButtons = UI.TaskDialogCommonButtons.Cancel
+        dialog.AddCommandLink(
+            UI.TaskDialogCommandLinkId.CommandLink1,
+            _safe_text(command_text),
+        )
+        result = dialog.Show()
+        return result == UI.TaskDialogResult.CommandLink1
+    except Exception as ex:
+        LOGGER.warning("Close Stop TaskDialog failed: %s", ex)
+        _show_alert(title, "{}\n\n{}".format(main_instruction, main_content).strip())
+        return False
+
+
+def _get_close_summary(uiapp, doc):
+    try:
+        summary = temp_phase_view.collect_close_summary(
+            uiapp=uiapp,
+            doc=doc,
+            include_all_discoverable=True,
+        )
+    except Exception as ex:
+        LOGGER.warning("Close Stop could not collect TVP summary: %s", ex)
+        summary = None
+
+    if isinstance(summary, dict):
+        return summary
+
+    return {
+        "doc_key": _doc_key(doc),
+        "doc_runtime_id": _get_doc_runtime_id(doc),
+        "doc_title": _safe_text(getattr(doc, "Title", "")).strip(),
+        "discoverable_tvp_views": [],
+        "tracked_restore_views": [],
+        "untracked_tvp_views": [],
+        "dialog_view_lines": [],
+        "has_blocking_views": False,
+        "has_restore_work": False,
+    }
 
 
 def _register_allow_close_once(state, doc, command_name):

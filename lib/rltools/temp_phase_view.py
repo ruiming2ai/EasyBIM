@@ -205,6 +205,174 @@ def handle_command_before_exec(uiapp=None, event_args=None):
     _save_state(state)
 
 
+def collect_close_summary(uiapp=None, doc=None, include_all_discoverable=True):
+    """Collect tracked and discoverable TVP state for a document close decision."""
+    uiapp = _get_uiapp(uiapp)
+    if not _is_doc_supported(doc):
+        doc = _get_active_project_doc(uiapp)
+
+    doc_key = _doc_key(doc)
+    doc_runtime_id = _get_doc_runtime_id(doc)
+    summary = {
+        "doc_key": doc_key,
+        "doc_runtime_id": doc_runtime_id,
+        "doc_title": _safe_text(getattr(doc, "Title", "")).strip() if doc else "",
+        "discoverable_tvp_views": [],
+        "tracked_restore_views": [],
+        "untracked_tvp_views": [],
+        "dialog_view_lines": [],
+        "has_blocking_views": False,
+        "has_restore_work": False,
+    }
+
+    if not _is_doc_supported(doc):
+        return summary
+
+    state = _get_state()
+    state_changed = False
+    tracked_restore_views = []
+
+    for view_key, session in list((state.get("view_sessions") or {}).items()):
+        if not isinstance(session, dict):
+            state["view_sessions"].pop(view_key, None)
+            state["last_seen_tvp"].pop(view_key, None)
+            state_changed = True
+            continue
+
+        if not _session_matches_doc(
+            session=session,
+            doc_key=doc_key,
+            doc_runtime_id=doc_runtime_id,
+        ):
+            continue
+
+        view_id = _to_int(session.get("view_id"))
+        if view_id is None:
+            state["view_sessions"].pop(view_key, None)
+            state["last_seen_tvp"].pop(view_key, None)
+            state_changed = True
+            continue
+
+        view = doc.GetElement(_int_to_eid(view_id))
+        if not _is_view_valid(view):
+            state["view_sessions"].pop(view_key, None)
+            state["last_seen_tvp"].pop(view_key, None)
+            state_changed = True
+            continue
+
+        tracked_restore_views.append(
+            {
+                "view_key": view_key,
+                "view_id": int(view_id),
+                "view_name": _view_display_name(view=view, session=session),
+                "original_phase_id": _to_int(session.get("original_phase_id")),
+            }
+        )
+
+    discoverable_tvp_views = []
+    if include_all_discoverable:
+        discoverable_tvp_views = _collect_discoverable_tvp_views(doc)
+
+    tracked_view_ids = set(
+        item["view_id"] for item in tracked_restore_views if item.get("view_id") is not None
+    )
+    untracked_tvp_views = [
+        item
+        for item in discoverable_tvp_views
+        if _to_int(item.get("view_id")) not in tracked_view_ids
+    ]
+
+    tracked_restore_views = _sort_view_records(tracked_restore_views)
+    discoverable_tvp_views = _sort_view_records(discoverable_tvp_views)
+    untracked_tvp_views = _sort_view_records(untracked_tvp_views)
+
+    summary.update(
+        {
+            "discoverable_tvp_views": discoverable_tvp_views,
+            "tracked_restore_views": tracked_restore_views,
+            "untracked_tvp_views": untracked_tvp_views,
+            "dialog_view_lines": [
+                _safe_text(item.get("view_name")).strip() or "View {}".format(item.get("view_id"))
+                for item in discoverable_tvp_views
+            ],
+            "has_blocking_views": bool(discoverable_tvp_views),
+            "has_restore_work": bool(tracked_restore_views or untracked_tvp_views),
+        }
+    )
+
+    if state_changed:
+        _save_state(state)
+
+    return summary
+
+
+def restore_close_summary(uiapp=None, doc=None, summary=None):
+    """Restore tracked temp-phase state and disable discoverable TVP before close."""
+    uiapp = _get_uiapp(uiapp)
+    if not isinstance(summary, dict):
+        summary = collect_close_summary(uiapp=uiapp, doc=doc, include_all_discoverable=True)
+
+    if not _is_doc_supported(doc):
+        doc = _find_doc_by_identity(
+            uiapp,
+            doc_key=_safe_text(summary.get("doc_key")).strip(),
+            doc_runtime_id=_to_int(summary.get("doc_runtime_id")),
+        )
+
+    result = {
+        "ok": False,
+        "restored_phase_views": 0,
+        "disabled_untracked_tvp_views": 0,
+        "failed_views": [],
+        "message": "",
+    }
+
+    if not _is_doc_supported(doc):
+        result["message"] = "Open a valid project document to restore Temporary View Properties."
+        return result
+
+    tracked_restore_views = list(summary.get("tracked_restore_views") or [])
+    untracked_tvp_views = list(summary.get("untracked_tvp_views") or [])
+
+    ok, restored_count, disabled_count, failed_views = _restore_close_summary_transaction(
+        doc=doc,
+        tracked_restore_views=tracked_restore_views,
+        untracked_tvp_views=untracked_tvp_views,
+    )
+    if not ok:
+        result["failed_views"] = failed_views
+        if failed_views:
+            result["message"] = (
+                "Could not restore Temporary View Properties for:\n{}".format(
+                    "\n".join(failed_views)
+                )
+            )
+        else:
+            result["message"] = "Could not restore Temporary View Properties before close."
+        return result
+
+    state = _get_state()
+    for item in tracked_restore_views:
+        view_key = _safe_text(item.get("view_key")).strip()
+        if not view_key:
+            continue
+        state["view_sessions"].pop(view_key, None)
+        state["last_seen_tvp"].pop(view_key, None)
+    _save_state(state)
+
+    result["ok"] = True
+    result["restored_phase_views"] = restored_count
+    result["disabled_untracked_tvp_views"] = disabled_count
+    result["message"] = (
+        "Original phases were restored in {} view(s).\n"
+        "Temporary View Properties were turned off in {} additional view(s).".format(
+            restored_count,
+            disabled_count,
+        )
+    )
+    return result
+
+
 def _phase_from_session_or_view(existing, view):
     if isinstance(existing, dict) and existing.get("original_phase_id") is not None:
         try:
@@ -368,6 +536,57 @@ def _restore_views_transaction(doc, sessions, reason):
         if started:
             _rollback_transaction(tx)
         return False, 0
+
+
+def _restore_close_summary_transaction(doc, tracked_restore_views, untracked_tvp_views):
+    DB = _get_db()
+    if DB is None:
+        return False, 0, 0, []
+
+    tx = DB.Transaction(doc, "Close Stop: Restore Temporary View Properties")
+    started = False
+    restored_count = 0
+    disabled_count = 0
+    failed_views = []
+    try:
+        tx.Start()
+        started = True
+
+        for item in tracked_restore_views:
+            view = doc.GetElement(_int_to_eid(item.get("view_id")))
+            if not _is_view_valid(view):
+                continue
+
+            if _is_tvp_active(view) and not _disable_tvp(view):
+                failed_views.append(_safe_text(item.get("view_name")).strip())
+                raise Exception("Failed disabling TVP for tracked view")
+
+            original_phase_id = _to_int(item.get("original_phase_id"))
+            if original_phase_id is not None and not _set_view_phase_id(view, original_phase_id):
+                failed_views.append(_safe_text(item.get("view_name")).strip())
+                raise Exception("Failed restoring original phase")
+
+            restored_count += 1
+
+        for item in untracked_tvp_views:
+            view = doc.GetElement(_int_to_eid(item.get("view_id")))
+            if not _is_view_valid(view):
+                continue
+            if not _is_tvp_active(view):
+                continue
+            if not _disable_tvp(view):
+                failed_views.append(_safe_text(item.get("view_name")).strip())
+                raise Exception("Failed disabling TVP for untracked view")
+
+            disabled_count += 1
+
+        tx.Commit()
+        return True, restored_count, disabled_count, failed_views
+    except Exception as ex:
+        LOGGER.debug("Close Stop restore failed: %s", ex)
+        if started:
+            _rollback_transaction(tx)
+        return False, 0, 0, failed_views
 
 
 def _process_pending_command(state, uiapp):
@@ -552,6 +771,14 @@ def _find_doc_by_identity(uiapp, doc_key="", doc_runtime_id=None):
     return None
 
 
+def _get_active_project_doc(uiapp):
+    if uiapp is None:
+        return None
+    uidoc = getattr(uiapp, "ActiveUIDocument", None)
+    doc = getattr(uidoc, "Document", None) if uidoc else None
+    return doc if _is_doc_supported(doc) else None
+
+
 def _consume_repost_guard(state, doc_key, command_name):
     guard = state.get("repost_guard")
     if not isinstance(guard, dict):
@@ -702,6 +929,67 @@ def _session_matches_doc(session, doc_key="", doc_runtime_id=None):
         return True
 
     return False
+
+
+def _collect_discoverable_tvp_views(doc):
+    DB = _get_db()
+    if DB is None or not _is_doc_supported(doc):
+        return []
+
+    records = []
+    try:
+        collector = DB.FilteredElementCollector(doc).OfClass(DB.View)
+        for view in collector:
+            if not _is_view_valid(view):
+                continue
+            if not _is_tvp_active(view):
+                continue
+
+            view_id = _eid_to_int(getattr(view, "Id", None))
+            if view_id is None:
+                continue
+
+            records.append(
+                {
+                    "view_id": int(view_id),
+                    "view_name": _view_display_name(view=view),
+                }
+            )
+    except Exception as ex:
+        LOGGER.debug("Could not collect discoverable TVP views: %s", ex)
+        return []
+
+    return _sort_view_records(records)
+
+
+def _sort_view_records(records):
+    return sorted(
+        list(records or []),
+        key=lambda item: (
+            _safe_text((item or {}).get("view_name")).strip().lower(),
+            _to_int((item or {}).get("view_id")) or 0,
+        ),
+    )
+
+
+def _view_display_name(view=None, session=None):
+    name = _safe_text(getattr(view, "Name", "")).strip() if view is not None else ""
+    if name:
+        return name
+    if isinstance(session, dict):
+        name = _safe_text(session.get("view_name")).strip()
+        if name:
+            return name
+
+    view_id = None
+    if view is not None:
+        view_id = _eid_to_int(getattr(view, "Id", None))
+    if view_id is None and isinstance(session, dict):
+        view_id = _to_int(session.get("view_id"))
+
+    if view_id is not None:
+        return "View {}".format(view_id)
+    return "Unnamed View"
 
 
 def _show_phase_picker(doc, view, current_phase_id):
