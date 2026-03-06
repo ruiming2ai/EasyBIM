@@ -11,3 +11,4 @@ except Exception:
 
 
 close_stop.capture_close_command(event_args=_EVENT_ARGS)
+close_stop.handle_command_before_exec(event_args=_EVENT_ARGS)
