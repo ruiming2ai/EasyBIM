@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Process RL Tools startup queue, temp-phase runtime, and close guard."""
+"""Process RL Tools startup queue, temp-phase runtime, and close stop."""
 
 from rltools.messages import process_startup_jobs
 
@@ -9,9 +9,9 @@ except Exception:
     temp_phase_view = None
 
 try:
-    from rltools import file_close_guard
+    from rltools import close_stop
 except Exception:
-    file_close_guard = None
+    close_stop = None
 
 try:
     _EVENT_ARGS = EXEC_PARAMS.event_args
@@ -31,9 +31,9 @@ if temp_phase_view is not None:
         # Never hard-fail Revit idling because of temp phase automation.
         pass
 
-if file_close_guard is not None:
+if close_stop is not None:
     try:
-        file_close_guard.handle_app_idling(event_args=_EVENT_ARGS)
+        close_stop.handle_app_idling(event_args=_EVENT_ARGS)
     except Exception:
-        # Never hard-fail Revit idling because of close guard automation.
+        # Never hard-fail Revit idling because of close stop automation.
         pass
