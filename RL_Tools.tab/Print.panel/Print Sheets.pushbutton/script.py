@@ -357,6 +357,11 @@ class EditNamingFormatsWindow(forms.WPFWindow):
     def get_default_naming_formats():
         return [
             NamingFormat(
+                name='Sheet Number - Sheet Name',
+                template='{Number} - {Name}.pdf',
+                builtin=True
+            ),
+            NamingFormat(
                 name='0001 A1.00 1ST FLOOR PLAN.pdf',
                 template='{index} {number} {name}.pdf',
                 builtin=True
@@ -877,7 +882,7 @@ class PrintSheetsWindow(forms.WPFWindow):
                 sheet_set = DB.ViewSet()
                 original_sheetnums = []
                 with revit.Transaction('Fix Sheet Numbers',
-                                    doc=self.selected_doc):
+                                       doc=self.selected_doc):
                     for idx, sheet in enumerate(target_sheets):
                         rvtsheet = sheet.revit_sheet
                         # removing any NPC from previous failed prints
@@ -960,9 +965,9 @@ class PrintSheetsWindow(forms.WPFWindow):
             if not supports_OrderedViewList:
                 # now fix the sheet names
                 with revit.Transaction('Restore Sheet Numbers',
-                                    doc=self.selected_doc):
+                                       doc=self.selected_doc):
                     for sheet, sheetnum in zip(target_sheets,
-                                            original_sheetnums):
+                                               original_sheetnums):
                         rvtsheet = sheet.revit_sheet
                         rvtsheet.SheetNumber = sheetnum
 
@@ -1093,23 +1098,41 @@ class PrintSheetsWindow(forms.WPFWindow):
             output_fname = \
                 template.format(
                     index=sheet.print_index,
+                    Index=sheet.print_index,
                     number=sheet.number,
+                    Number=sheet.number,
                     name=sheet.name,
+                    Name=sheet.name,
                     name_dash=sheet.name.replace(' ', '-'),
+                    NameDash=sheet.name.replace(' ', '-'),
                     name_underline=sheet.name.replace(' ', '_'),
+                    NameUnderline=sheet.name.replace(' ', '_'),
                     current_date=coreutils.current_date(),
+                    CurrentDate=coreutils.current_date(),
                     issue_date=sheet.issue_date,
+                    IssueDate=sheet.issue_date,
                     rev_number=sheet.revision.number if sheet.revision else '',
+                    RevNumber=sheet.revision.number if sheet.revision else '',
                     rev_desc=sheet.revision.desc if sheet.revision else '',
+                    RevDesc=sheet.revision.desc if sheet.revision else '',
                     rev_date=sheet.revision.date if sheet.revision else '',
+                    RevDate=sheet.revision.date if sheet.revision else '',
                     proj_name=self.project_info.name,
+                    ProjName=self.project_info.name,
                     proj_number=self.project_info.number,
+                    ProjNumber=self.project_info.number,
                     proj_building_name=self.project_info.building_name,
+                    ProjBuildingName=self.project_info.building_name,
                     proj_issue_date=self.project_info.issue_date,
+                    ProjIssueDate=self.project_info.issue_date,
                     proj_org_name=self.project_info.org_name,
+                    ProjOrgName=self.project_info.org_name,
                     proj_status=self.project_info.status,
+                    ProjStatus=self.project_info.status,
                     username=HOST_APP.username,
+                    UserName=HOST_APP.username,
                     revit_version=HOST_APP.version,
+                    RevitVersion=HOST_APP.version,
                 )
         except Exception as ferr:
             output_fname = ''
