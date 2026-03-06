@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Capture Revit close command names for Close Stop."""
+"""Capture Revit save commands and run Close Stop before saving."""
 
 from rltools import close_stop
 
@@ -11,3 +11,4 @@ except Exception:
 
 
 close_stop.capture_action_command(event_args=_EVENT_ARGS)
+close_stop.handle_save_related_before_exec(event_args=_EVENT_ARGS)

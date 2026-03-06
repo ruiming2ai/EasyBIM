@@ -205,8 +205,8 @@ def handle_command_before_exec(uiapp=None, event_args=None):
     _save_state(state)
 
 
-def collect_close_summary(uiapp=None, doc=None, include_all_discoverable=True):
-    """Collect tracked and discoverable TVP state for a document close decision."""
+def collect_tvp_summary(uiapp=None, doc=None, include_all_discoverable=True):
+    """Collect tracked and discoverable TVP state for save, sync, or close decisions."""
     uiapp = _get_uiapp(uiapp)
     if not _is_doc_supported(doc):
         doc = _get_active_project_doc(uiapp)
@@ -286,6 +286,23 @@ def collect_close_summary(uiapp=None, doc=None, include_all_discoverable=True):
     discoverable_tvp_views = _sort_view_records(discoverable_tvp_views)
     untracked_tvp_views = _sort_view_records(untracked_tvp_views)
 
+    dialog_views = list(discoverable_tvp_views)
+    dialog_view_ids = set(
+        _to_int(item.get("view_id")) for item in dialog_views if item.get("view_id") is not None
+    )
+    for item in tracked_restore_views:
+        view_id = _to_int(item.get("view_id"))
+        if view_id is None or view_id in dialog_view_ids:
+            continue
+        dialog_views.append(
+            {
+                "view_id": view_id,
+                "view_name": _safe_text(item.get("view_name")).strip(),
+            }
+        )
+        dialog_view_ids.add(view_id)
+    dialog_views = _sort_view_records(dialog_views)
+
     summary.update(
         {
             "discoverable_tvp_views": discoverable_tvp_views,
@@ -293,7 +310,7 @@ def collect_close_summary(uiapp=None, doc=None, include_all_discoverable=True):
             "untracked_tvp_views": untracked_tvp_views,
             "dialog_view_lines": [
                 _safe_text(item.get("view_name")).strip() or "View {}".format(item.get("view_id"))
-                for item in discoverable_tvp_views
+                for item in dialog_views
             ],
             "has_blocking_views": bool(discoverable_tvp_views),
             "has_restore_work": bool(tracked_restore_views or untracked_tvp_views),
@@ -306,11 +323,20 @@ def collect_close_summary(uiapp=None, doc=None, include_all_discoverable=True):
     return summary
 
 
-def restore_close_summary(uiapp=None, doc=None, summary=None):
-    """Restore tracked temp-phase state and disable discoverable TVP before close."""
+def collect_close_summary(uiapp=None, doc=None, include_all_discoverable=True):
+    """Compatibility wrapper for legacy close-stop callers."""
+    return collect_tvp_summary(
+        uiapp=uiapp,
+        doc=doc,
+        include_all_discoverable=include_all_discoverable,
+    )
+
+
+def restore_tvp_summary(uiapp=None, doc=None, summary=None):
+    """Restore tracked temp-phase state and disable discoverable TVP before command repost."""
     uiapp = _get_uiapp(uiapp)
     if not isinstance(summary, dict):
-        summary = collect_close_summary(uiapp=uiapp, doc=doc, include_all_discoverable=True)
+        summary = collect_tvp_summary(uiapp=uiapp, doc=doc, include_all_discoverable=True)
 
     if not _is_doc_supported(doc):
         doc = _find_doc_by_identity(
@@ -371,6 +397,11 @@ def restore_close_summary(uiapp=None, doc=None, summary=None):
         )
     )
     return result
+
+
+def restore_close_summary(uiapp=None, doc=None, summary=None):
+    """Compatibility wrapper for legacy close-stop callers."""
+    return restore_tvp_summary(uiapp=uiapp, doc=doc, summary=summary)
 
 
 def _phase_from_session_or_view(existing, view):
