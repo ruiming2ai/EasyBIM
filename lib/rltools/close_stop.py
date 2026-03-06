@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared close-stop runtime for hooks and the Close Stop pushbutton."""
+"""Shared Close Stop runtime for save/sync hooks and the Close Stop pushbutton."""
 
 from __future__ import print_function
 
@@ -12,22 +12,40 @@ from rltools import temp_phase_view
 LOGGER = script.get_logger()
 
 STATE_ENVVAR = "RLTOOLS_CLOSE_STOP_STATE"
-ALLOW_CLOSE_SEC = 10.0
+ALLOW_COMMAND_SEC = 10.0
 MAX_DEBUG_COMMANDS = 12
 TITLE_DIALOG = "Close Stop"
-RESTORE_LINK_TEXT = "Restore all Temporary View Properties before closing"
-CLOSE_FILE_LINK_TEXT = "Close File"
 MAX_MAIN_CONTENT_VIEWS = 8
-FALLBACK_COMMAND_NAMES = (
+
+CLOSE_RESTORE_LINK_TEXT = "Restore all Temporary View Properties before closing"
+SAVE_RESTORE_LINK_TEXT = "Restore all Temporary View Properties and continue saving"
+SYNC_RESTORE_LINK_TEXT = "Restore all Temporary View Properties and continue synchronizing"
+CLOSE_FILE_LINK_TEXT = "Close File"
+
+SAVE_COMMAND_NAMES = (
+    "ID_REVIT_FILE_SAVE",
+    "ID_FILE_SAVE",
+)
+SYNC_COMMAND_NAMES = (
+    "ID_FILE_SAVE_TO_CENTRAL",
+    "ID_FILE_SAVE_TO_CENTRAL_SHORTCUT",
+    "ID_FILE_SAVE_TO_MASTER",
+    "ID_FILE_SAVE_TO_MASTER_SHORTCUT",
+)
+CLOSE_COMMAND_NAMES = (
     "ID_REVIT_FILE_CLOSE",
     "ID_FILE_CLOSE",
     "ID_REVIT_PROJECT_CLOSE",
     "ID_PROJECT_CLOSE",
 )
 
+SAVE_FALLBACK_COMMAND_NAMES = SAVE_COMMAND_NAMES
+SYNC_FALLBACK_COMMAND_NAMES = SYNC_COMMAND_NAMES
+CLOSE_FALLBACK_COMMAND_NAMES = CLOSE_COMMAND_NAMES
+
 
 def run_pushbutton(uiapp=None):
-    """Run the close-stop flow manually from the ribbon button."""
+    """Run the close-related Close Stop flow manually from the ribbon button."""
     uiapp = _get_uiapp(uiapp)
     doc = _get_active_project_doc(uiapp)
     if not _is_doc_supported(doc):
@@ -35,23 +53,13 @@ def run_pushbutton(uiapp=None):
         return
 
     state = _get_state()
-    _clear_expired_allow_close_once(state)
+    _clear_expired_allow_command_once(state)
     _save_state(state)
-    _run_close_sequence(
-        uiapp=uiapp,
-        doc=doc,
-        preferred_command_name=_get_preferred_command_name(
-            state,
-            _doc_key(doc),
-            _get_doc_runtime_id(doc),
-        ),
-        state=state,
-        source="pushbutton",
-    )
+    _run_close_sequence(uiapp=uiapp, doc=doc, state=state)
 
 
-def capture_close_command(uiapp=None, event_args=None):
-    """Capture the Revit close command name for later repost."""
+def capture_action_command(uiapp=None, event_args=None):
+    """Capture save, sync, or close command names for later repost/diagnostics."""
     if event_args is None:
         return
 
@@ -70,18 +78,17 @@ def capture_close_command(uiapp=None, event_args=None):
         return
 
     state = _get_state()
-    _remember_debug_command(state, command_name)
-    state["last_close_command"] = {
-        "doc_key": _doc_key(target_doc),
-        "doc_runtime_id": _get_doc_runtime_id(target_doc),
-        "command_name": command_name,
-        "captured_at": time.time(),
-    }
+    _record_action_command(state, target_doc, command_name)
     _save_state(state)
 
 
-def handle_command_before_exec(uiapp=None, event_args=None):
-    """Cancel supported close commands before execution and queue Close Stop."""
+def capture_close_command(uiapp=None, event_args=None):
+    """Compatibility wrapper for old close hook imports."""
+    return capture_action_command(uiapp=uiapp, event_args=event_args)
+
+
+def handle_save_related_before_exec(uiapp=None, event_args=None):
+    """Cancel supported save/sync commands until TVP cleanup has finished."""
     if event_args is None:
         return
 
@@ -89,20 +96,24 @@ def handle_command_before_exec(uiapp=None, event_args=None):
     if uiapp is None:
         return
 
-    closing_doc = _resolve_doc_from_event_args(event_args, uiapp)
-    if not _is_doc_supported(closing_doc):
-        closing_doc = _get_active_project_doc(uiapp)
-    if not _is_doc_supported(closing_doc):
+    target_doc = _resolve_doc_from_event_args(event_args, uiapp)
+    if not _is_doc_supported(target_doc):
+        target_doc = _get_active_project_doc(uiapp)
+    if not _is_doc_supported(target_doc):
+        return
+
+    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip()
+    action_kind = _classify_action_command(command_name)
+    if action_kind not in ("save", "sync"):
         return
 
     state = _get_state()
-    _clear_expired_allow_close_once(state)
+    _clear_expired_allow_command_once(state)
 
-    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip()
-    doc_key = _doc_key(closing_doc)
-    doc_runtime_id = _get_doc_runtime_id(closing_doc)
+    doc_key = _doc_key(target_doc)
+    doc_runtime_id = _get_doc_runtime_id(target_doc)
 
-    if _consume_allow_close_once(
+    if _consume_allow_command_once(
         state,
         doc_key,
         doc_runtime_id,
@@ -111,22 +122,22 @@ def handle_command_before_exec(uiapp=None, event_args=None):
         _save_state(state)
         return
 
-    summary = _get_close_summary(uiapp, closing_doc)
+    summary = _get_tvp_summary(uiapp, target_doc)
     if not bool(summary.get("has_restore_work")):
         _save_state(state)
         return
 
     cancellable = _is_event_cancellable(event_args)
-    pending = state.get("pending_close")
+    pending = state.get("pending_action")
     if isinstance(pending, dict):
         cancel_succeeded = _cancel_event(event_args) if cancellable else False
         _set_debug_last_intercept(
             state=state,
             stage="before-exec",
-            doc=closing_doc,
+            doc=target_doc,
             cancellable=cancellable,
             cancel_succeeded=cancel_succeeded,
-            reason="pending-close-exists",
+            reason="pending-action-exists",
         )
         _save_state(state)
         return
@@ -135,7 +146,7 @@ def handle_command_before_exec(uiapp=None, event_args=None):
         _set_debug_last_intercept(
             state=state,
             stage="before-exec",
-            doc=closing_doc,
+            doc=target_doc,
             cancellable=False,
             cancel_succeeded=False,
             reason="event-not-cancellable",
@@ -147,112 +158,39 @@ def handle_command_before_exec(uiapp=None, event_args=None):
     _set_debug_last_intercept(
         state=state,
         stage="before-exec",
-        doc=closing_doc,
+        doc=target_doc,
         cancellable=True,
         cancel_succeeded=cancel_succeeded,
-        reason="queued-close-stop" if cancel_succeeded else "cancel-failed",
+        reason="queued-{}".format(action_kind) if cancel_succeeded else "cancel-failed",
     )
     if not cancel_succeeded:
         _save_state(state)
         return
 
-    _queue_pending_close(
+    _queue_pending_action(
         state=state,
-        doc=closing_doc,
-        preferred_command_name=command_name
-        or _get_preferred_command_name(state, doc_key, doc_runtime_id),
-        source="hook",
-        intercept_stage="before-exec",
+        doc=target_doc,
+        command_name=command_name,
+        action_kind=action_kind,
+        source="save-hook",
     )
     _save_state(state)
+
+
+def handle_command_before_exec(uiapp=None, event_args=None):
+    """Compatibility no-op for legacy close hook wiring."""
+    del uiapp, event_args
+    return None
 
 
 def handle_doc_closing(uiapp=None, event_args=None):
-    """Fallback close interception when command-before-exec did not stop close."""
-    if event_args is None:
-        return
-
-    uiapp = _get_uiapp(uiapp)
-    if uiapp is None:
-        return
-
-    closing_doc = _resolve_doc_from_event_args(event_args, uiapp)
-    if not _is_doc_supported(closing_doc):
-        closing_doc = _get_active_project_doc(uiapp)
-    if not _is_doc_supported(closing_doc):
-        return
-
-    state = _get_state()
-    _clear_expired_allow_close_once(state)
-
-    doc_key = _doc_key(closing_doc)
-    doc_runtime_id = _extract_doc_runtime_id(event_args, closing_doc)
-
-    if _consume_allow_close_once(state, doc_key, doc_runtime_id):
-        _save_state(state)
-        return
-
-    summary = _get_close_summary(uiapp, closing_doc)
-    if not bool(summary.get("has_restore_work")):
-        _save_state(state)
-        return
-
-    cancellable = _is_event_cancellable(event_args)
-    pending = state.get("pending_close")
-    if isinstance(pending, dict):
-        cancel_succeeded = _cancel_event(event_args) if cancellable else False
-        _set_debug_last_intercept(
-            state=state,
-            stage="doc-closing",
-            doc=closing_doc,
-            cancellable=cancellable,
-            cancel_succeeded=cancel_succeeded,
-            reason="pending-close-exists",
-        )
-        _save_state(state)
-        return
-
-    if not cancellable:
-        _set_debug_last_intercept(
-            state=state,
-            stage="doc-closing",
-            doc=closing_doc,
-            cancellable=False,
-            cancel_succeeded=False,
-            reason="event-not-cancellable",
-        )
-        _save_state(state)
-        return
-
-    cancel_succeeded = _cancel_event(event_args)
-    _set_debug_last_intercept(
-        state=state,
-        stage="doc-closing",
-        doc=closing_doc,
-        cancellable=True,
-        cancel_succeeded=cancel_succeeded,
-        reason="queued-close-stop" if cancel_succeeded else "cancel-failed",
-    )
-    if not cancel_succeeded:
-        _save_state(state)
-        return
-
-    _queue_pending_close(
-        state=state,
-        doc=closing_doc,
-        preferred_command_name=_get_preferred_command_name(
-            state,
-            doc_key,
-            doc_runtime_id,
-        ),
-        source="hook",
-        intercept_stage="doc-closing",
-    )
-    _save_state(state)
+    """Compatibility no-op for legacy close hook wiring."""
+    del uiapp, event_args
+    return None
 
 
 def handle_app_idling(uiapp=None, event_args=None):
-    """Process queued close-stop work on idling."""
+    """Process queued save/sync cleanup work on idling."""
     del event_args  # not used
 
     uiapp = _get_uiapp(uiapp)
@@ -260,45 +198,96 @@ def handle_app_idling(uiapp=None, event_args=None):
         return
 
     state = _get_state()
-    state_changed = _clear_expired_allow_close_once(state)
+    state_changed = _clear_expired_allow_command_once(state)
 
-    if _process_pending_close(state, uiapp):
+    if _process_pending_action(state, uiapp):
         state_changed = True
 
     if state_changed:
         _save_state(state)
 
 
-def _process_pending_close(state, uiapp):
-    pending = state.get("pending_close")
+def _process_pending_action(state, uiapp):
+    pending = state.get("pending_action")
     if not isinstance(pending, dict):
         return False
 
     doc_key = _safe_text(pending.get("doc_key")).strip()
     doc_runtime_id = _to_int(pending.get("doc_runtime_id"))
-    preferred_command_name = _safe_text(pending.get("preferred_command_name")).strip()
+    preferred_command_name = _safe_text(pending.get("command_name")).strip()
+    action_kind = _safe_text(pending.get("action_kind")).strip().lower()
 
     doc = _find_doc_by_identity(uiapp, doc_key=doc_key, doc_runtime_id=doc_runtime_id)
-    state["pending_close"] = None
+    state["pending_action"] = None
 
     if not _is_doc_supported(doc):
         return True
 
-    _run_close_sequence(
+    summary = _get_tvp_summary(uiapp, doc)
+    if bool(summary.get("has_restore_work")):
+        if not _show_save_related_restore_dialog(action_kind, summary):
+            return True
+
+        restore_result = temp_phase_view.restore_tvp_summary(
+            uiapp=uiapp,
+            doc=doc,
+            summary=summary,
+        )
+        if not bool(restore_result.get("ok")):
+            _show_alert(
+                TITLE_DIALOG,
+                _safe_text(restore_result.get("message")).strip()
+                or "RL Tools could not restore Temporary View Properties before {}.".format(
+                    _action_label(action_kind)
+                ),
+            )
+            return True
+
+    command_name, command_id = _resolve_revit_command(
         uiapp=uiapp,
         doc=doc,
         preferred_command_name=preferred_command_name,
+        action_kind=action_kind,
         state=state,
-        source=_safe_text(pending.get("source")).strip() or "hook",
     )
-    return True
+    if command_id is None:
+        _show_alert(
+            TITLE_DIALOG,
+            "RL Tools could not determine a {} command.\n\nRecent commands:\n{}".format(
+                _action_label(action_kind),
+                _debug_command_lines(state),
+            ),
+        )
+        return True
+
+    _register_allow_command_once(
+        state=state,
+        doc=doc,
+        command_name=command_name,
+    )
+    _save_state(state)
+
+    try:
+        uiapp.PostCommand(command_id)
+        return True
+    except Exception as ex:
+        state["allow_command_once"] = None
+        _save_state(state)
+        _show_alert(
+            TITLE_DIALOG,
+            "RL Tools could not repost the {} command.\n\n{}".format(
+                _action_label(action_kind),
+                ex,
+            ),
+        )
+        return True
 
 
-def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
+def _run_close_sequence(uiapp, doc, state):
     if uiapp is None or not _is_doc_supported(doc):
         return False
 
-    summary = _get_close_summary(uiapp, doc)
+    summary = _get_tvp_summary(uiapp, doc)
     needs_restore = bool(summary.get("has_restore_work"))
     restore_result = {
         "ok": True,
@@ -309,11 +298,10 @@ def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
     }
 
     if needs_restore:
-        if bool(summary.get("has_blocking_views")):
-            if not _show_restore_dialog(summary):
-                return False
+        if not _show_close_restore_dialog(summary):
+            return False
 
-        restore_result = temp_phase_view.restore_close_summary(
+        restore_result = temp_phase_view.restore_tvp_summary(
             uiapp=uiapp,
             doc=doc,
             summary=summary,
@@ -329,27 +317,32 @@ def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
     close_instruction, close_message = _build_close_prompt_message(
         needs_restore,
         restore_result,
-        source,
     )
     if not _show_close_file_prompt(close_instruction, close_message):
         return False
 
-    command_name, command_id = _resolve_close_command(
+    command_name, command_id = _resolve_revit_command(
         uiapp=uiapp,
         doc=doc,
-        preferred_command_name=preferred_command_name,
+        preferred_command_name=_get_preferred_command_name(
+            state,
+            _doc_key(doc),
+            _get_doc_runtime_id(doc),
+            action_kind="close",
+        ),
+        action_kind="close",
         state=state,
     )
     if command_id is None:
         _show_alert(
-            TITLE_CLOSE,
-            "RL Tools could not determine a close command.\n\nRecent close commands:\n{}".format(
+            TITLE_DIALOG,
+            "RL Tools could not determine a close command.\n\nRecent commands:\n{}".format(
                 _debug_command_lines(state)
             ),
         )
         return False
 
-    _register_allow_close_once(
+    _register_allow_command_once(
         state=state,
         doc=doc,
         command_name=command_name,
@@ -360,7 +353,7 @@ def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
         uiapp.PostCommand(command_id)
         return True
     except Exception as ex:
-        state["allow_close_once"] = None
+        state["allow_command_once"] = None
         _save_state(state)
         _show_alert(
             TITLE_DIALOG,
@@ -369,17 +362,19 @@ def _run_close_sequence(uiapp, doc, preferred_command_name, state, source):
         return False
 
 
-def _resolve_close_command(uiapp, doc, preferred_command_name, state):
+def _resolve_revit_command(uiapp, doc, preferred_command_name, action_kind, state):
     doc_key = _doc_key(doc)
     doc_runtime_id = _get_doc_runtime_id(doc)
 
     candidates = []
     for name in (
         preferred_command_name,
-        _get_preferred_command_name(state, doc_key, doc_runtime_id),
-    ) + FALLBACK_COMMAND_NAMES:
-        normalized = _safe_text(name).strip()
+        _get_preferred_command_name(state, doc_key, doc_runtime_id, action_kind=action_kind),
+    ) + _fallback_command_names(action_kind):
+        normalized = _normalize_command_name(name)
         if not normalized or normalized in candidates:
+            continue
+        if action_kind and _classify_action_command(normalized) != action_kind:
             continue
         candidates.append(normalized)
 
@@ -394,44 +389,22 @@ def _resolve_close_command(uiapp, doc, preferred_command_name, state):
     return "", None
 
 
-def _build_close_prompt_message(needs_restore, restore_result, source):
-    restored_phase_views = int(restore_result.get("restored_phase_views", 0) or 0)
-    disabled_untracked = int(restore_result.get("disabled_untracked_tvp_views", 0) or 0)
-
-    instruction = "Temporary View Properties were restored."
-    lines = []
-    if needs_restore:
-        lines.append(
-            "Original phases were restored in {} view(s).".format(restored_phase_views)
-        )
-        lines.append(
-            "Temporary View Properties were turned off in {} additional view(s).".format(
-                disabled_untracked
-            )
-        )
-        lines.append("")
-        lines.append("The file is still open.")
-        lines.append("Click Close File to continue with Revit's normal close process.")
-    elif _safe_text(source).strip() == "pushbutton":
-        instruction = "No Temporary View Properties cleanup is needed."
-        lines.append("No Temporary View Properties cleanup is needed.")
-        lines.append("")
-        lines.append("Click Close File to continue with Revit's normal close process.")
-    else:
-        instruction = "The file is still open."
-        lines.append("Cleanup is complete.")
-        lines.append("")
-        lines.append("Click Close File to continue with Revit's normal close process.")
-
-    return instruction, "\n".join(lines)
+def _fallback_command_names(action_kind):
+    if action_kind == "save":
+        return SAVE_FALLBACK_COMMAND_NAMES
+    if action_kind == "sync":
+        return SYNC_FALLBACK_COMMAND_NAMES
+    if action_kind == "close":
+        return CLOSE_FALLBACK_COMMAND_NAMES
+    return ()
 
 
-def _show_restore_dialog(summary):
+def _show_save_related_restore_dialog(action_kind, summary):
     lines = list(summary.get("dialog_view_lines") or [])
-    if not lines:
-        return True
-
     main_content = "\n".join(lines[:MAX_MAIN_CONTENT_VIEWS])
+    if not main_content:
+        main_content = "Temporary View Properties cleanup is still required in this file."
+
     expanded_content = ""
     if len(lines) > MAX_MAIN_CONTENT_VIEWS:
         expanded_content = "\n".join(lines)
@@ -439,25 +412,76 @@ def _show_restore_dialog(summary):
     details = (
         "RL Tools tracked temp-phase views will be restored to their original phase.\n"
         "Other discoverable TVP-enabled views will only have TVP turned off.\n"
-        "The file will remain open after restore until you click Close File."
+        "{} will continue automatically after restore.".format(
+            _action_prompt_label(action_kind)
+        )
     )
     if expanded_content:
         details = "{}\n\nAll affected views:\n{}".format(details, expanded_content)
 
     return _show_task_dialog_with_command_link(
         title=TITLE_DIALOG,
-        main_instruction="Temporary View Properties are still on in this file.",
+        main_instruction="Temporary View Properties must be restored before {}.".format(
+            _action_ing_label(action_kind)
+        ),
         main_content=main_content,
-        command_text=RESTORE_LINK_TEXT,
+        command_text=_action_restore_link_text(action_kind),
         expanded_content=details,
     )
 
 
-def _show_close_file_prompt(main_instruction, message):
+def _show_close_restore_dialog(summary):
+    lines = list(summary.get("dialog_view_lines") or [])
+    main_content = "\n".join(lines[:MAX_MAIN_CONTENT_VIEWS])
+    if not main_content:
+        main_content = "Temporary View Properties cleanup is still required in this file."
+
+    expanded_content = ""
+    if len(lines) > MAX_MAIN_CONTENT_VIEWS:
+        expanded_content = "\n".join(lines)
+
+    details = (
+        "RL Tools tracked temp-phase views will be restored to their original phase.\n"
+        "Other discoverable TVP-enabled views will only have TVP turned off.\n"
+        "The file will remain open until you click Close File."
+    )
+    if expanded_content:
+        details = "{}\n\nAll affected views:\n{}".format(details, expanded_content)
+
+    return _show_task_dialog_with_command_link(
+        title=TITLE_DIALOG,
+        main_instruction="Temporary View Properties must be restored before closing.",
+        main_content=main_content,
+        command_text=CLOSE_RESTORE_LINK_TEXT,
+        expanded_content=details,
+    )
+
+
+def _build_close_prompt_message(needs_restore, restore_result):
+    restored_phase_views = int(restore_result.get("restored_phase_views", 0) or 0)
+    disabled_untracked = int(restore_result.get("disabled_untracked_tvp_views", 0) or 0)
+
+    if needs_restore:
+        instruction = "Temporary View Properties were restored."
+        message = (
+            "Original phases were restored in {} view(s).\n"
+            "Temporary View Properties were turned off in {} additional view(s).\n\n"
+            "The file is still open.\n"
+            "Click Close File to continue with Revit's normal close process."
+        ).format(restored_phase_views, disabled_untracked)
+        return instruction, message
+
+    return (
+        "No Temporary View Properties cleanup is needed.",
+        "Click Close File to continue with Revit's normal close process.",
+    )
+
+
+def _show_close_file_prompt(main_instruction, main_content):
     return _show_task_dialog_with_command_link(
         title=TITLE_DIALOG,
         main_instruction=main_instruction,
-        main_content=message,
+        main_content=main_content,
         command_text=CLOSE_FILE_LINK_TEXT,
     )
 
@@ -498,9 +522,41 @@ def _show_task_dialog_with_command_link(
         return False
 
 
-def _get_close_summary(uiapp, doc):
+def _action_restore_link_text(action_kind):
+    if action_kind == "save":
+        return SAVE_RESTORE_LINK_TEXT
+    if action_kind == "sync":
+        return SYNC_RESTORE_LINK_TEXT
+    return CLOSE_RESTORE_LINK_TEXT
+
+
+def _action_ing_label(action_kind):
+    if action_kind == "save":
+        return "saving"
+    if action_kind == "sync":
+        return "synchronizing"
+    return "closing"
+
+
+def _action_label(action_kind):
+    if action_kind == "save":
+        return "save"
+    if action_kind == "sync":
+        return "synchronize"
+    return "close"
+
+
+def _action_prompt_label(action_kind):
+    if action_kind == "save":
+        return "Saving"
+    if action_kind == "sync":
+        return "Synchronizing"
+    return "Closing"
+
+
+def _get_tvp_summary(uiapp, doc):
     try:
-        summary = temp_phase_view.collect_close_summary(
+        summary = temp_phase_view.collect_tvp_summary(
             uiapp=uiapp,
             doc=doc,
             include_all_discoverable=True,
@@ -525,23 +581,34 @@ def _get_close_summary(uiapp, doc):
     }
 
 
-def _register_allow_close_once(state, doc, command_name):
-    state["allow_close_once"] = {
+def _record_action_command(state, doc, command_name):
+    _remember_debug_command(state, command_name)
+    state["last_action_command"] = {
         "doc_key": _doc_key(doc),
         "doc_runtime_id": _get_doc_runtime_id(doc),
-        "command_name": _safe_text(command_name).strip(),
-        "expires_at": time.time() + ALLOW_CLOSE_SEC,
+        "command_name": _normalize_command_name(command_name),
+        "captured_at": time.time(),
+        "action_kind": _classify_action_command(command_name),
     }
 
 
-def _consume_allow_close_once(state, doc_key, doc_runtime_id, command_name=""):
-    guard = state.get("allow_close_once")
+def _register_allow_command_once(state, doc, command_name):
+    state["allow_command_once"] = {
+        "doc_key": _doc_key(doc),
+        "doc_runtime_id": _get_doc_runtime_id(doc),
+        "command_name": _normalize_command_name(command_name),
+        "expires_at": time.time() + ALLOW_COMMAND_SEC,
+    }
+
+
+def _consume_allow_command_once(state, doc_key, doc_runtime_id, command_name=""):
+    guard = state.get("allow_command_once")
     if not isinstance(guard, dict):
         return False
 
     expires_at = float(guard.get("expires_at", 0.0) or 0.0)
     if time.time() > expires_at:
-        state["allow_close_once"] = None
+        state["allow_command_once"] = None
         return False
 
     if not _identity_matches(
@@ -552,17 +619,17 @@ def _consume_allow_close_once(state, doc_key, doc_runtime_id, command_name=""):
     ):
         return False
 
-    expected_command_name = _safe_text(guard.get("command_name")).strip()
-    command_name = _safe_text(command_name).strip()
+    expected_command_name = _normalize_command_name(guard.get("command_name"))
+    command_name = _normalize_command_name(command_name)
     if command_name and expected_command_name and command_name != expected_command_name:
         return False
 
-    state["allow_close_once"] = None
+    state["allow_command_once"] = None
     return True
 
 
-def _clear_expired_allow_close_once(state):
-    guard = state.get("allow_close_once")
+def _clear_expired_allow_command_once(state):
+    guard = state.get("allow_command_once")
     if not isinstance(guard, dict):
         return False
 
@@ -570,24 +637,24 @@ def _clear_expired_allow_close_once(state):
     if time.time() <= expires_at:
         return False
 
-    state["allow_close_once"] = None
+    state["allow_command_once"] = None
     return True
 
 
-def _queue_pending_close(state, doc, preferred_command_name, source, intercept_stage=""):
-    state["pending_close"] = {
+def _queue_pending_action(state, doc, command_name, action_kind, source):
+    state["pending_action"] = {
         "doc_key": _doc_key(doc),
         "doc_runtime_id": _get_doc_runtime_id(doc),
         "doc_title": _safe_text(getattr(doc, "Title", "")).strip(),
-        "preferred_command_name": _safe_text(preferred_command_name).strip(),
+        "command_name": _normalize_command_name(command_name),
+        "action_kind": _safe_text(action_kind).strip().lower(),
         "queued_at": time.time(),
         "source": _safe_text(source).strip(),
-        "intercept_stage": _safe_text(intercept_stage).strip(),
     }
 
 
-def _get_preferred_command_name(state, doc_key, doc_runtime_id):
-    record = state.get("last_close_command")
+def _get_preferred_command_name(state, doc_key, doc_runtime_id, action_kind=None):
+    record = state.get("last_action_command")
     if not isinstance(record, dict):
         return ""
 
@@ -599,19 +666,26 @@ def _get_preferred_command_name(state, doc_key, doc_runtime_id):
     ):
         return ""
 
-    return _safe_text(record.get("command_name")).strip()
+    recorded_kind = _safe_text(record.get("action_kind")).strip().lower()
+    if action_kind and recorded_kind and recorded_kind != action_kind:
+        return ""
+
+    command_name = _normalize_command_name(record.get("command_name"))
+    if action_kind and _classify_action_command(command_name) != action_kind:
+        return ""
+    return command_name
 
 
 def _remember_debug_command(state, command_name):
-    recent = list(state.get("debug_seen_close_commands") or [])
-    recent.append(_safe_text(command_name))
+    recent = list(state.get("debug_seen_commands") or [])
+    recent.append(_normalize_command_name(command_name))
     if len(recent) > MAX_DEBUG_COMMANDS:
         recent = recent[-MAX_DEBUG_COMMANDS:]
-    state["debug_seen_close_commands"] = recent
+    state["debug_seen_commands"] = recent
 
 
 def _debug_command_lines(state):
-    recent = list(state.get("debug_seen_close_commands") or [])
+    recent = list(state.get("debug_seen_commands") or [])
     if not recent:
         return "(none captured)"
     return "\n".join(recent)
@@ -635,12 +709,31 @@ def _set_debug_last_intercept(
     }
 
 
+def _classify_action_command(command_name):
+    normalized = _normalize_command_name(command_name)
+    if not normalized:
+        return None
+    if normalized in SAVE_COMMAND_NAMES:
+        return "save"
+    if normalized in SYNC_COMMAND_NAMES:
+        return "sync"
+    if normalized in CLOSE_COMMAND_NAMES:
+        return "close"
+    if "SAVE_TO_CENTRAL" in normalized or "SAVE_TO_MASTER" in normalized:
+        return "sync"
+    if normalized.endswith("FILE_SAVE"):
+        return "save"
+    if "CLOSE" in normalized and ("FILE" in normalized or "PROJECT" in normalized):
+        return "close"
+    return None
+
+
 def _lookup_command_id(command_name):
     UI = _get_ui()
     if UI is None:
         return None
     try:
-        return UI.RevitCommandId.LookupCommandId(command_name)
+        return UI.RevitCommandId.LookupCommandId(_normalize_command_name(command_name))
     except Exception:
         return None
 
@@ -684,7 +777,7 @@ def _cancel_event(event_args):
         return True
     except Exception:
         LOGGER.debug(
-            "Close Stop could not cancel closing event. args_type=%s",
+            "Close Stop could not cancel command event. args_type=%s",
             _safe_text(type(event_args)),
         )
         return False
@@ -872,14 +965,18 @@ def _get_state():
     if not isinstance(state, dict):
         state = {}
 
-    state.setdefault("pending_close", None)
-    state.setdefault("last_close_command", None)
-    state.setdefault("allow_close_once", None)
-    state.setdefault("debug_seen_close_commands", [])
+    state.setdefault("pending_action", None)
+    state.setdefault("last_action_command", None)
+    state.setdefault("allow_command_once", None)
+
+    legacy_debug = state.get("debug_seen_close_commands")
+    if not isinstance(state.get("debug_seen_commands"), list):
+        state["debug_seen_commands"] = list(legacy_debug) if isinstance(legacy_debug, list) else []
+
     state.setdefault("debug_last_intercept", None)
 
-    if not isinstance(state.get("debug_seen_close_commands"), list):
-        state["debug_seen_close_commands"] = []
+    if not isinstance(state.get("debug_seen_commands"), list):
+        state["debug_seen_commands"] = []
 
     return state
 
@@ -922,6 +1019,13 @@ def _safe_text(value):
         return str(value)
     except Exception:
         return ""
+
+
+def _normalize_command_name(name):
+    text = _safe_text(name).strip().upper()
+    if not text:
+        return ""
+    return text.replace("-", "_").replace(" ", "_")
 
 
 def _getattr_safe(obj, path):
