@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Temp Phase & View close interception hook."""
+"""RL Tools close interception hook."""
 
-from rltools import temp_phase_view
+from rltools import file_close_guard
 
 
 try:
@@ -10,4 +10,4 @@ except Exception:
     _EVENT_ARGS = None
 
 
-temp_phase_view.handle_command_before_exec(event_args=_EVENT_ARGS)
+file_close_guard.handle_command_before_exec(event_args=_EVENT_ARGS)
