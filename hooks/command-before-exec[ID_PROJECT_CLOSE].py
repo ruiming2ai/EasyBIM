@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RL Tools close-stop document closing hook."""
+"""Capture Revit close command names for Close Stop."""
 
 from rltools import close_stop
 
@@ -10,4 +10,4 @@ except Exception:
     _EVENT_ARGS = None
 
 
-close_stop.handle_doc_closing(event_args=_EVENT_ARGS)
+close_stop.capture_close_command(event_args=_EVENT_ARGS)
