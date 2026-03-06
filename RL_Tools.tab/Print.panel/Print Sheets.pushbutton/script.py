@@ -357,6 +357,11 @@ class EditNamingFormatsWindow(forms.WPFWindow):
     def get_default_naming_formats():
         return [
             NamingFormat(
+                name='Sheet Number - Sheet Name',
+                template='{Number} - {Name}.pdf',
+                builtin=True
+            ),
+            NamingFormat(
                 name='0001 A1.00 1ST FLOOR PLAN.pdf',
                 template='{index} {number} {name}.pdf',
                 builtin=True
@@ -642,6 +647,10 @@ class PrintSheetsWindow(forms.WPFWindow):
     def include_placeholders(self):
         return self.indexspace_cb.IsChecked
 
+    @property
+    def color_revision_clouds(self):
+        return self.revcloudcolor_cb.IsChecked
+
     # print settings
     @property
     def selected_naming_format(self):
@@ -791,6 +800,252 @@ class PrintSheetsWindow(forms.WPFWindow):
             self.disable_element(self.combine_cb)
             self.combine_cb.IsChecked = False
 
+    def _run_print_job(self, target_sheets):
+        if self.combine_print:
+            self._print_combined_sheets_in_order(target_sheets)
+        else:
+            if self.selected_doc.IsLinked:
+                self._print_linked_sheets_in_order(target_sheets)
+            else:
+                self._print_sheets_in_order(target_sheets)
+
+    def _add_unique_view(self, view, views, seen_ids):
+        if not view:
+            return
+
+        try:
+            if getattr(view, 'IsTemplate', False):
+                return
+        except Exception:
+            pass
+
+        view_id_val = get_elementid_value(view.Id)
+        if view_id_val is None:
+            return
+
+        try:
+            view_id_int = int(view_id_val)
+        except Exception:
+            return
+
+        if view_id_int in seen_ids:
+            return
+
+        seen_ids.add(view_id_int)
+        views.append(view)
+
+    def _collect_revision_cloud_views(self, target_sheets):
+        views = []
+        seen_ids = set()
+
+        for sheet in target_sheets:
+            if not sheet.printable:
+                continue
+
+            sheet_view = sheet.revit_sheet
+            self._add_unique_view(sheet_view, views, seen_ids)
+
+            placed_view_ids = []
+            if hasattr(sheet_view, 'GetAllPlacedViews'):
+                try:
+                    placed_view_ids = sheet_view.GetAllPlacedViews()
+                except Exception:
+                    placed_view_ids = []
+
+            for view_id in placed_view_ids:
+                try:
+                    placed_view = self.selected_doc.GetElement(view_id)
+                except Exception:
+                    placed_view = None
+                self._add_unique_view(placed_view, views, seen_ids)
+
+        return views
+
+    def _get_revision_cloud_category_id(self):
+        try:
+            revcloud_cat = self.selected_doc.Settings.Categories.get_Item(
+                DB.BuiltInCategory.OST_RevisionClouds
+            )
+            if revcloud_cat:
+                return revcloud_cat.Id
+        except Exception:
+            pass
+        return DB.ElementId(DB.BuiltInCategory.OST_RevisionClouds)
+
+    def _apply_temp_revision_cloud_color(self, target_sheets):
+        views = self._collect_revision_cloud_views(target_sheets)
+        if not views:
+            return {}
+
+        category_id = self._get_revision_cloud_category_id()
+        restore_items = []
+        red_color = DB.Color(255, 0, 0)
+
+        with revit.Transaction('Temp Colorize Revision Clouds',
+                               doc=self.selected_doc):
+            for view in views:
+                try:
+                    view_id_int = int(get_elementid_value(view.Id))
+                except Exception:
+                    continue
+
+                try:
+                    original_ogs = view.GetCategoryOverrides(category_id)
+                except Exception:
+                    continue
+
+                restore_items.append((view_id_int, original_ogs))
+
+                try:
+                    color_ogs = DB.OverrideGraphicSettings()
+                    try:
+                        color_ogs.SetProjectionLineColor(red_color)
+                    except Exception:
+                        pass
+                    try:
+                        color_ogs.SetCutLineColor(red_color)
+                    except Exception:
+                        pass
+                    view.SetCategoryOverrides(category_id, color_ogs)
+                except Exception as color_err:
+                    logger.warning(
+                        'Failed to color revision clouds in view %s: %s',
+                        view_id_int,
+                        color_err
+                    )
+
+        return {'category_id': category_id, 'items': restore_items}
+
+    def _restore_temp_revision_cloud_color(self, restore_state):
+        if not restore_state:
+            return
+
+        category_id = restore_state.get('category_id')
+        restore_items = restore_state.get('items', [])
+        if category_id is None or not restore_items:
+            return
+
+        with revit.Transaction('Restore Revision Cloud Overrides',
+                               doc=self.selected_doc):
+            for view_id_int, original_ogs in restore_items:
+                try:
+                    view = self.selected_doc.GetElement(DB.ElementId(view_id_int))
+                    if view:
+                        view.SetCategoryOverrides(category_id, original_ogs)
+                except Exception as restore_err:
+                    logger.warning(
+                        'Failed restoring revision cloud override in view %s: %s',
+                        view_id_int,
+                        restore_err
+                    )
+
+    def _resolve_print_setting(self, psetting_obj):
+        if not psetting_obj:
+            return None
+
+        print_setting = psetting_obj
+        try:
+            if hasattr(print_setting, 'print_settings'):
+                inner_setting = print_setting.print_settings
+                if inner_setting:
+                    print_setting = inner_setting
+        except Exception:
+            pass
+
+        try:
+            if hasattr(print_setting, 'item') and print_setting.item:
+                print_setting = print_setting.item
+        except Exception:
+            pass
+
+        return print_setting if hasattr(print_setting, 'PrintParameters') \
+            else None
+
+    def _collect_print_settings_for_color_force(self, target_sheets):
+        settings_to_check = []
+        per_sheet_psettings = \
+            self.selected_print_setting.allows_variable_paper \
+            if self.selected_print_setting else False
+
+        if self.combine_print or not per_sheet_psettings:
+            settings_to_check.append(self.selected_print_setting)
+        else:
+            for sheet in target_sheets:
+                if sheet.printable and sheet.print_settings:
+                    settings_to_check.append(sheet.print_settings)
+
+        unique_settings = {}
+        for psetting_obj in settings_to_check:
+            print_setting = self._resolve_print_setting(psetting_obj)
+            if not print_setting:
+                continue
+
+            setting_key = None
+            try:
+                setting_id = get_elementid_value(print_setting.Id)
+                if setting_id is not None:
+                    setting_key = int(setting_id)
+            except Exception:
+                pass
+
+            if setting_key is None:
+                setting_key = id(print_setting)
+
+            if setting_key not in unique_settings:
+                unique_settings[setting_key] = print_setting
+
+        return list(unique_settings.values())
+
+    def _force_color_depth_for_revision_clouds(self, print_settings):
+        if not print_settings:
+            return []
+
+        restore_state = []
+        with revit.Transaction('Force Color Depth For Revision Clouds',
+                               doc=self.selected_doc):
+            for print_setting in print_settings:
+                try:
+                    print_params = print_setting.PrintParameters
+                except Exception:
+                    continue
+                if not print_params:
+                    continue
+
+                try:
+                    original_depth = print_params.ColorDepth
+                except Exception:
+                    continue
+
+                restore_state.append((print_setting, original_depth))
+
+                try:
+                    if original_depth != DB.ColorDepthType.Color:
+                        print_params.ColorDepth = DB.ColorDepthType.Color
+                except Exception as set_err:
+                    logger.warning(
+                        'Failed forcing color depth on print setting %s: %s',
+                        getattr(print_setting, 'Name', '<unknown>'),
+                        set_err
+                    )
+
+        return restore_state
+
+    def _restore_color_depth_after_revision_clouds(self, restore_state):
+        if not restore_state:
+            return
+
+        with revit.Transaction('Restore Print Color Depth',
+                               doc=self.selected_doc):
+            for print_setting, original_depth in restore_state:
+                try:
+                    print_setting.PrintParameters.ColorDepth = original_depth
+                except Exception as restore_err:
+                    logger.warning(
+                        'Failed restoring color depth on print setting %s: %s',
+                        getattr(print_setting, 'Name', '<unknown>'),
+                        restore_err
+                    )
+
     def _setup_sheet_list(self):
         sheet_indices  = self._get_sheet_index_list()
         sheet_indices.append(
@@ -872,25 +1127,47 @@ class PrintSheetsWindow(forms.WPFWindow):
                     if sheet.printable:
                         sheet_list.Add(sheet.revit_sheet)
             else:
-                # add non-printable char in front of sheet Numbers
-                # to push revit to sort them per user
                 sheet_set = DB.ViewSet()
-                original_sheetnums = []
-                with revit.Transaction('Fix Sheet Numbers',
-                                    doc=self.selected_doc):
-                    for idx, sheet in enumerate(target_sheets):
-                        rvtsheet = sheet.revit_sheet
-                        # removing any NPC from previous failed prints
-                        if NPC in rvtsheet.SheetNumber:
-                            rvtsheet.SheetNumber = \
-                                rvtsheet.SheetNumber.replace(NPC, '')
-                        # create a list of the existing sheet numbers
-                        original_sheetnums.append(rvtsheet.SheetNumber)
-                        # add a prefix (NPC) for sorting purposes
+
+            # add non-printable char in front of temporary sheet labels.
+            # this keeps values unique while also driving older print ordering.
+            original_sheetnums = []
+            with revit.Transaction('Fix Sheet Numbers',
+                                   doc=self.selected_doc):
+                for idx, sheet in enumerate(target_sheets):
+                    rvtsheet = sheet.revit_sheet
+                    # remove NPC from previous failed prints
+                    if NPC in rvtsheet.SheetNumber:
                         rvtsheet.SheetNumber = \
-                            NPC * (idx + 1) + rvtsheet.SheetNumber
-                        if sheet.printable:
-                            sheet_set.Insert(rvtsheet)
+                            rvtsheet.SheetNumber.replace(NPC, '')
+
+                    # capture original value for later restore
+                    original_sheetnums.append(rvtsheet.SheetNumber)
+
+                    # use selected naming format for combined-PDF page label
+                    # and inject hidden NPC prefix for uniqueness and ordering.
+                    page_label = op.splitext(sheet.print_filename or '')[0]
+                    if not page_label:
+                        page_label = '{} - {}'.format(sheet.number, sheet.name)
+                    page_label = coreutils.cleanup_filename(
+                        page_label,
+                        windows_safe=True
+                    )
+                    if not page_label:
+                        page_label = rvtsheet.SheetNumber
+
+                    try:
+                        rvtsheet.SheetNumber = NPC * (idx + 1) + page_label
+                    except Exception:
+                        # keep process resilient even if one sheet label fails
+                        try:
+                            rvtsheet.SheetNumber = \
+                                NPC * (idx + 1) + rvtsheet.SheetNumber
+                        except Exception:
+                            pass
+
+                    if (not supports_OrderedViewList) and sheet.printable:
+                        sheet_set.Insert(rvtsheet)
 
             # Collect existing sheet sets
             cl = DB.FilteredElementCollector(self.selected_doc)
@@ -957,14 +1234,12 @@ class PrintSheetsWindow(forms.WPFWindow):
             print_mgr.SubmitPrint()
 
 
-            if not supports_OrderedViewList:
-                # now fix the sheet names
-                with revit.Transaction('Restore Sheet Numbers',
-                                    doc=self.selected_doc):
-                    for sheet, sheetnum in zip(target_sheets,
-                                            original_sheetnums):
-                        rvtsheet = sheet.revit_sheet
-                        rvtsheet.SheetNumber = sheetnum
+            # now restore original sheet numbers
+            with revit.Transaction('Restore Sheet Numbers',
+                                   doc=self.selected_doc):
+                for sheet, sheetnum in zip(target_sheets, original_sheetnums):
+                    rvtsheet = sheet.revit_sheet
+                    rvtsheet.SheetNumber = sheetnum
 
             self._reset_psettings()
 
@@ -1093,23 +1368,41 @@ class PrintSheetsWindow(forms.WPFWindow):
             output_fname = \
                 template.format(
                     index=sheet.print_index,
+                    Index=sheet.print_index,
                     number=sheet.number,
+                    Number=sheet.number,
                     name=sheet.name,
+                    Name=sheet.name,
                     name_dash=sheet.name.replace(' ', '-'),
+                    NameDash=sheet.name.replace(' ', '-'),
                     name_underline=sheet.name.replace(' ', '_'),
+                    NameUnderline=sheet.name.replace(' ', '_'),
                     current_date=coreutils.current_date(),
+                    CurrentDate=coreutils.current_date(),
                     issue_date=sheet.issue_date,
+                    IssueDate=sheet.issue_date,
                     rev_number=sheet.revision.number if sheet.revision else '',
+                    RevNumber=sheet.revision.number if sheet.revision else '',
                     rev_desc=sheet.revision.desc if sheet.revision else '',
+                    RevDesc=sheet.revision.desc if sheet.revision else '',
                     rev_date=sheet.revision.date if sheet.revision else '',
+                    RevDate=sheet.revision.date if sheet.revision else '',
                     proj_name=self.project_info.name,
+                    ProjName=self.project_info.name,
                     proj_number=self.project_info.number,
+                    ProjNumber=self.project_info.number,
                     proj_building_name=self.project_info.building_name,
+                    ProjBuildingName=self.project_info.building_name,
                     proj_issue_date=self.project_info.issue_date,
+                    ProjIssueDate=self.project_info.issue_date,
                     proj_org_name=self.project_info.org_name,
+                    ProjOrgName=self.project_info.org_name,
                     proj_status=self.project_info.status,
+                    ProjStatus=self.project_info.status,
                     username=HOST_APP.username,
+                    UserName=HOST_APP.username,
                     revit_version=HOST_APP.version,
+                    RevitVersion=HOST_APP.version,
                 )
         except Exception as ferr:
             output_fname = ''
@@ -1522,7 +1815,7 @@ class PrintSheetsWindow(forms.WPFWindow):
 
         if self.combine_cb.IsChecked:
             self.hide_element(self.order_sp)
-            self.hide_element(self.namingformat_dp)
+            self.show_element(self.namingformat_dp)
             self.hide_element(self.pfilename)
         else:
             self.show_element(self.order_sp)
@@ -1681,15 +1974,40 @@ class PrintSheetsWindow(forms.WPFWindow):
                                        'not be cancelled.'.format(message),
                                        ok=False, yes=True, no=True):
                         return
+
+            ask_and_reload_loaded_links(revit.doc)
+
             # close window and submit print
             self.Close()
-            if self.combine_print:
-                self._print_combined_sheets_in_order(target_sheets)
-            else:
-                if self.selected_doc.IsLinked:
-                    self._print_linked_sheets_in_order(target_sheets)
-                else:
-                    self._print_sheets_in_order(target_sheets)
+            if not self.color_revision_clouds:
+                self._run_print_job(target_sheets)
+                return
+
+            if self.selected_doc.IsLinked:
+                forms.alert(
+                    'Revision cloud color output is not available for linked '
+                    'models. Printing with current settings.'
+                    )
+                self._run_print_job(target_sheets)
+                return
+
+            color_restore_state = None
+            cloud_restore_state = None
+            try:
+                cloud_restore_state = \
+                    self._apply_temp_revision_cloud_color(target_sheets)
+                color_restore_state = \
+                    self._force_color_depth_for_revision_clouds(
+                        self._collect_print_settings_for_color_force(
+                            target_sheets
+                            )
+                        )
+                self._run_print_job(target_sheets)
+            finally:
+                self._restore_color_depth_after_revision_clouds(
+                    color_restore_state
+                    )
+                self._restore_temp_revision_cloud_color(cloud_restore_state)
 
 
 def cleanup_sheetnumbers(doc):
@@ -1697,6 +2015,221 @@ def cleanup_sheetnumbers(doc):
     with revit.Transaction('Cleanup Sheet Numbers', doc=doc):
         for sheet in sheets:
             sheet.SheetNumber = sheet.SheetNumber.replace(NPC, '')
+
+
+def _add_unique_link_element(link_elem, link_elems, seen_ids):
+    if not link_elem:
+        return
+    try:
+        elem_id = int(get_elementid_value(link_elem.Id))
+    except Exception:
+        return
+    if elem_id in seen_ids:
+        return
+    seen_ids.add(elem_id)
+    link_elems.append(link_elem)
+
+
+def _collect_manage_links_elements(doc):
+    link_elems = []
+    seen_ids = set()
+
+    for cls_name in ('RevitLinkType', 'CADLinkType', 'PointCloudType', 'ImageType'):
+        link_cls = getattr(DB, cls_name, None)
+        if not link_cls:
+            continue
+        try:
+            elements = DB.FilteredElementCollector(doc)\
+                         .OfClass(framework.get_type(link_cls))\
+                         .WhereElementIsElementType()\
+                         .ToElements()
+        except Exception:
+            elements = []
+        for element in elements:
+            _add_unique_link_element(element, link_elems, seen_ids)
+
+    try:
+        ext_ids = DB.ExternalFileUtils.GetAllExternalFileReferences(doc)
+    except Exception:
+        ext_ids = []
+
+    for ext_id in ext_ids:
+        try:
+            element = doc.GetElement(ext_id)
+        except Exception:
+            element = None
+        _add_unique_link_element(element, link_elems, seen_ids)
+
+    return link_elems
+
+
+def _get_external_file_reference(doc, link_elem):
+    ext_ref = None
+    if hasattr(DB.ExternalFileUtils, 'GetExternalFileReference'):
+        try:
+            ext_ref = DB.ExternalFileUtils.GetExternalFileReference(doc, link_elem.Id)
+        except Exception:
+            ext_ref = None
+
+    if ext_ref is None and hasattr(link_elem, 'GetExternalFileReference'):
+        try:
+            ext_ref = link_elem.GetExternalFileReference()
+        except Exception:
+            ext_ref = None
+
+    return ext_ref
+
+
+def _get_linked_cad_type_ids(doc):
+    linked_type_ids = set()
+    import_inst_cls = getattr(DB, 'ImportInstance', None)
+    if not import_inst_cls:
+        return linked_type_ids
+
+    try:
+        import_instances = DB.FilteredElementCollector(doc)\
+                             .OfClass(framework.get_type(import_inst_cls))\
+                             .WhereElementIsNotElementType()\
+                             .ToElements()
+    except Exception:
+        import_instances = []
+
+    for inst in import_instances:
+        try:
+            if getattr(inst, 'IsLinked', False):
+                tid = get_elementid_value(inst.GetTypeId())
+                if tid is not None:
+                    linked_type_ids.add(int(tid))
+        except Exception:
+            continue
+    return linked_type_ids
+
+
+def _is_linked_manage_link_element(doc, link_elem, linked_cad_type_ids):
+    # Revit links are always linked objects.
+    try:
+        if isinstance(link_elem, DB.RevitLinkType):
+            return True
+    except Exception:
+        pass
+
+    # CADLinkType can represent imported CADs. Keep linked-only.
+    cad_link_type = getattr(DB, 'CADLinkType', None)
+    try:
+        if cad_link_type and isinstance(link_elem, cad_link_type):
+            try:
+                if hasattr(link_elem, 'IsLink'):
+                    return bool(link_elem.IsLink)
+            except Exception:
+                pass
+            try:
+                return int(get_elementid_value(link_elem.Id)) in linked_cad_type_ids
+            except Exception:
+                return False
+    except Exception:
+        pass
+
+    # For point clouds, images, pdf, if external reference exists, it is link-like.
+    return _get_external_file_reference(doc, link_elem) is not None
+
+
+def _is_unloaded_link_element(doc, link_elem):
+    try:
+        if isinstance(link_elem, DB.RevitLinkType):
+            try:
+                return not DB.RevitLinkType.IsLoaded(doc, link_elem.Id)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        cad_link_type = getattr(DB, 'CADLinkType', None)
+        if cad_link_type and isinstance(link_elem, cad_link_type) \
+                and hasattr(cad_link_type, 'IsLoaded'):
+            try:
+                return not cad_link_type.IsLoaded(doc, link_elem.Id)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    ext_ref = _get_external_file_reference(doc, link_elem)
+
+    if ext_ref is not None and hasattr(ext_ref, 'GetLinkedFileStatus'):
+        try:
+            status = str(ext_ref.GetLinkedFileStatus() or '').lower()
+            if 'unloaded' in status:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+def _reload_link_element(doc, link_elem):
+    if hasattr(link_elem, 'Reload'):
+        try:
+            with revit.Transaction('Reload Manage Link', doc=doc):
+                link_elem.Reload()
+            return True
+        except Exception as reload_err:
+            logger.warning(
+                'Failed to reload link element id %s (%s): %s',
+                get_elementid_value(link_elem.Id),
+                type(link_elem),
+                reload_err
+                )
+            return False
+    return False
+
+
+def reload_loaded_manage_links(doc):
+    if not doc:
+        return
+
+    all_links = _collect_manage_links_elements(doc)
+    logger.debug('Manage Links candidates found: %s', len(all_links))
+
+    reloaded = 0
+    skipped_unloaded = 0
+    skipped_imported = 0
+    skipped_unsupported = 0
+    linked_cad_type_ids = _get_linked_cad_type_ids(doc)
+
+    for link_elem in all_links:
+        if not _is_linked_manage_link_element(doc, link_elem, linked_cad_type_ids):
+            skipped_imported += 1
+            continue
+        if _is_unloaded_link_element(doc, link_elem):
+            skipped_unloaded += 1
+            continue
+        if _reload_link_element(doc, link_elem):
+            reloaded += 1
+        else:
+            skipped_unsupported += 1
+
+    logger.info(
+        'Reload links summary | reloaded: %s | skipped imported/non-linked: %s | skipped unloaded: %s | skipped unsupported/failed: %s',
+        reloaded,
+        skipped_imported,
+        skipped_unloaded,
+        skipped_unsupported
+        )
+
+
+def ask_and_reload_loaded_links(doc):
+    reload_message = \
+        'Reload All the loaded Links (Revit Links, Linked CAD, and others)? ' \
+        'Unloaded elements are skipped.'
+    res = WinForms.MessageBox.Show(
+        reload_message,
+        'Print Sheets',
+        WinForms.MessageBoxButtons.YesNo,
+        WinForms.MessageBoxIcon.Question
+        )
+    if res == WinForms.DialogResult.Yes:
+        reload_loaded_manage_links(doc)
 
 
 # verify model is printable
