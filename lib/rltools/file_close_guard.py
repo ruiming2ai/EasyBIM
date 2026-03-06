@@ -6,7 +6,7 @@ from rltools import close_stop
 
 def handle_command_before_exec(uiapp=None, event_args=None):
     """Forward old close-command capture calls to close_stop."""
-    return close_stop.capture_close_command(uiapp=uiapp, event_args=event_args)
+    return close_stop.handle_command_before_exec(uiapp=uiapp, event_args=event_args)
 
 
 def handle_doc_closing(uiapp=None, event_args=None):
