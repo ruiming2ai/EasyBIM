@@ -77,8 +77,90 @@ def capture_close_command(uiapp=None, event_args=None):
     _save_state(state)
 
 
+def handle_command_before_exec(uiapp=None, event_args=None):
+    """Cancel supported close commands before execution and queue Close Stop."""
+    if event_args is None:
+        return
+
+    uiapp = _get_uiapp(uiapp)
+    if uiapp is None:
+        return
+
+    closing_doc = _resolve_doc_from_event_args(event_args, uiapp)
+    if not _is_doc_supported(closing_doc):
+        closing_doc = _get_active_project_doc(uiapp)
+    if not _is_doc_supported(closing_doc):
+        return
+
+    state = _get_state()
+    _clear_expired_allow_close_once(state)
+
+    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip()
+    doc_key = _doc_key(closing_doc)
+    doc_runtime_id = _get_doc_runtime_id(closing_doc)
+
+    if _consume_allow_close_once(
+        state,
+        doc_key,
+        doc_runtime_id,
+        command_name=command_name,
+    ):
+        _save_state(state)
+        return
+
+    cancellable = _is_event_cancellable(event_args)
+    pending = state.get("pending_close")
+    if isinstance(pending, dict):
+        cancel_succeeded = _cancel_event(event_args) if cancellable else False
+        _set_debug_last_intercept(
+            state=state,
+            stage="before-exec",
+            doc=closing_doc,
+            cancellable=cancellable,
+            cancel_succeeded=cancel_succeeded,
+            reason="pending-close-exists",
+        )
+        _save_state(state)
+        return
+
+    if not cancellable:
+        _set_debug_last_intercept(
+            state=state,
+            stage="before-exec",
+            doc=closing_doc,
+            cancellable=False,
+            cancel_succeeded=False,
+            reason="event-not-cancellable",
+        )
+        _save_state(state)
+        return
+
+    cancel_succeeded = _cancel_event(event_args)
+    _set_debug_last_intercept(
+        state=state,
+        stage="before-exec",
+        doc=closing_doc,
+        cancellable=True,
+        cancel_succeeded=cancel_succeeded,
+        reason="queued-close-stop" if cancel_succeeded else "cancel-failed",
+    )
+    if not cancel_succeeded:
+        _save_state(state)
+        return
+
+    _queue_pending_close(
+        state=state,
+        doc=closing_doc,
+        preferred_command_name=command_name
+        or _get_preferred_command_name(state, doc_key, doc_runtime_id),
+        source="hook",
+        intercept_stage="before-exec",
+    )
+    _save_state(state)
+
+
 def handle_doc_closing(uiapp=None, event_args=None):
-    """Cancel the first close attempt and queue the close-stop dialog flow."""
+    """Fallback close interception when command-before-exec did not stop close."""
     if event_args is None:
         return
 
@@ -102,13 +184,43 @@ def handle_doc_closing(uiapp=None, event_args=None):
         _save_state(state)
         return
 
+    cancellable = _is_event_cancellable(event_args)
     pending = state.get("pending_close")
     if isinstance(pending, dict):
-        if _cancel_event(event_args):
-            _save_state(state)
+        cancel_succeeded = _cancel_event(event_args) if cancellable else False
+        _set_debug_last_intercept(
+            state=state,
+            stage="doc-closing",
+            doc=closing_doc,
+            cancellable=cancellable,
+            cancel_succeeded=cancel_succeeded,
+            reason="pending-close-exists",
+        )
+        _save_state(state)
         return
 
-    if not _cancel_event(event_args):
+    if not cancellable:
+        _set_debug_last_intercept(
+            state=state,
+            stage="doc-closing",
+            doc=closing_doc,
+            cancellable=False,
+            cancel_succeeded=False,
+            reason="event-not-cancellable",
+        )
+        _save_state(state)
+        return
+
+    cancel_succeeded = _cancel_event(event_args)
+    _set_debug_last_intercept(
+        state=state,
+        stage="doc-closing",
+        doc=closing_doc,
+        cancellable=True,
+        cancel_succeeded=cancel_succeeded,
+        reason="queued-close-stop" if cancel_succeeded else "cancel-failed",
+    )
+    if not cancel_succeeded:
         _save_state(state)
         return
 
@@ -121,6 +233,7 @@ def handle_doc_closing(uiapp=None, event_args=None):
             doc_runtime_id,
         ),
         source="hook",
+        intercept_stage="doc-closing",
     )
     _save_state(state)
 
@@ -343,7 +456,7 @@ def _register_allow_close_once(state, doc, command_name):
     }
 
 
-def _consume_allow_close_once(state, doc_key, doc_runtime_id):
+def _consume_allow_close_once(state, doc_key, doc_runtime_id, command_name=""):
     guard = state.get("allow_close_once")
     if not isinstance(guard, dict):
         return False
@@ -359,6 +472,11 @@ def _consume_allow_close_once(state, doc_key, doc_runtime_id):
         doc_key=doc_key,
         doc_runtime_id=doc_runtime_id,
     ):
+        return False
+
+    expected_command_name = _safe_text(guard.get("command_name")).strip()
+    command_name = _safe_text(command_name).strip()
+    if command_name and expected_command_name and command_name != expected_command_name:
         return False
 
     state["allow_close_once"] = None
@@ -378,7 +496,7 @@ def _clear_expired_allow_close_once(state):
     return True
 
 
-def _queue_pending_close(state, doc, preferred_command_name, source):
+def _queue_pending_close(state, doc, preferred_command_name, source, intercept_stage=""):
     state["pending_close"] = {
         "doc_key": _doc_key(doc),
         "doc_runtime_id": _get_doc_runtime_id(doc),
@@ -386,6 +504,7 @@ def _queue_pending_close(state, doc, preferred_command_name, source):
         "preferred_command_name": _safe_text(preferred_command_name).strip(),
         "queued_at": time.time(),
         "source": _safe_text(source).strip(),
+        "intercept_stage": _safe_text(intercept_stage).strip(),
     }
 
 
@@ -420,6 +539,24 @@ def _debug_command_lines(state):
     return "\n".join(recent)
 
 
+def _set_debug_last_intercept(
+    state,
+    stage,
+    doc,
+    cancellable,
+    cancel_succeeded,
+    reason,
+):
+    state["debug_last_intercept"] = {
+        "stage": _safe_text(stage).strip(),
+        "doc_title": _safe_text(getattr(doc, "Title", "")).strip() if doc else "",
+        "cancellable": bool(cancellable),
+        "cancel_succeeded": bool(cancel_succeeded),
+        "timestamp": time.time(),
+        "reason": _safe_text(reason).strip(),
+    }
+
+
 def _lookup_command_id(command_name):
     UI = _get_ui()
     if UI is None:
@@ -441,6 +578,20 @@ def _can_post_command(uiapp, command_id):
         except Exception:
             pass
     return True
+
+
+def _is_event_cancellable(event_args):
+    if event_args is None:
+        return False
+
+    cancellable = _getattr_safe(event_args, "Cancellable")
+    if cancellable is None:
+        return True
+
+    try:
+        return bool(cancellable)
+    except Exception:
+        return False
 
 
 def _cancel_event(event_args):
@@ -647,6 +798,7 @@ def _get_state():
     state.setdefault("last_close_command", None)
     state.setdefault("allow_close_once", None)
     state.setdefault("debug_seen_close_commands", [])
+    state.setdefault("debug_last_intercept", None)
 
     if not isinstance(state.get("debug_seen_close_commands"), list):
         state["debug_seen_close_commands"] = []
