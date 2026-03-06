@@ -15,6 +15,7 @@ STATE_ENVVAR = "RLTOOLS_CLOSE_STOP_STATE"
 ALLOW_COMMAND_SEC = 10.0
 MAX_DEBUG_COMMANDS = 12
 TITLE_DIALOG = "Close Stop"
+TITLE_DEBUG = "Close Stop Debug"
 MAX_MAIN_CONTENT_VIEWS = 8
 
 CLOSE_RESTORE_LINK_TEXT = "Restore all Temporary View Properties before closing"
@@ -85,6 +86,58 @@ def capture_action_command(uiapp=None, event_args=None):
 def capture_close_command(uiapp=None, event_args=None):
     """Compatibility wrapper for old close hook imports."""
     return capture_action_command(uiapp=uiapp, event_args=event_args)
+
+
+def show_save_hook_probe(uiapp=None, event_args=None, hook_name=""):
+    """Show a one-time dialog proving a targeted save/sync hook fired."""
+    if event_args is None:
+        return
+
+    uiapp = _get_uiapp(uiapp)
+    if uiapp is None:
+        return
+
+    hook_name = _safe_text(hook_name).strip()
+    if not hook_name:
+        hook_name = _normalize_command_name(_getattr_safe(event_args, "CommandId.Name"))
+    if not hook_name:
+        return
+
+    state = _get_state()
+    seen_hooks = list(state.get("debug_probe_seen_hooks") or [])
+    if hook_name in seen_hooks:
+        return
+
+    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip() or "(blank)"
+    doc = _resolve_doc_from_event_args(event_args, uiapp)
+    if not _is_doc_supported(doc):
+        doc = _get_active_project_doc(uiapp)
+    doc_title = _safe_text(getattr(doc, "Title", "")).strip() if doc else "(no supported document)"
+    action_kind = _classify_action_command(command_name) or "unknown"
+    cancellable = _is_event_cancellable(event_args)
+
+    _show_alert(
+        TITLE_DEBUG,
+        (
+            "Save/sync hook fired.\n\n"
+            "Hook: {hook}\n"
+            "Command: {command}\n"
+            "Action: {action}\n"
+            "Document: {document}\n"
+            "Cancellable: {cancellable}\n\n"
+            "This proof dialog is shown once per Revit session for each hooked save/sync command."
+        ).format(
+            hook=hook_name,
+            command=command_name,
+            action=action_kind,
+            document=doc_title,
+            cancellable=bool(cancellable),
+        ),
+    )
+
+    seen_hooks.append(hook_name)
+    state["debug_probe_seen_hooks"] = seen_hooks[-MAX_DEBUG_COMMANDS:]
+    _save_state(state)
 
 
 def handle_save_related_before_exec(uiapp=None, event_args=None):
@@ -973,10 +1026,13 @@ def _get_state():
     if not isinstance(state.get("debug_seen_commands"), list):
         state["debug_seen_commands"] = list(legacy_debug) if isinstance(legacy_debug, list) else []
 
+    state.setdefault("debug_probe_seen_hooks", [])
     state.setdefault("debug_last_intercept", None)
 
     if not isinstance(state.get("debug_seen_commands"), list):
         state["debug_seen_commands"] = []
+    if not isinstance(state.get("debug_probe_seen_hooks"), list):
+        state["debug_probe_seen_hooks"] = []
 
     return state
 
