@@ -357,11 +357,6 @@ class EditNamingFormatsWindow(forms.WPFWindow):
     def get_default_naming_formats():
         return [
             NamingFormat(
-                name='Sheet Number - Sheet Name',
-                template='{Number} - {Name}.pdf',
-                builtin=True
-            ),
-            NamingFormat(
                 name='0001 A1.00 1ST FLOOR PLAN.pdf',
                 template='{index} {number} {name}.pdf',
                 builtin=True
@@ -877,47 +872,25 @@ class PrintSheetsWindow(forms.WPFWindow):
                     if sheet.printable:
                         sheet_list.Add(sheet.revit_sheet)
             else:
+                # add non-printable char in front of sheet Numbers
+                # to push revit to sort them per user
                 sheet_set = DB.ViewSet()
-
-            # add non-printable char in front of temporary sheet labels.
-            # this keeps values unique while also driving older print ordering.
-            original_sheetnums = []
-            with revit.Transaction('Fix Sheet Numbers',
-                                   doc=self.selected_doc):
-                for idx, sheet in enumerate(target_sheets):
-                    rvtsheet = sheet.revit_sheet
-                    # remove NPC from previous failed prints
-                    if NPC in rvtsheet.SheetNumber:
-                        rvtsheet.SheetNumber = \
-                            rvtsheet.SheetNumber.replace(NPC, '')
-
-                    # capture original value for later restore
-                    original_sheetnums.append(rvtsheet.SheetNumber)
-
-                    # use selected naming format for combined-PDF page label
-                    # and inject hidden NPC prefix for uniqueness and ordering.
-                    page_label = op.splitext(sheet.print_filename or '')[0]
-                    if not page_label:
-                        page_label = '{} - {}'.format(sheet.number, sheet.name)
-                    page_label = coreutils.cleanup_filename(
-                        page_label,
-                        windows_safe=True
-                    )
-                    if not page_label:
-                        page_label = rvtsheet.SheetNumber
-
-                    try:
-                        rvtsheet.SheetNumber = NPC * (idx + 1) + page_label
-                    except Exception:
-                        # keep process resilient even if one sheet label fails
-                        try:
+                original_sheetnums = []
+                with revit.Transaction('Fix Sheet Numbers',
+                                    doc=self.selected_doc):
+                    for idx, sheet in enumerate(target_sheets):
+                        rvtsheet = sheet.revit_sheet
+                        # removing any NPC from previous failed prints
+                        if NPC in rvtsheet.SheetNumber:
                             rvtsheet.SheetNumber = \
-                                NPC * (idx + 1) + rvtsheet.SheetNumber
-                        except Exception:
-                            pass
-
-                    if (not supports_OrderedViewList) and sheet.printable:
-                        sheet_set.Insert(rvtsheet)
+                                rvtsheet.SheetNumber.replace(NPC, '')
+                        # create a list of the existing sheet numbers
+                        original_sheetnums.append(rvtsheet.SheetNumber)
+                        # add a prefix (NPC) for sorting purposes
+                        rvtsheet.SheetNumber = \
+                            NPC * (idx + 1) + rvtsheet.SheetNumber
+                        if sheet.printable:
+                            sheet_set.Insert(rvtsheet)
 
             # Collect existing sheet sets
             cl = DB.FilteredElementCollector(self.selected_doc)
@@ -984,12 +957,14 @@ class PrintSheetsWindow(forms.WPFWindow):
             print_mgr.SubmitPrint()
 
 
-            # now restore original sheet numbers
-            with revit.Transaction('Restore Sheet Numbers',
-                                   doc=self.selected_doc):
-                for sheet, sheetnum in zip(target_sheets, original_sheetnums):
-                    rvtsheet = sheet.revit_sheet
-                    rvtsheet.SheetNumber = sheetnum
+            if not supports_OrderedViewList:
+                # now fix the sheet names
+                with revit.Transaction('Restore Sheet Numbers',
+                                    doc=self.selected_doc):
+                    for sheet, sheetnum in zip(target_sheets,
+                                            original_sheetnums):
+                        rvtsheet = sheet.revit_sheet
+                        rvtsheet.SheetNumber = sheetnum
 
             self._reset_psettings()
 
@@ -1118,41 +1093,23 @@ class PrintSheetsWindow(forms.WPFWindow):
             output_fname = \
                 template.format(
                     index=sheet.print_index,
-                    Index=sheet.print_index,
                     number=sheet.number,
-                    Number=sheet.number,
                     name=sheet.name,
-                    Name=sheet.name,
                     name_dash=sheet.name.replace(' ', '-'),
-                    NameDash=sheet.name.replace(' ', '-'),
                     name_underline=sheet.name.replace(' ', '_'),
-                    NameUnderline=sheet.name.replace(' ', '_'),
                     current_date=coreutils.current_date(),
-                    CurrentDate=coreutils.current_date(),
                     issue_date=sheet.issue_date,
-                    IssueDate=sheet.issue_date,
                     rev_number=sheet.revision.number if sheet.revision else '',
-                    RevNumber=sheet.revision.number if sheet.revision else '',
                     rev_desc=sheet.revision.desc if sheet.revision else '',
-                    RevDesc=sheet.revision.desc if sheet.revision else '',
                     rev_date=sheet.revision.date if sheet.revision else '',
-                    RevDate=sheet.revision.date if sheet.revision else '',
                     proj_name=self.project_info.name,
-                    ProjName=self.project_info.name,
                     proj_number=self.project_info.number,
-                    ProjNumber=self.project_info.number,
                     proj_building_name=self.project_info.building_name,
-                    ProjBuildingName=self.project_info.building_name,
                     proj_issue_date=self.project_info.issue_date,
-                    ProjIssueDate=self.project_info.issue_date,
                     proj_org_name=self.project_info.org_name,
-                    ProjOrgName=self.project_info.org_name,
                     proj_status=self.project_info.status,
-                    ProjStatus=self.project_info.status,
                     username=HOST_APP.username,
-                    UserName=HOST_APP.username,
                     revit_version=HOST_APP.version,
-                    RevitVersion=HOST_APP.version,
                 )
         except Exception as ferr:
             output_fname = ''
@@ -1565,7 +1522,7 @@ class PrintSheetsWindow(forms.WPFWindow):
 
         if self.combine_cb.IsChecked:
             self.hide_element(self.order_sp)
-            self.show_element(self.namingformat_dp)
+            self.hide_element(self.namingformat_dp)
             self.hide_element(self.pfilename)
         else:
             self.show_element(self.order_sp)
