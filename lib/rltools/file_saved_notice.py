@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Post-save notice runtime for save, save as, and synchronize events."""
+"""Post-save notice runtime for save, save as, and sync-complete events."""
 
 from __future__ import print_function
 
@@ -24,9 +24,14 @@ def handle_doc_saved_as(uiapp=None, event_args=None):
     _handle_post_save_event(uiapp=uiapp, event_args=event_args)
 
 
-def handle_doc_synchronized_with_central(uiapp=None, event_args=None):
-    """Show the File Saved popup after a synchronize-with-central hook fires."""
+def handle_doc_synced(uiapp=None, event_args=None):
+    """Show the File Saved popup after a doc-synced hook fires."""
     _handle_post_save_event(uiapp=uiapp, event_args=event_args)
+
+
+def handle_doc_synchronized_with_central(uiapp=None, event_args=None):
+    """Compatibility wrapper for stale sync imports."""
+    return handle_doc_synced(uiapp=uiapp, event_args=event_args)
 
 
 def _handle_post_save_event(uiapp=None, event_args=None):
