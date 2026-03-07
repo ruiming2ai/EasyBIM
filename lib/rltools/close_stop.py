@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared Close Stop runtime for save/sync hooks and the Close Stop pushbutton."""
+"""Shared Close Stop runtime for the Close Stop pushbutton and diagnostics."""
 
 from __future__ import print_function
 
@@ -155,111 +155,9 @@ def handle_generic_command_before_exec(uiapp=None, event_args=None):
 
 
 def handle_save_related_before_exec(uiapp=None, event_args=None):
-    """Cancel supported save/sync commands until TVP cleanup has finished."""
-    if event_args is None:
-        return
-
-    uiapp = _get_uiapp(uiapp)
-    if uiapp is None:
-        return
-
-    target_doc = _resolve_doc_from_event_args(event_args, uiapp)
-    if not _is_doc_supported(target_doc):
-        target_doc = _get_active_project_doc(uiapp)
-    if not _is_doc_supported(target_doc):
-        return
-
-    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip()
-    action_kind = _classify_action_command(command_name)
-    if action_kind not in ("save", "sync"):
-        return
-
-    state = _get_state()
-    _clear_expired_allow_command_once(state)
-    _clear_expired_probe_suppress_intercept(state)
-
-    doc_key = _doc_key(target_doc)
-    doc_runtime_id = _get_doc_runtime_id(target_doc)
-
-    if _consume_allow_command_once(
-        state,
-        doc_key,
-        doc_runtime_id,
-        command_name=command_name,
-    ):
-        _save_state(state)
-        return
-
-    skip_probe_intercept, skip_reason = _should_skip_save_intercept_for_probe(
-        state=state,
-        doc=target_doc,
-        command_name=command_name,
-    )
-    if skip_probe_intercept:
-        _set_debug_last_intercept(
-            state=state,
-            stage="before-exec",
-            doc=target_doc,
-            cancellable=_is_event_cancellable(event_args),
-            cancel_succeeded=False,
-            reason=skip_reason,
-        )
-        _save_state(state)
-        return
-
-    summary = _get_tvp_summary(uiapp, target_doc)
-    if not bool(summary.get("has_restore_work")):
-        _save_state(state)
-        return
-
-    cancellable = _is_event_cancellable(event_args)
-    pending = state.get("pending_action")
-    if isinstance(pending, dict):
-        cancel_succeeded = _cancel_event(event_args) if cancellable else False
-        _set_debug_last_intercept(
-            state=state,
-            stage="before-exec",
-            doc=target_doc,
-            cancellable=cancellable,
-            cancel_succeeded=cancel_succeeded,
-            reason="pending-action-exists",
-        )
-        _save_state(state)
-        return
-
-    if not cancellable:
-        _set_debug_last_intercept(
-            state=state,
-            stage="before-exec",
-            doc=target_doc,
-            cancellable=False,
-            cancel_succeeded=False,
-            reason="event-not-cancellable",
-        )
-        _save_state(state)
-        return
-
-    cancel_succeeded = _cancel_event(event_args)
-    _set_debug_last_intercept(
-        state=state,
-        stage="before-exec",
-        doc=target_doc,
-        cancellable=True,
-        cancel_succeeded=cancel_succeeded,
-        reason="queued-{}".format(action_kind) if cancel_succeeded else "cancel-failed",
-    )
-    if not cancel_succeeded:
-        _save_state(state)
-        return
-
-    _queue_pending_action(
-        state=state,
-        doc=target_doc,
-        command_name=command_name,
-        action_kind=action_kind,
-        source="save-hook",
-    )
-    _save_state(state)
+    """Compatibility no-op after save automation moved to doc-saving hooks."""
+    del uiapp, event_args
+    return None
 
 
 def handle_command_before_exec(uiapp=None, event_args=None):
@@ -275,17 +173,15 @@ def handle_doc_closing(uiapp=None, event_args=None):
 
 
 def handle_app_idling(uiapp=None, event_args=None):
-    """Process queued save/sync cleanup work on idling."""
-    del event_args  # not used
-
-    uiapp = _get_uiapp(uiapp)
-    if uiapp is None:
-        return
+    """Maintain legacy Close Stop state without owning automatic save behavior."""
+    del uiapp, event_args
 
     state = _get_state()
     state_changed = _clear_expired_allow_command_once(state)
-
-    if _process_pending_action(state, uiapp):
+    if _clear_expired_probe_suppress_intercept(state):
+        state_changed = True
+    if isinstance(state.get("pending_action"), dict):
+        state["pending_action"] = None
         state_changed = True
 
     if state_changed:
