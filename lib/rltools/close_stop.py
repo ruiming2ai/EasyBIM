@@ -13,6 +13,7 @@ LOGGER = script.get_logger()
 
 STATE_ENVVAR = "RLTOOLS_CLOSE_STOP_STATE"
 ALLOW_COMMAND_SEC = 10.0
+PROBE_SUPPRESS_SEC = 5.0
 MAX_DEBUG_COMMANDS = 12
 TITLE_DIALOG = "Close Stop"
 TITLE_DEBUG = "Close Stop Debug"
@@ -54,7 +55,19 @@ def run_pushbutton(uiapp=None):
         return
 
     state = _get_state()
-    _clear_expired_allow_command_once(state)
+    state_changed = _clear_expired_allow_command_once(state)
+    if _clear_expired_probe_suppress_intercept(state):
+        state_changed = True
+    if state_changed:
+        _save_state(state)
+
+    mode = _show_button_mode_dialog()
+    if mode == "probe":
+        arm_save_probe(uiapp=uiapp)
+        return
+    if mode != "close":
+        return
+
     _save_state(state)
     _run_close_sequence(uiapp=uiapp, doc=doc, state=state)
 
@@ -88,8 +101,22 @@ def capture_close_command(uiapp=None, event_args=None):
     return capture_action_command(uiapp=uiapp, event_args=event_args)
 
 
-def show_save_hook_probe(uiapp=None, event_args=None, hook_name=""):
-    """Show a one-time dialog proving a targeted save/sync hook fired."""
+def arm_save_probe(uiapp=None):
+    """Arm a one-shot generic command probe for the next Revit command."""
+    uiapp = _get_uiapp(uiapp)
+    doc = _get_active_project_doc(uiapp)
+    if not _is_doc_supported(doc):
+        _show_alert(TITLE_DEBUG, "Open a project document before testing the save hook.")
+        return
+
+    state = _get_state()
+    _arm_save_probe_state(state)
+    _save_state(state)
+    _show_probe_armed_dialog()
+
+
+def handle_generic_command_before_exec(uiapp=None, event_args=None):
+    """Probe the next command-before-exec event when armed by the Close Stop button."""
     if event_args is None:
         return
 
@@ -97,47 +124,34 @@ def show_save_hook_probe(uiapp=None, event_args=None, hook_name=""):
     if uiapp is None:
         return
 
-    hook_name = _safe_text(hook_name).strip()
-    if not hook_name:
-        hook_name = _normalize_command_name(_getattr_safe(event_args, "CommandId.Name"))
-    if not hook_name:
-        return
-
     state = _get_state()
-    seen_hooks = list(state.get("debug_probe_seen_hooks") or [])
-    if hook_name in seen_hooks:
+    if not _is_save_probe_armed(state):
         return
 
-    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip() or "(blank)"
+    command_name = _safe_text(_getattr_safe(event_args, "CommandId.Name")).strip()
+    if not command_name:
+        return
+
     doc = _resolve_doc_from_event_args(event_args, uiapp)
     if not _is_doc_supported(doc):
         doc = _get_active_project_doc(uiapp)
-    doc_title = _safe_text(getattr(doc, "Title", "")).strip() if doc else "(no supported document)"
-    action_kind = _classify_action_command(command_name) or "unknown"
-    cancellable = _is_event_cancellable(event_args)
+    normalized_command = _normalize_command_name(command_name)
 
-    _show_alert(
-        TITLE_DEBUG,
-        (
-            "Save/sync hook fired.\n\n"
-            "Hook: {hook}\n"
-            "Command: {command}\n"
-            "Action: {action}\n"
-            "Document: {document}\n"
-            "Cancellable: {cancellable}\n\n"
-            "This proof dialog is shown once per Revit session for each hooked save/sync command."
-        ).format(
-            hook=hook_name,
-            command=command_name,
-            action=action_kind,
-            document=doc_title,
-            cancellable=bool(cancellable),
-        ),
-    )
-
-    seen_hooks.append(hook_name)
-    state["debug_probe_seen_hooks"] = seen_hooks[-MAX_DEBUG_COMMANDS:]
+    state["last_probe_result"] = {
+        "captured_at": time.time(),
+        "command_name": normalized_command or command_name,
+        "action_kind": _classify_action_command(command_name) or "unknown",
+        "doc_key": _doc_key(doc),
+        "doc_runtime_id": _get_doc_runtime_id(doc),
+        "doc_title": _safe_text(getattr(doc, "Title", "")).strip() if doc else "",
+        "cancellable": bool(_is_event_cancellable(event_args)),
+        "matched_targeted_save_hook": bool(_targeted_save_hook_match(command_name)),
+        "captured_by": "generic-before-exec",
+    }
+    _register_probe_suppress_intercept(state, doc, normalized_command or command_name)
+    _clear_save_probe_state(state)
     _save_state(state)
+    _show_probe_result_dialog(state.get("last_probe_result"))
 
 
 def handle_save_related_before_exec(uiapp=None, event_args=None):
@@ -162,6 +176,7 @@ def handle_save_related_before_exec(uiapp=None, event_args=None):
 
     state = _get_state()
     _clear_expired_allow_command_once(state)
+    _clear_expired_probe_suppress_intercept(state)
 
     doc_key = _doc_key(target_doc)
     doc_runtime_id = _get_doc_runtime_id(target_doc)
@@ -172,6 +187,23 @@ def handle_save_related_before_exec(uiapp=None, event_args=None):
         doc_runtime_id,
         command_name=command_name,
     ):
+        _save_state(state)
+        return
+
+    skip_probe_intercept, skip_reason = _should_skip_save_intercept_for_probe(
+        state=state,
+        doc=target_doc,
+        command_name=command_name,
+    )
+    if skip_probe_intercept:
+        _set_debug_last_intercept(
+            state=state,
+            stage="before-exec",
+            doc=target_doc,
+            cancellable=_is_event_cancellable(event_args),
+            cancel_succeeded=False,
+            reason=skip_reason,
+        )
         _save_state(state)
         return
 
@@ -415,6 +447,94 @@ def _run_close_sequence(uiapp, doc, state):
         return False
 
 
+def _show_button_mode_dialog():
+    UI = _get_ui()
+    if UI is None:
+        return "close"
+
+    try:
+        dialog = UI.TaskDialog(TITLE_DIALOG)
+        if hasattr(dialog, "TitleAutoPrefix"):
+            dialog.TitleAutoPrefix = False
+        if hasattr(dialog, "AllowCancellation"):
+            dialog.AllowCancellation = True
+
+        dialog.MainInstruction = "Choose a Close Stop action."
+        dialog.MainContent = (
+            "Run the normal close workflow, or arm a diagnostic probe for the next Save-related command."
+        )
+        dialog.CommonButtons = UI.TaskDialogCommonButtons.Cancel
+        dialog.AddCommandLink(
+            UI.TaskDialogCommandLinkId.CommandLink1,
+            "Run Close Stop",
+        )
+        dialog.AddCommandLink(
+            UI.TaskDialogCommandLinkId.CommandLink2,
+            "Test Save Hook",
+        )
+        result = dialog.Show()
+        if result == UI.TaskDialogResult.CommandLink1:
+            return "close"
+        if result == UI.TaskDialogResult.CommandLink2:
+            return "probe"
+        return "cancel"
+    except Exception as ex:
+        LOGGER.warning("Close Stop mode dialog failed: %s", ex)
+        return "close"
+
+
+def _show_probe_armed_dialog():
+    _show_alert(
+        TITLE_DEBUG,
+        (
+            "Save hook probe is armed.\n\n"
+            "Click Save now.\n"
+            "RL Tools will report the next command-before-exec event it sees.\n"
+            "This test does not block or cancel the next command."
+        ),
+    )
+
+
+def _show_probe_result_dialog(result):
+    if not isinstance(result, dict):
+        _show_alert(TITLE_DEBUG, "No save hook probe result is available.")
+        return
+
+    command_name = _safe_text(result.get("command_name")).strip() or "(blank)"
+    action_kind = _safe_text(result.get("action_kind")).strip() or "unknown"
+    doc_title = _safe_text(result.get("doc_title")).strip() or "(no supported document)"
+    captured_by = _safe_text(result.get("captured_by")).strip() or "unknown"
+    matched_targeted = bool(result.get("matched_targeted_save_hook"))
+    match_text = "Yes" if matched_targeted else "No"
+    explanation = (
+        "This command matches the current targeted save/sync hook files."
+        if matched_targeted
+        else "This explains why the current save proof dialog did not appear."
+    )
+
+    _show_alert(
+        TITLE_DEBUG,
+        (
+            "Save hook probe captured a command.\n\n"
+            "Hook source: {captured_by}\n"
+            "Command: {command}\n"
+            "Classified as: {action}\n"
+            "Document: {document}\n"
+            "Cancellable: {cancellable}\n"
+            "Matches current targeted save/sync hook files: {matched}\n\n"
+            "{explanation}"
+        ).format(
+            captured_by=captured_by,
+            command=command_name,
+            action=action_kind,
+            document=doc_title,
+            cancellable=bool(result.get("cancellable")),
+            matched=match_text,
+            explanation=explanation,
+        ),
+    )
+
+
 def _resolve_revit_command(uiapp, doc, preferred_command_name, action_kind, state):
     doc_key = _doc_key(doc)
     doc_runtime_id = _get_doc_runtime_id(doc)
@@ -654,6 +774,69 @@ def _register_allow_command_once(state, doc, command_name):
     }
 
 
+def _arm_save_probe_state(state):
+    state["save_probe"] = {
+        "armed": True,
+        "armed_at": time.time(),
+        "source": "close-stop-button",
+        "mode": "next-command",
+    }
+    state["last_probe_result"] = None
+    state["probe_suppress_intercept"] = None
+
+
+def _clear_save_probe_state(state):
+    state["save_probe"] = None
+
+
+def _is_save_probe_armed(state):
+    probe = state.get("save_probe")
+    return isinstance(probe, dict) and bool(probe.get("armed"))
+
+
+def _register_probe_suppress_intercept(state, doc, command_name):
+    normalized_command = _normalize_command_name(command_name)
+    if not normalized_command:
+        state["probe_suppress_intercept"] = None
+        return
+
+    state["probe_suppress_intercept"] = {
+        "doc_key": _doc_key(doc),
+        "doc_runtime_id": _get_doc_runtime_id(doc),
+        "command_name": normalized_command,
+        "expires_at": time.time() + PROBE_SUPPRESS_SEC,
+    }
+
+
+def _should_skip_save_intercept_for_probe(state, doc, command_name):
+    if _is_save_probe_armed(state):
+        return True, "probe-armed"
+
+    guard = state.get("probe_suppress_intercept")
+    if not isinstance(guard, dict):
+        return False, ""
+
+    if time.time() > float(guard.get("expires_at", 0.0) or 0.0):
+        state["probe_suppress_intercept"] = None
+        return False, ""
+
+    if not _identity_matches(
+        stored_doc_key=guard.get("doc_key"),
+        stored_doc_runtime_id=guard.get("doc_runtime_id"),
+        doc_key=_doc_key(doc),
+        doc_runtime_id=_get_doc_runtime_id(doc),
+    ):
+        return False, ""
+
+    normalized_command = _normalize_command_name(command_name)
+    expected_command = _normalize_command_name(guard.get("command_name"))
+    if normalized_command and expected_command and normalized_command != expected_command:
+        return False, ""
+
+    state["probe_suppress_intercept"] = None
+    return True, "probe-suppress-intercept"
+
+
 def _consume_allow_command_once(state, doc_key, doc_runtime_id, command_name=""):
     guard = state.get("allow_command_once")
     if not isinstance(guard, dict):
@@ -691,6 +874,19 @@ def _clear_expired_allow_command_once(state):
         return False
 
     state["allow_command_once"] = None
+    return True
+
+
+def _clear_expired_probe_suppress_intercept(state):
+    guard = state.get("probe_suppress_intercept")
+    if not isinstance(guard, dict):
+        return False
+
+    expires_at = float(guard.get("expires_at", 0.0) or 0.0)
+    if time.time() <= expires_at:
+        return False
+
+    state["probe_suppress_intercept"] = None
     return True
 
 
@@ -779,6 +975,11 @@ def _classify_action_command(command_name):
     if "CLOSE" in normalized and ("FILE" in normalized or "PROJECT" in normalized):
         return "close"
     return None
+
+
+def _targeted_save_hook_match(command_name):
+    normalized = _normalize_command_name(command_name)
+    return normalized in SAVE_COMMAND_NAMES or normalized in SYNC_COMMAND_NAMES
 
 
 def _lookup_command_id(command_name):
@@ -1021,18 +1222,18 @@ def _get_state():
     state.setdefault("pending_action", None)
     state.setdefault("last_action_command", None)
     state.setdefault("allow_command_once", None)
+    state.setdefault("save_probe", None)
+    state.setdefault("last_probe_result", None)
+    state.setdefault("probe_suppress_intercept", None)
 
     legacy_debug = state.get("debug_seen_close_commands")
     if not isinstance(state.get("debug_seen_commands"), list):
         state["debug_seen_commands"] = list(legacy_debug) if isinstance(legacy_debug, list) else []
 
-    state.setdefault("debug_probe_seen_hooks", [])
     state.setdefault("debug_last_intercept", None)
 
     if not isinstance(state.get("debug_seen_commands"), list):
         state["debug_seen_commands"] = []
-    if not isinstance(state.get("debug_probe_seen_hooks"), list):
-        state["debug_probe_seen_hooks"] = []
 
     return state
 
