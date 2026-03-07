@@ -10,4 +10,4 @@ except Exception:
     _EVENT_ARGS = None
 
 
-file_saved_notice.handle_doc_synchronized_with_central(event_args=_EVENT_ARGS)
+file_saved_notice.handle_doc_synced(event_args=_EVENT_ARGS)
