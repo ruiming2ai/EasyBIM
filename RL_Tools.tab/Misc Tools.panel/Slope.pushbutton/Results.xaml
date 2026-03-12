@@ -38,7 +38,8 @@
                     <GridViewColumn Header="Category" Width="170" DisplayMemberBinding="{Binding category_name}"/>
                     <GridViewColumn Header="Element Name" Width="250" DisplayMemberBinding="{Binding element_name}"/>
                     <GridViewColumn Header="Current Slope" Width="160" DisplayMemberBinding="{Binding current_slope}"/>
-                    <GridViewColumn Header="Reason" Width="430" DisplayMemberBinding="{Binding reason}"/>
+                    <GridViewColumn Header="Stage" Width="150" DisplayMemberBinding="{Binding stage}"/>
+                    <GridViewColumn Header="Reason" Width="300" DisplayMemberBinding="{Binding reason}"/>
                 </GridView>
             </ListView.View>
         </ListView>

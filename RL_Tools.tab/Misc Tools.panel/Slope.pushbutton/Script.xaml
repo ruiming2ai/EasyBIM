@@ -29,10 +29,17 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0" Text="Selection:" FontWeight="SemiBold" VerticalAlignment="Center"/>
                 <TextBlock x:Name="selection_count_tb" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                <Button Grid.Column="2"
+                        Content="Select"
+                        Width="120"
+                        Height="32"
+                        Margin="12,0,0,0"
+                        Click="select_click"/>
             </Grid>
         </Border>
 
@@ -95,7 +102,7 @@
                     <StackPanel>
                         <TextBlock Text="Only built-in Slope parameters are targeted."
                                    FontWeight="SemiBold"/>
-                        <TextBlock Text="Shared or project parameters named Slope are ignored. Unsupported, pinned, or read-only elements are skipped and reported by element id."
+                        <TextBlock Text="The command targets explicit built-in slope parameters only. If direct parameter writing is blocked, straight line-based MEP curves fall back to a center-fixed geometry update."
                                    Margin="0,6,0,0"
                                    Foreground="DimGray"
                                    TextWrapping="Wrap"/>
