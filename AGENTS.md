@@ -14,11 +14,12 @@
 - Validate Python syntax for changed scripts before handoff (`python -m py_compile <script.py>`).
 - Update command icons/bundles only when behavior or UX changes require it.
 - Keep repo-level workflow decisions documented in `AGENTS.md` and mirrored in the repo parent skill.
-- Use shorthand command phrase `update feature & main worktree` for the standard promotion workflow.
+- Use shorthand command phrase `sync worktrees` for the standard parallel-worktree sync workflow.
 - Default meaning of that phrase:
-  - Commit + push on active feature worktree branch first (example: `Dev` in `RL_Tools.extension-Dev`).
-  - In primary worktree, merge/push active feature worktree branch into creator branch `Temp-Phase-and-View-2`.
-  - Merge creator branch `Temp-Phase-and-View-2` into `main` and push `main`.
+  - Commit + push on the active feature worktree branch first.
+  - Identify the creator branch associated with that feature worktree. `Temp-Phase-and-View-2` is only an example creator branch, not a fixed target.
+  - In primary worktree, sync the creator branch with the feature worktree branch.
+  - Stop after the creator branch is updated unless a separate merge to `main` is explicitly requested.
 
 ## Commands
 
@@ -29,17 +30,18 @@
 - Primary worktree and branch checks:
   - `git worktree list`
   - `git rev-parse --abbrev-ref HEAD`
-- Standard promotion commands:
+- Standard creator-branch sync commands:
   - `git add <files>`
   - `git commit -m "<message>"`
-  - `git push origin <branch>`
-  - `git checkout Temp-Phase-and-View-2` (in primary worktree)
-  - `git pull origin Temp-Phase-and-View-2`
-  - `git merge --no-ff origin/<feature-branch>`
-  - `git push origin Temp-Phase-and-View-2`
+  - `git push origin <feature-worktree-branch>`
+  - `git checkout <creator-branch>` (in primary worktree)
+  - `git pull origin <creator-branch>`
+  - `git merge --no-ff origin/<feature-worktree-branch>`
+  - `git push origin <creator-branch>`
+- Optional later promotion to `main`:
   - `git checkout main`
   - `git pull origin main`
-  - `git merge --no-ff Temp-Phase-and-View-2`
+  - `git merge --no-ff <creator-branch>`
   - `git push origin main`
 
 ## Conventions
@@ -81,9 +83,11 @@
 | 2026-03-02 | Standardize repository workflow source on `AGENTS.md` | Align global hub + parent skill governance | Enables reliable drift checks and skill maintenance | Active |
 | 2026-03-04 | Standardize Git worktree manager style rules | Preserve consistent branch/worktree behavior across sessions | Reduces duplicate checkouts, path conflict churn, and deletion errors | Active |
 | 2026-03-04 | Adopt standard promotion pipeline (`branch -> primary worktree branch -> main`) | Ensure predictable delivery from worktrees to production branch | Reduces missed merges and branch drift | Active |
-| 2026-03-04 | Standardize shorthand phrase `update feature & main worktree` | Reduce ambiguity and typing for routine promotion requests | Faster communication and fewer git wording mistakes | Active |
+| 2026-03-04 | Standardize shorthand phrase `update feature & main worktree` | Reduce ambiguity and typing for routine promotion requests | Faster communication and fewer git wording mistakes | Superseded |
 | 2026-03-04 | Enforce explicit-name worktree/branch parity | Match user-provided worktree names exactly and prevent unwanted auto-suffix branches | Eliminates naming drift for manually named worktrees | Active |
-| 2026-03-04 | Standardize 3-stage promotion path (`feature branch -> Temp-Phase-and-View-2 -> main`) | Ensure primary worktree always stages feature deliveries through the creator branch before production merge | Improves promotion traceability and keeps primary integration flow consistent | Active |
+| 2026-03-04 | Standardize 3-stage promotion path (`feature branch -> Temp-Phase-and-View-2 -> main`) | Ensure primary worktree always stages feature deliveries through the creator branch before production merge | Improves promotion traceability and keeps primary integration flow consistent | Superseded |
+| 2026-03-13 | Rename shorthand to `sync worktrees` | Match revised parallel worktree terminology | Clarifies shorthand request handling across repo docs and skill mirrors | Active |
+| 2026-03-13 | Make creator-branch sync the default worktree handoff | Ensure the primary branch refreshed depends on the branch that created the feature worktree | Removes hardcoded staging-branch assumptions and separates optional `main` promotion | Active |
 
 ## Session Handoff Log
 
@@ -92,6 +96,7 @@
 | 2026-03-02 | Created baseline AGENTS governance file | `AGENTS.md` | None | Add new decision/handoff rows after merged workflow changes |
 | 2026-03-04 | Added Git Worktree Manager Style governance and mirrored rule intent for skills | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | `rg` keyword checks, focused `git diff`, `git status --short` scope check | Continue applying these defaults for all RL_Tools worktree operations |
 | 2026-03-04 | Added documented standard git promotion flow and linked `skills.md` process | `AGENTS.md`, `skills.md` | Doc-only update | Follow this process for routine feature promotion |
-| 2026-03-04 | Added shorthand workflow command definition and default semantics | `AGENTS.md`, `skills.md` | Doc-only update | Use `update feature & main worktree` for typical worktree promotion |
+| 2026-03-04 | Added shorthand workflow command definition and default semantics | `AGENTS.md`, `skills.md` | Doc-only update | Superseded by `sync worktrees` wording |
 | 2026-03-04 | Added explicit-name worktree/branch parity rule and removed auto-suffix creation behavior | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Worktree recreate + doc sync + status verification | Keep explicit worktree names and branch names identical when requested |
-| 2026-03-04 | Standardized primary-worktree 3-stage promotion flow via `Temp-Phase-and-View-2` before `main` | `AGENTS.md`, `skills.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Doc update for workflow governance | Use creator-branch staging as the default promotion path |
+| 2026-03-04 | Standardized primary-worktree 3-stage promotion flow via `Temp-Phase-and-View-2` before `main` | `AGENTS.md`, `skills.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Doc update for workflow governance | Superseded by creator-branch sync default |
+| 2026-03-13 | Replaced fixed staging-branch shorthand with creator-branch `sync worktrees` semantics | `AGENTS.md`, `skills.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Targeted doc sync across root repo, mirrored skill, and worktree copies | Keep `main` promotion as a separate explicit step |
