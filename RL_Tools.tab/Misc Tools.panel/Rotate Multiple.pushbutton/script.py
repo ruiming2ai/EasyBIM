@@ -6,7 +6,11 @@ import math
 
 import clr
 
+clr.AddReference("RevitAPIUI")
 clr.AddReference("System.Windows.Forms")
+from Autodesk.Revit.Exceptions import OperationCanceledException
+from Autodesk.Revit.UI.Selection import ObjectType
+from System.Collections.Generic import List as ClrList
 import System.Windows.Forms as WinForms
 
 from pyrevit import DB
@@ -20,6 +24,7 @@ __title__ = "3D Rotate Multiple"
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
 EPS = 1e-9
+PICK_PROMPT = "Select elements to rotate"
 
 
 def _eid_int(eid):
@@ -44,11 +49,42 @@ def _parse_angle_degrees(value_text):
     return float(txt)
 
 
-def _prompt_settings():
+def _set_ui_selection(uidoc, element_ids):
+    clr_ids = ClrList[DB.ElementId]()
+    for element_id in element_ids or []:
+        if element_id:
+            clr_ids.Add(element_id)
+    uidoc.Selection.SetElementIds(clr_ids)
+
+
+def _merge_element_ids(existing_ids, new_ids):
+    merged = []
+    seen = set()
+
+    for source in (existing_ids or [], new_ids or []):
+        for element_id in source:
+            eid_int = _eid_int(element_id)
+            if eid_int is None or eid_int in seen:
+                continue
+            seen.add(eid_int)
+            merged.append(element_id)
+
+    return merged
+
+
+def _is_cancelled_pick(ex):
+    if isinstance(ex, OperationCanceledException):
+        return True
+    return "cancel" in str(ex).lower()
+
+
+def _prompt_settings(uidoc, initial_selected_ids):
+    selected_ids = _merge_element_ids(initial_selected_ids, [])
+
     dialog = WinForms.Form()
     dialog.Text = __title__
     dialog.Width = 900
-    dialog.Height = 360
+    dialog.Height = 430
     dialog.StartPosition = WinForms.FormStartPosition.CenterScreen
     dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
     dialog.MinimizeBox = False
@@ -95,7 +131,7 @@ def _prompt_settings():
 
     note_lbl = WinForms.Label()
     note_lbl.Left = 20
-    note_lbl.Top = 122
+    note_lbl.Top = 178
     note_lbl.Width = 850
     note_lbl.Height = 90
     note_lbl.Text = (
@@ -104,24 +140,102 @@ def _prompt_settings():
         "Leave both unchecked for normal plan rotation (global Z axis)."
     )
 
+    select_btn = WinForms.Button()
+    select_btn.Text = "Select Elements"
+    select_btn.Left = 280
+    select_btn.Top = 122
+    select_btn.Width = 130
+
+    selection_status_lbl = WinForms.Label()
+    selection_status_lbl.Left = 430
+    selection_status_lbl.Top = 127
+    selection_status_lbl.Width = 440
+    selection_status_lbl.Height = 42
+
     run_btn = WinForms.Button()
     run_btn.Text = "Run"
-    run_btn.DialogResult = WinForms.DialogResult.OK
     run_btn.Left = 705
-    run_btn.Top = 275
+    run_btn.Top = 345
     run_btn.Width = 80
 
     cancel_btn = WinForms.Button()
     cancel_btn.Text = "Cancel"
     cancel_btn.DialogResult = WinForms.DialogResult.Cancel
     cancel_btn.Left = 790
-    cancel_btn.Top = 275
+    cancel_btn.Top = 345
     cancel_btn.Width = 80
+
+    def _set_selection_status(message=None):
+        if message:
+            selection_status_lbl.Text = message
+            return
+        count = len(selected_ids)
+        if count:
+            selection_status_lbl.Text = "{} element(s) selected for rotation.".format(count)
+        else:
+            selection_status_lbl.Text = "No elements selected. Use Select Elements before running."
+
+    def _select_elements_click(sender, args):
+        del sender, args
+
+        try:
+            dialog.Hide()
+        except Exception:
+            pass
+
+        try:
+            picked_refs = uidoc.Selection.PickObjects(ObjectType.Element, PICK_PROMPT)
+        except Exception as ex:
+            picked_refs = None
+            if _is_cancelled_pick(ex):
+                _set_selection_status("Selection unchanged.")
+            else:
+                _set_selection_status("Select failed: {}".format(ex))
+        finally:
+            try:
+                dialog.Show()
+            except Exception:
+                pass
+            try:
+                dialog.Activate()
+            except Exception:
+                pass
+
+        if not picked_refs:
+            return
+
+        picked_ids = [ref.ElementId for ref in picked_refs if getattr(ref, "ElementId", None)]
+        old_count = len(selected_ids)
+        selected_ids[:] = _merge_element_ids(selected_ids, picked_ids)
+
+        try:
+            _set_ui_selection(uidoc, selected_ids)
+        except Exception:
+            pass
+
+        if len(selected_ids) != old_count:
+            _set_selection_status()
+        else:
+            _set_selection_status("Selection unchanged.")
+
+    def _run_click(sender, args):
+        del sender, args
+        if not selected_ids:
+            _set_selection_status("Select one or more elements before running.")
+            return
+        dialog.DialogResult = WinForms.DialogResult.OK
+        dialog.Close()
+
+    select_btn.Click += _select_elements_click
+    run_btn.Click += _run_click
+    _set_selection_status()
 
     dialog.Controls.Add(angle_lbl)
     dialog.Controls.Add(angle_tb)
     dialog.Controls.Add(front_back_cb)
     dialog.Controls.Add(left_right_cb)
+    dialog.Controls.Add(select_btn)
+    dialog.Controls.Add(selection_status_lbl)
     dialog.Controls.Add(note_lbl)
     dialog.Controls.Add(run_btn)
     dialog.Controls.Add(cancel_btn)
@@ -135,6 +249,7 @@ def _prompt_settings():
         "angle_text": angle_tb.Text,
         "rotate_front_back": bool(front_back_cb.Checked),
         "rotate_left_right": bool(left_right_cb.Checked),
+        "selected_ids": list(selected_ids),
     }
 
 
@@ -205,13 +320,12 @@ def run():
         return
 
     selected_ids = list(uidoc.Selection.GetElementIds())
-    if not selected_ids:
-        forms.alert("Select one or more elements first.", title=__title__)
-        return
 
-    settings = _prompt_settings()
+    settings = _prompt_settings(uidoc, selected_ids)
     if not settings:
         return
+
+    selected_ids = list(settings["selected_ids"])
 
     try:
         angle_deg = _parse_angle_degrees(settings["angle_text"])
