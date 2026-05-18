@@ -7,11 +7,9 @@ import math
 import clr
 
 clr.AddReference("RevitAPIUI")
-clr.AddReference("System.Windows.Forms")
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ObjectType
 from System.Collections.Generic import List as ClrList
-import System.Windows.Forms as WinForms
 
 from pyrevit import DB
 from pyrevit import forms
@@ -25,6 +23,33 @@ logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
 EPS = 1e-9
 PICK_PROMPT = "Select elements to rotate"
+
+MODE_PLAN = "plan"
+MODE_FRONT_BACK = "front_back"
+MODE_LEFT_RIGHT = "left_right"
+
+MODE_LABELS = {
+    MODE_PLAN: "Plan Rotation",
+    MODE_FRONT_BACK: "Vertical Rotation (Front/Back)",
+    MODE_LEFT_RIGHT: "Vertical Rotation (Left/Right)",
+}
+
+MODE_HELPERS = {
+    MODE_PLAN: "Rotate around the global Z axis for normal plan rotation.",
+    MODE_FRONT_BACK: "Rotate around the global X axis using the front/back elevation plane.",
+    MODE_LEFT_RIGHT: "Rotate around the global Y axis using the left/right elevation plane.",
+}
+
+EMPTY_SELECTION_STATUS_TEXT = "Select one or more elements before running."
+
+
+def _safe_text(value):
+    if value is None:
+        return ""
+    try:
+        return str(value)
+    except Exception:
+        return ""
 
 
 def _eid_int(eid):
@@ -40,13 +65,37 @@ def _eid_int(eid):
 
 
 def _parse_angle_degrees(value_text):
-    txt = str(value_text).strip()
+    txt = _safe_text(value_text).strip()
     if not txt:
         raise ValueError("Angle is empty.")
     txt = txt.replace(u"\N{DEGREE SIGN}", "").strip()
     if txt.lower().endswith("deg"):
         txt = txt[:-3].strip()
     return float(txt)
+
+
+def _get_mode_labels():
+    return [
+        MODE_LABELS[MODE_PLAN],
+        MODE_LABELS[MODE_FRONT_BACK],
+        MODE_LABELS[MODE_LEFT_RIGHT],
+    ]
+
+
+def _get_mode_key_from_label(label):
+    label_text = _safe_text(label)
+    for mode_key, mode_label in MODE_LABELS.items():
+        if mode_label == label_text:
+            return mode_key
+    return None
+
+
+def _get_mode_label(mode_key):
+    return MODE_LABELS.get(mode_key, MODE_LABELS[MODE_PLAN])
+
+
+def _get_mode_helper_text(mode_key):
+    return MODE_HELPERS.get(mode_key, MODE_HELPERS[MODE_PLAN])
 
 
 def _set_ui_selection(uidoc, element_ids):
@@ -75,182 +124,171 @@ def _merge_element_ids(existing_ids, new_ids):
 def _is_cancelled_pick(ex):
     if isinstance(ex, OperationCanceledException):
         return True
-    return "cancel" in str(ex).lower()
+    return "cancel" in _safe_text(ex).lower()
 
 
-def _prompt_settings(uidoc, initial_selected_ids):
-    selected_ids = _merge_element_ids(initial_selected_ids, [])
+class DialogState(object):
+    def __init__(self, selected_ids=None, angle_text="90", mode_key=MODE_PLAN, status_text=""):
+        self.selected_ids = list(selected_ids or [])
+        self.angle_text = _safe_text(angle_text) or "90"
+        self.mode_key = mode_key or MODE_PLAN
+        self.status_text = _safe_text(status_text)
 
-    dialog = WinForms.Form()
-    dialog.Text = __title__
-    dialog.Width = 900
-    dialog.Height = 430
-    dialog.StartPosition = WinForms.FormStartPosition.CenterScreen
-    dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
-    dialog.MinimizeBox = False
-    dialog.MaximizeBox = False
 
-    angle_lbl = WinForms.Label()
-    angle_lbl.Text = "Rotation angle (degrees)"
-    angle_lbl.Left = 20
-    angle_lbl.Top = 24
-    angle_lbl.Width = 240
+class RotateWindow(forms.WPFWindow):
+    def __init__(self, xaml_file_name, dialog_state):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.doc = revit.doc
+        self.uidoc = revit.uidoc
+        self.dialog_state = dialog_state or DialogState()
+        self.is_ready = False
+        self.next_action = None
+        self.selected_ids = list(getattr(self.dialog_state, "selected_ids", []) or [])
+        self.selected_elements = []
 
-    angle_tb = WinForms.TextBox()
-    angle_tb.Left = 280
-    angle_tb.Top = 20
-    angle_tb.Width = 590
-    angle_tb.Text = "90"
+        if not self.doc or not self.uidoc:
+            forms.alert("No active project document.", title=__title__)
+            return
 
-    front_back_cb = WinForms.CheckBox()
-    front_back_cb.Text = "Vertical rotate (Front/Back elevation plane)"
-    front_back_cb.Left = 280
-    front_back_cb.Top = 58
-    front_back_cb.Width = 590
-    front_back_cb.Checked = False
+        self.mode_cb.ItemsSource = list(_get_mode_labels())
+        self.mode_cb.SelectedItem = _get_mode_label(self.dialog_state.mode_key)
+        self.angle_tb.Text = self.dialog_state.angle_text
+        self._refresh_selection_state()
+        self.status_tb.Text = self.dialog_state.status_text
+        self.is_ready = True
 
-    left_right_cb = WinForms.CheckBox()
-    left_right_cb.Text = "Vertical rotate (Left/Right elevation plane)"
-    left_right_cb.Left = 280
-    left_right_cb.Top = 84
-    left_right_cb.Width = 590
-    left_right_cb.Checked = False
+    def _capture_state(self, status_text=""):
+        return DialogState(
+            selected_ids=self.selected_ids,
+            angle_text=self.angle_tb.Text,
+            mode_key=self._selected_mode_key(),
+            status_text=status_text,
+        )
 
-    def _on_front_back_changed(sender, args):
+    def _set_action_controls_enabled(self, is_enabled):
+        for control in (self.select_btn, self.run_btn, self.cancel_btn, self.mode_cb, self.angle_tb):
+            try:
+                control.IsEnabled = bool(is_enabled)
+            except Exception:
+                continue
+
+    def _selected_mode_key(self):
+        return _get_mode_key_from_label(getattr(self.mode_cb, "SelectedItem", None))
+
+    def _refresh_selection_state(self):
+        refreshed_ids = []
+        refreshed_elements = []
+        for element_id in self.selected_ids:
+            element = self.doc.GetElement(element_id)
+            if element:
+                refreshed_ids.append(element_id)
+                refreshed_elements.append(element)
+
+        self.selected_ids = refreshed_ids
+        self.selected_elements = refreshed_elements
+        self.selection_count_tb.Text = "{} element(s) selected.".format(len(self.selected_elements))
+        self._sync_mode_state()
+
+    def _sync_mode_state(self):
+        self.helper_tb.Text = _get_mode_helper_text(self._selected_mode_key())
+
+    def mode_changed(self, sender, args):
         del sender, args
-        if front_back_cb.Checked:
-            left_right_cb.Checked = False
+        self._sync_mode_state()
 
-    def _on_left_right_changed(sender, args):
+    def select_click(self, sender, args):
         del sender, args
-        if left_right_cb.Checked:
-            front_back_cb.Checked = False
+        self._set_action_controls_enabled(False)
+        self.status_tb.Text = "Opening Revit element selection..."
+        self.dialog_state = self._capture_state(self.status_tb.Text)
+        self.next_action = "select"
+        self.Close()
 
-    front_back_cb.CheckedChanged += _on_front_back_changed
-    left_right_cb.CheckedChanged += _on_left_right_changed
+    def cancel_click(self, sender, args):
+        del sender, args
+        self._set_action_controls_enabled(False)
+        self.dialog_state = self._capture_state("")
+        self.next_action = "cancel"
+        self.Close()
 
-    note_lbl = WinForms.Label()
-    note_lbl.Left = 20
-    note_lbl.Top = 178
-    note_lbl.Width = 850
-    note_lbl.Height = 90
-    note_lbl.Text = (
-        "Choose one vertical mode for 3D rotation:\n"
-        "Front/Back uses global X axis. Left/Right uses global Y axis.\n"
-        "Leave both unchecked for normal plan rotation (global Z axis)."
+    def run_click(self, sender, args):
+        del sender, args
+
+        if not self.selected_ids:
+            self.status_tb.Text = EMPTY_SELECTION_STATUS_TEXT
+            return
+
+        try:
+            angle_deg = _parse_angle_degrees(self.angle_tb.Text)
+        except Exception as ex:
+            self.status_tb.Text = "Invalid angle value: {}".format(ex)
+            return
+
+        if abs(angle_deg) < EPS:
+            self.status_tb.Text = "Angle is 0. Nothing to rotate."
+            return
+
+        if not self._selected_mode_key():
+            self.status_tb.Text = "Choose one rotation mode before running."
+            return
+
+        self._set_action_controls_enabled(False)
+        self.status_tb.Text = "Running rotate operation..."
+        self.dialog_state = self._capture_state(self.status_tb.Text)
+        self.next_action = "run"
+        self.Close()
+
+
+def _pick_more_elements(uidoc, dialog_state):
+    selected_ids = list(getattr(dialog_state, "selected_ids", []) or [])
+
+    try:
+        picked_refs = uidoc.Selection.PickObjects(ObjectType.Element, PICK_PROMPT)
+    except Exception as ex:
+        status_text = "Selection unchanged." if _is_cancelled_pick(ex) else "Select failed: {}".format(ex)
+        return DialogState(
+            selected_ids=selected_ids,
+            angle_text=dialog_state.angle_text,
+            mode_key=dialog_state.mode_key,
+            status_text=status_text,
+        )
+
+    picked_ids = [ref.ElementId for ref in picked_refs or [] if getattr(ref, "ElementId", None)]
+    merged_ids = _merge_element_ids(selected_ids, picked_ids)
+
+    try:
+        _set_ui_selection(uidoc, merged_ids)
+    except Exception:
+        pass
+
+    status_text = "Selection unchanged."
+    if len(merged_ids) != len(selected_ids):
+        status_text = "Selection updated to {} element(s).".format(len(merged_ids))
+
+    return DialogState(
+        selected_ids=merged_ids,
+        angle_text=dialog_state.angle_text,
+        mode_key=dialog_state.mode_key,
+        status_text=status_text,
     )
 
-    select_btn = WinForms.Button()
-    select_btn.Text = "Select Elements"
-    select_btn.Left = 280
-    select_btn.Top = 122
-    select_btn.Width = 130
 
-    selection_status_lbl = WinForms.Label()
-    selection_status_lbl.Left = 430
-    selection_status_lbl.Top = 127
-    selection_status_lbl.Width = 440
-    selection_status_lbl.Height = 42
+def _show_dialog(initial_state):
+    dialog_state = initial_state
 
-    run_btn = WinForms.Button()
-    run_btn.Text = "Run"
-    run_btn.Left = 705
-    run_btn.Top = 345
-    run_btn.Width = 80
+    while True:
+        window = RotateWindow("Script.xaml", dialog_state)
+        if not window.is_ready:
+            return None
 
-    cancel_btn = WinForms.Button()
-    cancel_btn.Text = "Cancel"
-    cancel_btn.DialogResult = WinForms.DialogResult.Cancel
-    cancel_btn.Left = 790
-    cancel_btn.Top = 345
-    cancel_btn.Width = 80
+        window.ShowDialog()
 
-    def _set_selection_status(message=None):
-        if message:
-            selection_status_lbl.Text = message
-            return
-        count = len(selected_ids)
-        if count:
-            selection_status_lbl.Text = "{} element(s) selected for rotation.".format(count)
-        else:
-            selection_status_lbl.Text = "No elements selected. Use Select Elements before running."
-
-    def _select_elements_click(sender, args):
-        del sender, args
-
-        try:
-            dialog.Hide()
-        except Exception:
-            pass
-
-        try:
-            picked_refs = uidoc.Selection.PickObjects(ObjectType.Element, PICK_PROMPT)
-        except Exception as ex:
-            picked_refs = None
-            if _is_cancelled_pick(ex):
-                _set_selection_status("Selection unchanged.")
-            else:
-                _set_selection_status("Select failed: {}".format(ex))
-        finally:
-            try:
-                dialog.Show()
-            except Exception:
-                pass
-            try:
-                dialog.Activate()
-            except Exception:
-                pass
-
-        if not picked_refs:
-            return
-
-        picked_ids = [ref.ElementId for ref in picked_refs if getattr(ref, "ElementId", None)]
-        old_count = len(selected_ids)
-        selected_ids[:] = _merge_element_ids(selected_ids, picked_ids)
-
-        try:
-            _set_ui_selection(uidoc, selected_ids)
-        except Exception:
-            pass
-
-        if len(selected_ids) != old_count:
-            _set_selection_status()
-        else:
-            _set_selection_status("Selection unchanged.")
-
-    def _run_click(sender, args):
-        del sender, args
-        if not selected_ids:
-            _set_selection_status("Select one or more elements before running.")
-            return
-        dialog.DialogResult = WinForms.DialogResult.OK
-        dialog.Close()
-
-    select_btn.Click += _select_elements_click
-    run_btn.Click += _run_click
-    _set_selection_status()
-
-    dialog.Controls.Add(angle_lbl)
-    dialog.Controls.Add(angle_tb)
-    dialog.Controls.Add(front_back_cb)
-    dialog.Controls.Add(left_right_cb)
-    dialog.Controls.Add(select_btn)
-    dialog.Controls.Add(selection_status_lbl)
-    dialog.Controls.Add(note_lbl)
-    dialog.Controls.Add(run_btn)
-    dialog.Controls.Add(cancel_btn)
-    dialog.AcceptButton = run_btn
-    dialog.CancelButton = cancel_btn
-
-    if dialog.ShowDialog() != WinForms.DialogResult.OK:
+        if window.next_action == "select":
+            dialog_state = _pick_more_elements(window.uidoc, window.dialog_state)
+            continue
+        if window.next_action == "run":
+            return window.dialog_state
         return None
-
-    return {
-        "angle_text": angle_tb.Text,
-        "rotate_front_back": bool(front_back_cb.Checked),
-        "rotate_left_right": bool(left_right_cb.Checked),
-        "selected_ids": list(selected_ids),
-    }
 
 
 def _midpoint_xyz(pt_a, pt_b):
@@ -302,12 +340,10 @@ def _get_rotation_center(element, active_view):
     return None
 
 
-def _axis_direction(rotate_front_back, rotate_left_right):
-    # Front/Back elevation-like rotation plane: YZ plane => axis X
-    if rotate_front_back:
+def _axis_direction(mode_key):
+    if mode_key == MODE_FRONT_BACK:
         return DB.XYZ.BasisX
-    # Left/Right elevation-like rotation plane: XZ plane => axis Y
-    if rotate_left_right:
+    if mode_key == MODE_LEFT_RIGHT:
         return DB.XYZ.BasisY
     return DB.XYZ.BasisZ
 
@@ -319,16 +355,15 @@ def run():
         forms.alert("No active project document.", title=__title__)
         return
 
-    selected_ids = list(uidoc.Selection.GetElementIds())
-
-    settings = _prompt_settings(uidoc, selected_ids)
+    initial_state = DialogState(selected_ids=list(uidoc.Selection.GetElementIds()))
+    settings = _show_dialog(initial_state)
     if not settings:
         return
 
-    selected_ids = list(settings["selected_ids"])
+    selected_ids = list(settings.selected_ids)
 
     try:
-        angle_deg = _parse_angle_degrees(settings["angle_text"])
+        angle_deg = _parse_angle_degrees(settings.angle_text)
     except Exception as ex:
         forms.alert("Invalid angle value: {}".format(ex), title=__title__)
         return
@@ -338,10 +373,7 @@ def run():
         return
 
     active_view = uidoc.ActiveView
-    axis_dir = _axis_direction(
-        settings["rotate_front_back"],
-        settings["rotate_left_right"],
-    )
+    axis_dir = _axis_direction(settings.mode_key)
     if not axis_dir or axis_dir.GetLength() < EPS:
         forms.alert("Could not determine rotation axis.", title=__title__)
         return
@@ -395,16 +427,10 @@ def run():
                 if len(sample_errors) < 20:
                     sample_errors.append("id {} -> {}".format(elem_id, ex))
 
-    if settings["rotate_front_back"]:
-        mode = "Vertical (Front/Back elevation plane, global X axis)"
-    elif settings["rotate_left_right"]:
-        mode = "Vertical (Left/Right elevation plane, global Y axis)"
-    else:
-        mode = "Plan (global Z axis)"
     lines = [
         "Rotate Multiple completed.",
         "Angle: {} deg".format(round(angle_deg, 6)),
-        "Mode: {}".format(mode),
+        "Mode: {}".format(_get_mode_label(settings.mode_key)),
         "Selected elements: {}".format(len(selected_ids)),
         "Rotated: {}".format(rotated),
         "Skipped pinned: {}".format(skipped_pinned),
