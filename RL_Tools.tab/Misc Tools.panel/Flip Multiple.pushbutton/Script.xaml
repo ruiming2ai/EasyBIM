@@ -18,7 +18,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Flip Multiple" FontSize="32" FontWeight="SemiBold"/>
-            <TextBlock Text="Batch flip family instances using native Revit flip actions."
+            <TextBlock Text="Batch flip family instances using native work-plane or local geometric flip actions."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"/>
@@ -82,9 +82,9 @@
                         Padding="10"
                         Background="#FAFAFA">
                     <StackPanel>
-                        <TextBlock Text="Only native family flip actions are used."
+                        <TextBlock Text="Work-plane is native. Other modes use local geometric flips."
                                    FontWeight="SemiBold"/>
-                        <TextBlock Text="The command validates the full selection before running. If any selected element does not support the chosen flip mode, nothing changes and the warning lists the incompatible family types."
+                        <TextBlock Text="The command validates the full selection before running. If any selected element cannot support the chosen flip mode or cannot provide the required local plane, nothing changes and the warning lists the incompatible family types."
                                    Margin="0,6,0,0"
                                    Foreground="DimGray"
                                    TextWrapping="Wrap"/>
