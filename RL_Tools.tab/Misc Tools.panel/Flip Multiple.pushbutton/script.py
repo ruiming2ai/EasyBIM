@@ -8,11 +8,9 @@ import sys
 import clr
 
 clr.AddReference("RevitAPIUI")
-clr.AddReference("System.Windows.Forms")
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ObjectType
 from System.Collections.Generic import List as ClrList
-import System.Windows.Forms as WinForms
 
 from pyrevit import DB
 from pyrevit import forms
@@ -24,18 +22,33 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
+from flip_multiple_utils import EMPTY_SELECTION_STATUS_TEXT
 from flip_multiple_utils import MODE_FRONT_BACK
 from flip_multiple_utils import MODE_LEFT_RIGHT
 from flip_multiple_utils import MODE_WORK_PLANE
+from flip_multiple_utils import build_completion_message
 from flip_multiple_utils import build_incompatibility_message
+from flip_multiple_utils import build_status_text
 from flip_multiple_utils import collect_incompatible_type_labels
+from flip_multiple_utils import get_mode_helper_text
+from flip_multiple_utils import get_mode_key_from_label
 from flip_multiple_utils import get_mode_label
+from flip_multiple_utils import get_mode_labels
 
 __title__ = "Flip Multiple"
 
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
 PICK_PROMPT = "Select elements to flip"
+
+
+def _safe_text(value):
+    if value is None:
+        return ""
+    try:
+        return str(value)
+    except Exception:
+        return ""
 
 
 def _eid_int(eid):
@@ -76,191 +89,151 @@ def _merge_element_ids(existing_ids, new_ids):
 def _is_cancelled_pick(ex):
     if isinstance(ex, OperationCanceledException):
         return True
-    return "cancel" in str(ex).lower()
+    return "cancel" in _safe_text(ex).lower()
 
 
-def _prompt_settings(uidoc, initial_selected_ids):
-    selected_ids = _merge_element_ids(initial_selected_ids, [])
+class DialogState(object):
+    def __init__(self, selected_ids=None, mode_key=None, status_text=""):
+        self.selected_ids = list(selected_ids or [])
+        self.mode_key = mode_key
+        self.status_text = _safe_text(status_text)
 
-    dialog = WinForms.Form()
-    dialog.Text = __title__
-    dialog.Width = 900
-    dialog.Height = 430
-    dialog.StartPosition = WinForms.FormStartPosition.CenterScreen
-    dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
-    dialog.MinimizeBox = False
-    dialog.MaximizeBox = False
 
-    mode_lbl = WinForms.Label()
-    mode_lbl.Text = "Choose one native flip mode"
-    mode_lbl.Left = 20
-    mode_lbl.Top = 24
-    mode_lbl.Width = 240
+class ExecuteOutcome(object):
+    def __init__(self, reopen_dialog, dialog_state=None):
+        self.reopen_dialog = bool(reopen_dialog)
+        self.dialog_state = dialog_state
 
-    mode_group = WinForms.GroupBox()
-    mode_group.Left = 280
-    mode_group.Top = 14
-    mode_group.Width = 590
-    mode_group.Height = 108
-    mode_group.Text = ""
 
-    work_plane_rb = WinForms.RadioButton()
-    work_plane_rb.Text = "Flip Work-plane"
-    work_plane_rb.Left = 18
-    work_plane_rb.Top = 24
-    work_plane_rb.Width = 240
+class FlipWindow(forms.WPFWindow):
+    def __init__(self, xaml_file_name, dialog_state):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.doc = revit.doc
+        self.uidoc = revit.uidoc
+        self.dialog_state = dialog_state or DialogState()
+        self.is_ready = False
+        self.next_action = None
+        self.selected_ids = list(getattr(self.dialog_state, "selected_ids", []) or [])
+        self.selected_elements = []
 
-    front_back_rb = WinForms.RadioButton()
-    front_back_rb.Text = "Flip Front/Back"
-    front_back_rb.Left = 18
-    front_back_rb.Top = 48
-    front_back_rb.Width = 240
-
-    left_right_rb = WinForms.RadioButton()
-    left_right_rb.Text = "Flip Left/Right"
-    left_right_rb.Left = 18
-    left_right_rb.Top = 72
-    left_right_rb.Width = 240
-
-    mode_group.Controls.Add(work_plane_rb)
-    mode_group.Controls.Add(front_back_rb)
-    mode_group.Controls.Add(left_right_rb)
-
-    select_btn = WinForms.Button()
-    select_btn.Text = "Select Elements"
-    select_btn.Left = 280
-    select_btn.Top = 138
-    select_btn.Width = 130
-
-    selection_status_lbl = WinForms.Label()
-    selection_status_lbl.Left = 430
-    selection_status_lbl.Top = 143
-    selection_status_lbl.Width = 440
-    selection_status_lbl.Height = 42
-
-    note_lbl = WinForms.Label()
-    note_lbl.Left = 20
-    note_lbl.Top = 196
-    note_lbl.Width = 850
-    note_lbl.Height = 95
-    note_lbl.Text = (
-        "This tool uses native Revit family flip actions only.\n"
-        "Work-plane requires native work-plane flip support.\n"
-        "Front/Back requires native facing flip support. Left/Right requires native hand flip support.\n"
-        "If any selected element is incompatible, nothing will be flipped."
-    )
-
-    run_btn = WinForms.Button()
-    run_btn.Text = "Run"
-    run_btn.Left = 705
-    run_btn.Top = 345
-    run_btn.Width = 80
-
-    cancel_btn = WinForms.Button()
-    cancel_btn.Text = "Cancel"
-    cancel_btn.DialogResult = WinForms.DialogResult.Cancel
-    cancel_btn.Left = 790
-    cancel_btn.Top = 345
-    cancel_btn.Width = 80
-
-    def _set_selection_status(message=None):
-        if message:
-            selection_status_lbl.Text = message
+        if not self.doc or not self.uidoc:
+            forms.alert("No active project document.", title=__title__)
             return
-        count = len(selected_ids)
-        if count:
-            selection_status_lbl.Text = "{} element(s) selected for flipping.".format(count)
-        else:
-            selection_status_lbl.Text = "No elements selected. Use Select Elements before running."
 
-    def _selected_mode_key():
-        if work_plane_rb.Checked:
-            return MODE_WORK_PLANE
-        if front_back_rb.Checked:
-            return MODE_FRONT_BACK
-        if left_right_rb.Checked:
-            return MODE_LEFT_RIGHT
-        return None
+        self.mode_cb.ItemsSource = list(get_mode_labels())
+        initial_mode_label = get_mode_label(self.dialog_state.mode_key)
+        if get_mode_key_from_label(initial_mode_label):
+            self.mode_cb.SelectedItem = initial_mode_label
 
-    def _select_elements_click(sender, args):
+        self._refresh_selection_state()
+        self.status_tb.Text = build_status_text(
+            len(self.selected_elements),
+            self.dialog_state.status_text,
+        )
+        self.is_ready = True
+
+    def _capture_state(self, status_text=""):
+        return DialogState(
+            selected_ids=self.selected_ids,
+            mode_key=self._selected_mode_key(),
+            status_text=status_text,
+        )
+
+    def _set_action_controls_enabled(self, is_enabled):
+        for control in (self.select_btn, self.run_btn, self.cancel_btn, self.mode_cb):
+            try:
+                control.IsEnabled = bool(is_enabled)
+            except Exception:
+                continue
+
+    def _selected_mode_key(self):
+        return get_mode_key_from_label(getattr(self.mode_cb, "SelectedItem", None))
+
+    def _refresh_selection_state(self):
+        refreshed_ids = []
+        refreshed_elements = []
+        for element_id in self.selected_ids:
+            element = self.doc.GetElement(element_id)
+            if element:
+                refreshed_ids.append(element_id)
+                refreshed_elements.append(element)
+
+        self.selected_ids = refreshed_ids
+        self.selected_elements = refreshed_elements
+        self.selection_count_tb.Text = "{} element(s) selected.".format(len(self.selected_elements))
+        self._sync_mode_state()
+
+    def _sync_mode_state(self):
+        self.helper_tb.Text = get_mode_helper_text(self._selected_mode_key())
+
+    def mode_changed(self, sender, args):
+        del sender, args
+        self._sync_mode_state()
+
+    def select_click(self, sender, args):
+        del sender, args
+        self._set_action_controls_enabled(False)
+        self.status_tb.Text = "Opening Revit element selection..."
+        self.dialog_state = self._capture_state(self.status_tb.Text)
+        self.next_action = "select"
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self._set_action_controls_enabled(False)
+        self.dialog_state = self._capture_state("")
+        self.next_action = "cancel"
+        self.Close()
+
+    def run_click(self, sender, args):
         del sender, args
 
-        try:
-            dialog.Hide()
-        except Exception:
-            pass
-
-        try:
-            picked_refs = uidoc.Selection.PickObjects(ObjectType.Element, PICK_PROMPT)
-        except Exception as ex:
-            picked_refs = None
-            if _is_cancelled_pick(ex):
-                _set_selection_status("Selection unchanged.")
-            else:
-                _set_selection_status("Select failed: {}".format(ex))
-        finally:
-            try:
-                dialog.Show()
-            except Exception:
-                pass
-            try:
-                dialog.Activate()
-            except Exception:
-                pass
-
-        if not picked_refs:
+        if not self.selected_ids:
+            self.status_tb.Text = EMPTY_SELECTION_STATUS_TEXT
             return
 
-        picked_ids = [ref.ElementId for ref in picked_refs if getattr(ref, "ElementId", None)]
-        old_count = len(selected_ids)
-        selected_ids[:] = _merge_element_ids(selected_ids, picked_ids)
-
-        try:
-            _set_ui_selection(uidoc, selected_ids)
-        except Exception:
-            pass
-
-        if len(selected_ids) != old_count:
-            _set_selection_status()
-        else:
-            _set_selection_status("Selection unchanged.")
-
-    def _run_click(sender, args):
-        del sender, args
-
-        if not selected_ids:
-            _set_selection_status("Select one or more elements before running.")
-            return
-
-        mode_key = _selected_mode_key()
+        mode_key = self._selected_mode_key()
         if not mode_key:
-            _set_selection_status("Choose one flip mode before running.")
+            self.status_tb.Text = "Choose one flip mode before running."
             return
 
-        dialog.DialogResult = WinForms.DialogResult.OK
-        dialog.Close()
+        self._set_action_controls_enabled(False)
+        self.status_tb.Text = "Running flip operation..."
+        self.dialog_state = self._capture_state(self.status_tb.Text)
+        self.next_action = "run"
+        self.Close()
 
-    select_btn.Click += _select_elements_click
-    run_btn.Click += _run_click
-    _set_selection_status()
 
-    dialog.Controls.Add(mode_lbl)
-    dialog.Controls.Add(mode_group)
-    dialog.Controls.Add(select_btn)
-    dialog.Controls.Add(selection_status_lbl)
-    dialog.Controls.Add(note_lbl)
-    dialog.Controls.Add(run_btn)
-    dialog.Controls.Add(cancel_btn)
-    dialog.AcceptButton = run_btn
-    dialog.CancelButton = cancel_btn
+def _pick_more_elements(uidoc, dialog_state):
+    selected_ids = list(getattr(dialog_state, "selected_ids", []) or [])
 
-    if dialog.ShowDialog() != WinForms.DialogResult.OK:
-        return None
+    try:
+        picked_refs = uidoc.Selection.PickObjects(ObjectType.Element, PICK_PROMPT)
+    except Exception as ex:
+        status_text = "Selection unchanged." if _is_cancelled_pick(ex) else "Select failed: {}".format(ex)
+        return DialogState(
+            selected_ids=selected_ids,
+            mode_key=dialog_state.mode_key,
+            status_text=status_text,
+        )
 
-    return {
-        "mode_key": _selected_mode_key(),
-        "selected_ids": list(selected_ids),
-    }
+    picked_ids = [ref.ElementId for ref in picked_refs or [] if getattr(ref, "ElementId", None)]
+    merged_ids = _merge_element_ids(selected_ids, picked_ids)
+
+    try:
+        _set_ui_selection(uidoc, merged_ids)
+    except Exception:
+        pass
+
+    status_text = "Selection unchanged."
+    if len(merged_ids) != len(selected_ids):
+        status_text = "Selection updated to {} element(s).".format(len(merged_ids))
+
+    return DialogState(
+        selected_ids=merged_ids,
+        mode_key=dialog_state.mode_key,
+        status_text=status_text,
+    )
 
 
 def _family_type_entry(element):
@@ -317,11 +290,14 @@ def _validate_selection(doc, selected_ids, mode_key):
     valid_instances = []
     invalid_type_entries = []
     non_family_count = 0
+    refreshed_ids = []
 
     for sid in selected_ids:
         element = doc.GetElement(sid)
         if element is None:
             continue
+
+        refreshed_ids.append(sid)
 
         if not isinstance(element, DB.FamilyInstance):
             non_family_count += 1
@@ -333,48 +309,74 @@ def _validate_selection(doc, selected_ids, mode_key):
 
         valid_instances.append(element)
 
-    return valid_instances, invalid_type_entries, non_family_count
+    return valid_instances, invalid_type_entries, non_family_count, refreshed_ids
 
 
-def run():
-    doc = revit.doc
-    uidoc = revit.uidoc
-    if not doc or not uidoc:
-        forms.alert("No active project document.", title=__title__)
-        return
+def _execute_flip_run(doc, uidoc, dialog_state):
+    selected_ids = list(getattr(dialog_state, "selected_ids", []) or [])
+    mode_key = getattr(dialog_state, "mode_key", None)
 
-    selected_ids = list(uidoc.Selection.GetElementIds())
+    if not selected_ids:
+        return ExecuteOutcome(
+            True,
+            DialogState(
+                selected_ids=[],
+                mode_key=mode_key,
+                status_text=EMPTY_SELECTION_STATUS_TEXT,
+            ),
+        )
 
-    settings = _prompt_settings(uidoc, selected_ids)
-    if not settings:
-        return
+    if not mode_key:
+        return ExecuteOutcome(
+            True,
+            DialogState(
+                selected_ids=selected_ids,
+                mode_key=mode_key,
+                status_text="Choose one flip mode before running.",
+            ),
+        )
 
-    mode_key = settings["mode_key"]
     mode_label = get_mode_label(mode_key)
-    selected_ids = list(settings["selected_ids"])
-
-    valid_instances, invalid_type_entries, non_family_count = _validate_selection(
+    valid_instances, invalid_type_entries, non_family_count, refreshed_ids = _validate_selection(
         doc,
         selected_ids,
         mode_key,
     )
+
+    try:
+        _set_ui_selection(uidoc, refreshed_ids)
+    except Exception:
+        pass
 
     incompatible_type_labels = collect_incompatible_type_labels(invalid_type_entries)
     if invalid_type_entries or non_family_count:
         forms.alert(
             build_incompatibility_message(
                 mode_label,
-                len(selected_ids),
+                len(refreshed_ids),
                 incompatible_type_labels,
                 non_family_count,
             ),
             title=__title__,
         )
-        return
+        return ExecuteOutcome(
+            True,
+            DialogState(
+                selected_ids=refreshed_ids,
+                mode_key=mode_key,
+                status_text="Selection contains incompatible elements for {}.".format(mode_label),
+            ),
+        )
 
     if not valid_instances:
-        forms.alert("No compatible family instances found in the current selection.", title=__title__)
-        return
+        return ExecuteOutcome(
+            True,
+            DialogState(
+                selected_ids=refreshed_ids,
+                mode_key=mode_key,
+                status_text=EMPTY_SELECTION_STATUS_TEXT,
+            ),
+        )
 
     flipped = 0
 
@@ -393,21 +395,51 @@ def run():
             "Flip failed and no changes were kept.\nMode: {}\n{}".format(mode_label, ex),
             title=__title__,
         )
-        return
+        return ExecuteOutcome(
+            True,
+            DialogState(
+                selected_ids=refreshed_ids,
+                mode_key=mode_key,
+                status_text="Flip failed: {}".format(_safe_text(ex)),
+            ),
+        )
 
     forms.alert(
-        "\n".join(
-            [
-                "Flip Multiple completed.",
-                "Mode: {}".format(mode_label),
-                "Selected elements: {}".format(len(selected_ids)),
-                "Flipped: {}".format(flipped),
-            ]
-        ),
+        build_completion_message(mode_label, len(refreshed_ids), flipped),
         title=__title__,
         warn_icon=False,
     )
+    return ExecuteOutcome(False)
+
+
+def main():
+    if not revit.doc or not revit.uidoc:
+        forms.alert("No active project document.", title=__title__)
+        return
+
+    dialog_state = DialogState(selected_ids=list(revit.uidoc.Selection.GetElementIds()))
+
+    while True:
+        window = FlipWindow("Script.xaml", dialog_state)
+        if not window.is_ready:
+            return
+
+        window.ShowDialog()
+        dialog_state = window.dialog_state or dialog_state
+
+        if window.next_action == "select":
+            dialog_state = _pick_more_elements(revit.uidoc, dialog_state)
+            continue
+
+        if window.next_action == "run":
+            outcome = _execute_flip_run(revit.doc, revit.uidoc, dialog_state)
+            if outcome.reopen_dialog:
+                dialog_state = outcome.dialog_state or dialog_state
+                continue
+            return
+
+        return
 
 
 if __name__ == "__main__":
-    run()
+    main()
