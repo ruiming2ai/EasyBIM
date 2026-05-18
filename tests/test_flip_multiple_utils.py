@@ -20,6 +20,36 @@ def _load_module():
 
 
 class FlipMultipleUtilsTests(unittest.TestCase):
+    def test_build_status_text_prefers_explicit_message(self):
+        module = _load_module()
+
+        self.assertEqual(
+            module.build_status_text(3, "Selection updated to 3 element(s)."),
+            "Selection updated to 3 element(s).",
+        )
+
+    def test_build_status_text_falls_back_to_ready_message(self):
+        module = _load_module()
+
+        self.assertEqual(
+            module.build_status_text(2, ""),
+            "Ready. 2 element(s) selected for flipping.",
+        )
+        self.assertEqual(
+            module.build_status_text(0, None),
+            "No elements selected. Click Select to add elements from the model.",
+        )
+
+    def test_build_completion_message_summarizes_mode_and_counts(self):
+        module = _load_module()
+
+        message = module.build_completion_message("Flip Left/Right", 5, 5)
+
+        self.assertIn("Flip Multiple completed.", message)
+        self.assertIn("Mode: Flip Left/Right", message)
+        self.assertIn("Selected elements: 5", message)
+        self.assertIn("Flipped: 5", message)
+
     def test_collect_incompatible_type_labels_dedupes_and_sorts(self):
         module = _load_module()
 
