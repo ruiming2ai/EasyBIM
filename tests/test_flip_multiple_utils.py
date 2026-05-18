@@ -45,10 +45,28 @@ class FlipMultipleUtilsTests(unittest.TestCase):
 
         message = module.build_completion_message("Flip Left/Right", 5, 5)
 
-        self.assertIn("Flip Multiple completed.", message)
-        self.assertIn("Mode: Flip Left/Right", message)
-        self.assertIn("Selected elements: 5", message)
-        self.assertIn("Flipped: 5", message)
+        self.assertEqual(message, "Flip Multiple completed.")
+
+    def test_get_mode_labels_includes_flip_up_down(self):
+        module = _load_module()
+
+        self.assertEqual(
+            module.get_mode_labels(),
+            [
+                "Flip Work-plane",
+                "Flip Front/Back",
+                "Flip Left/Right",
+                "Flip Up/Down",
+            ],
+        )
+
+    def test_get_mode_helper_text_describes_up_down_as_geometric(self):
+        module = _load_module()
+
+        self.assertIn(
+            "horizontal plane",
+            module.get_mode_helper_text("up_down").lower(),
+        )
 
     def test_collect_incompatible_type_labels_dedupes_and_sorts(self):
         module = _load_module()

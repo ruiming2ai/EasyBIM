@@ -25,6 +25,7 @@ if SCRIPT_DIR not in sys.path:
 from flip_multiple_utils import EMPTY_SELECTION_STATUS_TEXT
 from flip_multiple_utils import MODE_FRONT_BACK
 from flip_multiple_utils import MODE_LEFT_RIGHT
+from flip_multiple_utils import MODE_UP_DOWN
 from flip_multiple_utils import MODE_WORK_PLANE
 from flip_multiple_utils import build_completion_message
 from flip_multiple_utils import build_incompatibility_message
@@ -40,6 +41,7 @@ __title__ = "Flip Multiple"
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
 PICK_PROMPT = "Select elements to flip"
+EPS = 1e-9
 
 
 def _safe_text(value):
@@ -261,33 +263,137 @@ def _family_type_entry(element):
     }
 
 
-def _supports_mode(element, mode_key):
+def _family_type_label(element):
+    entry = _family_type_entry(element)
+    return "{} : {}".format(entry["family_name"], entry["type_name"])
+
+
+def _get_transform_from_method(element, method_name):
     try:
-        if mode_key == MODE_WORK_PLANE:
-            return bool(element.CanFlipWorkPlane)
-        if mode_key == MODE_FRONT_BACK:
-            return bool(element.CanFlipFacing)
-        if mode_key == MODE_LEFT_RIGHT:
-            return bool(element.CanFlipHand)
+        method = getattr(element, method_name, None)
+        if not method:
+            return None
+        transform = method()
+        if transform is not None:
+            return transform
+    except Exception:
+        return None
+    return None
+
+
+def _get_origin_from_transform(transform):
+    try:
+        origin = getattr(transform, "Origin", None)
+        if origin is not None:
+            return origin
+    except Exception:
+        return None
+    return None
+
+
+def _get_location_point_origin(element):
+    try:
+        location = getattr(element, "Location", None)
+        if isinstance(location, DB.LocationPoint):
+            return getattr(location, "Point", None)
+    except Exception:
+        return None
+    return None
+
+
+def _get_instance_origin(element):
+    for transform in (
+        _get_transform_from_method(element, "GetTransform"),
+        _get_transform_from_method(element, "GetTotalTransform"),
+    ):
+        origin = _get_origin_from_transform(transform)
+        if origin is not None:
+            return origin
+    return _get_location_point_origin(element)
+
+
+def _normalize_xyz(vector):
+    try:
+        if vector is None:
+            return None
+        if vector.GetLength() < EPS:
+            return None
+        return vector.Normalize()
+    except Exception:
+        return None
+
+
+def _get_transform_basis_z(element):
+    for transform in (
+        _get_transform_from_method(element, "GetTransform"),
+        _get_transform_from_method(element, "GetTotalTransform"),
+    ):
+        try:
+            basis_z = getattr(transform, "BasisZ", None)
+            normalized = _normalize_xyz(basis_z)
+            if normalized is not None:
+                return normalized
+        except Exception:
+            continue
+    return None
+
+
+def _get_plane_normal(element, mode_key):
+    if mode_key == MODE_FRONT_BACK:
+        try:
+            return _normalize_xyz(getattr(element, "FacingOrientation", None))
+        except Exception:
+            return None
+    if mode_key == MODE_LEFT_RIGHT:
+        try:
+            return _normalize_xyz(getattr(element, "HandOrientation", None))
+        except Exception:
+            return None
+    if mode_key == MODE_UP_DOWN:
+        return _get_transform_basis_z(element)
+    return None
+
+
+def _build_geometric_flip_context(element, mode_key):
+    origin = _get_instance_origin(element)
+    normal = _get_plane_normal(element, mode_key)
+    if origin is None or normal is None:
+        return None
+
+    try:
+        plane = DB.Plane.CreateByNormalAndOrigin(normal, origin)
+    except Exception:
+        return None
+
+    return {
+        "element": element,
+        "plane": plane,
+        "detail": "id {} | {}".format(_eid_int(element.Id), _family_type_label(element)),
+    }
+
+
+def _supports_native_work_plane_flip(element):
+    try:
+        return bool(element.CanFlipWorkPlane)
     except Exception:
         return False
-    return False
 
 
-def _apply_flip(element, mode_key):
-    if mode_key == MODE_WORK_PLANE:
-        current_state = bool(element.IsWorkPlaneFlipped)
-        element.IsWorkPlaneFlipped = not current_state
-        return True
-    if mode_key == MODE_FRONT_BACK:
-        return bool(element.flipFacing())
-    if mode_key == MODE_LEFT_RIGHT:
-        return bool(element.flipHand())
-    raise ValueError("Unknown flip mode: {}".format(mode_key))
+def _apply_native_work_plane_flip(element):
+    current_state = bool(element.IsWorkPlaneFlipped)
+    element.IsWorkPlaneFlipped = not current_state
+    return True
+
+
+def _apply_geometric_flip(doc, element, plane):
+    element_ids = ClrList[DB.ElementId]()
+    element_ids.Add(element.Id)
+    DB.ElementTransformUtils.MirrorElements(doc, element_ids, plane, False)
+    return True
 
 
 def _validate_selection(doc, selected_ids, mode_key):
-    valid_instances = []
+    valid_items = []
     invalid_type_entries = []
     non_family_count = 0
     refreshed_ids = []
@@ -303,13 +409,20 @@ def _validate_selection(doc, selected_ids, mode_key):
             non_family_count += 1
             continue
 
-        if not _supports_mode(element, mode_key):
-            invalid_type_entries.append(_family_type_entry(element))
+        if mode_key == MODE_WORK_PLANE:
+            if not _supports_native_work_plane_flip(element):
+                invalid_type_entries.append(_family_type_entry(element))
+                continue
+            valid_items.append({"element": element, "detail": "id {} | {}".format(_eid_int(element.Id), _family_type_label(element))})
             continue
 
-        valid_instances.append(element)
+        geometric_item = _build_geometric_flip_context(element, mode_key)
+        if geometric_item is None:
+            invalid_type_entries.append(_family_type_entry(element))
+            continue
+        valid_items.append(geometric_item)
 
-    return valid_instances, invalid_type_entries, non_family_count, refreshed_ids
+    return valid_items, invalid_type_entries, non_family_count, refreshed_ids
 
 
 def _execute_flip_run(doc, uidoc, dialog_state):
@@ -337,7 +450,7 @@ def _execute_flip_run(doc, uidoc, dialog_state):
         )
 
     mode_label = get_mode_label(mode_key)
-    valid_instances, invalid_type_entries, non_family_count, refreshed_ids = _validate_selection(
+    valid_items, invalid_type_entries, non_family_count, refreshed_ids = _validate_selection(
         doc,
         selected_ids,
         mode_key,
@@ -368,7 +481,7 @@ def _execute_flip_run(doc, uidoc, dialog_state):
             ),
         )
 
-    if not valid_instances:
+    if not valid_items:
         return ExecuteOutcome(
             True,
             DialogState(
@@ -379,20 +492,31 @@ def _execute_flip_run(doc, uidoc, dialog_state):
         )
 
     flipped = 0
+    failure_detail = ""
 
     try:
         with revit.Transaction(__title__):
-            for element in valid_instances:
-                result = _apply_flip(element, mode_key)
+            for item in valid_items:
+                element = item["element"]
+                failure_detail = item.get("detail", "")
+                if mode_key == MODE_WORK_PLANE:
+                    result = _apply_native_work_plane_flip(element)
+                else:
+                    result = _apply_geometric_flip(doc, element, item["plane"])
                 if not result:
-                    raise RuntimeError(
-                        "Native flip returned False for id {}.".format(_eid_int(element.Id))
-                    )
+                    raise RuntimeError("Flip returned False.")
                 flipped += 1
     except Exception as ex:
         logger.debug("Flip failed | mode=%s | %s", mode_key, ex)
+        lines = [
+            "Flip failed and no changes were kept.",
+            "Mode: {}".format(mode_label),
+        ]
+        if failure_detail:
+            lines.append("Sample failure: {}".format(failure_detail))
+        lines.append("Error: {}".format(ex))
         forms.alert(
-            "Flip failed and no changes were kept.\nMode: {}\n{}".format(mode_label, ex),
+            "\n".join(lines),
             title=__title__,
         )
         return ExecuteOutcome(

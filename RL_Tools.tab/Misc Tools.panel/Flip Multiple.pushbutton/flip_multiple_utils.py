@@ -3,16 +3,19 @@
 MODE_WORK_PLANE = "work_plane"
 MODE_FRONT_BACK = "front_back"
 MODE_LEFT_RIGHT = "left_right"
+MODE_UP_DOWN = "up_down"
 
 MODE_LABELS = {
     MODE_WORK_PLANE: "Flip Work-plane",
     MODE_FRONT_BACK: "Flip Front/Back",
     MODE_LEFT_RIGHT: "Flip Left/Right",
+    MODE_UP_DOWN: "Flip Up/Down",
 }
 MODE_KEYS_IN_ORDER = (
     MODE_WORK_PLANE,
     MODE_FRONT_BACK,
     MODE_LEFT_RIGHT,
+    MODE_UP_DOWN,
 )
 MODE_HELPER_TEXTS = {
     MODE_WORK_PLANE: (
@@ -20,12 +23,16 @@ MODE_HELPER_TEXTS = {
         "Only families that expose work-plane flip are compatible."
     ),
     MODE_FRONT_BACK: (
-        "Use the family instance's native facing flip. "
-        "This is the front/back flip supported by the family."
+        "Use a geometric flip across a vertical plane through the instance origin, "
+        "derived from the instance facing direction."
     ),
     MODE_LEFT_RIGHT: (
-        "Use the family instance's native hand flip. "
-        "This is the left/right flip supported by the family."
+        "Use a geometric flip across a vertical plane through the instance origin, "
+        "derived from the instance hand direction."
+    ),
+    MODE_UP_DOWN: (
+        "Use a geometric flip across a horizontal plane through the instance origin, "
+        "derived from the instance local vertical direction."
     ),
 }
 EMPTY_SELECTION_STATUS_TEXT = "No elements selected. Click Select to add elements from the model."
@@ -61,14 +68,8 @@ def build_status_text(selection_count, status_text):
 
 
 def build_completion_message(mode_label, selected_count, flipped_count):
-    return "\n".join(
-        [
-            "Flip Multiple completed.",
-            "Mode: {}".format(mode_label),
-            "Selected elements: {}".format(int(selected_count)),
-            "Flipped: {}".format(int(flipped_count)),
-        ]
-    )
+    del mode_label, selected_count, flipped_count
+    return "Flip Multiple completed."
 
 
 def collect_incompatible_type_labels(entries):
