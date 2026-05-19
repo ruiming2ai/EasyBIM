@@ -68,7 +68,7 @@ This is intentionally destructive and is part of the accepted product policy.
 
 ### Components
 
-### `startup.py`
+#### `startup.py`
 
 Add an extension-root `startup.py` that pyRevit executes when the extension loads.
 
@@ -81,7 +81,7 @@ Responsibilities:
 
 This file should stay small and avoid embedding git logic directly.
 
-### `lib/rltools/auto_update.py`
+#### `lib/rltools/auto_update.py`
 
 Create a shared helper module that owns the full workflow.
 
@@ -113,7 +113,7 @@ Suggested internal helpers:
 - `maybe_reload_pyrevit()`
 - `show_result_message()`
 
-### `Auto Update.pushbutton`
+#### `Auto Update.pushbutton`
 
 Add a new pushbutton under `RL_Tools.tab/Misc Tools.panel`.
 
@@ -121,6 +121,12 @@ Responsibilities:
 
 - call `run_manual_auto_update()`
 - present a short result when the repo is already current or when the update fails
+
+Icon direction:
+
+- reuse the native pyRevit reload icon as the visual base
+- change the color treatment so the command reads as RL Tools rather than stock pyRevit
+- provide normal and dark icon assets if the bundle follows the existing panel convention
 
 ## Data Flow
 
