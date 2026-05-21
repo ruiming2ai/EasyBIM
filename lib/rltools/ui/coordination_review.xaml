@@ -12,14 +12,13 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Coordination Review" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Problem links only. Expanders start open and per-instance Show actions keep this window available for continued review."
+            <TextBlock Text="All linked-model Coordination Review issues are shown together so users can review the full problem list at once."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -63,46 +62,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12" Margin="0,0,0,10">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="220"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="260"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-
-                <TextBlock Grid.Column="0" Text="Link:" VerticalAlignment="Center"/>
-                <ComboBox x:Name="link_filter_cb"
-                          Grid.Column="1"
-                          Height="30"
-                          Margin="8,0,12,0"
-                          VerticalContentAlignment="Center"
-                          DisplayMemberPath="label"
-                          SelectionChanged="link_filter_changed"/>
-
-                <TextBlock Grid.Column="2" Text="Issue Type:" VerticalAlignment="Center"/>
-                <ComboBox x:Name="issue_filter_cb"
-                          Grid.Column="3"
-                          Height="30"
-                          Margin="8,0,12,0"
-                          VerticalContentAlignment="Center"
-                          DisplayMemberPath="label"
-                          SelectionChanged="issue_filter_changed"/>
-
-                <StackPanel Grid.Column="5" Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button x:Name="expand_all_btn" Content="Expand All" Width="110" Height="30" Margin="0,0,8,0" Click="expand_all_click"/>
-                    <Button x:Name="collapse_all_btn" Content="Collapse All" Width="110" Height="30" Margin="0,0,8,0" Click="collapse_all_click"/>
-                    <Button x:Name="reset_filters_btn" Content="Reset Filters" Width="110" Height="30" Click="reset_filters_click"/>
-                </StackPanel>
-            </Grid>
-        </Border>
-
-        <Border Grid.Row="3" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
             <Grid>
                 <TextBlock x:Name="empty_tb"
                            Visibility="Collapsed"
@@ -121,7 +81,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+        <Border Grid.Row="3" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -135,6 +95,8 @@
                            TextWrapping="Wrap"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="expand_all_btn" Content="Expand All" Width="120" Height="36" Margin="0,0,8,0" Click="expand_all_click"/>
+                    <Button x:Name="collapse_all_btn" Content="Collapse All" Width="120" Height="36" Margin="0,0,8,0" Click="collapse_all_click"/>
                     <Button x:Name="close_btn" Content="Close" Width="120" Height="36" Click="close_click"/>
                 </StackPanel>
             </Grid>
