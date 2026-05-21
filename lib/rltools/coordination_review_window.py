@@ -23,7 +23,7 @@ from rltools import coordination_review_model
 LOGGER = script.get_logger()
 XAML_PATH = os.path.join(os.path.dirname(__file__), "ui", "coordination_review.xaml")
 DEFAULT_STATUS_TEXT = (
-    "Ready. Filter the report, expand or collapse groups, or click Show to focus an instance in Revit."
+    "Ready. Review the full issue list below, or click Show to focus an instance in Revit."
 )
 
 
@@ -85,74 +85,25 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self.uiapp = uiapp
         self.uidoc = getattr(uiapp, "ActiveUIDocument", None) if uiapp else None
         self._all_problem_links = coordination_review_model.build_problem_link_records(self.report)
-        self._selected_link_value = coordination_review_model.ALL_LINKS_FILTER_VALUE
-        self._selected_issue_value = coordination_review_model.ALL_ISSUES_FILTER_VALUE
         self._link_expansion_state = {}
         self._issue_expansion_state = {}
         self._visible_link_keys = []
         self._visible_issue_keys = []
-        self._suspend_filter_events = False
 
         self._populate_summary()
-        self._refresh_link_filter_options()
         self._refresh_content()
 
     def _populate_summary(self):
-        model = coordination_review_model.build_coordination_review_view_model(self.report)
-        self.doc_title_tb.Text = model.get("doc_title", "(Unknown)")
-        self.matching_warnings_tb.Text = str(model.get("matching_warnings", 0))
-        self.problem_links_tb.Text = str(model.get("problem_link_count", 0))
-        self.assignments_tb.Text = str(model.get("link_assignments", 0))
+        self.doc_title_tb.Text = _safe_text(self.report.get("doc_title")) or "(Unknown)"
+        self.matching_warnings_tb.Text = str(_safe_int(self.report.get("total_matching_warnings")) or 0)
+        self.problem_links_tb.Text = str(len(self._all_problem_links))
+        self.assignments_tb.Text = str(_safe_int(self.report.get("total_link_assignments")) or 0)
 
     def _link_key(self, link_record):
         return _safe_text(link_record.get("filter_value"))
 
     def _issue_key(self, link_record, issue_record):
         return "{}::{}".format(self._link_key(link_record), _safe_text(issue_record.get("text")))
-
-    def _option_exists(self, options, value):
-        value = _safe_text(value)
-        for option in list(options or []):
-            if _safe_text(option.get("value")) == value:
-                return True
-        return False
-
-    def _select_combo_value(self, combo, options, selected_value):
-        selected_value = _safe_text(selected_value)
-        combo.ItemsSource = list(options or [])
-        target = None
-        for option in list(options or []):
-            if _safe_text(option.get("value")) == selected_value:
-                target = option
-                break
-        if target is None and options:
-            target = list(options)[0]
-        combo.SelectedItem = target
-        return _safe_text(target.get("value")) if target else ""
-
-    def _refresh_link_filter_options(self):
-        link_options = coordination_review_model.build_link_filter_options(self._all_problem_links)
-        visible_for_issue_filter = coordination_review_model.apply_coordination_review_filters(
-            self._all_problem_links,
-            selected_link_value=self._selected_link_value,
-            selected_issue_value=coordination_review_model.ALL_ISSUES_FILTER_VALUE,
-        )
-        issue_options = coordination_review_model.build_issue_filter_options(visible_for_issue_filter)
-        if not self._option_exists(issue_options, self._selected_issue_value):
-            self._selected_issue_value = coordination_review_model.ALL_ISSUES_FILTER_VALUE
-
-        self._suspend_filter_events = True
-        self._selected_link_value = self._select_combo_value(
-            self.link_filter_cb,
-            link_options,
-            self._selected_link_value,
-        )
-        self._selected_issue_value = self._select_combo_value(
-            self.issue_filter_cb,
-            issue_options,
-            self._selected_issue_value,
-        )
-        self._suspend_filter_events = False
 
     def _build_link_header(self, link_record):
         header = DockPanel()
@@ -309,11 +260,7 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self.empty_tb.Text = _safe_text(text)
 
     def _visible_links(self):
-        return coordination_review_model.apply_coordination_review_filters(
-            self._all_problem_links,
-            selected_link_value=self._selected_link_value,
-            selected_issue_value=self._selected_issue_value,
-        )
+        return list(self._all_problem_links)
 
     def _refresh_content(self):
         self.content_sp.Children.Clear()
@@ -321,13 +268,8 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self._visible_link_keys = []
         self._visible_issue_keys = []
 
-        if not self._all_problem_links:
-            self._set_empty_state(True, "No Coordination Review problems were found in this document.")
-            self.status_tb.Text = DEFAULT_STATUS_TEXT
-            return
-
         if not visible_links:
-            self._set_empty_state(True, "No results match the current filters.")
+            self._set_empty_state(True, "No Coordination Review problems were found in this document.")
             self.status_tb.Text = DEFAULT_STATUS_TEXT
             return
 
@@ -338,7 +280,7 @@ class CoordinationReviewWindow(forms.WPFWindow):
                 self._visible_issue_keys.append(self._issue_key(link_record, issue_record))
             self.content_sp.Children.Add(self._create_link_expander(link_record))
 
-        self.status_tb.Text = "Showing {} problem link(s).".format(len(visible_links))
+        self.status_tb.Text = "Showing all issues across {} problem link(s).".format(len(visible_links))
 
     def _show_instance(self, instance_id):
         element_id_int = _safe_int(instance_id)
@@ -378,26 +320,6 @@ class CoordinationReviewWindow(forms.WPFWindow):
                 _safe_text(ex) or "Unknown error",
             )
 
-    def link_filter_changed(self, sender, args):
-        del sender, args
-        if self._suspend_filter_events:
-            return
-        option = getattr(self.link_filter_cb, "SelectedItem", None)
-        self._selected_link_value = (
-            _safe_text(option.get("value"))
-            if option else coordination_review_model.ALL_LINKS_FILTER_VALUE
-        )
-        self._refresh_link_filter_options()
-        self._refresh_content()
-
-    def issue_filter_changed(self, sender, args):
-        del sender, args
-        if self._suspend_filter_events:
-            return
-        option = getattr(self.issue_filter_cb, "SelectedItem", None)
-        self._selected_issue_value = _safe_text(option.get("value")) if option else coordination_review_model.ALL_ISSUES_FILTER_VALUE
-        self._refresh_content()
-
     def expand_all_click(self, sender, args):
         del sender, args
         for link_key in list(self._visible_link_keys):
@@ -412,13 +334,6 @@ class CoordinationReviewWindow(forms.WPFWindow):
             self._link_expansion_state[link_key] = False
         for issue_key in list(self._visible_issue_keys):
             self._issue_expansion_state[issue_key] = False
-        self._refresh_content()
-
-    def reset_filters_click(self, sender, args):
-        del sender, args
-        self._selected_link_value = coordination_review_model.ALL_LINKS_FILTER_VALUE
-        self._selected_issue_value = coordination_review_model.ALL_ISSUES_FILTER_VALUE
-        self._refresh_link_filter_options()
         self._refresh_content()
 
     def close_click(self, sender, args):
