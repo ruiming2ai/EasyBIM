@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = (
@@ -170,6 +171,14 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertFalse(module.should_skip_startup({"attempted": False}))
         self.assertFalse(module.should_skip_startup(None))
         self.assertTrue(module.should_skip_startup({"attempted": True}))
+
+    def test_resolve_git_command_falls_back_when_shutil_which_is_missing(self):
+        module = _load_module()
+
+        fake_shutil = object()
+
+        with mock.patch.object(module, "_can_run_git_command", return_value=True):
+            self.assertEqual(module.resolve_git_command(shutil_module=fake_shutil), ["git"])
 
 
 if __name__ == "__main__":

@@ -168,26 +168,26 @@ def _run_auto_update(trigger):
     if not os.path.isdir(repo_root):
         return _failure_result("RL Tools auto update could not find the extension folder.", visible=True)
 
-    git_path = shutil.which("git")
-    if not git_path:
+    git_command = resolve_git_command()
+    if not git_command:
         return _failure_result("RL Tools auto update could not find git on this machine.", visible=True)
 
     if not os.path.exists(os.path.join(repo_root, ".git")):
         return _failure_result("RL Tools auto update requires a valid git checkout.", visible=True)
 
-    worktree_check = _run_git(repo_root, ["rev-parse", "--is-inside-work-tree"])
+    worktree_check = _run_git(repo_root, ["rev-parse", "--is-inside-work-tree"], git_command=git_command)
     if worktree_check["returncode"] != 0 or worktree_check["stdout"].strip().lower() != "true":
         return _failure_result("RL Tools auto update requires a valid git checkout.", visible=True, details=worktree_check)
 
-    remote_check = _run_git(repo_root, ["remote", "get-url", "origin"])
+    remote_check = _run_git(repo_root, ["remote", "get-url", "origin"], git_command=git_command)
     if remote_check["returncode"] != 0 or not remote_check["stdout"].strip():
         return _failure_result("RL Tools auto update requires an origin remote.", visible=True, details=remote_check)
 
-    before_state = _read_repo_state(repo_root)
+    before_state = _read_repo_state(repo_root, git_command=git_command)
     if before_state["error"]:
         return _failure_result("RL Tools auto update could not read the current repo state.", visible=True, details=before_state)
 
-    fetch_result = _run_git(repo_root, ["fetch", "origin", "main", "--prune"])
+    fetch_result = _run_git(repo_root, ["fetch", "origin", "main", "--prune"], git_command=git_command)
     if fetch_result["returncode"] != 0:
         fetch_kind = classify_fetch_failure(fetch_result["returncode"], fetch_result["stderr"])
         if fetch_kind == FETCH_NETWORK and trigger == "startup":
@@ -204,7 +204,7 @@ def _run_auto_update(trigger):
             details=fetch_result,
         )
 
-    remote_head_result = _run_git(repo_root, ["rev-parse", "origin/main"])
+    remote_head_result = _run_git(repo_root, ["rev-parse", "origin/main"], git_command=git_command)
     if remote_head_result["returncode"] != 0:
         return _failure_result(
             "RL Tools auto update could not resolve origin/main.",
@@ -219,7 +219,7 @@ def _run_auto_update(trigger):
         return {"status": STATUS_NO_OP, "message": "RL Tools is already current.", "visible": trigger == "manual"}
 
     if before_state.get("has_untracked", False):
-        preclean = _run_git(repo_root, ["clean", "-fd"])
+        preclean = _run_git(repo_root, ["clean", "-fd"], git_command=git_command)
         if preclean["returncode"] != 0:
             return _failure_result(
                 "RL Tools auto update could not remove untracked files.",
@@ -227,7 +227,7 @@ def _run_auto_update(trigger):
                 details=preclean,
             )
 
-    checkout_result = _run_git(repo_root, ["checkout", "-B", "main", "origin/main"])
+    checkout_result = _run_git(repo_root, ["checkout", "-B", "main", "origin/main"], git_command=git_command)
     if checkout_result["returncode"] != 0:
         return _failure_result(
             "RL Tools auto update could not switch the extension repo to main.",
@@ -235,7 +235,7 @@ def _run_auto_update(trigger):
             details=checkout_result,
         )
 
-    reset_result = _run_git(repo_root, ["reset", "--hard", "origin/main"])
+    reset_result = _run_git(repo_root, ["reset", "--hard", "origin/main"], git_command=git_command)
     if reset_result["returncode"] != 0:
         return _failure_result(
             "RL Tools auto update could not reset the extension repo to origin/main.",
@@ -243,7 +243,7 @@ def _run_auto_update(trigger):
             details=reset_result,
         )
 
-    clean_result = _run_git(repo_root, ["clean", "-fd"])
+    clean_result = _run_git(repo_root, ["clean", "-fd"], git_command=git_command)
     if clean_result["returncode"] != 0:
         return _failure_result(
             "RL Tools auto update could not clean untracked files.",
@@ -251,7 +251,7 @@ def _run_auto_update(trigger):
             details=clean_result,
         )
 
-    after_state = _read_repo_state(repo_root, remote_head=remote_head)
+    after_state = _read_repo_state(repo_root, remote_head=remote_head, git_command=git_command)
     if after_state["error"]:
         return _failure_result("RL Tools auto update could not read the final repo state.", visible=True, details=after_state)
 
@@ -269,10 +269,24 @@ def _get_repo_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _read_repo_state(repo_root, remote_head=None):
-    branch_result = _run_git(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
-    head_result = _run_git(repo_root, ["rev-parse", "HEAD"])
-    status_result = _run_git(repo_root, ["status", "--short", "--untracked-files=all"])
+def resolve_git_command(shutil_module=None):
+    shutil_module = shutil if shutil_module is None else shutil_module
+    which_func = getattr(shutil_module, "which", None)
+    if callable(which_func):
+        git_path = which_func("git")
+        if git_path:
+            return [git_path]
+
+    fallback = ["git"]
+    if _can_run_git_command(fallback):
+        return fallback
+    return None
+
+
+def _read_repo_state(repo_root, remote_head=None, git_command=None):
+    branch_result = _run_git(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"], git_command=git_command)
+    head_result = _run_git(repo_root, ["rev-parse", "HEAD"], git_command=git_command)
+    status_result = _run_git(repo_root, ["status", "--short", "--untracked-files=all"], git_command=git_command)
 
     if branch_result["returncode"] != 0 or head_result["returncode"] != 0 or status_result["returncode"] != 0:
         return {
@@ -303,10 +317,25 @@ def _read_repo_state(repo_root, remote_head=None):
     }
 
 
-def _run_git(repo_root, args):
+def _can_run_git_command(git_command):
     try:
         completed = subprocess.Popen(
-            ["git"] + list(args),
+            list(git_command) + ["--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        completed.communicate()
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _run_git(repo_root, args, git_command=None):
+    git_command = list(git_command or ["git"])
+    try:
+        completed = subprocess.Popen(
+            git_command + list(args),
             cwd=repo_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
