@@ -819,6 +819,9 @@ def _show_workset_picker_dialog_wpfwindow(context):
 
 def _print_coordination_review_report(doc):
     report = _build_coordination_report(doc)
+    if _show_coordination_review_dialog(report, doc=doc):
+        return
+
     output = _get_output_window()
 
     if output:
@@ -833,6 +836,18 @@ def _print_coordination_review_report(doc):
             pass
 
     _render_report_text(report)
+
+
+def _show_coordination_review_dialog(report, doc=None):
+    try:
+        from rltools.coordination_review_window import show_coordination_review_dialog
+    except Exception:
+        return False
+
+    try:
+        return bool(show_coordination_review_dialog(report, doc=doc, uiapp=_get_uiapp()))
+    except Exception:
+        return False
 
 
 def _set_output_always_on_top(output):

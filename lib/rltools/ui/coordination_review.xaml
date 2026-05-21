@@ -1,0 +1,143 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Coordination Review"
+        Height="760"
+        Width="980"
+        MinHeight="620"
+        MinWidth="860"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Coordination Review" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock Text="Problem links only. Expanders start open and per-instance Show actions keep this window available for continued review."
+                       Margin="0,6,0,0"
+                       FontSize="13"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12" Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2.2*"/>
+                    <ColumnDefinition Width="1*"/>
+                    <ColumnDefinition Width="1*"/>
+                    <ColumnDefinition Width="1*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                    <TextBlock Text="Document" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
+                    <TextBlock x:Name="doc_title_tb" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                </StackPanel>
+
+                <Border Grid.Column="1" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10" Margin="0,0,10,0">
+                    <StackPanel>
+                        <TextBlock Text="Warnings" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="matching_warnings_tb" FontSize="22" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10" Margin="0,0,10,0">
+                    <StackPanel>
+                        <TextBlock Text="Problem Links" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="problem_links_tb" FontSize="22" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="3" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="Assignments" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="assignments_tb" FontSize="22" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12" Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="260"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Link:" VerticalAlignment="Center"/>
+                <ComboBox x:Name="link_filter_cb"
+                          Grid.Column="1"
+                          Height="30"
+                          Margin="8,0,12,0"
+                          VerticalContentAlignment="Center"
+                          DisplayMemberPath="label"
+                          SelectionChanged="link_filter_changed"/>
+
+                <TextBlock Grid.Column="2" Text="Issue Type:" VerticalAlignment="Center"/>
+                <ComboBox x:Name="issue_filter_cb"
+                          Grid.Column="3"
+                          Height="30"
+                          Margin="8,0,12,0"
+                          VerticalContentAlignment="Center"
+                          DisplayMemberPath="label"
+                          SelectionChanged="issue_filter_changed"/>
+
+                <StackPanel Grid.Column="5" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="expand_all_btn" Content="Expand All" Width="110" Height="30" Margin="0,0,8,0" Click="expand_all_click"/>
+                    <Button x:Name="collapse_all_btn" Content="Collapse All" Width="110" Height="30" Margin="0,0,8,0" Click="collapse_all_click"/>
+                    <Button x:Name="reset_filters_btn" Content="Reset Filters" Width="110" Height="30" Click="reset_filters_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+            <Grid>
+                <TextBlock x:Name="empty_tb"
+                           Visibility="Collapsed"
+                           Foreground="DimGray"
+                           FontSize="14"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center"/>
+
+                <ScrollViewer x:Name="content_sv"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="content_sp"/>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="status_tb"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Foreground="DimGray"
+                           TextWrapping="Wrap"/>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="close_btn" Content="Close" Width="120" Height="36" Click="close_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
