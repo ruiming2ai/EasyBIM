@@ -268,6 +268,17 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self._visible_link_keys = []
         self._visible_issue_keys = []
 
+        automation_error = self.report.get("automation_error")
+        if automation_error:
+            stage = _safe_text(automation_error.get("stage")) or "unknown"
+            message = _safe_text(automation_error.get("message")) or "Coordination Review automation failed."
+            self._set_empty_state(
+                True,
+                "Coordination Review automation failed at '{}'.\n\n{}".format(stage, message),
+            )
+            self.status_tb.Text = "Native Coordination Review extraction failed."
+            return
+
         if not visible_links:
             self._set_empty_state(True, "No Coordination Review problems were found in this document.")
             self.status_tb.Text = DEFAULT_STATUS_TEXT
