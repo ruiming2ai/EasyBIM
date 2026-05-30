@@ -268,6 +268,11 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self._visible_link_keys = []
         self._visible_issue_keys = []
 
+        if self.report.get("detection_error"):
+            self._set_empty_state(True, "Detection Error")
+            self.status_tb.Text = "Detection Error"
+            return
+
         automation_error = self.report.get("automation_error")
         if automation_error:
             stage = _safe_text(automation_error.get("stage")) or "unknown"
