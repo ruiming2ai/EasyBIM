@@ -14,11 +14,6 @@ except Exception:
     close_stop = None
 
 try:
-    from rltools import coordination_review_native
-except Exception:
-    coordination_review_native = None
-
-try:
     _EVENT_ARGS = EXEC_PARAMS.event_args
 except Exception:
     _EVENT_ARGS = None
@@ -28,13 +23,6 @@ try:
 except Exception:
     # Never hard-fail Revit idling because of startup automation.
     pass
-
-if coordination_review_native is not None:
-    try:
-        coordination_review_native.process_native_coordination_review_jobs()
-    except Exception:
-        # Never hard-fail Revit idling because of native report automation.
-        pass
 
 if temp_phase_view is not None:
     try:

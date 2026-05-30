@@ -819,20 +819,10 @@ def _show_workset_picker_dialog_wpfwindow(context):
 
 def _print_coordination_review_report(doc):
     try:
-        from rltools.coordination_review_native import start_native_coordination_review_extraction
-        if start_native_coordination_review_extraction(doc, uiapp=_get_uiapp()):
-            return
-        report = _build_coordination_automation_error_report(
-            doc,
-            "prepare_link",
-            "Could not queue native Coordination Review extraction.",
-        )
-    except Exception as ex:
-        report = _build_coordination_automation_error_report(
-            doc,
-            "native_automation",
-            _safe_text(ex) or "Could not start native Coordination Review extraction.",
-        )
+        from rltools.coordination_review_passive import build_passive_coordination_report
+        report = build_passive_coordination_report(doc, consume=True)
+    except Exception:
+        report = _build_coordination_detection_error_report(doc)
 
     if _show_coordination_review_dialog(report, doc=doc):
         return
@@ -865,7 +855,7 @@ def _show_coordination_review_dialog(report, doc=None):
         return False
 
 
-def _build_coordination_automation_error_report(doc, stage, message):
+def _build_coordination_detection_error_report(doc):
     return {
         "doc_title": _get_doc_title(doc),
         "link_map": {},
@@ -873,11 +863,8 @@ def _build_coordination_automation_error_report(doc, stage, message):
         "link_totals": {},
         "total_matching_warnings": 0,
         "total_link_assignments": 0,
-        "source": "native_coordination_review_report",
-        "automation_error": {
-            "stage": _safe_text(stage) or "unknown",
-            "message": _safe_text(message) or "Coordination Review automation failed.",
-        },
+        "source": "passive_coordination_review_warning",
+        "detection_error": True,
     }
 
 
@@ -1371,4 +1358,3 @@ def _alert_wpf_with_bold(title, message):
 
     except Exception:
         return False
-

@@ -223,4 +223,5 @@ def build_coordination_review_view_model(
         "issue_filter_options": build_issue_filter_options(problem_links),
         "links": filtered_links,
         "is_empty": len(problem_links) == 0,
+        "detection_error": bool((report or {}).get("detection_error", False)),
     }

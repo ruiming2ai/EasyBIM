@@ -160,6 +160,20 @@ class CoordinationReviewModelTests(unittest.TestCase):
         self.assertEqual(len(model["link_filter_options"]), 1)
         self.assertEqual(len(model["issue_filter_options"]), 1)
 
+    def test_build_view_model_preserves_detection_error_flag(self):
+        module = _load_module()
+        report = _make_report()
+        report["grouped"] = {}
+        report["link_totals"] = {}
+        report["total_matching_warnings"] = 0
+        report["total_link_assignments"] = 0
+        report["detection_error"] = True
+
+        model = module.build_coordination_review_view_model(report)
+
+        self.assertTrue(model["is_empty"])
+        self.assertTrue(model["detection_error"])
+
 
 if __name__ == "__main__":
     unittest.main()
