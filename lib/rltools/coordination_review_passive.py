@@ -288,22 +288,73 @@ def _normalize_title(value):
     return _safe_text(value).strip().lower()
 
 
-def _doc_key(doc):
+def _model_identity(value):
+    text = _normalize_path(value)
+    if not text:
+        return ""
+
+    text = text.rsplit("/", 1)[-1]
+    if text.endswith(".rvt"):
+        text = text[:-4]
+
+    for suffix in ("_detached", " detached", "-detached"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+
+    return text.strip(" _-")
+
+
+def _doc_aliases(doc):
+    aliases = set()
+
     path = _normalize_path(_get_doc_path(doc))
     if path:
-        return "path:{}".format(path)
+        aliases.add("path:{}".format(path))
+        aliases.add("file:{}".format(path.rsplit("/", 1)[-1]))
+        identity = _model_identity(path)
+        if identity:
+            aliases.add("model:{}".format(identity))
+
     title = _normalize_title(_get_doc_title(doc))
     if title:
-        return "title:{}".format(title)
-    return "unknown"
+        aliases.add("title:{}".format(title))
+        identity = _model_identity(title)
+        if identity:
+            aliases.add("model:{}".format(identity))
+
+    return sorted(aliases or set(["unknown"]))
+
+
+def _doc_key(doc):
+    aliases = _doc_aliases(doc)
+    for prefix in ("path:", "title:", "model:", "file:"):
+        for alias in aliases:
+            if alias.startswith(prefix):
+                return alias
+    return aliases[0] if aliases else "unknown"
 
 
 def _doc_entry(state, doc, create=False):
     documents = state.setdefault("documents", {})
     key = _doc_key(doc)
-    if key not in documents and create:
+    aliases = set(_doc_aliases(doc))
+    if key in documents:
+        entry = documents.get(key)
+        entry["aliases"] = sorted(set(entry.get("aliases", []) or []) | aliases | set([key]))
+        return entry
+
+    for stored_key, entry in documents.items():
+        stored_aliases = set(entry.get("aliases", []) or [])
+        stored_aliases.add(stored_key)
+        if aliases.intersection(stored_aliases):
+            entry["aliases"] = sorted(stored_aliases | aliases | set([key]))
+            return entry
+
+    if create:
         documents[key] = {
             "doc_title": _get_doc_title(doc),
+            "aliases": sorted(aliases | set([key])),
             "records": [],
         }
     return documents.get(key)
@@ -522,7 +573,16 @@ def build_passive_coordination_report(doc, consume=True):
 def clear_document_records(doc):
     state = _load_state()
     documents = state.setdefault("documents", {})
-    documents.pop(_doc_key(doc), None)
+    aliases = set(_doc_aliases(doc))
+    keys_to_remove = []
+    for stored_key, entry in documents.items():
+        stored_aliases = set((entry or {}).get("aliases", []) or [])
+        stored_aliases.add(stored_key)
+        if stored_key == _doc_key(doc) or aliases.intersection(stored_aliases):
+            keys_to_remove.append(stored_key)
+
+    for key in keys_to_remove:
+        documents.pop(key, None)
     _save_state(state)
 
 

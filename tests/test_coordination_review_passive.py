@@ -133,6 +133,32 @@ class PassiveCoordinationReviewTests(unittest.TestCase):
         self.assertEqual(report["grouped"]["42"]["Needs Coordination Review"]["count"], 1)
         self.assertEqual(report["grouped"]["42"]["Needs Coordination Review"]["instance_ids"], set([42]))
 
+    def test_matches_records_when_report_document_is_detached_copy(self):
+        module = _load_module()
+        source_doc = FakeDocument(
+            title="24091_Belmont Village Westwood_P_2025",
+            path=(
+                "C:/Users/rliu/Downloads/SAR-007 Belmont Village Senior Living-Study/"
+                "24091_Belmont Village_WWP_AR_2025/"
+                "24091_Belmont Village Westwood_P_2025.rvt"
+            ),
+            elements={2385092: FakeLinkElement(2385092, "24091_Belmont Village_WWP_AR_2025.rvt : 5")},
+        )
+        detached_doc = FakeDocument(
+            title="24091_Belmont Village Westwood_P_2025_detached",
+            path="24091_Belmont Village Westwood_P_2025_detached.rvt",
+        )
+        failure = FakeFailure("LinkInstanceNeedsReconcile", failing_ids=[2385092])
+
+        module.record_coordination_review_failure(source_doc, failure, timestamp=100.0)
+        report = module.build_passive_coordination_report(detached_doc, consume=True)
+        followup = module.build_passive_coordination_report(detached_doc, consume=False)
+
+        self.assertFalse(report.get("detection_error"))
+        self.assertEqual(report["total_matching_warnings"], 1)
+        self.assertIn("2385092", report["link_map"])
+        self.assertTrue(followup["detection_error"])
+
     def test_builds_detection_error_report_when_no_records_exist(self):
         module = _load_module()
 
