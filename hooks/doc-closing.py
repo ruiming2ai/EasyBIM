@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Temp Phase & View document closing hook."""
+"""EasyBIM close-stop document closing hook."""
 
-from rltools import temp_phase_view
+from easybim import close_stop
+
+try:
+    from easybim import coordination_review_passive
+except Exception:
+    coordination_review_passive = None
 
 
 try:
