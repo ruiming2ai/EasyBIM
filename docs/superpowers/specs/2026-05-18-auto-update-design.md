@@ -1,16 +1,16 @@
-# RL Tools Auto Update Design
+# EasyBIM Auto Update Design
 
 Date: 2026-05-18
 Status: Proposed and approved in brainstorming
 
 ## Summary
 
-Add an `Auto Update` command under `Misc Tools` and add extension startup automation for `RL_Tools.extension`.
+Add an `Auto Update` command under `Misc Tools` and add extension startup automation for `EasyBIM.extension`.
 
-On each Revit program launch, RL Tools should:
+On each Revit program launch, EasyBIM should:
 
 - run once per Revit session during extension startup
-- target only the installed `RL_Tools.extension` repo
+- target only the installed `EasyBIM.extension` repo
 - force that repo to match `origin/main`
 - reload pyRevit only when the repo changed or had to be repaired
 - stay silent when nothing changed
@@ -20,7 +20,7 @@ The `Auto Update` button should run the same workflow immediately on demand, out
 
 ## Goals
 
-- Keep installed RL Tools aligned with `origin/main` automatically at Revit startup.
+- Keep installed EasyBIM aligned with `origin/main` automatically at Revit startup.
 - Remove dependence on users remembering to run manual update steps.
 - Recover from local branch drift, divergence, or dirty working trees in the installed extension.
 - Reuse one shared update path for both startup automation and the ribbon button.
@@ -29,7 +29,7 @@ The `Auto Update` button should run the same workflow immediately on demand, out
 
 - Do not update pyRevit core.
 - Do not update any other third-party extension.
-- Do not preserve local edits in the installed RL Tools extension folder.
+- Do not preserve local edits in the installed EasyBIM extension folder.
 - Do not run on every document open.
 - Do not introduce a persistent user toggle. Startup behavior is always on by policy.
 
@@ -48,7 +48,7 @@ Rationale:
 
 The updater always forces the installed repo to `origin/main`.
 
-This policy intentionally differs from native pyRevit update behavior. Native pyRevit updates the repo's current tracked branch. RL Tools auto update must instead treat `origin/main` as the single deployment source.
+This policy intentionally differs from native pyRevit update behavior. Native pyRevit updates the repo's current tracked branch. EasyBIM auto update must instead treat `origin/main` as the single deployment source.
 
 ### Dirty or Drifted Installations
 
@@ -77,17 +77,17 @@ Responsibilities:
 - check a once-per-session guard
 - exit immediately if startup auto update already ran this Revit session
 - mark the guard before running update logic
-- call a shared helper in `lib/rltools/auto_update.py`
+- call a shared helper in `lib/easybim/auto_update.py`
 
 This file should stay small and avoid embedding git logic directly.
 
-#### `lib/rltools/auto_update.py`
+#### `lib/easybim/auto_update.py`
 
 Create a shared helper module that owns the full workflow.
 
 Responsibilities:
 
-- identify the installed RL Tools repo root
+- identify the installed EasyBIM repo root
 - confirm the repo is valid and has `origin`
 - fetch remote state
 - compare local installed state against `origin/main`
@@ -115,7 +115,7 @@ Suggested internal helpers:
 
 #### `Auto Update.pushbutton`
 
-Add a new pushbutton under `RL_Tools.tab/Misc Tools.panel`.
+Add a new pushbutton under `EasyBIM.tab/Misc Tools.panel`.
 
 Responsibilities:
 
@@ -125,7 +125,7 @@ Responsibilities:
 Icon direction:
 
 - reuse the native pyRevit reload icon as the visual base
-- change the color treatment so the command reads as RL Tools rather than stock pyRevit
+- change the color treatment so the command reads as EasyBIM rather than stock pyRevit
 - provide normal and dark icon assets if the bundle follows the existing panel convention
 
 ## Data Flow
@@ -133,7 +133,7 @@ Icon direction:
 ### Startup Flow
 
 1. Revit launches.
-2. pyRevit loads `RL_Tools.extension`.
+2. pyRevit loads `EasyBIM.extension`.
 3. `startup.py` runs.
 4. `startup.py` checks a session guard.
 5. If already attempted this session, exit.
@@ -248,11 +248,11 @@ The visible message should stay short. Detailed diagnostics should go to logs/ou
 - Keep startup bootstrap code minimal.
 - Put update logic in shared library code, not inline in `startup.py`.
 - Prefer pyRevit-supported reload behavior for the final refresh step.
-- Keep the feature scoped to RL Tools only.
+- Keep the feature scoped to EasyBIM only.
 
 ## Open Questions Resolved
 
-- Should this use native pyRevit update directly? No. Native behavior follows the current tracked branch, while RL Tools must always force `origin/main`.
+- Should this use native pyRevit update directly? No. Native behavior follows the current tracked branch, while EasyBIM must always force `origin/main`.
 - Should it run on file open? No. It must run only when the Revit program starts and pyRevit loads the extension.
 - Should startup behavior be user-toggleable? No. It is always on by policy.
 - Should dirty local edits be preserved? No. They should be discarded by force sync.

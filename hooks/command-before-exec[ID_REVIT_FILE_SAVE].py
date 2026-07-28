@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Capture Revit save commands for compatibility diagnostics only."""
 
-from rltools import close_stop
+from easybim import close_stop
 
 
 try:

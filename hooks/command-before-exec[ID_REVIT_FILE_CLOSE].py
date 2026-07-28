@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Capture Revit close command names for Close Stop."""
 
-from rltools import close_stop
+from easybim import close_stop
 
 
 try:
