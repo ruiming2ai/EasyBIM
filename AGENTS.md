@@ -2,9 +2,9 @@
 
 ## Project Snapshot
 
-- Project name: RL_Tools.extension
+- Project name: EasyBIM.extension
 - Status: Active pyRevit extension development on `main`
-- Primary goal: Maintain and expand RL_Tools pyRevit commands/hooks with safe workflow governance
+- Primary goal: Maintain and expand EasyBIM pyRevit commands/hooks with safe workflow governance
 - Primary stack: Python (pyRevit/Revit API), XAML for command UI
 
 ## Current Workflow Summary
@@ -25,7 +25,7 @@
 - Python syntax check for one file:
   - `python -m py_compile "<path-to-script.py>"`
 - Compile many command scripts:
-  - `python -m compileall "RL_Tools.tab"`
+  - `python -m compileall "EasyBIM.tab"`
 - Primary worktree and branch checks:
   - `git worktree list`
   - `git rev-parse --abbrev-ref HEAD`
@@ -49,7 +49,7 @@
 
 ## Git Worktree Manager Style
 
-- Naming: create worktree folders as `C:\Users\RML\Documents\GitHub\RL_Tools.extension-<BranchName>`.
+- Naming: create worktree folders as `C:\Users\RML\Documents\GitHub\EasyBIM.extension-<BranchName>`.
 - Explicit-name override: if user provides a specific worktree name/path, create that exact folder and create/check out a branch with the exact same name as that worktree folder name.
 - One branch per worktree: never keep the same branch checked out in more than one worktree.
 - Branch conflict handling:
@@ -87,7 +87,9 @@
 | Date | What Changed | Files Touched | Checks Run | Next Step |
 |------|---------------|---------------|------------|-----------|
 | 2026-03-02 | Created baseline AGENTS governance file | `AGENTS.md` | None | Add new decision/handoff rows after merged workflow changes |
-| 2026-03-04 | Added Git Worktree Manager Style governance and mirrored rule intent for skills | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | `rg` keyword checks, focused `git diff`, `git status --short` scope check | Continue applying these defaults for all RL_Tools worktree operations |
+| 2026-03-04 | Added Git Worktree Manager Style governance and mirrored rule intent for skills | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-easybim-extension\SKILL.md` | `rg` keyword checks, focused `git diff`, `git status --short` scope check | Continue applying these defaults for all EasyBIM worktree operations |
 | 2026-03-04 | Added documented standard git promotion flow and linked `skills.md` process | `AGENTS.md`, `skills.md` | Doc-only update | Follow this process for routine feature promotion |
-| 2026-03-04 | Added shorthand workflow command definition and default semantics | `AGENTS.md`, `skills.md` | Doc-only update | Use `update feature & main worktree` for typical worktree promotion |
-| 2026-03-04 | Added explicit-name worktree/branch parity rule and removed auto-suffix creation behavior | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-rl-tools-extension\SKILL.md` | Worktree recreate + doc sync + status verification | Keep explicit worktree names and branch names identical when requested |
+| 2026-03-04 | Added shorthand workflow command definition and default semantics | `AGENTS.md`, `skills.md` | Doc-only update | Superseded by `sync worktrees` wording |
+| 2026-03-04 | Added explicit-name worktree/branch parity rule and removed auto-suffix creation behavior | `AGENTS.md`, `C:\Users\RML\.codex\skills\rml-repo-easybim-extension\SKILL.md` | Worktree recreate + doc sync + status verification | Keep explicit worktree names and branch names identical when requested |
+| 2026-03-04 | Standardized primary-worktree 3-stage promotion flow via `Temp-Phase-and-View-2` before `main` | `AGENTS.md`, `skills.md`, `C:\Users\RML\.codex\skills\rml-repo-easybim-extension\SKILL.md` | Doc update for workflow governance | Superseded by creator-branch sync default |
+| 2026-03-13 | Replaced fixed staging-branch shorthand with creator-branch `sync worktrees` semantics | `AGENTS.md`, `skills.md`, `C:\Users\RML\.codex\skills\rml-repo-easybim-extension\SKILL.md` | Targeted doc sync across root repo, mirrored skill, and worktree copies | Keep `main` promotion as a separate explicit step |
