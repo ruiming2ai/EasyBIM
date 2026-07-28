@@ -7,8 +7,10 @@ import time
 
 
 AUTO_UPDATE_GUARD_ENVVAR = "EASYBIM_AUTO_UPDATE_RAN"
+AUTO_UPDATE_MUTEX_NAME = "Global\\EasyBIMAutoUpdate"
 TITLE = "Auto Update"
 STATUS_NO_OP = "no_op"
+STATUS_SKIPPED_LOCKED = "skipped_locked"
 STATUS_UPDATED = "updated"
 
 
@@ -50,7 +52,20 @@ def mark_startup_attempted():
 
 
 def run_startup_auto_update():
-    return _run_native_update(trigger="startup")
+    startup_lock = _try_acquire_startup_lock()
+    if startup_lock is False:
+        return _result(
+            trigger="startup",
+            updated_repos=[],
+            status=STATUS_SKIPPED_LOCKED,
+        )
+    if startup_lock is None:
+        return _run_native_update(trigger="startup")
+
+    try:
+        return _run_native_update(trigger="startup")
+    finally:
+        _release_startup_lock(startup_lock)
 
 
 def run_manual_auto_update():
@@ -91,13 +106,59 @@ def _run_native_update(trigger):
     return _result(trigger=trigger, updated_repos=updated_repos)
 
 
-def _result(trigger, updated_repos):
+def _result(trigger, updated_repos, status=None):
     updated_repos = list(updated_repos or [])
+    if status is None:
+        status = STATUS_UPDATED if updated_repos else STATUS_NO_OP
     return {
-        "status": STATUS_UPDATED if updated_repos else STATUS_NO_OP,
+        "status": status,
         "trigger": trigger,
         "updated_repos": updated_repos,
     }
+
+
+def _try_acquire_startup_lock():
+    startup_lock = None
+    try:
+        from System.Threading import AbandonedMutexException
+        from System.Threading import Mutex
+
+        startup_lock = Mutex(False, AUTO_UPDATE_MUTEX_NAME)
+        try:
+            acquired = bool(startup_lock.WaitOne(0, False))
+        except AbandonedMutexException:
+            acquired = True
+    except Exception:
+        _dispose_startup_lock(startup_lock)
+        return None
+
+    if acquired:
+        return startup_lock
+
+    _dispose_startup_lock(startup_lock)
+    return False
+
+
+def _release_startup_lock(startup_lock):
+    try:
+        startup_lock.ReleaseMutex()
+    except Exception:
+        pass
+    _dispose_startup_lock(startup_lock)
+
+
+def _dispose_startup_lock(startup_lock):
+    if startup_lock is None:
+        return
+
+    dispose = getattr(startup_lock, "Dispose", None)
+    if dispose is None:
+        return
+
+    try:
+        dispose()
+    except Exception:
+        pass
 
 
 def _get_native_updater():
