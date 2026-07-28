@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Capture legacy Revit synchronize commands and run Close Stop before syncing."""
 
-from rltools import close_stop
+from easybim import close_stop
 
 
 try:
