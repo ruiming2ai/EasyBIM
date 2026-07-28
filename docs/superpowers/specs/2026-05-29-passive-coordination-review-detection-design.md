@@ -2,7 +2,7 @@
 
 ## Summary
 
-Replace the native Coordination Review dialog automation goal with passive detection. RL Tools will watch Revit's normal warning/failure flow and record linked models that Revit reports as needing Coordination Review. The Coordination Review window will still open automatically after Start Message, but it will only show problem links captured during file open or link load/reload.
+Replace the native Coordination Review dialog automation goal with passive detection. EasyBIM will watch Revit's normal warning/failure flow and record linked models that Revit reports as needing Coordination Review. The Coordination Review window will still open automatically after Start Message, but it will only show problem links captured during file open or link load/reload.
 
 ## Goals
 
@@ -21,7 +21,7 @@ Replace the native Coordination Review dialog automation goal with passive detec
 
 ## User Behavior
 
-RL Tools will continue to open the Coordination Review window automatically after Start Message.
+EasyBIM will continue to open the Coordination Review window automatically after Start Message.
 
 The window content will be:
 
@@ -30,7 +30,7 @@ The window content will be:
 
 ## Detection Flow
 
-At extension startup, RL Tools registers a lightweight listener for Revit warning/failure events. When Revit naturally raises `BuiltInFailures.LinkFailures.LinkInstanceNeedsReconcile`, the listener records the affected link for the active document.
+At extension startup, EasyBIM registers a lightweight listener for Revit warning/failure events. When Revit naturally raises `BuiltInFailures.LinkFailures.LinkInstanceNeedsReconcile`, the listener records the affected link for the active document.
 
 The Start Message workflow reads the recorded session state and builds the Coordination Review window model from that state. This replaces the current native HTML-report automation path for the default startup/manual report flow.
 
@@ -44,7 +44,7 @@ Captured records should contain only minimal session data:
 - Timestamp.
 - Status: `needs_coordination_review`.
 
-If the warning is detected but cannot be mapped to a specific link, RL Tools should show one generic problem row:
+If the warning is detected but cannot be mapped to a specific link, EasyBIM should show one generic problem row:
 
 `Linked model needs Coordination Review`
 
@@ -71,7 +71,7 @@ Unit tests should cover pure parser/state behavior:
 Manual Revit validation should cover:
 
 - Open the Belmont file that triggers native Coordination Review warnings.
-- Confirm RL Tools opens the Coordination Review window automatically after Start Message.
+- Confirm EasyBIM opens the Coordination Review window automatically after Start Message.
 - Confirm only captured problem links are listed.
 - Confirm no native Coordination Review dialog opens.
 - Confirm a session with no captured warning shows `Detection Error`.

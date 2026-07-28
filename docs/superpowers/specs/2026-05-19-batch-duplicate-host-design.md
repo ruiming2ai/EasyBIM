@@ -5,7 +5,7 @@ Status: Proposed and approved in brainstorming
 
 ## Summary
 
-Port the Revit C# `Batch Duplicate Host` add-in from `C:\Users\RML\Documents\Dynamo - Batch Host` into a new pyRevit command under `RL_Tools.tab/Misc Tools.panel`.
+Port the Revit C# `Batch Duplicate Host` add-in from `C:\Users\RML\Documents\Dynamo - Batch Host` into a new pyRevit command under `EasyBIM.tab/Misc Tools.panel`.
 
 The pyRevit port must preserve the original four-step wizard, public name, icon branding, target-local offset behavior, and summary flow as closely as pyRevit allows.
 
@@ -18,7 +18,7 @@ The port also adds one approved UI behavior change on the Offset step:
 
 ## Goals
 
-- Preserve the source add-in's user workflow and logic inside RL Tools.
+- Preserve the source add-in's user workflow and logic inside EasyBIM.
 - Keep target-local offset semantics based on each target family instance's own orientation.
 - Preserve current hosted-family copy behavior without inventing custom rehost logic.
 - Make the non-Revit parts of the port testable with plain Python unit tests.
@@ -35,7 +35,7 @@ The port also adds one approved UI behavior change on the Offset step:
 
 ### Command Location and Branding
 
-- Add a new command at `RL_Tools.tab/Misc Tools.panel/Batch Duplicate Host.pushbutton`.
+- Add a new command at `EasyBIM.tab/Misc Tools.panel/Batch Duplicate Host.pushbutton`.
 - Keep the public button title as `Batch Duplicate\nHost`.
 - Reuse the source add-in icon branding where practical.
 
