@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TEMP Phase & Views command interception hook."""
+"""Capture Revit close command names for Close Stop."""
 
 from easybim import close_stop
 
@@ -10,4 +10,4 @@ except Exception:
     _EVENT_ARGS = None
 
 
-temp_phase_views.handle_command_before_exec(event_args=_EVENT_ARGS)
+close_stop.capture_action_command(event_args=_EVENT_ARGS)

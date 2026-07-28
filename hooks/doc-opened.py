@@ -2,7 +2,7 @@
 # Runs when a document finishes opening. CPython & IronPython safe.
 # We don't rely on EXEC_PARAMS; we try to grab the doc but will still show even if we can't.
 
-from rltools.messages import show_start_message
+from easybim.messages import run_start_message_on_file_open
 
 # Try hook event args first (most reliable in hook context), then fall back
 # to active UIDocument. If both fail, we'll still show with force=True.
