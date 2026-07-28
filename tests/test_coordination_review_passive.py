@@ -8,7 +8,7 @@ import unittest
 MODULE_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
     / "lib"
-    / "rltools"
+    / "easybim"
     / "coordination_review_passive.py"
 )
 
@@ -195,7 +195,7 @@ class PassiveCoordinationReviewTests(unittest.TestCase):
         module = _load_module()
         path = module.passive_debug_file_path()
 
-        self.assertTrue(path.replace("\\", "/").endswith("/RLTools/CoordinationReview/passive_detection_debug.json"))
+        self.assertTrue(path.replace("\\", "/").endswith("/EasyBIM/CoordinationReview/passive_detection_debug.json"))
 
         module.append_debug_event("sample_event", {"value": 7})
         written_path = module.write_debug_file()

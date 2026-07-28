@@ -5,7 +5,7 @@ import unittest
 
 COMMAND_DIR = (
     pathlib.Path(__file__).resolve().parents[1]
-    / "RL_Tools.tab"
+    / "EasyBIM.tab"
     / "Misc Tools.panel"
     / "Batch Duplicate Host.pushbutton"
 )
