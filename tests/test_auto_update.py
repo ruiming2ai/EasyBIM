@@ -35,8 +35,19 @@ class _FakeSessionManager(object):
 
 
 class _FakeUpdater(object):
-    def __init__(self, before_repos=None, after_repos=None, sessionmgr=None, request_reload=False):
+    def __init__(
+        self,
+        before_repos=None,
+        after_repos=None,
+        sessionmgr=None,
+        request_reload=False,
+        pending_updates=True,
+        check_exception=None,
+    ):
+        self.check_count = 0
+        self.check_exception = check_exception
         self.call_count = 0
+        self.pending_updates = pending_updates
         self.repos = list(before_repos or [])
         self.after_repos = list(after_repos or self.repos)
         self.sessionmgr = sessionmgr
@@ -44,6 +55,12 @@ class _FakeUpdater(object):
 
     def get_all_extension_repos(self):
         return list(self.repos)
+
+    def check_for_updates(self):
+        self.check_count += 1
+        if self.check_exception is not None:
+            raise self.check_exception
+        return self.pending_updates
 
     def update_pyrevit(self):
         self.call_count += 1
@@ -163,6 +180,79 @@ class AutoUpdateTests(unittest.TestCase):
                     result = module.run_manual_auto_update()
 
         acquire_lock.assert_not_called()
+        self.assertEqual(updater.call_count, 1)
+        self.assertEqual(result["trigger"], "manual")
+
+    def test_startup_no_pending_updates_skips_full_native_update(self):
+        module = _load_module()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            pending_updates=False,
+        )
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=None):
+            with mock.patch.object(module, "_get_native_updater", return_value=updater):
+                result = module.run_startup_auto_update()
+
+        self.assertEqual(updater.check_count, 1)
+        self.assertEqual(updater.call_count, 0)
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+        self.assertEqual(result["trigger"], "startup")
+        self.assertEqual(result["updated_repos"], [])
+
+    def test_startup_pending_updates_calls_full_native_update(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            after_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            sessionmgr=sessionmgr,
+            pending_updates=True,
+        )
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=None):
+            with mock.patch.object(module, "_get_native_updater", return_value=updater):
+                with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
+                    result = module.run_startup_auto_update()
+
+        self.assertEqual(updater.check_count, 1)
+        self.assertEqual(updater.call_count, 1)
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+
+    def test_startup_precheck_exception_falls_back_to_full_native_update(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            after_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            sessionmgr=sessionmgr,
+            check_exception=RuntimeError("precheck failed"),
+        )
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=None):
+            with mock.patch.object(module, "_get_native_updater", return_value=updater):
+                with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
+                    result = module.run_startup_auto_update()
+
+        self.assertEqual(updater.check_count, 1)
+        self.assertEqual(updater.call_count, 1)
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+
+    def test_manual_auto_update_bypasses_pending_update_precheck(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            after_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            sessionmgr=sessionmgr,
+            check_exception=RuntimeError("manual should not precheck"),
+        )
+
+        with mock.patch.object(module, "_get_native_updater", return_value=updater):
+            with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
+                result = module.run_manual_auto_update()
+
+        self.assertEqual(updater.check_count, 0)
         self.assertEqual(updater.call_count, 1)
         self.assertEqual(result["trigger"], "manual")
 
