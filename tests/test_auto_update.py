@@ -52,6 +52,18 @@ class _FakeUpdater(object):
             self.sessionmgr.reload_pyrevit()
 
 
+class _FakeStartupLock(object):
+    def __init__(self):
+        self.released = False
+        self.disposed = False
+
+    def ReleaseMutex(self):
+        self.released = True
+
+    def Dispose(self):
+        self.disposed = True
+
+
 class AutoUpdateTests(unittest.TestCase):
     def test_should_skip_startup_returns_true_after_guard_is_set(self):
         module = _load_module()
@@ -77,6 +89,48 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertEqual(result["status"], module.STATUS_NO_OP)
         self.assertEqual(result["trigger"], "startup")
 
+    def test_startup_lock_acquired_runs_native_update_and_releases(self):
+        module = _load_module()
+        startup_lock = _FakeStartupLock()
+        expected_result = {
+            "status": module.STATUS_NO_OP,
+            "trigger": "startup",
+            "updated_repos": [],
+        }
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=startup_lock):
+            with mock.patch.object(module, "_run_native_update", return_value=expected_result) as run_update:
+                result = module.run_startup_auto_update()
+
+        run_update.assert_called_once_with(trigger="startup")
+        self.assertEqual(result, expected_result)
+        self.assertTrue(startup_lock.released)
+        self.assertTrue(startup_lock.disposed)
+
+    def test_startup_lock_unavailable_skips_native_update(self):
+        module = _load_module()
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=False):
+            with mock.patch.object(module, "_run_native_update") as run_update:
+                result = module.run_startup_auto_update()
+
+        run_update.assert_not_called()
+        self.assertEqual(result["status"], module.STATUS_SKIPPED_LOCKED)
+        self.assertEqual(result["trigger"], "startup")
+        self.assertEqual(result["updated_repos"], [])
+
+    def test_startup_lock_releases_when_native_update_raises(self):
+        module = _load_module()
+        startup_lock = _FakeStartupLock()
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=startup_lock):
+            with mock.patch.object(module, "_run_native_update", side_effect=RuntimeError("failed")):
+                with self.assertRaises(RuntimeError):
+                    module.run_startup_auto_update()
+
+        self.assertTrue(startup_lock.released)
+        self.assertTrue(startup_lock.disposed)
+
     def test_manual_auto_update_calls_native_pyrevit_update(self):
         module = _load_module()
         sessionmgr = _FakeSessionManager()
@@ -92,6 +146,24 @@ class AutoUpdateTests(unittest.TestCase):
 
         self.assertEqual(updater.call_count, 1)
         self.assertEqual(result["status"], module.STATUS_NO_OP)
+        self.assertEqual(result["trigger"], "manual")
+
+    def test_manual_auto_update_does_not_require_startup_lock(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            after_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            sessionmgr=sessionmgr,
+        )
+
+        with mock.patch.object(module, "_try_acquire_startup_lock") as acquire_lock:
+            with mock.patch.object(module, "_get_native_updater", return_value=updater):
+                with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
+                    result = module.run_manual_auto_update()
+
+        acquire_lock.assert_not_called()
+        self.assertEqual(updater.call_count, 1)
         self.assertEqual(result["trigger"], "manual")
 
     def test_no_popup_when_repo_heads_match(self):
