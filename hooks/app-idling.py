@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
-"""RL Tools app-idling hook."""
+"""Process EasyBIM startup queue, temp-phase runtime, and close stop."""
 
-from rltools.messages import process_startup_jobs
+from easybim.messages import process_startup_jobs
 
 try:
-    from rltools import temp_phase_views
+    from easybim import temp_phase_view
 except Exception:
-    temp_phase_views = None
+    temp_phase_view = None
+
+try:
+    from easybim import close_stop
+except Exception:
+    close_stop = None
 
 try:
     _EVENT_ARGS = EXEC_PARAMS.event_args
