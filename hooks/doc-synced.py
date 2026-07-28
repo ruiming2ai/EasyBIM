@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Show a post-save RL Tools notice after synchronize with central completes."""
+"""Show a post-save EasyBIM notice after synchronize with central completes."""
 
-from rltools import file_saved_notice
+from easybim import file_saved_notice
 
 
 try:

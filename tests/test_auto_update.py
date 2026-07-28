@@ -6,7 +6,7 @@ import unittest
 MODULE_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
     / "lib"
-    / "rltools"
+    / "easybim"
     / "auto_update.py"
 )
 
