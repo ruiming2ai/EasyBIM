@@ -60,10 +60,10 @@ def run_startup_auto_update():
             status=STATUS_SKIPPED_LOCKED,
         )
     if startup_lock is None:
-        return _run_native_update(trigger="startup")
+        return _run_startup_update_after_precheck()
 
     try:
-        return _run_native_update(trigger="startup")
+        return _run_startup_update_after_precheck()
     finally:
         _release_startup_lock(startup_lock)
 
@@ -72,8 +72,22 @@ def run_manual_auto_update():
     return _run_native_update(trigger="manual")
 
 
-def _run_native_update(trigger):
-    updater = _get_native_updater()
+def _run_startup_update_after_precheck():
+    try:
+        updater = _get_native_updater()
+    except Exception:
+        return _run_native_update(trigger="startup")
+
+    pending_updates = _try_check_for_pending_updates(updater)
+    if pending_updates is False:
+        return _result(trigger="startup", updated_repos=[])
+
+    return _run_native_update(trigger="startup", updater=updater)
+
+
+def _run_native_update(trigger, updater=None):
+    if updater is None:
+        updater = _get_native_updater()
     sessionmgr = _get_session_manager()
     before_heads = _try_snapshot_repo_heads(updater)
 
@@ -176,6 +190,13 @@ def _get_session_manager():
 def _try_snapshot_repo_heads(updater):
     try:
         return _snapshot_repo_heads(updater)
+    except Exception:
+        return None
+
+
+def _try_check_for_pending_updates(updater):
+    try:
+        return bool(updater.check_for_updates())
     except Exception:
         return None
 
