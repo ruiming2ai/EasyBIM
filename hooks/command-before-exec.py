@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Generic command-before-exec probe hook for button-armed diagnostics."""
 
-from rltools import close_stop
+from easybim import close_stop
 
 
 try:
