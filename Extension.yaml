@@ -1,5 +1,5 @@
 type: extension
-name: RL_Tools
+name: EasyBIM
 description: Company Startup Meesage for Revit
 author: Ruiming Liu
 default_enabled: true
