@@ -19,152 +19,15 @@ def _load_module():
     return module
 
 
+class _FakeUpdater(object):
+    def __init__(self):
+        self.call_count = 0
+
+    def update_pyrevit(self):
+        self.call_count += 1
+
+
 class AutoUpdateTests(unittest.TestCase):
-    def test_is_repo_compliant_requires_main_clean_and_matching_remote(self):
-        module = _load_module()
-
-        self.assertTrue(
-            module.is_repo_compliant(
-                {
-                    "branch": "main",
-                    "head": "abc123",
-                    "remote_head": "abc123",
-                    "tracked_dirty": False,
-                    "has_untracked": False,
-                }
-            )
-        )
-
-        self.assertFalse(
-            module.is_repo_compliant(
-                {
-                    "branch": "Auto-Update",
-                    "head": "abc123",
-                    "remote_head": "abc123",
-                    "tracked_dirty": False,
-                    "has_untracked": False,
-                }
-            )
-        )
-
-        self.assertFalse(
-            module.is_repo_compliant(
-                {
-                    "branch": "main",
-                    "head": "abc123",
-                    "remote_head": "def456",
-                    "tracked_dirty": False,
-                    "has_untracked": False,
-                }
-            )
-        )
-
-        self.assertFalse(
-            module.is_repo_compliant(
-                {
-                    "branch": "main",
-                    "head": "abc123",
-                    "remote_head": "abc123",
-                    "tracked_dirty": True,
-                    "has_untracked": False,
-                }
-            )
-        )
-
-        self.assertFalse(
-            module.is_repo_compliant(
-                {
-                    "branch": "main",
-                    "head": "abc123",
-                    "remote_head": "abc123",
-                    "tracked_dirty": False,
-                    "has_untracked": True,
-                }
-            )
-        )
-
-    def test_classify_sync_result_distinguishes_noop_update_and_repair(self):
-        module = _load_module()
-
-        noop_result = module.classify_sync_result(
-            before_state={
-                "branch": "main",
-                "head": "abc123",
-                "remote_head": "abc123",
-                "tracked_dirty": False,
-                "has_untracked": False,
-            },
-            after_state={
-                "branch": "main",
-                "head": "abc123",
-                "remote_head": "abc123",
-                "tracked_dirty": False,
-                "has_untracked": False,
-            },
-        )
-        self.assertEqual(noop_result["status"], "no_op")
-
-        updated_result = module.classify_sync_result(
-            before_state={
-                "branch": "main",
-                "head": "old111",
-                "remote_head": "new222",
-                "tracked_dirty": False,
-                "has_untracked": False,
-            },
-            after_state={
-                "branch": "main",
-                "head": "new222",
-                "remote_head": "new222",
-                "tracked_dirty": False,
-                "has_untracked": False,
-            },
-        )
-        self.assertEqual(updated_result["status"], "updated")
-
-        repaired_result = module.classify_sync_result(
-            before_state={
-                "branch": "feature",
-                "head": "same333",
-                "remote_head": "same333",
-                "tracked_dirty": True,
-                "has_untracked": True,
-            },
-            after_state={
-                "branch": "main",
-                "head": "same333",
-                "remote_head": "same333",
-                "tracked_dirty": False,
-                "has_untracked": False,
-            },
-        )
-        self.assertEqual(repaired_result["status"], "repaired")
-
-    def test_classify_fetch_failure_recognizes_silent_startup_skip_cases(self):
-        module = _load_module()
-
-        self.assertEqual(
-            module.classify_fetch_failure(
-                returncode=128,
-                stderr_text="fatal: unable to access 'https://example': Could not resolve host: github.com",
-            ),
-            "network",
-        )
-        self.assertEqual(
-            module.classify_fetch_failure(
-                returncode=128,
-                stderr_text="fatal: unable to access 'https://example': Failed to connect to github.com port 443",
-            ),
-            "network",
-        )
-        self.assertEqual(
-            module.classify_fetch_failure(
-                returncode=128,
-                stderr_text="fatal: Authentication failed for 'https://example'",
-            ),
-            "error",
-        )
-
     def test_should_skip_startup_returns_true_after_guard_is_set(self):
         module = _load_module()
 
@@ -172,13 +35,44 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertFalse(module.should_skip_startup(None))
         self.assertTrue(module.should_skip_startup({"attempted": True}))
 
-    def test_resolve_git_command_falls_back_when_shutil_which_is_missing(self):
+    def test_startup_auto_update_calls_native_pyrevit_update(self):
+        module = _load_module()
+        fake_updater = _FakeUpdater()
+
+        with mock.patch.object(module, "_get_native_updater", return_value=fake_updater):
+            result = module.run_startup_auto_update()
+
+        self.assertEqual(fake_updater.call_count, 1)
+        self.assertEqual(result["status"], module.STATUS_EXECUTED)
+        self.assertEqual(result["trigger"], "startup")
+
+    def test_manual_auto_update_calls_native_pyrevit_update(self):
+        module = _load_module()
+        fake_updater = _FakeUpdater()
+
+        with mock.patch.object(module, "_get_native_updater", return_value=fake_updater):
+            result = module.run_manual_auto_update()
+
+        self.assertEqual(fake_updater.call_count, 1)
+        self.assertEqual(result["status"], module.STATUS_EXECUTED)
+        self.assertEqual(result["trigger"], "manual")
+
+    def test_native_update_errors_are_not_swallowed(self):
         module = _load_module()
 
-        fake_shutil = object()
+        class FailingUpdater(object):
+            def update_pyrevit(self):
+                raise RuntimeError("native update failed")
 
-        with mock.patch.object(module, "_can_run_git_command", return_value=True):
-            self.assertEqual(module.resolve_git_command(shutil_module=fake_shutil), ["git"])
+        with mock.patch.object(module, "_get_native_updater", return_value=FailingUpdater()):
+            with self.assertRaises(RuntimeError):
+                module.run_manual_auto_update()
+
+    def test_easybim_auto_update_has_no_local_command_runner_dependencies(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("subprocess", source)
+        self.assertNotIn("shutil", source)
 
 
 if __name__ == "__main__":
