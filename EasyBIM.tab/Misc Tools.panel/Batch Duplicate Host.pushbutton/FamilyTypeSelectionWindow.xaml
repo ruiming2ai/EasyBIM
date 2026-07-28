@@ -1,0 +1,54 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Family Types"
+        Width="520"
+        Height="560"
+        MinWidth="420"
+        MinHeight="420"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border BorderBrush="#b8b8b8"
+                BorderThickness="1"
+                Margin="0,0,0,12">
+            <TreeView x:Name="FamilyTypeTree" />
+        </Border>
+
+        <DockPanel Grid.Row="1"
+                   LastChildFill="False">
+            <StackPanel Orientation="Horizontal"
+                        DockPanel.Dock="Left">
+                <Button Content="Select All"
+                        Width="88"
+                        Margin="0,0,8,0"
+                        Click="select_all_click" />
+                <Button Content="Select None"
+                        Width="88"
+                        Click="select_none_click" />
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal"
+                        DockPanel.Dock="Right"
+                        HorizontalAlignment="Right">
+                <Button Content="Back"
+                        Width="88"
+                        Margin="0,0,8,0"
+                        Click="back_click" />
+                <Button Content="OK"
+                        Width="88"
+                        Margin="0,0,8,0"
+                        IsDefault="True"
+                        Click="ok_click" />
+                <Button Content="Cancel"
+                        Width="88"
+                        IsCancel="True"
+                        Click="cancel_click" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>
