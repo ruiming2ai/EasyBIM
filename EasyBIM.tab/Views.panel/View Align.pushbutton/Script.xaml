@@ -1,0 +1,181 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="View Align"
+        Height="760"
+        Width="1380"
+        MinHeight="660"
+        MinWidth="1160"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Window.Resources>
+        <Style x:Key="TreeItemStyle" TargetType="TreeViewItem">
+            <Setter Property="IsExpanded" Value="True"/>
+        </Style>
+
+        <HierarchicalDataTemplate x:Key="TargetNodeTemplate" ItemsSource="{Binding children}">
+            <DockPanel Margin="0,2,0,2" LastChildFill="True">
+                <CheckBox Width="18"
+                          VerticalAlignment="Center"
+                          Margin="0,0,6,0"
+                          IsThreeState="True"
+                          IsChecked="{Binding is_checked, Mode=TwoWay}"
+                          Click="target_checkbox_click"/>
+
+                <Border x:Name="typeBadge"
+                        DockPanel.Dock="Right"
+                        Background="#ECF5EF"
+                        BorderBrush="#B9D7C2"
+                        BorderThickness="1"
+                        CornerRadius="9"
+                        Padding="8,2,8,2"
+                        Margin="8,0,0,0"
+                        VerticalAlignment="Center">
+                    <TextBlock Text="{Binding view_type_badge_text}"
+                               FontSize="11"
+                               Foreground="#2D4A34"
+                               FontWeight="SemiBold"/>
+                </Border>
+
+                <TextBlock x:Name="nodeText"
+                           Text="{Binding display_name}"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+
+            <HierarchicalDataTemplate.Triggers>
+                <DataTrigger Binding="{Binding is_sheet}" Value="True">
+                    <Setter TargetName="typeBadge" Property="Visibility" Value="Collapsed"/>
+                    <Setter TargetName="nodeText" Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+            </HierarchicalDataTemplate.Triggers>
+        </HierarchicalDataTemplate>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="View Align" FontSize="34" FontWeight="SemiBold"/>
+            <TextBlock Text="Model-coordinate alignment only. Unsupported view types are hidden from target selection."
+                       Margin="0,6,0,0"
+                       FontSize="13"
+                       Foreground="DimGray"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="520"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="Alignment View" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,12"/>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="120"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Document:" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="ref_doc_cb" Grid.Row="0" Grid.Column="1" Height="30" Margin="8,0,0,8"
+                                  SelectionChanged="ref_doc_changed" DisplayMemberPath="display"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Sheet:" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="ref_sheet_cb" Grid.Row="1" Grid.Column="1" Height="30" Margin="8,0,0,8"
+                                  SelectionChanged="ref_sheet_changed" DisplayMemberPath="display"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="View:" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="ref_view_cb" Grid.Row="2" Grid.Column="1" Height="30" Margin="8,0,0,0"
+                                  DisplayMemberPath="display"/>
+                    </Grid>
+
+                    <Border Grid.Row="2" Margin="0,12,0,0" BorderBrush="#E3E3E3" BorderThickness="1" Padding="10">
+                        <StackPanel>
+                            <CheckBox x:Name="match_title_pos_cb" Content="Match view title position" Margin="0,0,0,8"/>
+                            <CheckBox x:Name="match_title_line_cb" Content="Match view title line length" Margin="0,0,0,8"/>
+                            <CheckBox x:Name="assign_scope_cb" Content="Assign Scope Box" Margin="0,0,0,8" Click="assign_scope_clicked"/>
+                            <CheckBox x:Name="assign_crop_cb" Content="Assign Crop View Region" Margin="0,0,0,8" Click="assign_crop_clicked"/>
+                            <CheckBox x:Name="match_viewport_type_cb" Content="Match viewport type"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Grid.Row="3"
+                               Margin="0,12,0,0"
+                               Foreground="DimGray"
+                               TextWrapping="Wrap"
+                               Text="Targets are always taken from the active file. References can come from active/open/linked files."/>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="Views To Align" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,10"/>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="target_search_tb" Width="420" Height="28" Padding="6,2,6,2"
+                                 VerticalContentAlignment="Center"
+                                 TextChanged="target_search_changed"/>
+                        <Button Content="Check All Visible" Margin="10,0,6,0" Width="128" Height="28" Click="check_all_visible_click"/>
+                        <Button Content="Clear" Width="74" Height="28" Margin="0,0,6,0" Click="clear_targets_click"/>
+                        <Button Content="Expand" Width="74" Height="28" Margin="0,0,6,0" Click="expand_all_click"/>
+                        <Button Content="Collapse" Width="74" Height="28" Click="collapse_all_click"/>
+                    </StackPanel>
+
+                    <TreeView x:Name="target_tv"
+                              Grid.Row="2"
+                              BorderBrush="#B9B9B9"
+                              BorderThickness="1"
+                              ItemTemplate="{StaticResource TargetNodeTemplate}"
+                              ItemContainerStyle="{StaticResource TreeItemStyle}"/>
+
+                    <TextBlock x:Name="target_count_tb" Grid.Row="3" Margin="0,8,0,0" Foreground="DimGray"/>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextWrapping="Wrap"/>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Run" Width="120" Height="36" Margin="0,0,8,0" Click="run_click"/>
+                    <Button Content="Cancel" Width="120" Height="36" Click="cancel_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
