@@ -1,0 +1,106 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Load Print Set by Schedule"
+        Height="620"
+        Width="760"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <DockPanel>
+        <StackPanel Margin="10" DockPanel.Dock="Top">
+            <DockPanel Height="26">
+                <Grid Margin="0,0,10,0" Width="160">
+                    <Polygon Points="0,0 150,0 160,13 150,26 0,26"
+                             Fill="{DynamicResource pyRevitDarkBrush}"
+                             SnapsToDevicePixels="True"/>
+                    <TextBlock Text="Sheet List"
+                               FontWeight="Medium"
+                               VerticalAlignment="Center"
+                               Margin="10,0,10,0"
+                               Foreground="White"/>
+                </Grid>
+                <ComboBox x:Name="schedules_cb"
+                          SelectionChanged="schedule_changed"
+                          VerticalAlignment="Stretch">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding name}"/>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </DockPanel>
+            <DockPanel Margin="0,10,0,0" Height="28">
+                <Button x:Name="filterrevs_b"
+                        DockPanel.Dock="Left"
+                        Width="150"
+                        Content="Filter By Revisions"
+                        Click="filter_by_revisions"/>
+                <TextBlock Text="Target Print Set:"
+                           Margin="15,0,8,0"
+                           VerticalAlignment="Center"
+                           DockPanel.Dock="Left"/>
+                <TextBlock x:Name="printsetname_tb"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+            <TextBlock x:Name="summary_tb"
+                       TextWrapping="Wrap"
+                       Margin="0,10,0,0"/>
+            <Border x:Name="errormsg_block"
+                    Background="Red"
+                    Padding="5"
+                    Margin="0,8,0,0"
+                    Visibility="Collapsed">
+                <TextBlock x:Name="errormsg_tb"
+                           Foreground="White"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap"/>
+            </Border>
+        </StackPanel>
+        <StackPanel Margin="10" DockPanel.Dock="Bottom">
+            <Button x:Name="save_b"
+                    Height="32"
+                    HorizontalAlignment="Right"
+                    MinWidth="170"
+                    Padding="12,0,12,0"
+                    Content="Create / Update Print Set"
+                    Click="save_print_set"/>
+        </StackPanel>
+        <DataGrid x:Name="sheets_lb"
+                  AutoGenerateColumns="False"
+                  Margin="10,0,10,0"
+                  BorderThickness="1"
+                  RowHeaderWidth="0"
+                  CanUserSortColumns="False"
+                  HorizontalGridLinesBrush="#dedede"
+                  VerticalGridLinesBrush="#dedede"
+                  EnableColumnVirtualization="True"
+                  EnableRowVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="#"
+                                    Binding="{Binding index}"
+                                    MinWidth="48"
+                                    Width="48"
+                                    IsReadOnly="True"/>
+                <DataGridTextColumn Header="Sheet Number"
+                                    Binding="{Binding number}"
+                                    MinWidth="110"
+                                    Width="110"
+                                    IsReadOnly="True"/>
+                <DataGridTextColumn Header="Sheet Name"
+                                    Binding="{Binding name}"
+                                    MinWidth="160"
+                                    Width="*"
+                                    IsReadOnly="True"/>
+                <DataGridTextColumn Header="Status"
+                                    Binding="{Binding status}"
+                                    MinWidth="90"
+                                    Width="90"
+                                    IsReadOnly="True"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</Window>
