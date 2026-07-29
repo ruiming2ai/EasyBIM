@@ -7,6 +7,10 @@ import re
 
 SUMMARY_DISPLAY_LIMIT = 20
 INVALID_FILENAME_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+SOURCE_PROJECT = "project"
+SOURCE_OPEN_RFA = "open_rfa"
+PROJECT_FAMILY_KEY_PREFIX = "project|"
+OPEN_RFA_FAMILY_KEY_PREFIX = "open-rfa|"
 
 
 def _safe_text(value):
@@ -19,15 +23,39 @@ def _safe_text(value):
 
 
 class FamilyOption(object):
-    def __init__(self, name, family_key, is_selected=False, family=None, element_id=None):
+    def __init__(
+        self,
+        name,
+        family_key,
+        is_selected=False,
+        family=None,
+        element_id=None,
+        source_kind=SOURCE_PROJECT,
+        family_document=None,
+        document_key=None,
+    ):
         self.name = _safe_text(name) or "(Unnamed Family)"
         self.family_key = _safe_text(family_key)
         self.is_selected = bool(is_selected)
         self.family = family
         self.element_id = element_id
+        self.source_kind = source_kind or SOURCE_PROJECT
+        self.family_document = family_document
+        self.document_key = _safe_text(document_key)
 
     def __str__(self):
         return self.name
+
+
+class OpenFamilyDocumentOption(object):
+    def __init__(self, display_name, document_key, is_selected=False, document=None):
+        self.display_name = _safe_text(display_name) or "(Untitled Family)"
+        self.document_key = _safe_text(document_key)
+        self.is_selected = bool(is_selected)
+        self.document = document
+
+    def __str__(self):
+        return self.display_name
 
 
 class TargetDocumentOption(object):
@@ -49,10 +77,40 @@ class TransferResult(object):
 
 
 class TransferSummary(object):
-    def __init__(self, loaded=None, skipped=None, failed=None):
+    def __init__(self, loaded=None, skipped=None, failed=None, closed_rfa_count=0):
         self.loaded = list(loaded or [])
         self.skipped = list(skipped or [])
         self.failed = list(failed or [])
+        self.closed_rfa_count = int(closed_rfa_count or 0)
+
+
+def make_project_family_key(raw_family_key):
+    raw_family_key = _safe_text(raw_family_key)
+    if raw_family_key.startswith(PROJECT_FAMILY_KEY_PREFIX):
+        return raw_family_key
+    return "{}{}".format(PROJECT_FAMILY_KEY_PREFIX, raw_family_key)
+
+
+def make_open_family_document_key(document_key):
+    document_key = _safe_text(document_key)
+    if document_key.startswith(OPEN_RFA_FAMILY_KEY_PREFIX):
+        return document_key
+    return "{}{}".format(OPEN_RFA_FAMILY_KEY_PREFIX, document_key)
+
+
+def is_project_family_key(family_key):
+    return _safe_text(family_key).startswith(PROJECT_FAMILY_KEY_PREFIX)
+
+
+def is_open_family_document_key(family_key):
+    return _safe_text(family_key).startswith(OPEN_RFA_FAMILY_KEY_PREFIX)
+
+
+def open_family_document_key_from_family_key(family_key):
+    family_key = _safe_text(family_key)
+    if not is_open_family_document_key(family_key):
+        return ""
+    return family_key[len(OPEN_RFA_FAMILY_KEY_PREFIX):]
 
 
 def restore_family_selection(families, selected_family_keys):
@@ -63,6 +121,13 @@ def restore_family_selection(families, selected_family_keys):
 
 
 def restore_document_selection(documents, selected_document_keys):
+    selected_document_keys = set(selected_document_keys or [])
+    for document in documents or []:
+        document.is_selected = document.document_key in selected_document_keys
+    return documents
+
+
+def restore_open_family_document_selection(documents, selected_document_keys):
     selected_document_keys = set(selected_document_keys or [])
     for document in documents or []:
         document.is_selected = document.document_key in selected_document_keys
@@ -81,6 +146,34 @@ def sort_target_documents(documents):
         list(documents or []),
         key=lambda document: _safe_text(getattr(document, "display_name", "")).lower(),
     )
+
+
+def sort_open_family_documents(documents):
+    return sorted(
+        list(documents or []),
+        key=lambda document: _safe_text(getattr(document, "display_name", "")).lower(),
+    )
+
+
+def merge_transferable_family_options(project_families, open_family_documents):
+    merged = list(project_families or [])
+    for document in list(open_family_documents or []):
+        if not bool(getattr(document, "is_selected", False)):
+            continue
+        document_key = _safe_text(getattr(document, "document_key", ""))
+        if not document_key:
+            continue
+        merged.append(
+            FamilyOption(
+                getattr(document, "display_name", ""),
+                make_open_family_document_key(document_key),
+                is_selected=True,
+                source_kind=SOURCE_OPEN_RFA,
+                family_document=getattr(document, "document", None),
+                document_key=document_key,
+            )
+        )
+    return sort_family_options(merged)
 
 
 def sanitize_export_filename(family_name):
@@ -136,6 +229,20 @@ def get_selected_document_keys(documents):
     return selected
 
 
+def get_selected_open_family_document_keys(documents):
+    selected = []
+    seen = set()
+    for document in documents or []:
+        if not bool(getattr(document, "is_selected", False)):
+            continue
+        document_key = _safe_text(getattr(document, "document_key", ""))
+        if not document_key or document_key in seen:
+            continue
+        seen.add(document_key)
+        selected.append(document_key)
+    return selected
+
+
 def _append_result_lines(lines, title, results):
     results = list(results or [])
     if not results:
@@ -162,12 +269,15 @@ def build_transfer_summary_text(summary):
     skipped = list(summary.skipped or [])
     failed = list(summary.failed or [])
 
+    closed_rfa_count = int(getattr(summary, "closed_rfa_count", 0) or 0)
     lines = [
         "Families Transfer completed.",
         "Loaded/overwritten: {}".format(len(loaded)),
         "Skipped: {}".format(len(skipped)),
         "Failed: {}".format(len(failed)),
     ]
+    if closed_rfa_count:
+        lines.append("Closed .rfa files: {}".format(closed_rfa_count))
 
     _append_result_lines(lines, "Loaded/overwritten:", loaded)
     _append_result_lines(lines, "Skipped:", skipped)
