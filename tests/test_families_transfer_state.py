@@ -109,6 +109,72 @@ class FamiliesTransferStateTests(unittest.TestCase):
 
         self.assertEqual(module.get_selected_family_keys(families), ["100"])
 
+    def test_open_family_document_options_default_unchecked(self):
+        module = _load_state_module()
+
+        option = module.OpenFamilyDocumentOption("Chair.rfa", "path|chair.rfa")
+
+        self.assertEqual(option.display_name, "Chair.rfa")
+        self.assertEqual(option.document_key, "path|chair.rfa")
+        self.assertFalse(option.is_selected)
+        self.assertEqual(str(option), "Chair.rfa")
+
+    def test_source_keys_distinguish_project_families_from_open_rfa_files(self):
+        module = _load_state_module()
+
+        project_key = module.make_project_family_key("42")
+        open_rfa_key = module.make_open_family_document_key("42")
+
+        self.assertEqual(project_key, "project|42")
+        self.assertEqual(open_rfa_key, "open-rfa|42")
+        self.assertNotEqual(project_key, open_rfa_key)
+
+    def test_merge_transferable_families_adds_only_checked_open_rfa_sources(self):
+        module = _load_state_module()
+
+        project_families = [
+            module.FamilyOption("Wall Cabinet", module.make_project_family_key("200"), is_selected=True),
+        ]
+        open_rfas = [
+            module.OpenFamilyDocumentOption("Desk.rfa", "doc-desk", is_selected=True),
+            module.OpenFamilyDocumentOption("Light.rfa", "doc-light", is_selected=False),
+        ]
+
+        merged = module.merge_transferable_family_options(project_families, open_rfas)
+
+        self.assertEqual([item.name for item in merged], ["Desk.rfa", "Wall Cabinet"])
+        self.assertEqual(
+            [item.family_key for item in merged],
+            [module.make_open_family_document_key("doc-desk"), module.make_project_family_key("200")],
+        )
+        self.assertEqual([item.source_kind for item in merged], ["open_rfa", "project"])
+        self.assertTrue(merged[0].is_selected)
+        self.assertTrue(merged[1].is_selected)
+
+    def test_selected_open_family_document_keys_deduplicate_ids(self):
+        module = _load_state_module()
+
+        documents = [
+            module.OpenFamilyDocumentOption("Desk.rfa", "doc-desk", is_selected=True),
+            module.OpenFamilyDocumentOption("Desk Copy.rfa", "doc-desk", is_selected=True),
+            module.OpenFamilyDocumentOption("Light.rfa", "doc-light", is_selected=False),
+        ]
+
+        self.assertEqual(module.get_selected_open_family_document_keys(documents), ["doc-desk"])
+
+    def test_build_operation_summary_reports_closed_rfa_files(self):
+        module = _load_state_module()
+
+        summary = module.TransferSummary(
+            loaded=[module.TransferResult("Desk.rfa", "Tower.rvt", "loaded")],
+            closed_rfa_count=3,
+        )
+
+        message = module.build_transfer_summary_text(summary)
+
+        self.assertIn("Loaded/overwritten: 1", message)
+        self.assertIn("Closed .rfa files: 3", message)
+
     def test_revit_helper_does_not_use_temporary_transfer_files(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")
         source = REVIT_MODULE_PATH.read_text()
