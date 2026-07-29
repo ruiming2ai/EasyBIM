@@ -18,11 +18,16 @@ from pyrevit import DB
 from pyrevit.compat import get_elementid_value_func
 
 from families_transfer_state import FamilyOption
+from families_transfer_state import OpenFamilyDocumentOption
+from families_transfer_state import SOURCE_OPEN_RFA
 from families_transfer_state import TargetDocumentOption
 from families_transfer_state import TransferResult
 from families_transfer_state import TransferSummary
 from families_transfer_state import build_unique_export_path
+from families_transfer_state import is_open_family_document_key
+from families_transfer_state import make_project_family_key
 from families_transfer_state import sort_family_options
+from families_transfer_state import sort_open_family_documents
 from families_transfer_state import sort_target_documents
 
 
@@ -95,7 +100,21 @@ def _is_project_document(document):
             return False
     except Exception:
         pass
+    try:
+        if bool(document.IsLinked):
+            return False
+    except Exception:
+        pass
     return True
+
+
+def _is_family_document(document):
+    if document is None:
+        return False
+    try:
+        return bool(document.IsFamilyDocument)
+    except Exception:
+        return False
 
 
 def _application_from(uiapp, source_doc):
@@ -136,6 +155,36 @@ def get_open_target_documents(uiapp, source_doc, selected_document_keys=None):
         )
 
     return sort_target_documents(options)
+
+
+def get_open_family_documents(uiapp, source_doc=None, selected_document_keys=None):
+    selected_document_keys = set(selected_document_keys or [])
+    app = _application_from(uiapp, source_doc)
+    documents = []
+    if app is not None:
+        try:
+            documents = list(app.Documents)
+        except Exception:
+            documents = []
+
+    options = []
+    for document in documents:
+        if not _is_family_document(document):
+            continue
+        if source_doc is not None and _same_document(document, source_doc):
+            continue
+
+        document_key = _doc_key(document)
+        options.append(
+            OpenFamilyDocumentOption(
+                _doc_title(document),
+                document_key,
+                is_selected=document_key in selected_document_keys,
+                document=document,
+            )
+        )
+
+    return sort_open_family_documents(options)
 
 
 def is_transferable_family(family):
@@ -202,7 +251,7 @@ def get_selected_family_keys_from_selection(doc, uidoc):
             continue
         family_key = _family_key(family)
         if family_key:
-            keys.add(family_key)
+            keys.add(make_project_family_key(family_key))
 
     return keys
 
@@ -230,8 +279,8 @@ def get_source_family_options(doc, selected_family_keys=None):
         options.append(
             FamilyOption(
                 _family_name(family),
-                family_key,
-                is_selected=family_key in selected_family_keys,
+                make_project_family_key(family_key),
+                is_selected=make_project_family_key(family_key) in selected_family_keys,
                 family=family,
                 element_id=getattr(family, "Id", None),
             )
@@ -254,7 +303,7 @@ def resolve_family(doc, family_option):
 
     family_key = _safe_text(getattr(family_option, "family_key", ""))
     for family in _collect_families(doc):
-        if _family_key(family) == family_key:
+        if make_project_family_key(_family_key(family)) == family_key:
             return family
     return None
 
@@ -318,7 +367,7 @@ def pick_more_family_keys(uidoc):
             continue
         family_key = _family_key(family)
         if family_key:
-            picked_keys.add(family_key)
+            picked_keys.add(make_project_family_key(family_key))
 
     return picked_keys
 
@@ -345,52 +394,118 @@ def _close_family_doc(family_doc):
         pass
 
 
+def _is_open_rfa_family_option(family_option):
+    family_key = _safe_text(getattr(family_option, "family_key", ""))
+    return (
+        getattr(family_option, "source_kind", None) == SOURCE_OPEN_RFA
+        or is_open_family_document_key(family_key)
+    )
+
+
+def _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary, load_options):
+    for target_option in targets:
+        target_doc = getattr(target_option, "document", None)
+        target_name = _safe_text(getattr(target_option, "display_name", ""))
+        if target_doc is None:
+            summary.skipped.append(TransferResult(family_name, target_name, "target document is unavailable"))
+            continue
+        if _same_document(source_doc, target_doc):
+            summary.skipped.append(TransferResult(family_name, target_name, "target is the source document"))
+            continue
+
+        try:
+            load_options.reset()
+            loaded = family_doc.LoadFamily(target_doc, load_options)
+        except Exception as ex:
+            summary.failed.append(TransferResult(family_name, target_name, "LoadFamily failed: {}".format(ex)))
+            continue
+
+        if loaded:
+            status = "overwritten" if load_options.loaded_existing else "loaded"
+            summary.loaded.append(TransferResult(family_name, target_name, status))
+        else:
+            summary.failed.append(TransferResult(family_name, target_name, "LoadFamily returned false"))
+
+
+def _transfer_open_rfa_family(source_doc, family_option, targets, summary, load_options):
+    family_name = _safe_text(getattr(family_option, "name", ""))
+    family_doc = getattr(family_option, "family_document", None)
+    if family_doc is None:
+        summary.skipped.append(TransferResult(family_name, "Opened .rfa files", "family document is unavailable"))
+        return
+    _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary, load_options)
+
+
+def _transfer_project_family(source_doc, family_option, targets, summary, load_options):
+    family_name = _safe_text(getattr(family_option, "name", ""))
+    family = resolve_family(source_doc, family_option)
+    if not is_transferable_family(family):
+        summary.skipped.append(TransferResult(family_name, "Source", "family is not editable"))
+        return
+
+    family_doc = None
+    try:
+        family_doc = _edit_family(source_doc, family)
+    except Exception as ex:
+        summary.failed.append(TransferResult(family_name, "Source", "EditFamily failed: {}".format(ex)))
+        return
+
+    try:
+        _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary, load_options)
+    finally:
+        _close_family_doc(family_doc)
+
+
 def transfer_families(source_doc, family_options, target_options):
     summary = TransferSummary()
     targets = list(target_options or [])
     load_options = FamilyTransferLoadOptions()
 
     for family_option in list(family_options or []):
-        family_name = _safe_text(getattr(family_option, "name", ""))
-        family = resolve_family(source_doc, family_option)
-        if not is_transferable_family(family):
-            summary.skipped.append(TransferResult(family_name, "Source", "family is not editable"))
-            continue
-
-        family_doc = None
-        try:
-            family_doc = _edit_family(source_doc, family)
-        except Exception as ex:
-            summary.failed.append(TransferResult(family_name, "Source", "EditFamily failed: {}".format(ex)))
-            continue
-
-        try:
-            for target_option in targets:
-                target_doc = getattr(target_option, "document", None)
-                target_name = _safe_text(getattr(target_option, "display_name", ""))
-                if target_doc is None:
-                    summary.skipped.append(TransferResult(family_name, target_name, "target document is unavailable"))
-                    continue
-                if _same_document(source_doc, target_doc):
-                    summary.skipped.append(TransferResult(family_name, target_name, "target is the source document"))
-                    continue
-
-                try:
-                    load_options.reset()
-                    loaded = family_doc.LoadFamily(target_doc, load_options)
-                except Exception as ex:
-                    summary.failed.append(TransferResult(family_name, target_name, "LoadFamily failed: {}".format(ex)))
-                    continue
-
-                if loaded:
-                    status = "overwritten" if load_options.loaded_existing else "loaded"
-                    summary.loaded.append(TransferResult(family_name, target_name, status))
-                else:
-                    summary.failed.append(TransferResult(family_name, target_name, "LoadFamily returned false"))
-        finally:
-            _close_family_doc(family_doc)
+        if _is_open_rfa_family_option(family_option):
+            _transfer_open_rfa_family(source_doc, family_option, targets, summary, load_options)
+        else:
+            _transfer_project_family(source_doc, family_option, targets, summary, load_options)
 
     return summary
+
+
+def _export_open_rfa_family(family_option, folder_path, used_paths, summary):
+    family_name = _safe_text(getattr(family_option, "name", ""))
+    family_doc = getattr(family_option, "family_document", None)
+    export_path = build_unique_export_path(folder_path, family_name, used_paths)
+    if family_doc is None:
+        summary.skipped.append(TransferResult(family_name, export_path, "family document is unavailable"))
+        return
+
+    try:
+        save_options = DB.SaveAsOptions()
+        save_options.OverwriteExistingFile = True
+        family_doc.SaveAs(export_path, save_options)
+        summary.loaded.append(TransferResult(family_name, export_path, "exported"))
+    except Exception as ex:
+        summary.failed.append(TransferResult(family_name, export_path, "Export failed: {}".format(ex)))
+
+
+def _export_project_family(source_doc, family_option, folder_path, used_paths, summary):
+    family_name = _safe_text(getattr(family_option, "name", ""))
+    family = resolve_family(source_doc, family_option)
+    if not is_transferable_family(family):
+        summary.skipped.append(TransferResult(family_name, folder_path, "family is not editable"))
+        return
+
+    export_path = build_unique_export_path(folder_path, family_name, used_paths)
+    family_doc = None
+    try:
+        family_doc = _edit_family(source_doc, family)
+        save_options = DB.SaveAsOptions()
+        save_options.OverwriteExistingFile = True
+        family_doc.SaveAs(export_path, save_options)
+        summary.loaded.append(TransferResult(family_name, export_path, "exported"))
+    except Exception as ex:
+        summary.failed.append(TransferResult(family_name, export_path, "Export failed: {}".format(ex)))
+    finally:
+        _close_family_doc(family_doc)
 
 
 def export_families(source_doc, family_options, folder_path):
@@ -398,23 +513,27 @@ def export_families(source_doc, family_options, folder_path):
     used_paths = set()
 
     for family_option in list(family_options or []):
-        family_name = _safe_text(getattr(family_option, "name", ""))
-        family = resolve_family(source_doc, family_option)
-        if not is_transferable_family(family):
-            summary.skipped.append(TransferResult(family_name, folder_path, "family is not editable"))
+        if _is_open_rfa_family_option(family_option):
+            _export_open_rfa_family(family_option, folder_path, used_paths, summary)
+        else:
+            _export_project_family(source_doc, family_option, folder_path, used_paths, summary)
+
+    return summary
+
+
+def close_open_family_documents(open_family_documents):
+    summary = TransferSummary()
+    for document_option in list(open_family_documents or []):
+        display_name = _safe_text(getattr(document_option, "display_name", ""))
+        document = getattr(document_option, "document", None)
+        if document is None:
+            summary.skipped.append(TransferResult(display_name, "Opened .rfa files", "document is unavailable"))
             continue
 
-        export_path = build_unique_export_path(folder_path, family_name, used_paths)
-        family_doc = None
         try:
-            family_doc = _edit_family(source_doc, family)
-            save_options = DB.SaveAsOptions()
-            save_options.OverwriteExistingFile = True
-            family_doc.SaveAs(export_path, save_options)
-            summary.loaded.append(TransferResult(family_name, export_path, "exported"))
+            document.Close(False)
+            summary.closed_rfa_count += 1
         except Exception as ex:
-            summary.failed.append(TransferResult(family_name, export_path, "Export failed: {}".format(ex)))
-        finally:
-            _close_family_doc(family_doc)
+            summary.failed.append(TransferResult(display_name, "Opened .rfa files", "Close failed: {}".format(ex)))
 
     return summary
