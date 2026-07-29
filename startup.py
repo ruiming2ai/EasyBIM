@@ -10,6 +10,13 @@ except Exception:
 
 
 try:
+    from easybim import modify_ribbon
+    modify_ribbon.register_modify_shortcuts()
+except Exception:
+    pass
+
+
+try:
     from easybim import auto_update
 
     if not auto_update.should_skip_startup(auto_update.get_startup_guard_state()):
