@@ -21,7 +21,9 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
+from families_transfer_revit import close_open_family_documents
 from families_transfer_revit import export_families
+from families_transfer_revit import get_open_family_documents
 from families_transfer_revit import get_open_target_documents
 from families_transfer_revit import get_selected_family_keys_from_selection
 from families_transfer_revit import get_source_family_options
@@ -29,8 +31,13 @@ from families_transfer_revit import pick_export_folder
 from families_transfer_revit import pick_more_family_keys
 from families_transfer_revit import transfer_families
 from families_transfer_state import build_transfer_summary_text
+from families_transfer_state import is_open_family_document_key
+from families_transfer_state import is_project_family_key
+from families_transfer_state import merge_transferable_family_options
+from families_transfer_state import open_family_document_key_from_family_key
 from families_transfer_ui import ActionWindow
 from families_transfer_ui import FamilySelectionWindow
+from families_transfer_ui import OpenFamilyDocumentsWindow
 from families_transfer_ui import SourceSelectionWindow
 from families_transfer_ui import TargetSelectionWindow
 
@@ -40,6 +47,7 @@ __title__ = "Families Transfer"
 LOGGER = script.get_logger()
 
 STEP_SOURCE = "source"
+STEP_OPEN_RFAS = "open_rfas"
 STEP_FAMILIES = "families"
 STEP_TARGETS = "targets"
 STEP_ACTION = "action"
@@ -80,6 +88,33 @@ def _show_summary(summary):
     TaskDialog.Show(__title__, build_transfer_summary_text(summary))
 
 
+def _split_selected_family_keys(selected_family_keys):
+    project_family_keys = set()
+    open_family_document_keys = set()
+
+    for family_key in selected_family_keys or []:
+        if is_open_family_document_key(family_key):
+            document_key = open_family_document_key_from_family_key(family_key)
+            if document_key:
+                open_family_document_keys.add(document_key)
+            continue
+
+        if is_project_family_key(family_key):
+            project_family_keys.add(family_key)
+
+    return project_family_keys, open_family_document_keys
+
+
+def _merge_close_summary(transfer_summary, close_summary):
+    if close_summary is None:
+        return transfer_summary
+
+    transfer_summary.closed_rfa_count = int(getattr(close_summary, "closed_rfa_count", 0) or 0)
+    transfer_summary.skipped.extend(list(getattr(close_summary, "skipped", []) or []))
+    transfer_summary.failed.extend(list(getattr(close_summary, "failed", []) or []))
+    return transfer_summary
+
+
 def _run():
     uidoc = revit.uidoc
     doc = revit.doc
@@ -96,9 +131,12 @@ def _run():
     except Exception:
         pass
 
-    selected_family_keys = set(get_selected_family_keys_from_selection(doc, uidoc))
+    selected_project_family_keys = set(get_selected_family_keys_from_selection(doc, uidoc))
+    selected_open_family_document_keys = set()
+    selected_family_keys = set(selected_project_family_keys)
     selected_document_keys = set()
     source_status = ""
+    open_family_documents = []
     families = []
     targets = []
     step = STEP_SOURCE
@@ -107,7 +145,7 @@ def _run():
         if step == STEP_SOURCE:
             source_window = SourceSelectionWindow(
                 "SourceSelectionWindow.xaml",
-                len(selected_family_keys),
+                len(selected_project_family_keys),
                 source_status,
             )
             source_window.ShowDialog()
@@ -123,19 +161,61 @@ def _run():
                     return
 
                 selected_family_keys.update(picked_keys)
-                source_status = "{} family/families selected.".format(len(selected_family_keys))
+                selected_project_family_keys.update(picked_keys)
+                source_status = "{} active-project family/families selected.".format(
+                    len(selected_project_family_keys)
+                )
                 continue
 
             if source_window.result == "next":
+                step = STEP_OPEN_RFAS
+                continue
+            return
+
+        if step == STEP_OPEN_RFAS:
+            open_family_documents = get_open_family_documents(
+                uiapp,
+                doc,
+                selected_open_family_document_keys,
+            )
+            open_family_window = OpenFamilyDocumentsWindow(
+                "OpenFamilyDocumentsWindow.xaml",
+                open_family_documents,
+                selected_open_family_document_keys,
+            )
+            open_family_window.ShowDialog()
+
+            if open_family_window.result == "next":
+                selected_open_family_document_keys = set(open_family_window.selected_document_keys)
                 step = STEP_FAMILIES
+                continue
+
+            if open_family_window.result == "back":
+                selected_open_family_document_keys = set(open_family_window.selected_document_keys)
+                step = STEP_SOURCE
                 continue
             return
 
         if step == STEP_FAMILIES:
-            families = get_source_family_options(doc, selected_family_keys)
+            project_families = get_source_family_options(doc, selected_project_family_keys)
+            open_family_documents = get_open_family_documents(
+                uiapp,
+                doc,
+                selected_open_family_document_keys,
+            )
+            families = merge_transferable_family_options(project_families, open_family_documents)
             if not families:
-                forms.alert("No transferable loadable families were found in the active project.", title=__title__)
+                forms.alert(
+                    "No transferable active-project families or selected opened .rfa files were found.",
+                    title=__title__,
+                )
                 return
+
+            selected_family_keys = set(
+                getattr(family, "family_key", "")
+                for family in families
+                if bool(getattr(family, "is_selected", False))
+            )
 
             family_window = FamilySelectionWindow(
                 "FamilySelectionWindow.xaml",
@@ -146,13 +226,21 @@ def _run():
 
             if family_window.result == "next":
                 selected_family_keys = set(family_window.selected_family_keys)
+                selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
+                    selected_family_keys
+                )
                 step = STEP_TARGETS
                 continue
 
             if family_window.result == "back":
                 selected_family_keys = set(family_window.selected_family_keys)
-                source_status = "{} family/families selected.".format(len(selected_family_keys))
-                step = STEP_SOURCE
+                selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
+                    selected_family_keys
+                )
+                source_status = "{} active-project family/families selected.".format(
+                    len(selected_project_family_keys)
+                )
+                step = STEP_OPEN_RFAS
                 continue
             return
 
@@ -200,6 +288,21 @@ def _run():
                     continue
                 _show_summary(transfer_families(doc, selected_families, selected_targets))
                 return
+
+            if action_window.result == "transfer_close_all_rfa":
+                if not selected_targets:
+                    forms.alert("Select at least one open target file before transferring.", title=__title__)
+                    step = STEP_TARGETS
+                    continue
+
+                summary = transfer_families(doc, selected_families, selected_targets)
+                close_summary = close_open_family_documents(get_open_family_documents(uiapp, doc))
+                _show_summary(_merge_close_summary(summary, close_summary))
+                return
+
+            if action_window.result == "back":
+                step = STEP_TARGETS
+                continue
 
             return
 
