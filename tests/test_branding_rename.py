@@ -28,6 +28,7 @@ class BrandingRenameTests(unittest.TestCase):
         )
         forbidden = _forbidden_terms()
         binary_suffixes = {".dark.png", ".png", ".ico", ".jpg", ".jpeg", ".gif", ".pyc"}
+        binary_file_names = {".DS_Store"}
         failures = []
 
         for relative_path in result.splitlines():
@@ -36,6 +37,9 @@ class BrandingRenameTests(unittest.TestCase):
                 continue
 
             path = ROOT / relative_path
+            if path.name in binary_file_names:
+                continue
+
             if any(relative_path.endswith(suffix) for suffix in binary_suffixes):
                 continue
 
