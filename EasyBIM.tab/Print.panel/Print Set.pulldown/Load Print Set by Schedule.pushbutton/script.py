@@ -13,6 +13,7 @@ from pyrevit import forms
 from pyrevit import revit
 from pyrevit import script
 
+from easybim import link_reload
 from easybim import print_sets
 
 
@@ -272,6 +273,11 @@ class LoadPrintSetByScheduleWindow(forms.WPFWindow):
                 expanded=str(save_err)
             )
             return
+
+        link_reload.ask_and_reload_loaded_links(
+            revit.doc,
+            title="Load Print Set by Schedule"
+        )
 
         message = [
             "Print set updated: {}".format(print_set_name),
