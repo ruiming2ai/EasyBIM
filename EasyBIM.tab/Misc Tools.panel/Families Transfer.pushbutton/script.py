@@ -255,24 +255,37 @@ def _run():
             )
             family_window.ShowDialog()
 
-            if family_window.result == "next":
-                selected_family_keys = set(family_window.selected_family_keys)
-                selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
-                    selected_family_keys
+            if family_window.result == "add":
+                add_project_family_keys, add_open_family_document_keys = _split_selected_family_keys(
+                    set(family_window.selected_family_keys)
                 )
-                target_back_step = STEP_FAMILIES
-                step = STEP_TARGETS
+                selected_existing_source_families = get_selected_source_family_options(
+                    selected_source_families,
+                    selected_project_family_keys,
+                )
+                added_source_families = get_selected_source_family_options(
+                    project_families,
+                    add_project_family_keys,
+                )
+                selected_source_families = merge_source_family_options(
+                    selected_existing_source_families,
+                    added_source_families,
+                )
+                selected_project_family_keys = set(get_selected_family_keys(selected_source_families))
+                selected_open_family_document_keys.update(add_open_family_document_keys)
+                selected_family_keys = set(selected_project_family_keys)
+                source_status = "{} active-project families selected.".format(
+                    len(selected_project_family_keys)
+                )
+                step = STEP_SOURCE
                 continue
 
             if family_window.result == "back":
-                selected_family_keys = set(family_window.selected_family_keys)
-                selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
-                    selected_family_keys
-                )
                 selected_source_families = get_selected_source_family_options(
-                    families,
+                    selected_source_families,
                     selected_project_family_keys,
                 )
+                selected_family_keys = set(selected_project_family_keys)
                 source_status = "{} active-project families selected.".format(
                     len(selected_project_family_keys)
                 )
