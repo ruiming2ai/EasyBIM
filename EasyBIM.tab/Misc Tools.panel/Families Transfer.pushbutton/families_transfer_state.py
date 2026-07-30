@@ -11,7 +11,6 @@ SOURCE_PROJECT = "project"
 SOURCE_OPEN_RFA = "open_rfa"
 PROJECT_FAMILY_KEY_PREFIX = "project|"
 OPEN_RFA_FAMILY_KEY_PREFIX = "open-rfa|"
-UNKNOWN_CATEGORY = "Unknown Category"
 
 
 def _safe_text(value):
@@ -21,11 +20,6 @@ def _safe_text(value):
         return str(value)
     except Exception:
         return ""
-
-
-def normalize_category_name(category_name):
-    category_name = _safe_text(category_name).strip()
-    return category_name or UNKNOWN_CATEGORY
 
 
 class FamilyOption(object):
@@ -39,7 +33,6 @@ class FamilyOption(object):
         source_kind=SOURCE_PROJECT,
         family_document=None,
         document_key=None,
-        category_name=None,
     ):
         self.name = _safe_text(name) or "(Unnamed Family)"
         self.family_key = _safe_text(family_key)
@@ -49,19 +42,17 @@ class FamilyOption(object):
         self.source_kind = source_kind or SOURCE_PROJECT
         self.family_document = family_document
         self.document_key = _safe_text(document_key)
-        self.category_name = normalize_category_name(category_name)
 
     def __str__(self):
         return self.name
 
 
 class OpenFamilyDocumentOption(object):
-    def __init__(self, display_name, document_key, is_selected=False, document=None, category_name=None):
+    def __init__(self, display_name, document_key, is_selected=False, document=None):
         self.display_name = _safe_text(display_name) or "(Untitled Family)"
         self.document_key = _safe_text(document_key)
         self.is_selected = bool(is_selected)
         self.document = document
-        self.category_name = normalize_category_name(category_name)
 
     def __str__(self):
         return self.display_name
@@ -91,12 +82,6 @@ class TransferSummary(object):
         self.skipped = list(skipped or [])
         self.failed = list(failed or [])
         self.closed_rfa_count = int(closed_rfa_count or 0)
-
-
-class FamilyCategoryGroup(object):
-    def __init__(self, category_name, families=None):
-        self.category_name = normalize_category_name(category_name)
-        self.families = list(families or [])
 
 
 def make_project_family_key(raw_family_key):
@@ -149,18 +134,10 @@ def restore_open_family_document_selection(documents, selected_document_keys):
     return documents
 
 
-def _category_sort_key(category_name):
-    category_name = normalize_category_name(category_name)
-    return (category_name == UNKNOWN_CATEGORY, category_name.lower())
-
-
 def sort_family_options(families):
     return sorted(
         list(families or []),
-        key=lambda family: (
-            _category_sort_key(getattr(family, "category_name", "")),
-            _safe_text(getattr(family, "name", "")).lower(),
-        ),
+        key=lambda family: _safe_text(getattr(family, "name", "")).lower(),
     )
 
 
@@ -174,65 +151,8 @@ def sort_target_documents(documents):
 def sort_open_family_documents(documents):
     return sorted(
         list(documents or []),
-        key=lambda document: (
-            _category_sort_key(getattr(document, "category_name", "")),
-            _safe_text(getattr(document, "display_name", "")).lower(),
-        ),
+        key=lambda document: _safe_text(getattr(document, "display_name", "")).lower(),
     )
-
-
-def get_selected_source_family_options(families, selected_family_keys):
-    selected_family_keys = set(selected_family_keys or [])
-    selected = []
-    for family in families or []:
-        family_key = _safe_text(getattr(family, "family_key", ""))
-        if family_key in selected_family_keys:
-            family.is_selected = True
-            selected.append(family)
-    return sort_family_options(selected)
-
-
-def group_family_options_by_category(families):
-    grouped = {}
-    for family in sort_family_options(families):
-        category_name = normalize_category_name(getattr(family, "category_name", ""))
-        grouped.setdefault(category_name, []).append(family)
-
-    groups = []
-    for category_name in sorted(grouped.keys(), key=_category_sort_key):
-        groups.append(FamilyCategoryGroup(category_name, grouped[category_name]))
-    return groups
-
-
-def _matches_family_search(name, category_name, search_text):
-    search_text = _safe_text(search_text).strip().lower()
-    if not search_text:
-        return True
-    return search_text in _safe_text(name).lower() or search_text in _safe_text(category_name).lower()
-
-
-def filter_family_options(families, search_text):
-    return [
-        family
-        for family in list(families or [])
-        if _matches_family_search(
-            getattr(family, "name", ""),
-            getattr(family, "category_name", ""),
-            search_text,
-        )
-    ]
-
-
-def filter_open_family_document_options(documents, search_text):
-    return [
-        document
-        for document in list(documents or [])
-        if _matches_family_search(
-            getattr(document, "display_name", ""),
-            getattr(document, "category_name", ""),
-            search_text,
-        )
-    ]
 
 
 def merge_transferable_family_options(project_families, open_family_documents):
@@ -251,7 +171,6 @@ def merge_transferable_family_options(project_families, open_family_documents):
                 source_kind=SOURCE_OPEN_RFA,
                 family_document=getattr(document, "document", None),
                 document_key=document_key,
-                category_name=getattr(document, "category_name", None),
             )
         )
     return sort_family_options(merged)
