@@ -31,13 +31,13 @@ from families_transfer_revit import pick_export_folder
 from families_transfer_revit import pick_more_family_keys
 from families_transfer_revit import transfer_families
 from families_transfer_state import build_transfer_summary_text
+from families_transfer_state import get_selected_source_family_options
 from families_transfer_state import is_open_family_document_key
 from families_transfer_state import is_project_family_key
 from families_transfer_state import merge_transferable_family_options
 from families_transfer_state import open_family_document_key_from_family_key
 from families_transfer_ui import ActionWindow
 from families_transfer_ui import FamilySelectionWindow
-from families_transfer_ui import OpenFamilyDocumentsWindow
 from families_transfer_ui import SourceSelectionWindow
 from families_transfer_ui import TargetSelectionWindow
 
@@ -47,7 +47,6 @@ __title__ = "Families Transfer"
 LOGGER = script.get_logger()
 
 STEP_SOURCE = "source"
-STEP_OPEN_RFAS = "open_rfas"
 STEP_FAMILIES = "families"
 STEP_TARGETS = "targets"
 STEP_ACTION = "action"
@@ -143,14 +142,27 @@ def _run():
 
     while True:
         if step == STEP_SOURCE:
+            project_families = get_source_family_options(doc, selected_project_family_keys)
+            selected_source_families = get_selected_source_family_options(
+                project_families,
+                selected_project_family_keys,
+            )
+            open_family_documents = get_open_family_documents(
+                uiapp,
+                doc,
+                selected_open_family_document_keys,
+            )
             source_window = SourceSelectionWindow(
                 "SourceSelectionWindow.xaml",
-                len(selected_project_family_keys),
+                selected_source_families,
+                open_family_documents,
+                selected_open_family_document_keys,
                 source_status,
             )
             source_window.ShowDialog()
 
             if source_window.result == "select":
+                selected_open_family_document_keys = set(source_window.selected_document_keys)
                 try:
                     picked_keys = pick_more_family_keys(uidoc)
                 except Exception as ex:
@@ -162,37 +174,14 @@ def _run():
 
                 selected_family_keys.update(picked_keys)
                 selected_project_family_keys.update(picked_keys)
-                source_status = "{} active-project family/families selected.".format(
+                source_status = "{} active-project families selected.".format(
                     len(selected_project_family_keys)
                 )
                 continue
 
             if source_window.result == "next":
-                step = STEP_OPEN_RFAS
-                continue
-            return
-
-        if step == STEP_OPEN_RFAS:
-            open_family_documents = get_open_family_documents(
-                uiapp,
-                doc,
-                selected_open_family_document_keys,
-            )
-            open_family_window = OpenFamilyDocumentsWindow(
-                "OpenFamilyDocumentsWindow.xaml",
-                open_family_documents,
-                selected_open_family_document_keys,
-            )
-            open_family_window.ShowDialog()
-
-            if open_family_window.result == "next":
-                selected_open_family_document_keys = set(open_family_window.selected_document_keys)
+                selected_open_family_document_keys = set(source_window.selected_document_keys)
                 step = STEP_FAMILIES
-                continue
-
-            if open_family_window.result == "back":
-                selected_open_family_document_keys = set(open_family_window.selected_document_keys)
-                step = STEP_SOURCE
                 continue
             return
 
@@ -237,10 +226,10 @@ def _run():
                 selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
                     selected_family_keys
                 )
-                source_status = "{} active-project family/families selected.".format(
+                source_status = "{} active-project families selected.".format(
                     len(selected_project_family_keys)
                 )
-                step = STEP_OPEN_RFAS
+                step = STEP_SOURCE
                 continue
             return
 
