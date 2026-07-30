@@ -1,0 +1,292 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Load Print Set From Excel"
+        Height="680"
+        Width="900"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="10">
+        <Grid x:Name="validation_page">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top">
+                    <DockPanel>
+                        <Button x:Name="import_b"
+                                DockPanel.Dock="Left"
+                                Width="120"
+                                Height="30"
+                                Content="Import Excel"
+                                Click="import_excel"/>
+                        <TextBlock Text=".xlsx/.xlsm only. Uses first visible worksheet, first two visible columns as sheet number and sheet name. No header row is skipped."
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                    </DockPanel>
+                    <TextBlock x:Name="file_tb"
+                               Margin="0,8,0,0"
+                               TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="warning_tb"
+                               Margin="0,6,0,0"
+                               Foreground="#a15c00"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed"/>
+                    <DockPanel Margin="0,10,0,0" Height="28">
+                        <TextBlock Text="Print Set:"
+                                   DockPanel.Dock="Left"
+                                   Width="76"
+                                   VerticalAlignment="Center"/>
+                        <Button x:Name="editname_b"
+                                DockPanel.Dock="Right"
+                                Width="86"
+                                Content="Edit Name"
+                                Click="edit_print_set_name"/>
+                        <ComboBox x:Name="printset_cb"
+                                  IsEditable="True"
+                                  IsTextSearchEnabled="False"
+                                  Margin="0,0,8,0"
+                                  LostFocus="print_set_name_changed"
+                                  SelectionChanged="print_set_name_changed"/>
+                    </DockPanel>
+                    <DockPanel Margin="0,10,0,0" Height="28">
+                        <Button x:Name="filterrevs_b"
+                                DockPanel.Dock="Left"
+                                Width="150"
+                                Content="Filter By Revisions"
+                                Click="filter_by_revisions"/>
+                        <TextBlock x:Name="summary_tb"
+                                   Margin="12,0,0,0"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                    </DockPanel>
+                    <Border x:Name="errormsg_block"
+                            Background="Red"
+                            Padding="5"
+                            Margin="0,8,0,0"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="errormsg_tb"
+                                   Foreground="White"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                    </Border>
+                </StackPanel>
+
+                <DockPanel DockPanel.Dock="Bottom"
+                           Margin="0,10,0,0"
+                           LastChildFill="False">
+                    <Button x:Name="skipnumbers_b"
+                            DockPanel.Dock="Left"
+                            MinWidth="250"
+                            Height="32"
+                            Padding="12,0,12,0"
+                            Content="Skip Number Discrepancies and Continue"
+                            Click="skip_number_discrepancies"/>
+                    <Button x:Name="skipnames_b"
+                            DockPanel.Dock="Left"
+                            MinWidth="240"
+                            Height="32"
+                            Margin="8,0,0,0"
+                            Padding="12,0,12,0"
+                            Content="Skip Name Discrepancies and Continue"
+                            Click="skip_name_discrepancies"/>
+                    <Button x:Name="next_b"
+                            DockPanel.Dock="Right"
+                            MinWidth="90"
+                            Height="32"
+                            Padding="12,0,12,0"
+                            Content="Next"
+                            Click="next_page"/>
+                </DockPanel>
+
+                <Grid Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="0"
+                               Text="Missing / Duplicate Sheet Numbers"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,6"/>
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="2"
+                               Text="Missing / Mismatched Sheet Names"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,6"/>
+
+                    <DataGrid x:Name="number_discrepancies_lb"
+                              Grid.Row="1"
+                              Grid.Column="0"
+                              AutoGenerateColumns="False"
+                              BorderThickness="1"
+                              RowHeaderWidth="0"
+                              CanUserSortColumns="False"
+                              Foreground="#c00000"
+                              HorizontalGridLinesBrush="#dedede"
+                              VerticalGridLinesBrush="#dedede"
+                              EnableColumnVirtualization="True"
+                              EnableRowVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Excel Row"
+                                                Binding="{Binding excel_row}"
+                                                MinWidth="70"
+                                                Width="70"
+                                                IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Sheet Number"
+                                                Binding="{Binding number}"
+                                                MinWidth="105"
+                                                Width="105"
+                                                IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Sheet Name"
+                                                Binding="{Binding name}"
+                                                MinWidth="135"
+                                                Width="*"
+                                                IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Reason"
+                                                Binding="{Binding reason}"
+                                                MinWidth="130"
+                                                Width="150"
+                                                IsReadOnly="True"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <DataGrid x:Name="name_discrepancies_lb"
+                              Grid.Row="1"
+                              Grid.Column="2"
+                              AutoGenerateColumns="False"
+                              BorderThickness="1"
+                              RowHeaderWidth="0"
+                              CanUserSortColumns="False"
+                              Foreground="#c00000"
+                              HorizontalGridLinesBrush="#dedede"
+                              VerticalGridLinesBrush="#dedede"
+                              EnableColumnVirtualization="True"
+                              EnableRowVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Excel Row"
+                                                Binding="{Binding excel_row}"
+                                                MinWidth="70"
+                                                Width="70"
+                                                IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Sheet Number"
+                                                Binding="{Binding number}"
+                                                MinWidth="105"
+                                                Width="105"
+                                                IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Sheet Name"
+                                                Binding="{Binding name}"
+                                                MinWidth="135"
+                                                Width="*"
+                                                IsReadOnly="True"/>
+                            <DataGridTextColumn Header="Reason"
+                                                Binding="{Binding reason}"
+                                                MinWidth="130"
+                                                Width="150"
+                                                IsReadOnly="True"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </DockPanel>
+        </Grid>
+
+        <Grid x:Name="preview_page"
+              Visibility="Collapsed">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top">
+                    <DockPanel Height="28">
+                        <TextBlock Text="Target Print Set:"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   DockPanel.Dock="Left"/>
+                        <TextBlock x:Name="preview_printsetname_tb"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                    <TextBlock x:Name="preview_summary_tb"
+                               TextWrapping="Wrap"
+                               Margin="0,8,0,0"/>
+                    <Border x:Name="preview_errormsg_block"
+                            Background="Red"
+                            Padding="5"
+                            Margin="0,8,0,0"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="preview_errormsg_tb"
+                                   Foreground="White"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel DockPanel.Dock="Bottom"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            Margin="0,10,0,0">
+                    <Button x:Name="back_b"
+                            Height="32"
+                            MinWidth="80"
+                            Padding="12,0,12,0"
+                            Content="Back"
+                            Click="back_page"/>
+                    <Button x:Name="save_b"
+                            Height="32"
+                            MinWidth="170"
+                            Margin="8,0,0,0"
+                            Padding="12,0,12,0"
+                            Content="Create / Update Print Set"
+                            Click="save_print_set"/>
+                </StackPanel>
+
+                <DataGrid x:Name="final_sheets_lb"
+                          AutoGenerateColumns="False"
+                          Margin="0,12,0,0"
+                          BorderThickness="1"
+                          RowHeaderWidth="0"
+                          CanUserSortColumns="False"
+                          HorizontalGridLinesBrush="#dedede"
+                          VerticalGridLinesBrush="#dedede"
+                          EnableColumnVirtualization="True"
+                          EnableRowVirtualization="True"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="#"
+                                            Binding="{Binding index}"
+                                            MinWidth="48"
+                                            Width="48"
+                                            IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Excel Row"
+                                            Binding="{Binding excel_row}"
+                                            MinWidth="70"
+                                            Width="70"
+                                            IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Number"
+                                            Binding="{Binding number}"
+                                            MinWidth="110"
+                                            Width="110"
+                                            IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Name"
+                                            Binding="{Binding name}"
+                                            MinWidth="160"
+                                            Width="*"
+                                            IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Status"
+                                            Binding="{Binding status}"
+                                            MinWidth="90"
+                                            Width="90"
+                                            IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
+        </Grid>
+    </Grid>
+</Window>
