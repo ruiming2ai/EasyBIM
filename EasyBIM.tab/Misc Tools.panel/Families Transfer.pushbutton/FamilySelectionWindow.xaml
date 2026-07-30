@@ -26,10 +26,20 @@
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="0" Margin="0,0,0,8">
-                <TextBlock Text="Search families" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                <TextBox x:Name="FamilySearchBox" Height="28" Margin="0,4,0,0" TextChanged="family_search_changed"/>
-            </StackPanel>
+            <Grid Grid.Row="0" Margin="0,0,0,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <DockPanel Grid.Row="0" LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Expand All" Width="100" Height="30" Margin="0,0,8,0" Click="expand_all_click"/>
+                        <Button Content="Collapse All" Width="110" Height="30" Click="collapse_all_click"/>
+                    </StackPanel>
+                    <TextBlock Text="Search families" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center"/>
+                </DockPanel>
+                <TextBox Grid.Row="1" x:Name="FamilySearchBox" Height="28" Margin="0,4,0,0" TextChanged="family_search_changed"/>
+            </Grid>
 
             <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
