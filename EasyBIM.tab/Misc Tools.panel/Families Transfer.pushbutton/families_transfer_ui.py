@@ -344,15 +344,15 @@ class FamilySelectionWindow(forms.WPFWindow):
         self.result = "back"
         self.Close()
 
-    def next_click(self, sender, args):
+    def add_click(self, sender, args):
         del sender, args
         self._sync_category_expanders()
         selected = self._read_selected_family_keys()
         if not selected:
-            forms.alert("Select at least one family.", title=TITLE)
+            forms.alert("Select at least one family or opened .rfa file.", title=TITLE)
             return
         self.selected_family_keys = selected
-        self.result = "next"
+        self.result = "add"
         self.Close()
 
     def cancel_click(self, sender, args):
