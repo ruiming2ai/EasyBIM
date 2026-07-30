@@ -8,14 +8,14 @@ import zipfile
 
 
 MODULE_PATH = (
-    pathlib.Path(__file__).resolve().parents[1]
+    pathlib.Path(__file__).resolve().parents[2]
     / "lib"
     / "easybim"
     / "excel_print_sets.py"
 )
 
 PRINT_SETS_PATH = (
-    pathlib.Path(__file__).resolve().parents[1]
+    pathlib.Path(__file__).resolve().parents[2]
     / "lib"
     / "easybim"
     / "print_sets.py"
