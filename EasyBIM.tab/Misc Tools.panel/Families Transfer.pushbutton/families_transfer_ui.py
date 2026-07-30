@@ -4,9 +4,12 @@
 from pyrevit import forms
 from pyrevit.framework import Windows
 
+from families_transfer_state import filter_family_options
+from families_transfer_state import filter_open_family_document_options
 from families_transfer_state import get_selected_document_keys
 from families_transfer_state import get_selected_family_keys
 from families_transfer_state import get_selected_open_family_document_keys
+from families_transfer_state import group_family_options_by_category
 from families_transfer_state import restore_document_selection
 from families_transfer_state import restore_family_selection
 from families_transfer_state import restore_open_family_document_selection
@@ -31,20 +34,153 @@ def _family_count_text(count):
     return "{} families selected.".format(count)
 
 
+def _option_text(name, category_name):
+    category_name = _safe_text(category_name)
+    if category_name:
+        return "{}  ({})".format(_safe_text(name), category_name)
+    return _safe_text(name)
+
+
+def _search_text(control):
+    try:
+        return _safe_text(control.Text)
+    except Exception:
+        return ""
+
+
+def _add_empty_text(panel, message):
+    textblock = Windows.Controls.TextBlock()
+    textblock.Text = message
+    textblock.Margin = Windows.Thickness(8, 4, 8, 4)
+    panel.Children.Add(textblock)
+
+
 class SourceSelectionWindow(forms.WPFWindow):
-    def __init__(self, xaml_file_name, selected_count, status_text=""):
+    def __init__(
+        self,
+        xaml_file_name,
+        selected_families,
+        open_family_documents,
+        selected_document_keys=None,
+        status_text="",
+    ):
         forms.WPFWindow.__init__(self, xaml_file_name)
+        self.selected_families = list(selected_families or [])
+        self.open_family_documents = list(open_family_documents or [])
+        self.selected_document_keys = set(selected_document_keys or [])
         self.result = None
-        self.selected_count_tb.Text = _family_count_text(selected_count)
+        self._open_rfa_controls = []
+
+        restore_open_family_document_selection(
+            self.open_family_documents,
+            self.selected_document_keys,
+        )
+
+        self.selected_count_tb.Text = _family_count_text(len(self.selected_families))
         self.status_tb.Text = _safe_text(status_text)
+        self._populate_selected_families()
+        self._populate_open_family_documents()
+
+    def _populate_selected_families(self):
+        self.SelectedSourceListPanel.Children.Clear()
+        visible_families = filter_family_options(
+            self.selected_families,
+            _search_text(self.SelectedSourceSearchBox),
+        )
+        for family in visible_families:
+            textblock = Windows.Controls.TextBlock()
+            textblock.Text = _option_text(
+                getattr(family, "name", ""),
+                getattr(family, "category_name", ""),
+            )
+            textblock.Margin = Windows.Thickness(8, 4, 8, 4)
+            self.SelectedSourceListPanel.Children.Add(textblock)
+
+        if not visible_families:
+            if self.selected_families:
+                _add_empty_text(self.SelectedSourceListPanel, "No selected families match the search.")
+            else:
+                _add_empty_text(self.SelectedSourceListPanel, "No active-project families selected.")
+
+    def _sync_open_rfa_controls(self):
+        for checkbox in self._open_rfa_controls:
+            option = getattr(checkbox, "Tag", None)
+            if option is not None:
+                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+
+    def _populate_open_family_documents(self):
+        self.OpenFamilyListPanel.Children.Clear()
+        self._open_rfa_controls = []
+        visible_documents = filter_open_family_document_options(
+            self.open_family_documents,
+            _search_text(self.OpenFamilySearchBox),
+        )
+        for document in visible_documents:
+            checkbox = Windows.Controls.CheckBox()
+            checkbox.Content = _option_text(
+                getattr(document, "display_name", ""),
+                getattr(document, "category_name", ""),
+            )
+            checkbox.IsChecked = bool(document.is_selected)
+            checkbox.Tag = document
+            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
+            self.OpenFamilyListPanel.Children.Add(checkbox)
+            self._open_rfa_controls.append(checkbox)
+
+        if not visible_documents:
+            if self.open_family_documents:
+                _add_empty_text(self.OpenFamilyListPanel, "No opened .rfa files match the search.")
+            else:
+                _add_empty_text(self.OpenFamilyListPanel, "No opened .rfa family files were found.")
+
+        checked_count = len(get_selected_open_family_document_keys(self.open_family_documents))
+        if self.open_family_documents:
+            self.open_rfa_count_tb.Text = "{} opened .rfa file(s), {} checked.".format(
+                len(self.open_family_documents),
+                checked_count,
+            )
+        else:
+            self.open_rfa_count_tb.Text = "No opened .rfa family files were found."
+
+    def _read_selected_document_keys(self):
+        self._sync_open_rfa_controls()
+        self.selected_document_keys = set(
+            get_selected_open_family_document_keys(self.open_family_documents)
+        )
+        return self.selected_document_keys
+
+    def selected_source_search_changed(self, sender, args):
+        del sender, args
+        self._populate_selected_families()
+
+    def open_family_search_changed(self, sender, args):
+        del sender, args
+        self._sync_open_rfa_controls()
+        self._populate_open_family_documents()
+
+    def open_family_select_all_click(self, sender, args):
+        del sender, args
+        for checkbox in self._open_rfa_controls:
+            checkbox.IsChecked = True
+        self._read_selected_document_keys()
+        self._populate_open_family_documents()
+
+    def open_family_select_none_click(self, sender, args):
+        del sender, args
+        for checkbox in self._open_rfa_controls:
+            checkbox.IsChecked = False
+        self._read_selected_document_keys()
+        self._populate_open_family_documents()
 
     def select_click(self, sender, args):
         del sender, args
+        self._read_selected_document_keys()
         self.result = "select"
         self.Close()
 
     def next_click(self, sender, args):
         del sender, args
+        self._read_selected_document_keys()
         self.result = "next"
         self.Close()
 
@@ -65,36 +201,68 @@ class FamilySelectionWindow(forms.WPFWindow):
         restore_family_selection(self.families, self.selected_family_keys)
         self._populate()
 
-    def _populate(self):
-        self.FamilyListPanel.Children.Clear()
-        self._controls = []
-        for family in self.families:
-            checkbox = Windows.Controls.CheckBox()
-            checkbox.Content = family.name
-            checkbox.IsChecked = bool(family.is_selected)
-            checkbox.Tag = family
-            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
-            self.FamilyListPanel.Children.Add(checkbox)
-            self._controls.append(checkbox)
-
-        self.count_tb.Text = "{} transferable family/families.".format(len(self.families))
-
-    def _read_selected_family_keys(self):
+    def _sync_family_controls(self):
         for checkbox in self._controls:
             option = getattr(checkbox, "Tag", None)
             if option is not None:
                 option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+
+    def _populate(self):
+        self.FamilyListPanel.Children.Clear()
+        self._controls = []
+        visible_families = filter_family_options(
+            self.families,
+            _search_text(self.FamilySearchBox),
+        )
+        for group in group_family_options_by_category(visible_families):
+            header = Windows.Controls.TextBlock()
+            header.Text = group.category_name
+            header.FontWeight = Windows.FontWeights.SemiBold
+            header.Margin = Windows.Thickness(8, 10, 8, 4)
+            self.FamilyListPanel.Children.Add(header)
+
+            for family in group.families:
+                checkbox = Windows.Controls.CheckBox()
+                checkbox.Content = family.name
+                checkbox.IsChecked = bool(family.is_selected)
+                checkbox.Tag = family
+                checkbox.Margin = Windows.Thickness(18, 4, 8, 4)
+                self.FamilyListPanel.Children.Add(checkbox)
+                self._controls.append(checkbox)
+
+        if not visible_families:
+            _add_empty_text(self.FamilyListPanel, "No transferable families match the search.")
+
+        if visible_families and len(visible_families) != len(self.families):
+            self.count_tb.Text = "{} transferable families, {} shown.".format(
+                len(self.families),
+                len(visible_families),
+            )
+        else:
+            self.count_tb.Text = "{} transferable families.".format(len(self.families))
+
+    def _read_selected_family_keys(self):
+        self._sync_family_controls()
         return set(get_selected_family_keys(self.families))
+
+    def family_search_changed(self, sender, args):
+        del sender, args
+        self._sync_family_controls()
+        self._populate()
 
     def select_all_click(self, sender, args):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = True
+        self._read_selected_family_keys()
+        self._populate()
 
     def select_none_click(self, sender, args):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = False
+        self._read_selected_family_keys()
+        self._populate()
 
     def back_click(self, sender, args):
         del sender, args
@@ -109,69 +277,6 @@ class FamilySelectionWindow(forms.WPFWindow):
             forms.alert("Select at least one family.", title=TITLE)
             return
         self.selected_family_keys = selected
-        self.result = "next"
-        self.Close()
-
-    def cancel_click(self, sender, args):
-        del sender, args
-        self.result = "cancel"
-        self.Close()
-
-
-class OpenFamilyDocumentsWindow(forms.WPFWindow):
-    def __init__(self, xaml_file_name, documents, selected_document_keys=None):
-        forms.WPFWindow.__init__(self, xaml_file_name)
-        self.documents = list(documents or [])
-        self.selected_document_keys = set(selected_document_keys or [])
-        self.result = None
-        self._controls = []
-
-        restore_open_family_document_selection(self.documents, self.selected_document_keys)
-        self._populate()
-
-    def _populate(self):
-        self.OpenFamilyListPanel.Children.Clear()
-        self._controls = []
-        for document in self.documents:
-            checkbox = Windows.Controls.CheckBox()
-            checkbox.Content = document.display_name
-            checkbox.IsChecked = bool(document.is_selected)
-            checkbox.Tag = document
-            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
-            self.OpenFamilyListPanel.Children.Add(checkbox)
-            self._controls.append(checkbox)
-
-        if self.documents:
-            self.count_tb.Text = "{} opened .rfa file(s).".format(len(self.documents))
-        else:
-            self.count_tb.Text = "No opened .rfa family files were found."
-
-    def _read_selected_document_keys(self):
-        for checkbox in self._controls:
-            option = getattr(checkbox, "Tag", None)
-            if option is not None:
-                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
-        return set(get_selected_open_family_document_keys(self.documents))
-
-    def select_all_click(self, sender, args):
-        del sender, args
-        for checkbox in self._controls:
-            checkbox.IsChecked = True
-
-    def select_none_click(self, sender, args):
-        del sender, args
-        for checkbox in self._controls:
-            checkbox.IsChecked = False
-
-    def back_click(self, sender, args):
-        del sender, args
-        self.selected_document_keys = self._read_selected_document_keys()
-        self.result = "back"
-        self.Close()
-
-    def next_click(self, sender, args):
-        del sender, args
-        self.selected_document_keys = self._read_selected_document_keys()
         self.result = "next"
         self.Close()
 
