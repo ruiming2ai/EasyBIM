@@ -162,8 +162,6 @@ def _run():
             source_window.ShowDialog()
 
             if source_window.result == "select":
-                selected_project_family_keys = set(source_window.selected_family_keys)
-                selected_family_keys = set(selected_project_family_keys)
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
                 try:
                     picked_keys = pick_more_family_keys(uidoc)
@@ -182,8 +180,6 @@ def _run():
                 continue
 
             if source_window.result == "next":
-                selected_project_family_keys = set(source_window.selected_family_keys)
-                selected_family_keys = set(selected_project_family_keys)
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
                 step = STEP_FAMILIES
                 continue
