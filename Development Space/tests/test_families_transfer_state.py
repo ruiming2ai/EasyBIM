@@ -374,6 +374,15 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertIn('Click="expand_all_click"', source)
         self.assertIn('Click="collapse_all_click"', source)
 
+    def test_family_selection_xaml_uses_add_instead_of_next(self):
+        self.assertTrue(FAMILY_XAML_PATH.exists(), "FamilySelectionWindow.xaml is missing")
+        source = FAMILY_XAML_PATH.read_text()
+
+        self.assertIn('Content="Add"', source)
+        self.assertIn('Click="add_click"', source)
+        self.assertNotIn('Content="Next"', source)
+        self.assertNotIn('Click="next_click"', source)
+
     def test_source_window_supports_family_checkboxes_and_load_more_result(self):
         self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
         source = UI_MODULE_PATH.read_text()
@@ -417,6 +426,42 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertIn("STEP_TARGETS", next_assignments)
         self.assertNotIn("STEP_FAMILIES", next_assignments)
         self.assertIn("STEP_FAMILIES", load_more_assignments)
+
+    def test_family_selection_window_exposes_add_result(self):
+        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
+        source = UI_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(UI_MODULE_PATH))
+
+        add_method = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "add_click":
+                add_method = node
+                break
+
+        self.assertIsNotNone(add_method, "add_click is missing")
+        add_source = ast.dump(add_method)
+        self.assertIn("selected_family_keys", add_source)
+        self.assertIn("add", add_source)
+
+    def test_family_add_branch_returns_to_source_without_target_navigation(self):
+        self.assertTrue(SCRIPT_MODULE_PATH.exists(), "script.py is missing")
+        tree = ast.parse(SCRIPT_MODULE_PATH.read_text(), filename=str(SCRIPT_MODULE_PATH))
+
+        add_branch = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test_source = ast.dump(node.test)
+            if "family_window" in test_source and "result" in test_source and "add" in test_source:
+                add_branch = node.body
+                break
+
+        self.assertIsNotNone(add_branch, "family add branch is missing")
+        add_assignments = ast.dump(ast.Module(body=add_branch, type_ignores=[]))
+        self.assertIn("STEP_SOURCE", add_assignments)
+        self.assertNotIn("STEP_TARGETS", add_assignments)
+        self.assertIn("merge_source_family_options", add_assignments)
+        self.assertIn("get_selected_source_family_options", add_assignments)
 
     def test_family_selection_window_uses_expanders_and_expand_collapse_handlers(self):
         self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
