@@ -25,15 +25,17 @@ from families_transfer_revit import close_open_family_documents
 from families_transfer_revit import export_families
 from families_transfer_revit import get_open_family_documents
 from families_transfer_revit import get_open_target_documents
-from families_transfer_revit import get_selected_family_keys_from_selection
+from families_transfer_revit import get_selected_family_options_from_selection
 from families_transfer_revit import get_source_family_options
 from families_transfer_revit import pick_export_folder
-from families_transfer_revit import pick_more_family_keys
+from families_transfer_revit import pick_more_family_options
 from families_transfer_revit import transfer_families
 from families_transfer_state import build_transfer_summary_text
+from families_transfer_state import get_selected_family_keys
 from families_transfer_state import get_selected_source_family_options
 from families_transfer_state import is_open_family_document_key
 from families_transfer_state import is_project_family_key
+from families_transfer_state import merge_source_family_options
 from families_transfer_state import merge_transferable_family_options
 from families_transfer_state import open_family_document_key_from_family_key
 from families_transfer_ui import ActionWindow
@@ -130,7 +132,8 @@ def _run():
     except Exception:
         pass
 
-    selected_project_family_keys = set(get_selected_family_keys_from_selection(doc, uidoc))
+    selected_source_families = get_selected_family_options_from_selection(doc, uidoc)
+    selected_project_family_keys = set(get_selected_family_keys(selected_source_families))
     selected_open_family_document_keys = set()
     selected_family_keys = set(selected_project_family_keys)
     selected_document_keys = set()
@@ -142,9 +145,8 @@ def _run():
 
     while True:
         if step == STEP_SOURCE:
-            project_families = get_source_family_options(doc, selected_project_family_keys)
             selected_source_families = get_selected_source_family_options(
-                project_families,
+                selected_source_families,
                 selected_project_family_keys,
             )
             open_family_documents = get_open_family_documents(
@@ -164,7 +166,7 @@ def _run():
             if source_window.result == "select":
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
                 try:
-                    picked_keys = pick_more_family_keys(uidoc)
+                    picked_families = pick_more_family_options(uidoc)
                 except Exception as ex:
                     if _is_cancelled_pick(ex):
                         source_status = "Selection canceled."
@@ -172,8 +174,12 @@ def _run():
                     forms.alert("Select failed: {}".format(ex), title=__title__)
                     return
 
-                selected_family_keys.update(picked_keys)
-                selected_project_family_keys.update(picked_keys)
+                selected_source_families = merge_source_family_options(
+                    selected_source_families,
+                    picked_families,
+                )
+                selected_project_family_keys = set(get_selected_family_keys(selected_source_families))
+                selected_family_keys = set(selected_project_family_keys)
                 source_status = "{} active-project families selected.".format(
                     len(selected_project_family_keys)
                 )
@@ -225,6 +231,10 @@ def _run():
                 selected_family_keys = set(family_window.selected_family_keys)
                 selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
                     selected_family_keys
+                )
+                selected_source_families = get_selected_source_family_options(
+                    families,
+                    selected_project_family_keys,
                 )
                 source_status = "{} active-project families selected.".format(
                     len(selected_project_family_keys)

@@ -64,6 +64,7 @@ class SourceSelectionWindow(forms.WPFWindow):
         selected_document_keys=None,
         status_text="",
     ):
+        self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.selected_families = list(selected_families or [])
         self.open_family_documents = list(open_family_documents or [])
@@ -80,6 +81,7 @@ class SourceSelectionWindow(forms.WPFWindow):
         self.status_tb.Text = _safe_text(status_text)
         self._populate_selected_families()
         self._populate_open_family_documents()
+        self._is_ready = True
 
     def _populate_selected_families(self):
         self.SelectedSourceListPanel.Children.Clear()
@@ -151,10 +153,14 @@ class SourceSelectionWindow(forms.WPFWindow):
 
     def selected_source_search_changed(self, sender, args):
         del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
         self._populate_selected_families()
 
     def open_family_search_changed(self, sender, args):
         del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
         self._sync_open_rfa_controls()
         self._populate_open_family_documents()
 
@@ -192,6 +198,7 @@ class SourceSelectionWindow(forms.WPFWindow):
 
 class FamilySelectionWindow(forms.WPFWindow):
     def __init__(self, xaml_file_name, families, selected_family_keys=None):
+        self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.families = list(families or [])
         self.selected_family_keys = set(selected_family_keys or [])
@@ -200,6 +207,7 @@ class FamilySelectionWindow(forms.WPFWindow):
 
         restore_family_selection(self.families, self.selected_family_keys)
         self._populate()
+        self._is_ready = True
 
     def _sync_family_controls(self):
         for checkbox in self._controls:
@@ -247,6 +255,8 @@ class FamilySelectionWindow(forms.WPFWindow):
 
     def family_search_changed(self, sender, args):
         del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
         self._sync_family_controls()
         self._populate()
 

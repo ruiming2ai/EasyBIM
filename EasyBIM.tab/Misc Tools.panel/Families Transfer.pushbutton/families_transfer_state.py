@@ -187,8 +187,20 @@ def get_selected_source_family_options(families, selected_family_keys):
     for family in families or []:
         family_key = _safe_text(getattr(family, "family_key", ""))
         if family_key in selected_family_keys:
+            family.is_selected = True
             selected.append(family)
     return sort_family_options(selected)
+
+
+def merge_source_family_options(existing_families, added_families):
+    by_key = {}
+    for family in list(existing_families or []) + list(added_families or []):
+        family_key = _safe_text(getattr(family, "family_key", ""))
+        if not family_key or family_key in by_key:
+            continue
+        family.is_selected = True
+        by_key[family_key] = family
+    return sort_family_options(by_key.values())
 
 
 def group_family_options_by_category(families):
