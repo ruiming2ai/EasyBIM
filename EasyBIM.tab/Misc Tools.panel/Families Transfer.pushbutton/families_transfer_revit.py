@@ -26,7 +26,6 @@ from families_transfer_state import TransferSummary
 from families_transfer_state import build_unique_export_path
 from families_transfer_state import is_open_family_document_key
 from families_transfer_state import make_project_family_key
-from families_transfer_state import normalize_category_name
 from families_transfer_state import sort_family_options
 from families_transfer_state import sort_open_family_documents
 from families_transfer_state import sort_target_documents
@@ -73,27 +72,6 @@ def _doc_title(document):
     except Exception:
         pass
     return _safe_text(getattr(document, "Title", "")) or "(Untitled Project)"
-
-
-def _category_name(category):
-    try:
-        return normalize_category_name(getattr(category, "Name", ""))
-    except Exception:
-        return normalize_category_name("")
-
-
-def _family_category_name(family):
-    try:
-        return _category_name(getattr(family, "FamilyCategory", None))
-    except Exception:
-        return normalize_category_name("")
-
-
-def _family_document_category_name(document):
-    try:
-        return _family_category_name(getattr(document, "OwnerFamily", None))
-    except Exception:
-        return normalize_category_name("")
 
 
 def _doc_key(document):
@@ -203,7 +181,6 @@ def get_open_family_documents(uiapp, source_doc=None, selected_document_keys=Non
                 document_key,
                 is_selected=document_key in selected_document_keys,
                 document=document,
-                category_name=_family_document_category_name(document),
             )
         )
 
@@ -306,7 +283,6 @@ def get_source_family_options(doc, selected_family_keys=None):
                 is_selected=make_project_family_key(family_key) in selected_family_keys,
                 family=family,
                 element_id=getattr(family, "Id", None),
-                category_name=_family_category_name(family),
             )
         )
 
