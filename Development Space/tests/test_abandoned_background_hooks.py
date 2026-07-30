@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 ABANDONED_BACKGROUND_PATHS = (
