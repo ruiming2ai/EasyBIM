@@ -3,7 +3,7 @@ import subprocess
 import unittest
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _forbidden_terms():
@@ -41,6 +41,9 @@ class BrandingRenameTests(unittest.TestCase):
                 continue
 
             if any(relative_path.endswith(suffix) for suffix in binary_suffixes):
+                continue
+
+            if not path.exists():
                 continue
 
             text = path.read_text(encoding="utf-8")

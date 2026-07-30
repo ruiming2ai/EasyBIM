@@ -1,6 +1,6 @@
 type: extension
 name: EasyBIM
-description: Company Startup Meesage for Revit
+description: Handy Tools for Revit
 author: Ruiming Liu
 default_enabled: true
 rocket_mode_compatible: true
