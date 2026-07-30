@@ -43,7 +43,10 @@
 
                     <TextBlock Grid.Row="0" Text="Selection Source" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
                     <TextBlock Grid.Row="1" x:Name="selected_count_tb" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,10"/>
-                    <Button Grid.Row="2" x:Name="select_btn" Content="Select More Families" Width="180" Height="34" HorizontalAlignment="Left" Click="select_click"/>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Button x:Name="select_btn" Content="Click to Select More in Project" Width="220" Height="34" Margin="0,0,8,0" Click="select_click"/>
+                        <Button x:Name="load_more_btn" Content="Load More from Project" Width="180" Height="34" Click="load_more_click"/>
+                    </StackPanel>
 
                     <StackPanel Grid.Row="3" Margin="0,12,0,6">
                         <TextBlock Text="Search selected families" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
