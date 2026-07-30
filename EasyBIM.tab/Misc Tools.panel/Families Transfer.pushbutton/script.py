@@ -142,6 +142,7 @@ def _run():
     families = []
     targets = []
     step = STEP_SOURCE
+    target_back_step = STEP_SOURCE
 
     while True:
         if step == STEP_SOURCE:
@@ -164,6 +165,11 @@ def _run():
             source_window.ShowDialog()
 
             if source_window.result == "select":
+                selected_project_family_keys = set(source_window.selected_family_keys)
+                selected_source_families = get_selected_source_family_options(
+                    selected_source_families,
+                    selected_project_family_keys,
+                )
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
                 try:
                     picked_families = pick_more_family_options(uidoc)
@@ -185,9 +191,39 @@ def _run():
                 )
                 continue
 
-            if source_window.result == "next":
+            if source_window.result == "load_more":
+                selected_project_family_keys = set(source_window.selected_family_keys)
+                selected_family_keys = set(selected_project_family_keys)
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
                 step = STEP_FAMILIES
+                continue
+
+            if source_window.result == "next":
+                selected_project_family_keys = set(source_window.selected_family_keys)
+                selected_source_families = get_selected_source_family_options(
+                    selected_source_families,
+                    selected_project_family_keys,
+                )
+                selected_open_family_document_keys = set(source_window.selected_document_keys)
+                open_family_documents = get_open_family_documents(
+                    uiapp,
+                    doc,
+                    selected_open_family_document_keys,
+                )
+                families = merge_transferable_family_options(
+                    selected_source_families,
+                    open_family_documents,
+                )
+                selected_family_keys = set(get_selected_family_keys(families))
+                if not selected_family_keys:
+                    forms.alert(
+                        "Select at least one family or opened .rfa file before continuing.",
+                        title=__title__,
+                    )
+                    source_status = "Select at least one family or opened .rfa file before continuing."
+                    continue
+                target_back_step = STEP_SOURCE
+                step = STEP_TARGETS
                 continue
             return
 
@@ -224,6 +260,7 @@ def _run():
                 selected_project_family_keys, selected_open_family_document_keys = _split_selected_family_keys(
                     selected_family_keys
                 )
+                target_back_step = STEP_FAMILIES
                 step = STEP_TARGETS
                 continue
 
@@ -259,7 +296,7 @@ def _run():
 
             if target_window.result == "back":
                 selected_document_keys = set(target_window.selected_document_keys)
-                step = STEP_FAMILIES
+                step = target_back_step
                 continue
             return
 
