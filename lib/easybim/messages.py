@@ -238,6 +238,16 @@ def process_startup_jobs(uiapp=None):
         _save_startup_state(state)
 
 
+def has_pending_startup_jobs():
+    """Return True when app-idling has deferred file-open work to process."""
+    trigger_state = _load_file_open_trigger_state()
+    if trigger_state.get("pending", False):
+        return True
+
+    startup_state = _load_startup_state()
+    return bool(startup_state.get("jobs", []))
+
+
 def _process_startup_job(uiapp, job, now):
     stage = job.get("stage")
     target_doc = _resolve_doc_from_job(uiapp, job)
@@ -819,28 +829,39 @@ def _show_workset_picker_dialog_wpfwindow(context):
 
 def _print_coordination_review_report(doc):
     try:
-        from easybim.coordination_review_passive import build_passive_coordination_report
-        report = build_passive_coordination_report(doc, consume=True)
-    except Exception:
-        report = _build_coordination_detection_error_report(doc)
-
-    if _show_coordination_review_dialog(report, doc=doc):
-        return
-
-    output = _get_output_window()
-
-    if output:
         try:
-            _set_output_always_on_top(output)
+            from easybim.coordination_review_passive import build_passive_coordination_report
+            report = build_passive_coordination_report(doc, consume=True)
         except Exception:
-            pass
-        try:
-            _render_report_html(output, report)
+            report = _build_coordination_detection_error_report(doc)
+
+        if _show_coordination_review_dialog(report, doc=doc):
             return
-        except Exception:
-            pass
 
-    _render_report_text(report)
+        output = _get_output_window()
+
+        if output:
+            try:
+                _set_output_always_on_top(output)
+            except Exception:
+                pass
+            try:
+                _render_report_html(output, report)
+                return
+            except Exception:
+                pass
+
+        _render_report_text(report)
+    finally:
+        _disable_passive_coordination_review_detector()
+
+
+def _disable_passive_coordination_review_detector():
+    try:
+        from easybim.coordination_review_passive import unregister_passive_detector
+        unregister_passive_detector()
+    except Exception:
+        pass
 
 
 def _show_coordination_review_dialog(report, doc=None):
