@@ -187,7 +187,6 @@ def get_selected_source_family_options(families, selected_family_keys):
     for family in families or []:
         family_key = _safe_text(getattr(family, "family_key", ""))
         if family_key in selected_family_keys:
-            family.is_selected = True
             selected.append(family)
     return sort_family_options(selected)
 

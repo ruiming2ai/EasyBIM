@@ -183,18 +183,6 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertEqual([item.name for item in selected], ["Door Tag"])
         self.assertEqual([item.category_name for item in selected], ["Door Tags"])
 
-    def test_selected_source_family_options_are_checked_by_default(self):
-        module = _load_state_module()
-
-        selected_key = module.make_project_family_key("100")
-        families = [
-            module.FamilyOption("Door Tag", selected_key, is_selected=False, category_name="Door Tags"),
-        ]
-
-        selected = module.get_selected_source_family_options(families, {selected_key})
-
-        self.assertTrue(selected[0].is_selected)
-
     def test_group_family_options_sorts_by_category_then_family_name(self):
         module = _load_state_module()
 
