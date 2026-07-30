@@ -1,0 +1,9 @@
+title: |-
+  Load Print Set
+  From Excel
+tooltip: |-
+  Create or update a native Revit print set from visible Excel rows.
+
+  Import .xlsx or .xlsm files. The command reads the first visible worksheet, uses the first two visible columns as sheet number and sheet name, and treats the first visible row as a sheet row.
+min_revit_version: 2023
+author: Ruiming Liu

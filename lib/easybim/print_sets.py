@@ -362,6 +362,19 @@ def _collect_print_sets(doc, DB, framework):
     )
 
 
+def collect_print_set_names(doc, DB, framework):
+    names = []
+    for view_sheet_set in _collect_print_sets(doc, DB, framework):
+        try:
+            name = _safe_text(view_sheet_set.Name)
+        except Exception:
+            name = ""
+        if name and name not in names:
+            names.append(name)
+    names.sort()
+    return names
+
+
 def _find_print_set_by_name(doc, DB, framework, print_set_name):
     for view_sheet_set in _collect_print_sets(doc, DB, framework):
         try:
