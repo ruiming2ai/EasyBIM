@@ -11,7 +11,7 @@ class UnsupportedRevitVersion(Exception):
 
 
 class SheetListOption(object):
-    """Sheet List shown in the Load Print Set window."""
+    """Sheet List shown in the Update Print Set window."""
 
     def __init__(self, schedule, rows):
         self.schedule = schedule
@@ -20,7 +20,7 @@ class SheetListOption(object):
 
 
 class SheetSetRow(object):
-    """Sheet row shown in the Load Print Set preview."""
+    """Sheet row shown in the Update Print Set preview."""
 
     def __init__(self, revit_sheet, index):
         self.revit_sheet = revit_sheet
@@ -390,7 +390,7 @@ def save_ordered_print_set(doc, print_set_name, printable_rows, DB, framework,
     """Create or update a native ordered ViewSheetSet and make it current."""
     if not supports_ordered_print_sets(host_app):
         raise UnsupportedRevitVersion(
-            "Load Print Set by Schedule requires Revit 2023 or newer."
+            "Ordered print sets require Revit 2023 or newer."
         )
 
     sheets = []

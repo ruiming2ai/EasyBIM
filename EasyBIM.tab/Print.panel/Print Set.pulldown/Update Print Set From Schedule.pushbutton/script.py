@@ -20,7 +20,7 @@ from easybim import print_sets
 LOGGER = script.get_logger()
 
 
-class LoadPrintSetByScheduleWindow(forms.WPFWindow):
+class UpdatePrintSetFromScheduleWindow(forms.WPFWindow):
     def __init__(self, xaml_file_name):
         forms.WPFWindow.__init__(self, xaml_file_name)
         self._selected_revision_ids = set()
@@ -276,7 +276,7 @@ class LoadPrintSetByScheduleWindow(forms.WPFWindow):
 
         link_reload.ask_and_reload_loaded_links(
             revit.doc,
-            title="Load Print Set by Schedule"
+            title="Update Print Set From Schedule"
         )
 
         message = [
@@ -285,7 +285,7 @@ class LoadPrintSetByScheduleWindow(forms.WPFWindow):
         ]
         if skipped_count:
             message.append("Skipped non-printable rows: {}".format(skipped_count))
-        forms.alert("\n".join(message), title="Load Print Set by Schedule")
+        forms.alert("\n".join(message), title="Update Print Set From Schedule")
         self.Close()
 
 
@@ -294,8 +294,8 @@ revit.selection.get_selection().clear()
 
 if not print_sets.supports_ordered_print_sets(HOST_APP):
     forms.alert(
-        "Load Print Set by Schedule requires Revit 2023 or newer.",
+        "Update Print Set From Schedule requires Revit 2023 or newer.",
         exitscript=True
     )
 
-LoadPrintSetByScheduleWindow("LoadPrintSetBySchedule.xaml").ShowDialog()
+UpdatePrintSetFromScheduleWindow("UpdatePrintSetFromSchedule.xaml").ShowDialog()
