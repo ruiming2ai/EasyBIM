@@ -237,6 +237,24 @@ def _family_name(family):
     return _safe_text(getattr(family, "Name", "")) or "(Unnamed Family)"
 
 
+def _family_option(family, is_selected=False):
+    if not is_transferable_family(family):
+        return None
+
+    family_key = _family_key(family)
+    if not family_key:
+        return None
+
+    return FamilyOption(
+        _family_name(family),
+        make_project_family_key(family_key),
+        is_selected=is_selected,
+        family=family,
+        element_id=getattr(family, "Id", None),
+        category_name=_family_category_name(family),
+    )
+
+
 def _family_from_element(element):
     if element is None:
         return None
@@ -257,10 +275,11 @@ def _family_from_element(element):
     return family
 
 
-def get_selected_family_keys_from_selection(doc, uidoc):
-    keys = set()
+def get_selected_family_options_from_selection(doc, uidoc):
+    options = []
+    seen = set()
     if doc is None or uidoc is None:
-        return keys
+        return options
 
     try:
         selected_ids = list(uidoc.Selection.GetElementIds())
@@ -270,13 +289,17 @@ def get_selected_family_keys_from_selection(doc, uidoc):
     for element_id in selected_ids:
         element = doc.GetElement(element_id)
         family = _family_from_element(element)
-        if not is_transferable_family(family):
+        option = _family_option(family, is_selected=True)
+        if option is None or option.family_key in seen:
             continue
-        family_key = _family_key(family)
-        if family_key:
-            keys.add(make_project_family_key(family_key))
+        seen.add(option.family_key)
+        options.append(option)
 
-    return keys
+    return sort_family_options(options)
+
+
+def get_selected_family_keys_from_selection(doc, uidoc):
+    return set(option.family_key for option in get_selected_family_options_from_selection(doc, uidoc))
 
 
 def _collect_families(doc):
@@ -299,16 +322,12 @@ def get_source_family_options(doc, selected_family_keys=None):
         family_key = _family_key(family)
         if not family_key:
             continue
-        options.append(
-            FamilyOption(
-                _family_name(family),
-                make_project_family_key(family_key),
-                is_selected=make_project_family_key(family_key) in selected_family_keys,
-                family=family,
-                element_id=getattr(family, "Id", None),
-                category_name=_family_category_name(family),
-            )
+        option = _family_option(
+            family,
+            is_selected=make_project_family_key(family_key) in selected_family_keys,
         )
+        if option is not None:
+            options.append(option)
 
     return sort_family_options(options)
 
@@ -372,8 +391,9 @@ class FamilyTransferLoadOptions(DB.IFamilyLoadOptions):
         return True
 
 
-def pick_more_family_keys(uidoc):
-    picked_keys = set()
+def pick_more_family_options(uidoc):
+    picked_options = []
+    seen = set()
     references = uidoc.Selection.PickObjects(
         ObjectType.Element,
         FamilyTransferSelectionFilter(),
@@ -387,13 +407,17 @@ def pick_more_family_keys(uidoc):
         except Exception:
             element = None
         family = _family_from_element(element)
-        if not is_transferable_family(family):
+        option = _family_option(family, is_selected=True)
+        if option is None or option.family_key in seen:
             continue
-        family_key = _family_key(family)
-        if family_key:
-            picked_keys.add(make_project_family_key(family_key))
+        seen.add(option.family_key)
+        picked_options.append(option)
 
-    return picked_keys
+    return sort_family_options(picked_options)
+
+
+def pick_more_family_keys(uidoc):
+    return set(option.family_key for option in pick_more_family_options(uidoc))
 
 
 def pick_export_folder():

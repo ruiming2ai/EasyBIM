@@ -12,6 +12,8 @@ COMMAND_DIR = (
 )
 STATE_MODULE_PATH = COMMAND_DIR / "families_transfer_state.py"
 REVIT_MODULE_PATH = COMMAND_DIR / "families_transfer_revit.py"
+SCRIPT_MODULE_PATH = COMMAND_DIR / "script.py"
+UI_MODULE_PATH = COMMAND_DIR / "families_transfer_ui.py"
 
 
 def _load_state_module():
@@ -182,6 +184,26 @@ class FamiliesTransferStateTests(unittest.TestCase):
 
         self.assertEqual([item.name for item in selected], ["Door Tag"])
         self.assertEqual([item.category_name for item in selected], ["Door Tags"])
+        self.assertTrue(selected[0].is_selected)
+
+    def test_merge_source_family_options_deduplicates_picked_rows(self):
+        module = _load_state_module()
+
+        door_key = module.make_project_family_key("100")
+        casework_key = module.make_project_family_key("200")
+        existing = [
+            module.FamilyOption("Door Tag", door_key, is_selected=True, category_name="Door Tags"),
+        ]
+        additions = [
+            module.FamilyOption("Door Tag Duplicate", door_key, is_selected=True, category_name="Door Tags"),
+            module.FamilyOption("Base Cabinet", casework_key, is_selected=True, category_name="Casework"),
+        ]
+
+        merged = module.merge_source_family_options(existing, additions)
+
+        self.assertEqual([item.family_key for item in merged], [casework_key, door_key])
+        self.assertEqual([item.name for item in merged], ["Base Cabinet", "Door Tag"])
+        self.assertTrue(all(item.is_selected for item in merged))
 
     def test_group_family_options_sorts_by_category_then_family_name(self):
         module = _load_state_module()
@@ -285,6 +307,64 @@ class FamiliesTransferStateTests(unittest.TestCase):
                 forbidden_imports.append(node.module)
 
         self.assertEqual([], forbidden_imports)
+
+    def test_source_step_does_not_collect_all_project_families_before_first_window(self):
+        self.assertTrue(SCRIPT_MODULE_PATH.exists(), "script.py is missing")
+        tree = ast.parse(SCRIPT_MODULE_PATH.read_text(), filename=str(SCRIPT_MODULE_PATH))
+
+        run_function = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_run":
+                run_function = node
+                break
+        self.assertIsNotNone(run_function, "_run is missing")
+
+        source_step_body = None
+        for node in ast.walk(run_function):
+            if not isinstance(node, ast.If):
+                continue
+            comparison = ast.dump(node.test)
+            if "step" in comparison and "STEP_SOURCE" in comparison:
+                source_step_body = node.body
+                break
+        self.assertIsNotNone(source_step_body, "STEP_SOURCE branch is missing")
+
+        calls_before_show_dialog = []
+        for node in source_step_body:
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "ShowDialog"
+            ):
+                break
+            calls_before_show_dialog.extend(
+                call.func.id
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            )
+
+        self.assertNotIn("get_source_family_options", calls_before_show_dialog)
+
+    def test_wpf_search_handlers_guard_until_window_is_ready(self):
+        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
+        tree = ast.parse(UI_MODULE_PATH.read_text(), filename=str(UI_MODULE_PATH))
+
+        guarded_handlers = {
+            "selected_source_search_changed",
+            "open_family_search_changed",
+            "family_search_changed",
+        }
+        found_handlers = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name not in guarded_handlers:
+                continue
+            found_handlers.add(node.name)
+            handler_source = ast.dump(node)
+            self.assertIn("_is_ready", handler_source)
+            self.assertIn("Return", handler_source)
+
+        self.assertEqual(guarded_handlers, found_handlers)
 
     def test_transferability_does_not_restrict_to_model_categories(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")
