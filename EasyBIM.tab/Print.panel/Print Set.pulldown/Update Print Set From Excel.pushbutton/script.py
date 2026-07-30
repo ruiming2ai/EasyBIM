@@ -22,7 +22,7 @@ from easybim import print_sets
 LOGGER = script.get_logger()
 
 
-class LoadPrintSetFromExcelWindow(forms.WPFWindow):
+class UpdatePrintSetFromExcelWindow(forms.WPFWindow):
     def __init__(self, xaml_file_name):
         forms.WPFWindow.__init__(self, xaml_file_name)
         self._selected_revision_ids = set()
@@ -355,14 +355,14 @@ class LoadPrintSetFromExcelWindow(forms.WPFWindow):
         try:
             read_result = excel_print_sets.read_visible_excel_rows(excel_path)
         except excel_print_sets.UnsupportedExcelFile as import_err:
-            forms.alert(str(import_err), title="Load Print Set From Excel")
+            forms.alert(str(import_err), title="Update Print Set From Excel")
             return
         except Exception as import_err:
             LOGGER.critical("Failed to import Excel print set: %s", import_err)
             forms.alert(
                 "Failed to import the Excel file.",
                 expanded=str(import_err),
-                title="Load Print Set From Excel"
+                title="Update Print Set From Excel"
             )
             return
 
@@ -479,13 +479,13 @@ class LoadPrintSetFromExcelWindow(forms.WPFWindow):
             forms.alert(
                 "Failed to create or update the print set.",
                 expanded=str(save_err),
-                title="Load Print Set From Excel"
+                title="Update Print Set From Excel"
             )
             return
 
         link_reload.ask_and_reload_loaded_links(
             revit.doc,
-            title="Load Print Set From Excel"
+            title="Update Print Set From Excel"
         )
 
         message = [
@@ -500,7 +500,7 @@ class LoadPrintSetFromExcelWindow(forms.WPFWindow):
                     len(self._result.skipped_row_ids)
                 )
             )
-        forms.alert("\n".join(message), title="Load Print Set From Excel")
+        forms.alert("\n".join(message), title="Update Print Set From Excel")
         self.Close()
 
 
@@ -509,8 +509,8 @@ revit.selection.get_selection().clear()
 
 if not print_sets.supports_ordered_print_sets(HOST_APP):
     forms.alert(
-        "Load Print Set From Excel requires Revit 2023 or newer.",
+        "Update Print Set From Excel requires Revit 2023 or newer.",
         exitscript=True
     )
 
-LoadPrintSetFromExcelWindow("LoadPrintSetFromExcel.xaml").ShowDialog()
+UpdatePrintSetFromExcelWindow("UpdatePrintSetFromExcel.xaml").ShowDialog()

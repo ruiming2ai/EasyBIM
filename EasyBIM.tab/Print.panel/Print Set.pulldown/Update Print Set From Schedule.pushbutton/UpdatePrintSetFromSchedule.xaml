@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Load Print Set by Schedule"
+        Title="Update Print Set From Schedule"
         Height="620"
         Width="760"
         ShowInTaskbar="False"

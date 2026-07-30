@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Load Print Set From Excel"
+        Title="Update Print Set From Excel"
         Height="680"
         Width="900"
         ShowInTaskbar="False"
