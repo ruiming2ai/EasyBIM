@@ -4,7 +4,7 @@ import unittest
 
 
 MODULE_PATH = (
-    pathlib.Path(__file__).resolve().parents[1]
+    pathlib.Path(__file__).resolve().parents[2]
     / "lib"
     / "easybim"
     / "link_reload.py"
