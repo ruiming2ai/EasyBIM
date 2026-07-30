@@ -14,6 +14,9 @@ STATE_MODULE_PATH = COMMAND_DIR / "families_transfer_state.py"
 REVIT_MODULE_PATH = COMMAND_DIR / "families_transfer_revit.py"
 SCRIPT_MODULE_PATH = COMMAND_DIR / "script.py"
 UI_MODULE_PATH = COMMAND_DIR / "families_transfer_ui.py"
+SOURCE_XAML_PATH = COMMAND_DIR / "SourceSelectionWindow.xaml"
+FAMILY_XAML_PATH = COMMAND_DIR / "FamilySelectionWindow.xaml"
+TARGET_XAML_PATH = COMMAND_DIR / "TargetSelectionWindow.xaml"
 
 
 def _load_state_module():
@@ -345,6 +348,83 @@ class FamiliesTransferStateTests(unittest.TestCase):
             )
 
         self.assertNotIn("get_source_family_options", calls_before_show_dialog)
+
+    def test_source_window_xaml_exposes_pick_and_load_more_buttons(self):
+        self.assertTrue(SOURCE_XAML_PATH.exists(), "SourceSelectionWindow.xaml is missing")
+        source = SOURCE_XAML_PATH.read_text()
+
+        self.assertIn("Click to Select More in Project", source)
+        self.assertIn("Load More from Project", source)
+        self.assertIn('Click="load_more_click"', source)
+
+    def test_target_window_title_loads_families_into_selected_open_files(self):
+        self.assertTrue(TARGET_XAML_PATH.exists(), "TargetSelectionWindow.xaml is missing")
+        source = TARGET_XAML_PATH.read_text()
+
+        self.assertIn('Title="Load Families into Selected Open Files"', source)
+        self.assertIn('Text="Load Families into Selected Open Files"', source)
+        self.assertNotIn("Select Open Files", source)
+
+    def test_family_selection_xaml_exposes_expand_and_collapse_all(self):
+        self.assertTrue(FAMILY_XAML_PATH.exists(), "FamilySelectionWindow.xaml is missing")
+        source = FAMILY_XAML_PATH.read_text()
+
+        self.assertIn("Expand All", source)
+        self.assertIn("Collapse All", source)
+        self.assertIn('Click="expand_all_click"', source)
+        self.assertIn('Click="collapse_all_click"', source)
+
+    def test_source_window_supports_family_checkboxes_and_load_more_result(self):
+        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
+        source = UI_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(UI_MODULE_PATH))
+
+        self.assertIn("_selected_family_controls", source)
+        self.assertIn("selected_family_keys", source)
+        self.assertIn('"load_more"', source)
+
+        populate_method = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_populate_selected_families":
+                populate_method = node
+                break
+
+        self.assertIsNotNone(populate_method, "_populate_selected_families is missing")
+        populate_source = ast.dump(populate_method)
+        self.assertIn("CheckBox", populate_source)
+
+    def test_source_next_goes_to_targets_without_full_family_selector(self):
+        self.assertTrue(SCRIPT_MODULE_PATH.exists(), "script.py is missing")
+        tree = ast.parse(SCRIPT_MODULE_PATH.read_text(), filename=str(SCRIPT_MODULE_PATH))
+
+        next_branch = None
+        load_more_branch = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test_source = ast.dump(node.test)
+            if "source_window" in test_source and "result" in test_source and "next" in test_source:
+                next_branch = node.body
+            if "source_window" in test_source and "result" in test_source and "load_more" in test_source:
+                load_more_branch = node.body
+
+        self.assertIsNotNone(next_branch, "source next branch is missing")
+        self.assertIsNotNone(load_more_branch, "source load_more branch is missing")
+
+        next_assignments = ast.dump(ast.Module(body=next_branch, type_ignores=[]))
+        load_more_assignments = ast.dump(ast.Module(body=load_more_branch, type_ignores=[]))
+
+        self.assertIn("STEP_TARGETS", next_assignments)
+        self.assertNotIn("STEP_FAMILIES", next_assignments)
+        self.assertIn("STEP_FAMILIES", load_more_assignments)
+
+    def test_family_selection_window_uses_expanders_and_expand_collapse_handlers(self):
+        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
+        source = UI_MODULE_PATH.read_text()
+
+        self.assertIn("Windows.Controls.Expander", source)
+        self.assertIn("def expand_all_click", source)
+        self.assertIn("def collapse_all_click", source)
 
     def test_wpf_search_handlers_guard_until_window_is_ready(self):
         self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")

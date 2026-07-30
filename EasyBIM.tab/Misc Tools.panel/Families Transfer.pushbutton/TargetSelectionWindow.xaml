@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Select Open Files"
+        Title="Load Families into Selected Open Files"
         Width="660"
         Height="620"
         MinWidth="560"
@@ -16,7 +16,7 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
-            <TextBlock Text="Select Open Files" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock Text="Load Families into Selected Open Files" FontSize="30" FontWeight="SemiBold"/>
             <TextBlock x:Name="count_tb" Margin="0,6,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
         </StackPanel>
 

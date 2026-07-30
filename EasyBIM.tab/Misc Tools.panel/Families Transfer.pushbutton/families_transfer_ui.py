@@ -68,8 +68,10 @@ class SourceSelectionWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.selected_families = list(selected_families or [])
         self.open_family_documents = list(open_family_documents or [])
+        self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
         self.selected_document_keys = set(selected_document_keys or [])
         self.result = None
+        self._selected_family_controls = []
         self._open_rfa_controls = []
 
         restore_open_family_document_selection(
@@ -85,24 +87,40 @@ class SourceSelectionWindow(forms.WPFWindow):
 
     def _populate_selected_families(self):
         self.SelectedSourceListPanel.Children.Clear()
+        self._selected_family_controls = []
         visible_families = filter_family_options(
             self.selected_families,
             _search_text(self.SelectedSourceSearchBox),
         )
         for family in visible_families:
-            textblock = Windows.Controls.TextBlock()
-            textblock.Text = _option_text(
+            checkbox = Windows.Controls.CheckBox()
+            checkbox.Content = _option_text(
                 getattr(family, "name", ""),
                 getattr(family, "category_name", ""),
             )
-            textblock.Margin = Windows.Thickness(8, 4, 8, 4)
-            self.SelectedSourceListPanel.Children.Add(textblock)
+            checkbox.IsChecked = bool(getattr(family, "is_selected", False))
+            checkbox.Tag = family
+            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
+            self.SelectedSourceListPanel.Children.Add(checkbox)
+            self._selected_family_controls.append(checkbox)
 
         if not visible_families:
             if self.selected_families:
                 _add_empty_text(self.SelectedSourceListPanel, "No selected families match the search.")
             else:
                 _add_empty_text(self.SelectedSourceListPanel, "No active-project families selected.")
+
+    def _sync_selected_family_controls(self):
+        for checkbox in self._selected_family_controls:
+            option = getattr(checkbox, "Tag", None)
+            if option is not None:
+                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+
+    def _read_selected_family_keys(self):
+        self._sync_selected_family_controls()
+        self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
+        self.selected_count_tb.Text = _family_count_text(len(self.selected_family_keys))
+        return self.selected_family_keys
 
     def _sync_open_rfa_controls(self):
         for checkbox in self._open_rfa_controls:
@@ -155,6 +173,7 @@ class SourceSelectionWindow(forms.WPFWindow):
         del sender, args
         if not getattr(self, "_is_ready", False):
             return
+        self._read_selected_family_keys()
         self._populate_selected_families()
 
     def open_family_search_changed(self, sender, args):
@@ -180,12 +199,21 @@ class SourceSelectionWindow(forms.WPFWindow):
 
     def select_click(self, sender, args):
         del sender, args
+        self._read_selected_family_keys()
         self._read_selected_document_keys()
         self.result = "select"
         self.Close()
 
+    def load_more_click(self, sender, args):
+        del sender, args
+        self._read_selected_family_keys()
+        self._read_selected_document_keys()
+        self.result = "load_more"
+        self.Close()
+
     def next_click(self, sender, args):
         del sender, args
+        self._read_selected_family_keys()
         self._read_selected_document_keys()
         self.result = "next"
         self.Close()
@@ -204,6 +232,8 @@ class FamilySelectionWindow(forms.WPFWindow):
         self.selected_family_keys = set(selected_family_keys or [])
         self.result = None
         self._controls = []
+        self._category_expanders = []
+        self._expanded_categories = {}
 
         restore_family_selection(self.families, self.selected_family_keys)
         self._populate()
@@ -215,19 +245,30 @@ class FamilySelectionWindow(forms.WPFWindow):
             if option is not None:
                 option.is_selected = bool(getattr(checkbox, "IsChecked", False))
 
+    def _sync_category_expanders(self):
+        for expander in self._category_expanders:
+            category_name = _safe_text(getattr(expander, "Tag", ""))
+            if category_name:
+                self._expanded_categories[category_name] = bool(
+                    getattr(expander, "IsExpanded", True)
+                )
+
+    def _set_all_category_expanders(self, is_expanded):
+        for group in group_family_options_by_category(self.families):
+            self._expanded_categories[group.category_name] = bool(is_expanded)
+        for expander in self._category_expanders:
+            expander.IsExpanded = bool(is_expanded)
+
     def _populate(self):
         self.FamilyListPanel.Children.Clear()
         self._controls = []
+        self._category_expanders = []
         visible_families = filter_family_options(
             self.families,
             _search_text(self.FamilySearchBox),
         )
         for group in group_family_options_by_category(visible_families):
-            header = Windows.Controls.TextBlock()
-            header.Text = group.category_name
-            header.FontWeight = Windows.FontWeights.SemiBold
-            header.Margin = Windows.Thickness(8, 10, 8, 4)
-            self.FamilyListPanel.Children.Add(header)
+            family_panel = Windows.Controls.StackPanel()
 
             for family in group.families:
                 checkbox = Windows.Controls.CheckBox()
@@ -235,8 +276,17 @@ class FamilySelectionWindow(forms.WPFWindow):
                 checkbox.IsChecked = bool(family.is_selected)
                 checkbox.Tag = family
                 checkbox.Margin = Windows.Thickness(18, 4, 8, 4)
-                self.FamilyListPanel.Children.Add(checkbox)
+                family_panel.Children.Add(checkbox)
                 self._controls.append(checkbox)
+
+            expander = Windows.Controls.Expander()
+            expander.Header = "{} ({})".format(group.category_name, len(group.families))
+            expander.IsExpanded = self._expanded_categories.get(group.category_name, True)
+            expander.Tag = group.category_name
+            expander.Margin = Windows.Thickness(8, 6, 8, 4)
+            expander.Content = family_panel
+            self.FamilyListPanel.Children.Add(expander)
+            self._category_expanders.append(expander)
 
         if not visible_families:
             _add_empty_text(self.FamilyListPanel, "No transferable families match the search.")
@@ -258,12 +308,14 @@ class FamilySelectionWindow(forms.WPFWindow):
         if not getattr(self, "_is_ready", False):
             return
         self._sync_family_controls()
+        self._sync_category_expanders()
         self._populate()
 
     def select_all_click(self, sender, args):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = True
+        self._sync_category_expanders()
         self._read_selected_family_keys()
         self._populate()
 
@@ -271,17 +323,30 @@ class FamilySelectionWindow(forms.WPFWindow):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = False
+        self._sync_category_expanders()
         self._read_selected_family_keys()
         self._populate()
 
+    def expand_all_click(self, sender, args):
+        del sender, args
+        self._sync_family_controls()
+        self._set_all_category_expanders(True)
+
+    def collapse_all_click(self, sender, args):
+        del sender, args
+        self._sync_family_controls()
+        self._set_all_category_expanders(False)
+
     def back_click(self, sender, args):
         del sender, args
+        self._sync_category_expanders()
         self.selected_family_keys = self._read_selected_family_keys()
         self.result = "back"
         self.Close()
 
     def next_click(self, sender, args):
         del sender, args
+        self._sync_category_expanders()
         selected = self._read_selected_family_keys()
         if not selected:
             forms.alert("Select at least one family.", title=TITLE)
