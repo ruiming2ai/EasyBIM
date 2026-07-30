@@ -116,6 +116,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
 
         self.assertEqual(option.display_name, "Chair.rfa")
         self.assertEqual(option.document_key, "path|chair.rfa")
+        self.assertEqual(option.category_name, "Unknown Category")
         self.assertFalse(option.is_selected)
         self.assertEqual(str(option), "Chair.rfa")
 
@@ -133,23 +134,129 @@ class FamiliesTransferStateTests(unittest.TestCase):
         module = _load_state_module()
 
         project_families = [
-            module.FamilyOption("Wall Cabinet", module.make_project_family_key("200"), is_selected=True),
+            module.FamilyOption(
+                "Wall Cabinet",
+                module.make_project_family_key("200"),
+                is_selected=True,
+                category_name="Casework",
+            ),
         ]
         open_rfas = [
-            module.OpenFamilyDocumentOption("Desk.rfa", "doc-desk", is_selected=True),
-            module.OpenFamilyDocumentOption("Light.rfa", "doc-light", is_selected=False),
+            module.OpenFamilyDocumentOption(
+                "Desk.rfa",
+                "doc-desk",
+                is_selected=True,
+                category_name="Furniture",
+            ),
+            module.OpenFamilyDocumentOption(
+                "Light.rfa",
+                "doc-light",
+                is_selected=False,
+                category_name="Lighting Fixtures",
+            ),
         ]
 
         merged = module.merge_transferable_family_options(project_families, open_rfas)
 
-        self.assertEqual([item.name for item in merged], ["Desk.rfa", "Wall Cabinet"])
+        self.assertEqual([item.name for item in merged], ["Wall Cabinet", "Desk.rfa"])
         self.assertEqual(
             [item.family_key for item in merged],
-            [module.make_open_family_document_key("doc-desk"), module.make_project_family_key("200")],
+            [module.make_project_family_key("200"), module.make_open_family_document_key("doc-desk")],
         )
-        self.assertEqual([item.source_kind for item in merged], ["open_rfa", "project"])
+        self.assertEqual([item.source_kind for item in merged], ["project", "open_rfa"])
+        self.assertEqual([item.category_name for item in merged], ["Casework", "Furniture"])
         self.assertTrue(merged[0].is_selected)
         self.assertTrue(merged[1].is_selected)
+
+    def test_selected_source_family_options_returns_checked_project_families(self):
+        module = _load_state_module()
+
+        selected_key = module.make_project_family_key("100")
+        other_key = module.make_project_family_key("200")
+        families = [
+            module.FamilyOption("Door Tag", selected_key, category_name="Door Tags"),
+            module.FamilyOption("Base Cabinet", other_key, category_name="Casework"),
+        ]
+
+        selected = module.get_selected_source_family_options(families, {selected_key})
+
+        self.assertEqual([item.name for item in selected], ["Door Tag"])
+        self.assertEqual([item.category_name for item in selected], ["Door Tags"])
+
+    def test_selected_source_family_options_are_checked_by_default(self):
+        module = _load_state_module()
+
+        selected_key = module.make_project_family_key("100")
+        families = [
+            module.FamilyOption("Door Tag", selected_key, is_selected=False, category_name="Door Tags"),
+        ]
+
+        selected = module.get_selected_source_family_options(families, {selected_key})
+
+        self.assertTrue(selected[0].is_selected)
+
+    def test_group_family_options_sorts_by_category_then_family_name(self):
+        module = _load_state_module()
+
+        families = [
+            module.FamilyOption("Window Tag", "project|3", category_name="Window Tags"),
+            module.FamilyOption("Base Cabinet", "project|2", category_name="Casework"),
+            module.FamilyOption("Upper Cabinet", "project|1", category_name="Casework"),
+            module.FamilyOption("No Category", "project|4", category_name=""),
+        ]
+
+        groups = module.group_family_options_by_category(families)
+
+        self.assertEqual(
+            [(group.category_name, [family.name for family in group.families]) for group in groups],
+            [
+                ("Casework", ["Base Cabinet", "Upper Cabinet"]),
+                ("Window Tags", ["Window Tag"]),
+                ("Unknown Category", ["No Category"]),
+            ],
+        )
+
+    def test_family_search_matches_name_or_category_without_changing_selection(self):
+        module = _load_state_module()
+
+        families = [
+            module.FamilyOption("Room Name", "project|1", is_selected=True, category_name="Generic Annotations"),
+            module.FamilyOption("Single Door", "project|2", is_selected=False, category_name="Doors"),
+        ]
+
+        category_match = module.filter_family_options(families, "annotation")
+        name_match = module.filter_family_options(families, "door")
+        all_items = module.filter_family_options(families, "")
+
+        self.assertEqual([item.name for item in category_match], ["Room Name"])
+        self.assertEqual([item.name for item in name_match], ["Single Door"])
+        self.assertEqual([item.name for item in all_items], ["Room Name", "Single Door"])
+        self.assertTrue(families[0].is_selected)
+        self.assertFalse(families[1].is_selected)
+
+    def test_open_rfa_search_matches_name_or_category_without_changing_selection(self):
+        module = _load_state_module()
+
+        documents = [
+            module.OpenFamilyDocumentOption(
+                "North Arrow.rfa",
+                "doc-north",
+                is_selected=True,
+                category_name="Generic Annotations",
+            ),
+            module.OpenFamilyDocumentOption(
+                "Work Table.rfa",
+                "doc-table",
+                is_selected=False,
+                category_name="Furniture",
+            ),
+        ]
+
+        filtered = module.filter_open_family_document_options(documents, "annotation")
+
+        self.assertEqual([item.display_name for item in filtered], ["North Arrow.rfa"])
+        self.assertTrue(documents[0].is_selected)
+        self.assertFalse(documents[1].is_selected)
 
     def test_selected_open_family_document_keys_deduplicate_ids(self):
         module = _load_state_module()
@@ -190,6 +297,27 @@ class FamiliesTransferStateTests(unittest.TestCase):
                 forbidden_imports.append(node.module)
 
         self.assertEqual([], forbidden_imports)
+
+    def test_transferability_does_not_restrict_to_model_categories(self):
+        self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")
+        source = REVIT_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(REVIT_MODULE_PATH))
+
+        target = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "is_transferable_family":
+                target = node
+                break
+
+        self.assertIsNotNone(target, "is_transferable_family is missing")
+        attribute_names = set(
+            node.attr
+            for node in ast.walk(target)
+            if isinstance(node, ast.Attribute)
+        )
+
+        self.assertNotIn("FamilyCategory", attribute_names)
+        self.assertNotIn("CategoryType", attribute_names)
 
 
 if __name__ == "__main__":
