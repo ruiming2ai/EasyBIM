@@ -17,6 +17,13 @@ except Exception:
 
 
 try:
+    from easybim import view_template_ribbon
+    view_template_ribbon.apply_native_view_template_icon()
+except Exception:
+    pass
+
+
+try:
     from easybim import auto_update
 
     if not auto_update.should_skip_startup(auto_update.get_startup_guard_state()):
