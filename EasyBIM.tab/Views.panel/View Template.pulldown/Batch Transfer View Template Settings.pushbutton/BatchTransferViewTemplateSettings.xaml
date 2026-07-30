@@ -63,7 +63,6 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -86,58 +85,65 @@
                                    VerticalAlignment="Center"/>
                     </DockPanel>
 
-                    <Grid Grid.Row="2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="2*"/>
-                            <ColumnDefinition Width="2*"/>
-                            <ColumnDefinition Width="92"/>
-                        </Grid.ColumnDefinitions>
-                        <Border Grid.Column="0" BorderBrush="#8F8F8F" BorderThickness="1,1,0,1" Background="#EEEEEE" Padding="4,3">
-                            <TextBlock Text="Parameter" HorizontalAlignment="Center" FontWeight="SemiBold"/>
-                        </Border>
-                        <Border Grid.Column="1" BorderBrush="#8F8F8F" BorderThickness="1,1,0,1" Background="#EEEEEE" Padding="4,3">
-                            <TextBlock Text="Value" HorizontalAlignment="Center" FontWeight="SemiBold"/>
-                        </Border>
-                        <Border Grid.Column="2" BorderBrush="#8F8F8F" BorderThickness="1" Background="#EEEEEE" Padding="4,3">
-                            <TextBlock Text="Include" HorizontalAlignment="Center" FontWeight="SemiBold"/>
-                        </Border>
-                    </Grid>
-
-                    <ListView x:Name="settings_lv"
-                              Grid.Row="3"
+                    <DataGrid x:Name="settings_lv"
+                              Grid.Row="2"
+                              AutoGenerateColumns="False"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="All"
+                              HorizontalGridLinesBrush="#D0D0D0"
+                              VerticalGridLinesBrush="#D0D0D0"
                               BorderBrush="#8F8F8F"
-                              BorderThickness="1,0,1,1"
+                              BorderThickness="1"
                               Background="White"
+                              RowHeaderWidth="0"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              CanUserReorderColumns="False"
+                              CanUserResizeColumns="False"
+                              CanUserResizeRows="False"
+                              CanUserSortColumns="False"
+                              SelectionMode="Single"
+                              SelectionUnit="FullRow"
                               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                        <ListView.ItemTemplate>
-                            <DataTemplate>
-                                <Grid MinHeight="21">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="2*"/>
-                                        <ColumnDefinition Width="2*"/>
-                                        <ColumnDefinition Width="92"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Border Grid.Column="0" BorderBrush="#D0D0D0" BorderThickness="0,0,1,1" Padding="4,1">
-                                        <TextBlock Text="{Binding name}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   VerticalAlignment="Center"/>
-                                    </Border>
-                                    <Border Grid.Column="1" BorderBrush="#D0D0D0" BorderThickness="0,0,1,1" Padding="4,1">
-                                        <TextBlock Text="{Binding value_text}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   VerticalAlignment="Center"/>
-                                    </Border>
-                                    <Border Grid.Column="2" BorderBrush="#D0D0D0" BorderThickness="0,0,0,1" Padding="4,1">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="92">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="Include"
+                                                   HorizontalAlignment="Center"
+                                                   FontWeight="SemiBold"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
                                         <CheckBox HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"
                                                   IsChecked="{Binding is_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                                    </Border>
-                                </Grid>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
 
-                    <DockPanel Grid.Row="4" Margin="0,8,0,0">
+                            <DataGridTemplateColumn Width="*">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="Parameter"
+                                                   HorizontalAlignment="Center"
+                                                   FontWeight="SemiBold"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding name}"
+                                                   Margin="6,0,4,0"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <DockPanel Grid.Row="3" Margin="0,8,0,0">
                         <TextBlock x:Name="settings_count_tb"
                                    DockPanel.Dock="Left"
                                    VerticalAlignment="Center"
