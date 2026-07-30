@@ -57,7 +57,7 @@
 
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <Button Content="Back" Width="100" Height="34" Margin="0,0,8,0" Click="back_click"/>
-                    <Button Content="Next" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="next_click"/>
+                    <Button Content="Add" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="add_click"/>
                     <Button Content="Cancel" Width="100" Height="34" IsCancel="True" Click="cancel_click"/>
                 </StackPanel>
             </DockPanel>
