@@ -27,12 +27,12 @@ class TempPhaseConversionTests(unittest.TestCase):
             self.assertIn("GetProperty(\"Shared\"", text)
             self.assertNotIn("using EasyBIM.TempPhase", text)
 
-    def test_command_bundle_declares_controller_module(self):
+    def test_command_bundle_uses_packaged_versioned_controllers(self):
         metadata = (BUTTON_ROOT / "bundle.yaml").read_text(encoding="utf-8")
         self.assertIn("min_revit_version: 2025", metadata)
         self.assertIn("max_revit_version: 2026", metadata)
-        self.assertIn("modules:", metadata)
-        self.assertIn("TempPhaseController.dll", metadata)
+        self.assertNotIn("modules:", metadata)
+        self.assertNotIn("TempPhaseController.dll", metadata)
 
     def test_command_wrapper_reports_module_load_failures(self):
         script = (BUTTON_ROOT / "script.cs").read_text(encoding="utf-8")
@@ -41,6 +41,7 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("Assembly.LoadFrom", script)
         self.assertIn("ModuleCandidatePath", script)
         self.assertIn("FindControllerAssembly", script)
+        self.assertIn("TempPhaseController.Revit", script)
         self.assertIn("ControllerModuleMissing", script)
         self.assertIn("ControllerModuleWrongYearLoaded", script)
         self.assertIn("TaskDialog.Show", script)
@@ -102,26 +103,22 @@ class TempPhaseConversionTests(unittest.TestCase):
             )
             self.assertIn('Version="' + version + '.0.0"', project)
 
-    def test_build_script_requires_a_single_host_version(self):
+    def test_packaged_controller_release_script(self):
         script = (ROOT / "build" / "Build-TempPhase.ps1").read_text(
             encoding="utf-8"
         )
-        self.assertIn('ValidateSet("2025", "2026")', script)
-        self.assertIn("ExtensionRoot", script)
-        self.assertIn("ArtifactPath", script)
+        self.assertIn('ValidateSet("2025", "2026", "All")', script)
         self.assertIn("VerifyOnly", script)
-        self.assertIn("C:\\Users\\RML\\Documents\\GitHub\\EasyBIM.extension", script)
-        self.assertIn("ProviderPath", script)
-        self.assertIn("bundle.yaml", script)
-        self.assertIn("script.cs", script)
-        self.assertIn("doc-closing.cs", script)
-        self.assertIn("app-idling.cs", script)
-        self.assertIn("doc-closed.cs", script)
+        self.assertIn('TempPhaseController.Revit{0}.dll', script)
+        self.assertIn("Update-TrackedController", script)
         self.assertIn("GetAssemblyName", script)
         self.assertIn("RevitAPI", script)
-        self.assertIn("TempPhaseController.dll", script)
-        self.assertIn("Stage-PackageFiles", script)
-        self.assertIn("Write-PackageStatus", script)
+        self.assertNotIn("Stage-PackageFiles", script)
+        self.assertNotIn("ExtensionRoot", script)
+
+        for version in ("2025", "2026"):
+            packaged = ROOT / "bin" / ("TempPhaseController.Revit" + version + ".dll")
+            self.assertTrue(packaged.exists(), str(packaged))
 
 
 if __name__ == "__main__":

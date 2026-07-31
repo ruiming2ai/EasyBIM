@@ -96,6 +96,12 @@ namespace EasyBIM.TempPhaseHooks
                 }
             }
 
+            Assembly extensionModule = LoadControllerFromPath(FindControllerPath(version), "DocClosed");
+            if (extensionModule != null)
+            {
+                return extensionModule;
+            }
+
             if (mismatchedController != null)
             {
                 Log(
@@ -104,7 +110,102 @@ namespace EasyBIM.TempPhaseHooks
                     + " actualAssembly=" + mismatchedController.GetName().Name);
             }
 
-            return string.IsNullOrWhiteSpace(expectedName) ? mismatchedController : null;
+            return null;
+        }
+
+        private static Assembly LoadControllerFromPath(string controllerPath, string hookName)
+        {
+            Log(
+                hookName
+                + "HookControllerPathCandidate path="
+                + (controllerPath ?? string.Empty)
+                + " exists="
+                + File.Exists(controllerPath ?? string.Empty));
+
+            if (string.IsNullOrWhiteSpace(controllerPath) || !File.Exists(controllerPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                return Assembly.LoadFrom(controllerPath);
+            }
+            catch (Exception ex)
+            {
+                Log(hookName + "HookAssemblyLoadFromFailed path=" + controllerPath + " " + ExceptionText(ex));
+                return null;
+            }
+        }
+
+        private static string FindControllerPath(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                return string.Empty;
+            }
+
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string location = GetAssemblyLocation(assembly);
+                if (string.IsNullOrWhiteSpace(location))
+                {
+                    continue;
+                }
+
+                string extensionRoot = FindExtensionRoot(Path.GetDirectoryName(location));
+                if (string.IsNullOrWhiteSpace(extensionRoot))
+                {
+                    continue;
+                }
+
+                string controllerPath = Path.Combine(
+                    extensionRoot,
+                    "bin",
+                    "TempPhaseController.Revit" + version + ".dll");
+                if (File.Exists(controllerPath))
+                {
+                    return controllerPath;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string FindExtensionRoot(string startDirectory)
+        {
+            try
+            {
+                DirectoryInfo directory = string.IsNullOrWhiteSpace(startDirectory)
+                    ? null
+                    : new DirectoryInfo(startDirectory);
+                while (directory != null)
+                {
+                    if (File.Exists(Path.Combine(directory.FullName, "Extension.yaml")))
+                    {
+                        return directory.FullName;
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+            catch
+            {
+            }
+
+            return string.Empty;
+        }
+
+        private static string GetAssemblyLocation(Assembly assembly)
+        {
+            try
+            {
+                return assembly == null ? string.Empty : (assembly.Location ?? string.Empty);
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         private static string GetRevitVersion(object sender)
