@@ -22,7 +22,10 @@ class TempPhaseConversionTests(unittest.TestCase):
         for filename, event_type in expected.items():
             text = (ROOT / "hooks" / filename).read_text(encoding="utf-8")
             self.assertIn(event_type, text)
-            self.assertIn("TempPhaseController.Shared", text)
+            self.assertIn("FindControllerAssembly", text)
+            self.assertIn("Assembly.Load", text)
+            self.assertIn("GetProperty(\"Shared\"", text)
+            self.assertNotIn("using EasyBIM.TempPhase", text)
 
     def test_command_bundle_declares_controller_module(self):
         metadata = (BUTTON_ROOT / "bundle.yaml").read_text(encoding="utf-8")
@@ -106,12 +109,19 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn('ValidateSet("2025", "2026")', script)
         self.assertIn("ExtensionRoot", script)
         self.assertIn("ArtifactPath", script)
+        self.assertIn("VerifyOnly", script)
+        self.assertIn("C:\\Users\\RML\\Documents\\GitHub\\EasyBIM.extension", script)
         self.assertIn("ProviderPath", script)
         self.assertIn("bundle.yaml", script)
         self.assertIn("script.cs", script)
+        self.assertIn("doc-closing.cs", script)
+        self.assertIn("app-idling.cs", script)
+        self.assertIn("doc-closed.cs", script)
         self.assertIn("GetAssemblyName", script)
         self.assertIn("RevitAPI", script)
         self.assertIn("TempPhaseController.dll", script)
+        self.assertIn("Stage-PackageFiles", script)
+        self.assertIn("Write-PackageStatus", script)
 
 
 if __name__ == "__main__":

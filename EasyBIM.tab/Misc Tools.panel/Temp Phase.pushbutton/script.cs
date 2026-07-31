@@ -29,6 +29,7 @@ namespace EasyBIM.TempPhaseCommand
                 string version = GetRevitVersion(commandData);
                 string scriptPath = GetScriptPath();
                 string bundleDirectory = GetBundleDirectory(scriptPath);
+                string extensionRoot = GetExtensionRoot(bundleDirectory);
                 Log(
                     "PyRevitCommandStart"
                     + " revitVersion=" + version
@@ -37,15 +38,16 @@ namespace EasyBIM.TempPhaseCommand
                     + " scriptPath=" + scriptPath
                     + " commandBundle=" + GetCommandBundle()
                     + " commandExtension=" + GetCommandExtension()
-                    + " bundleDirectory=" + bundleDirectory);
+                    + " bundleDirectory=" + bundleDirectory
+                    + " extensionRoot=" + extensionRoot);
 
-                Assembly controllerAssembly = FindControllerAssembly(version, bundleDirectory);
+                Assembly controllerAssembly = FindControllerAssembly(version, bundleDirectory, extensionRoot);
                 if (controllerAssembly == null)
                 {
                     string error = "The Temp Phase controller module is not loaded for Revit " + version + ".";
                     Log("ControllerModuleMissing expectedAssembly=TempPhaseController.Revit" + version);
                     ShowFailure(error + Environment.NewLine + Environment.NewLine
-                        + "Expected: TempPhaseController.dll in this command bundle's bin folder.");
+                        + "Expected: TempPhaseController.dll in this command bundle's bin folder or the extension root bin folder.");
                     message = error;
                     return Result.Failed;
                 }
@@ -110,7 +112,7 @@ namespace EasyBIM.TempPhaseCommand
             }
         }
 
-        private static Assembly FindControllerAssembly(string version, string bundleDirectory)
+        private static Assembly FindControllerAssembly(string version, string bundleDirectory, string extensionRoot)
         {
             string expectedName = "TempPhaseController.Revit" + version;
             Assembly mismatchedController = null;
@@ -146,30 +148,16 @@ namespace EasyBIM.TempPhaseCommand
                 Log("ControllerAssemblyLoadException expectedAssembly=" + expectedName + " " + ExceptionText(ex));
             }
 
-            string modulePath = GetModulePath(bundleDirectory);
-            Log(
-                "ModuleCandidatePath"
-                + " path=" + modulePath
-                + " exists=" + File.Exists(modulePath));
-
-            if (File.Exists(modulePath))
+            Assembly commandModule = LoadControllerFromPath(GetModulePath(bundleDirectory), "command");
+            if (commandModule != null)
             {
-                try
-                {
-                    Assembly loadedFromBundle = Assembly.LoadFrom(modulePath);
-                    Log(
-                        "ControllerAssemblyLoadFromSuccess"
-                        + " assembly=" + loadedFromBundle.GetName().Name
-                        + " controllerPath=" + loadedFromBundle.Location);
-                    return loadedFromBundle;
-                }
-                catch (Exception ex)
-                {
-                    Log(
-                        "ControllerAssemblyLoadFromException"
-                        + " path=" + modulePath
-                        + " " + ExceptionText(ex));
-                }
+                return commandModule;
+            }
+
+            Assembly rootModule = LoadControllerFromPath(GetRootModulePath(extensionRoot), "extension");
+            if (rootModule != null)
+            {
+                return rootModule;
             }
 
             if (mismatchedController != null)
@@ -181,6 +169,40 @@ namespace EasyBIM.TempPhaseCommand
             }
 
             return mismatchedController;
+        }
+
+        private static Assembly LoadControllerFromPath(string modulePath, string scope)
+        {
+            Log(
+                "ModuleCandidatePath"
+                + " scope=" + scope
+                + " path=" + modulePath
+                + " exists=" + File.Exists(modulePath));
+
+            if (!File.Exists(modulePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                Assembly loadedFromPath = Assembly.LoadFrom(modulePath);
+                Log(
+                    "ControllerAssemblyLoadFromSuccess"
+                    + " scope=" + scope
+                    + " assembly=" + loadedFromPath.GetName().Name
+                    + " controllerPath=" + loadedFromPath.Location);
+                return loadedFromPath;
+            }
+            catch (Exception ex)
+            {
+                Log(
+                    "ControllerAssemblyLoadFromException"
+                    + " scope=" + scope
+                    + " path=" + modulePath
+                    + " " + ExceptionText(ex));
+                return null;
+            }
         }
 
         private string GetScriptPath()
@@ -238,6 +260,51 @@ namespace EasyBIM.TempPhaseCommand
             {
                 return string.Empty;
             }
+        }
+
+        private static string GetRootModulePath(string extensionRoot)
+        {
+            if (string.IsNullOrWhiteSpace(extensionRoot))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return Path.Combine(extensionRoot, "bin", "TempPhaseController.dll");
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string GetExtensionRoot(string bundleDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(bundleDirectory))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                DirectoryInfo directory = new DirectoryInfo(bundleDirectory);
+                while (directory != null)
+                {
+                    if (File.Exists(Path.Combine(directory.FullName, "Extension.yaml"))
+                        || directory.Name.EndsWith(".extension", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return directory.FullName;
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+            catch
+            {
+            }
+
+            return string.Empty;
         }
 
         private static string GetRevitVersion(ExternalCommandData commandData)
