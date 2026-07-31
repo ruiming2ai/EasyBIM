@@ -7,6 +7,8 @@ Temp Phase is a Python-only pyRevit workflow. The button applies the selected
 phase and records the original view state in the EasyBIM session. When a file
 close is requested, EasyBIM cancels the close, restores tracked phases, and
 clears every tracked or discoverable Temporary View Property in one transaction.
+Close-Stop is armed per document only after the button successfully applies a
+temporary phase; files where the button has not been used close normally.
 
 After restoration, the Close-Stop dialog explains that the cleanup is currently
 only in the open session. Choose one of the following actions:
@@ -25,7 +27,8 @@ only in the open session. Choose one of the following actions:
 Save or synchronization cancellation, failure, unavailable commands, Revit
 shutdown, and unsupported/non-cancellable close contexts leave the restored
 document open. The Python `doc-closing`, `app-idling`, and `doc-closed` hooks
-coordinate the per-document state and prevent duplicate close reposts.
+coordinate the per-document trigger/state and prevent duplicate close reposts.
+Using Temp Phase in one file does not arm close recovery for other open files.
 
 Normal users only need to update EasyBIM from GitHub and reload pyRevit. No DLL
 staging, build step, or cache clearing is required. The standalone C# add-in
@@ -35,6 +38,10 @@ normal pyRevit command or hooks.
 
 Diagnostics are written to
 `%APPDATA%\EasyBIM\Temp Phase\logs\events.log`. Useful markers include
+`PythonTempPhaseDocumentArmed`, `DocClosingSkippedUnarmedDocument`,
+`DocClosingArmedDocument`, `PythonTempPhaseDocumentTriggerCleared`,
+`DocClosingIdentityRecorded`, `DocClosedIdentityResolved`,
+`TempPhaseArmStaleRemoved`,
 `DocClosingCancelSucceeded`, `TempPhaseRestoreCommitted`,
 `TempPhaseSaveCloseSelected`, `TempPhaseSyncCloseSelected`,
 `TempPhaseCommitCompleted`, `TempPhaseCommitFailed`,

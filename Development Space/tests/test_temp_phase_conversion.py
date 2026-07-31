@@ -67,6 +67,11 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertNotIn("Assembly.Load", runtime)
         self.assertIn("sessionRecorded", runtime)
         self.assertIn("PythonCommandContext", runtime)
+        self.assertIn('state.setdefault("armed_documents", {})', runtime)
+        self.assertIn('_arm_document(state, doc, armed_by="successful_apply")', runtime)
+        self.assertIn("ARM_SCHEMA_VERSION", runtime)
+        self.assertIn("arm_schema_version", runtime)
+        self.assertIn("revit_process_id", runtime)
 
         close_runtime = (ROOT / "lib" / "easybim" / "temp_phase_close.py").read_text(
             encoding="utf-8"
@@ -76,6 +81,14 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("PostableCommand", close_runtime)
         self.assertIn("CanPostCommand", close_runtime)
         self.assertIn("DocClosingHookEntry", close_runtime)
+        self.assertIn("_is_document_armed", close_runtime)
+        self.assertIn("DocClosingSkippedUnarmedDocument", close_runtime)
+        self.assertIn("DocClosingArmedDocument", close_runtime)
+        self.assertIn("PythonTempPhaseDocumentTriggerCleared", close_runtime)
+        self.assertIn("closing_identities", close_runtime)
+        self.assertIn("DocClosingIdentityRecorded", close_runtime)
+        self.assertIn("DocClosedIdentityResolved", close_runtime)
+        self.assertIn("TempPhaseArmStaleRemoved", close_runtime)
         self.assertIn("TempPhaseRestoreCommitted", close_runtime)
         self.assertIn("TempPhaseCloseReposted", close_runtime)
         self.assertIn("DocumentSaved", close_runtime)
@@ -108,6 +121,12 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("PythonPhasePickerClosed", runtime)
         self.assertIn("PythonApplyTransactionCommitted", runtime)
         self.assertIn("PythonApplySuccess", runtime)
+
+    def test_readme_documents_per_document_close_trigger(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Close-Stop is armed per document", readme)
+        self.assertIn("files where the button has not been used close normally", readme)
+        self.assertIn("does not arm close recovery for other open files", readme)
 
     def test_manual_picker_is_wpf_first_with_winforms_fallback(self):
         runtime = (ROOT / "lib" / "easybim" / "temp_phase_view.py").read_text(

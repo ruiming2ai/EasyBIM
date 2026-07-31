@@ -20,6 +20,12 @@ except Exception:
 TITLE = "Temp Phase"
 STATE_ENVVAR = "EASYBIM_TEMP_PHASE_VIEW_STATE"
 
+# Version the arm record independently from the broader view-state payload.
+# The close hook uses this marker to distinguish records written by the
+# current trigger implementation from legacy records that pre-date process
+# and identity safeguards.
+ARM_SCHEMA_VERSION = 2
+
 # ``None`` is a valid result from a picker (the user cancelled), so use a
 # private sentinel to distinguish a cancelled WPF dialog from a WPF load
 # failure.  The latter is the only case that should fall back to WinForms.
@@ -125,6 +131,7 @@ def run_pushbutton(command_script_path=""):
         "updated_at": time.time(),
     }
     state["last_seen_tvp"][view_key] = bool(_is_tvp_active(view))
+    _arm_document(state, doc, armed_by="successful_apply")
     _save_state(state)
 
     _log(
@@ -764,6 +771,49 @@ def _view_key(doc_key, view_id_int):
     return "{0}|{1}".format(doc_key, int(view_id_int))
 
 
+def _arm_document(state, doc, armed_by="successful_apply"):
+    """Mark one document as eligible for Temp Phase close recovery.
+
+    The close hook uses this record as a gate before it discovers untracked
+    Temporary View Properties.  Keeping the record beside the existing view
+    sessions makes the trigger available to separate pyRevit hook executions
+    without introducing a DLL or a process-global flag.
+    """
+    if not isinstance(state, dict) or not _is_doc_valid(doc):
+        return ""
+
+    doc_key = _doc_key(doc)
+    doc_runtime_id = _get_doc_runtime_id(doc)
+    identity = doc_key or (
+        "runtime|{0}".format(doc_runtime_id)
+        if doc_runtime_id is not None
+        else ""
+    )
+    if not identity:
+        return ""
+
+    armed_documents = state.setdefault("armed_documents", {})
+    if not isinstance(armed_documents, dict):
+        armed_documents = {}
+        state["armed_documents"] = armed_documents
+    armed_documents[identity] = {
+        "arm_schema_version": ARM_SCHEMA_VERSION,
+        "doc_key": doc_key,
+        "doc_runtime_id": int(doc_runtime_id) if doc_runtime_id is not None else None,
+        "revit_process_id": _get_revit_process_id(),
+        "armed_at": time.time(),
+        "armed_by": armed_by,
+    }
+    _log(
+        "PythonTempPhaseDocumentArmed docKey={0} runtimeId={1} by={2}".format(
+            doc_key,
+            "" if doc_runtime_id is None else doc_runtime_id,
+            armed_by,
+        )
+    )
+    return identity
+
+
 def _doc_key(doc):
     if not _is_doc_valid(doc):
         return ""
@@ -800,6 +850,20 @@ def _get_doc_runtime_id(doc):
 
     try:
         return _to_int(doc.GetHashCode())
+    except Exception:
+        return None
+
+
+def _get_revit_process_id():
+    """Return the current Revit process id for arm-record freshness checks.
+
+    ``os.getpid`` is available in both IronPython and CPython and does not
+    require touching Revit's UI/application object.  Returning ``None`` on a
+    restricted host keeps the record usable; the close hook can then apply
+    its legacy/missing-metadata policy rather than rejecting every arm.
+    """
+    try:
+        return int(os.getpid())
     except Exception:
         return None
 
@@ -883,11 +947,14 @@ def _get_state():
 
     state.setdefault("last_seen_tvp", {})
     state.setdefault("view_sessions", {})
+    state.setdefault("armed_documents", {})
 
     if not isinstance(state.get("last_seen_tvp"), dict):
         state["last_seen_tvp"] = {}
     if not isinstance(state.get("view_sessions"), dict):
         state["view_sessions"] = {}
+    if not isinstance(state.get("armed_documents"), dict):
+        state["armed_documents"] = {}
 
     return state
 
