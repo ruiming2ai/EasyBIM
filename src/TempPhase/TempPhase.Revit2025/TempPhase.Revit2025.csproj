@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>TempPhaseController.Revit2025</AssemblyName>
+    <RootNamespace>EasyBIM.TempPhase</RootNamespace>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <NoWarn>NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Revit_All_Main_Versions_API_x64"
+                      Version="2025.0.0"
+                      PrivateAssets="all"
+                      IncludeAssets="compile;build;analyzers;buildtransitive" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\TempPhase.RevitCommon\*.cs"
+             Link="TempPhase.RevitCommon\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
