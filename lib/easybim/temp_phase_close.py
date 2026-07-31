@@ -35,6 +35,15 @@ try:
 except Exception:
     temp_phase_view = None
 
+try:
+    # The helper imports no WPF assemblies at module import time.  Keeping the
+    # import optional lets the close state machine continue to work on hosts
+    # where WPF is unavailable, in which case the native Revit TaskDialog
+    # fallback below is used.
+    from easybim import temp_phase_dialog
+except Exception:
+    temp_phase_dialog = None
+
 
 TITLE = "Temp Phase"
 STATE_ENVVAR = "EASYBIM_TEMP_PHASE_CLOSE_STATE"
@@ -872,7 +881,6 @@ def _show_close_decision(summary, record):
     UI = _get_ui()
     title = _safe_text(record.get("title")) if isinstance(record, dict) else ""
     title = title or _safe_text(summary.get("doc_title")) or "the document"
-    lines = list(summary.get("dialog_view_lines") or [])
     tracked_count = _to_int(summary.get("tracked_restore_count"))
     if tracked_count is None:
         tracked_count = len(summary.get("tracked_restore_views") or [])
@@ -880,42 +888,98 @@ def _show_close_decision(summary, record):
     if untracked_count is None:
         untracked_count = len(summary.get("untracked_tvp_views") or [])
     workshared = bool(summary.get("doc_is_workshared"))
-    main_content = (
-        "EasyBIM removed temporary phase and view properties from {0} tracked "
-        "view(s) and {1} additional view(s) in {2}.\n\n"
-        "The restored state is currently only in this session. Save the file "
-        "to make the cleanup permanent."
-    ).format(tracked_count, untracked_count, title)
-    if workshared:
-        main_content += (
-            "\n\nFor a workshared local file, synchronize with central to update "
-            "the central model before closing."
+
+    # Keep the useful details in the diagnostic stream while keeping the
+    # decision window short enough to be read at a glance.
+    compact_message = (
+        getattr(temp_phase_dialog, "WARNING_MESSAGE", None)
+        if temp_phase_dialog is not None
+        else None
+    ) or (
+        "Please Sync or Save the model again to remove all the Temporary Phases "
+        "and Views Settings before closing!!"
+    )
+    restored_message = (
+        getattr(temp_phase_dialog, "RESTORED_MESSAGE", None)
+        if temp_phase_dialog is not None
+        else None
+    ) or "Temporary phase/view state has been restored."
+    _log(
+        "TempPhaseDialogSummary title={0} tracked={1} untracked={2} "
+        "workshared={3}".format(
+            title,
+            tracked_count,
+            untracked_count,
+            workshared,
         )
-    expanded = "\n".join(lines)
-    if expanded:
-        expanded += "\n\nThe document will remain open if Save or Synchronize is cancelled or fails."
+    )
+
+    # WPF is the primary presentation so Sync/Save can be emphasized in red
+    # and Temporary Phases can be bold.  The helper returns None when its
+    # assemblies or window cannot be loaded, which deliberately falls through
+    # to the native Revit warning dialog.
+    if temp_phase_dialog is not None:
+        try:
+            choice = temp_phase_dialog.show_close_decision(
+                workshared=workshared,
+                title="Temp Phase Warning",
+            )
+        except Exception as ex:
+            _log("TempPhaseDialogWpfException {0}".format(_exception_text(ex)))
+            choice = None
+        if choice in ("save_close", "sync_close", "cancel"):
+            _log(
+                "TempPhaseDialogWpfShown choice={0} workshared={1} "
+                "tracked={2} untracked={3}".format(
+                    choice,
+                    workshared,
+                    tracked_count,
+                    untracked_count,
+                )
+            )
+            return choice
+        _log("TempPhaseDialogWpfUnavailable")
 
     if UI is None:
-        _show_alert(TITLE, main_content + "\n\nKeep the document open and save it manually when ready.")
+        _show_alert(
+            "Temp Phase Warning",
+            "{0}\n\n{1}".format(compact_message, restored_message),
+        )
+        _log("TempPhaseDialogFallbackNoUi choice=cancel")
         return "cancel"
 
     try:
-        dialog = UI.TaskDialog(TITLE)
+        dialog = UI.TaskDialog("Temp Phase Warning")
         if hasattr(dialog, "TitleAutoPrefix"):
             dialog.TitleAutoPrefix = False
         if hasattr(dialog, "AllowCancellation"):
             dialog.AllowCancellation = True
-        dialog.MainInstruction = "Temporary phase/view state has been restored."
-        dialog.MainContent = main_content
-        if expanded:
-            dialog.ExpandedContent = expanded
+        # Keep the warning as the prominent instruction and put the short
+        # restoration status beneath it.  The WPF path adds the requested
+        # per-word red styling; this native path remains intentionally plain.
+        dialog.MainInstruction = compact_message
+        dialog.MainContent = restored_message
+        task_dialog_icon = getattr(UI, "TaskDialogIcon", None)
+        warning_icon = getattr(task_dialog_icon, "Warning", None)
+        if warning_icon is not None:
+            try:
+                dialog.MainIcon = warning_icon
+            except Exception:
+                # A very old Python.NET wrapper may expose the icon enum but
+                # not the TaskDialog.MainIcon setter.  The dialog remains a
+                # valid compact fallback in that case.
+                pass
 
         command_ids = getattr(UI, "TaskDialogCommandLinkId", None)
         link_one = getattr(command_ids, "CommandLink1", None)
         link_two = getattr(command_ids, "CommandLink2", None)
         link_three = getattr(command_ids, "CommandLink3", None)
         if link_one is None or link_two is None:
-            _show_alert(TITLE, main_content + "\n\nSave the restored document manually when ready.")
+            _show_alert(
+                "Temp Phase Warning",
+                "{0}\n\n{1}".format(compact_message, restored_message),
+            )
+            _log("TempPhaseDialogFallbackMissingCommandLinks choice=cancel")
             return "cancel"
 
         dialog.AddCommandLink(link_one, "Save Restored File and Close")
@@ -931,6 +995,17 @@ def _show_close_decision(summary, record):
         else:
             dialog.AddCommandLink(link_two, "Keep File Open")
             result_map = (("save_close", "CommandLink1"), ("cancel", "CommandLink2"))
+        # Keep File Open is deliberately the safe default in the native
+        # fallback too.  Revit otherwise focuses the first command link,
+        # which would make Enter choose Save.
+        try:
+            result_enum = getattr(UI, "TaskDialogResult", None)
+            default_member = "CommandLink3" if workshared else "CommandLink2"
+            default_button = getattr(result_enum, default_member, None)
+            if default_button is not None:
+                dialog.DefaultButton = default_button
+        except Exception:
+            pass
         try:
             dialog.CommonButtons = UI.TaskDialogCommonButtons.Cancel
         except Exception:
@@ -939,7 +1014,7 @@ def _show_close_decision(summary, record):
 
         choice = _task_dialog_choice(result, UI, result_map)
         _log(
-            "TempPhaseDialogShown result={0} choice={1} workshared={2} "
+            "TempPhaseDialogShown mode=fallback result={0} choice={1} workshared={2} "
             "tracked={3} untracked={4}".format(
                 _safe_text(result),
                 choice,
@@ -950,8 +1025,11 @@ def _show_close_decision(summary, record):
         )
         return choice
     except Exception as ex:
-        _log("CloseDecisionDialogFailed {0}".format(_exception_text(ex)))
-        _show_alert(TITLE, main_content + "\n\nSave the restored document manually when ready.")
+        _log("TempPhaseDialogFallbackFailed {0}".format(_exception_text(ex)))
+        _show_alert(
+            "Temp Phase Warning",
+            "{0}\n\n{1}".format(compact_message, restored_message),
+        )
         return "cancel"
 
 
