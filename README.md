@@ -15,6 +15,13 @@ Build and stage the controller for the Revit installation being tested:
     .\build\Build-TempPhase.ps1 -RevitVersion 2026 `
         -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
 
+When the live extension is the WSL-backed clone, use `-ArtifactPath` with the
+freshly built versioned DLL. This stages into the exact path pyRevit loads:
+
+    .\build\Build-TempPhase.ps1 -RevitVersion 2025 `
+        -ExtensionRoot "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM" `
+        -ArtifactPath "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM\src\TempPhase\TempPhase.Revit2025\bin\Release\net8.0-windows\TempPhaseController.Revit2025.dll"
+
 Only the matching TempPhaseController.dll should be present in the live
 pyRevit extension. The build preflight verifies the live bundle, controller
 assembly identity, and absence of Revit API DLLs beside the module. Because the

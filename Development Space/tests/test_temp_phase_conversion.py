@@ -33,6 +33,10 @@ class TempPhaseConversionTests(unittest.TestCase):
 
     def test_command_wrapper_reports_module_load_failures(self):
         script = (BUTTON_ROOT / "script.cs").read_text(encoding="utf-8")
+        self.assertIn("ExecParams", script)
+        self.assertIn("ScriptPath", script)
+        self.assertIn("Assembly.LoadFrom", script)
+        self.assertIn("ModuleCandidatePath", script)
         self.assertIn("FindControllerAssembly", script)
         self.assertIn("ControllerModuleMissing", script)
         self.assertIn("ControllerModuleWrongYearLoaded", script)
@@ -101,6 +105,8 @@ class TempPhaseConversionTests(unittest.TestCase):
         )
         self.assertIn('ValidateSet("2025", "2026")', script)
         self.assertIn("ExtensionRoot", script)
+        self.assertIn("ArtifactPath", script)
+        self.assertIn("ProviderPath", script)
         self.assertIn("bundle.yaml", script)
         self.assertIn("script.cs", script)
         self.assertIn("GetAssemblyName", script)
