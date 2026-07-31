@@ -52,6 +52,12 @@ MAX_RESTORE_ATTEMPTS = 8
 RETRY_DELAY_SEC = 0.25
 REPOST_GUARD_SEC = 12.0
 COMMIT_GUARD_SEC = 60.0
+# A close identity is a short-lived handoff between DocumentClosing and
+# DocumentClosed.  Revit normally raises the latter immediately, but a
+# modal save/synchronise dialog or a failed close can leave the handoff
+# around for a while.  Expiring it prevents an old identity from cleaning a
+# later document that happens to reuse an event id.
+CLOSING_IDENTITY_GUARD_SEC = 120.0
 IDLE_THROTTLE_SEC = 0.10
 
 
@@ -105,6 +111,21 @@ def handle_doc_closing(uiapp=None, event_args=None):
     doc_runtime_id = _extract_doc_runtime_id(event_args, closing_doc)
     doc_key = _doc_key(closing_doc)
     state = _get_state()
+    _expire_closing_identities(state)
+
+    # DocumentClosed may expose a different identity (or no Document object at
+    # all) after Revit has released the document.  Keep the stable path and
+    # both identities from this event as a handoff so the close-completion
+    # hook can still clear only this document's state.
+    _remember_closing_identity(
+        state=state,
+        token=_identity_token(doc_key, doc_runtime_id),
+        doc=closing_doc,
+        event_args=event_args,
+        doc_key=doc_key,
+        doc_runtime_id=doc_runtime_id,
+        title=_doc_title(closing_doc),
+    )
 
     # A close reposted by this module is allowed through once.  This guard is
     # checked before discovery so a stale session cannot create a close loop.
@@ -134,11 +155,28 @@ def handle_doc_closing(uiapp=None, event_args=None):
         _log("DocClosingSkippedUnsupportedDocument token={0}".format(token))
         return False
 
+    view_state = _get_view_state()
+    if not _is_document_armed(
+        view_state,
+        doc_key=doc_key,
+        doc_runtime_id=doc_runtime_id,
+    ):
+        _save_state(state)
+        _log(
+            "DocClosingSkippedUnarmedDocument token={0} title={1}".format(
+                token,
+                _doc_title(closing_doc),
+            )
+        )
+        return False
+
+    _log("DocClosingArmedDocument token={0}".format(token))
+
     if _is_doc_valid(closing_doc):
         summary = collect_tvp_summary(
             uiapp=uiapp,
             doc=closing_doc,
-            view_state=_get_view_state(),
+            view_state=view_state,
         )
         has_work = bool(summary.get("has_restore_work"))
     else:
@@ -210,11 +248,13 @@ def handle_idling(uiapp=None, event_args=None):
             state.get("pending_closes")
             or state.get("commit_operations")
             or state.get("pending_commit_closes")
+            or state.get("closing_identities")
         ):
             state["pending_closes"] = {}
             state["commit_operations"] = {}
             state["pending_commit_closes"] = {}
             state["commit_failures"] = {}
+            state["closing_identities"] = {}
             _save_state(state)
         _log("AppIdlingSkippedShutdown")
         return False
@@ -425,6 +465,7 @@ def handle_idling(uiapp=None, event_args=None):
         len(state.get("commit_operations") or {}),
         len(state.get("pending_commit_closes") or {}),
         len(state.get("commit_failures") or {}),
+        len(state.get("closing_identities") or {}),
     )
     _expire_repost_guards(state)
     after_expiry = (
@@ -432,6 +473,7 @@ def handle_idling(uiapp=None, event_args=None):
         len(state.get("commit_operations") or {}),
         len(state.get("pending_commit_closes") or {}),
         len(state.get("commit_failures") or {}),
+        len(state.get("closing_identities") or {}),
     )
     if before_expiry != after_expiry:
         changed = True
@@ -449,46 +491,144 @@ def handle_doc_closed(uiapp=None, event_args=None):
     """Clear per-document pending/guard/session state after close completion."""
     uiapp, event_args = _normalize_event_call(uiapp, event_args)
     _log("DocClosedHookEntry")
-    del uiapp
     if event_args is None:
         _log("DocClosedSkippedMissingEventArgs")
         return False
 
-    doc = _resolve_doc_from_event_args(event_args, None)
-    doc_runtime_id = _extract_doc_runtime_id(event_args, doc)
+    doc = _resolve_doc_from_event_args(event_args, uiapp)
+    event_document_id = _event_document_id(event_args)
+    doc_runtime_identity = _get_doc_runtime_id(doc)
+    doc_runtime_id = event_document_id
+    if doc_runtime_id is None:
+        doc_runtime_id = doc_runtime_identity
     doc_key = _doc_key(doc)
     token = _identity_token(doc_key, doc_runtime_id)
     state = _get_state()
+    _expire_closing_identities(state)
     status = _event_status(event_args)
 
+    # Resolve the handoff before mutating any close state.  The event token is
+    # not sufficient on all Revit versions: DocumentClosed can provide a
+    # different DocumentId, or only a released Document wrapper.  Matching by
+    # stable path and both recorded identities handles all of those forms.
+    closing_records = _find_closing_identity_records(
+        state,
+        token=token,
+        doc_key=doc_key,
+        event_document_id=event_document_id,
+        doc_runtime_id=doc_runtime_identity,
+    )
+    identity_pairs = []
+    if doc_key or doc_runtime_id is not None:
+        identity_pairs.append((doc_key, doc_runtime_id))
+    if doc_key or doc_runtime_identity is not None:
+        identity_pairs.append((doc_key, doc_runtime_identity))
+    close_tokens = {token} if token else set()
+    for identity_key, record in closing_records:
+        close_tokens.add(identity_key)
+        if isinstance(record, dict):
+            close_tokens.add(_safe_text(record.get("token")))
+            identity_pairs.append(
+                (
+                    _safe_text(record.get("doc_key")),
+                    _to_int(record.get("doc_runtime_id")),
+                )
+            )
+            identity_pairs.append(
+                (
+                    _safe_text(record.get("doc_key")),
+                    _to_int(record.get("event_document_id")),
+                )
+            )
+    identity_pairs = _unique_identity_pairs(identity_pairs)
+
     # A cancelled/failed close leaves the document open.  Preserve any
-    # pending state so a subsequent close can be handled normally.
+    # pending state so a subsequent close can be handled normally.  Only the
+    # short-lived identity handoff is discarded; the armed document and view
+    # sessions remain available for the next attempt.
     if status in ("CANCELLED", "FAILED"):
-        state.get("repost_guards", {}).pop(token, None)
+        _remove_closing_identity_records(state, closing_records)
+        for guard_token in close_tokens:
+            state.get("repost_guards", {}).pop(guard_token, None)
         _save_state(state)
-        _log("DocClosedNonSuccess status={0} token={1}".format(status, token))
+        _log(
+            "DocClosedNonSuccess status={0} token={1} identityHandoffDiscarded={2}".format(
+                status,
+                token,
+                len(closing_records),
+            )
+        )
         return False
 
-    pending_record = state.get("pending_closes", {}).pop(token, None)
-    repost_guard = state.get("repost_guards", {}).pop(token, None)
-    commit_operation = state.get("commit_operations", {}).pop(token, None)
-    commit_pending = state.get("pending_commit_closes", {}).pop(token, None)
-    commit_failure = state.get("commit_failures", {}).pop(token, None)
+    _remove_closing_identity_records(state, closing_records)
+    # Clear all close-operation records that refer to the resolved identity,
+    # not merely the token exposed by this DocumentClosed event.
+    operation_records = []
+    for map_name in (
+        "pending_closes",
+        "repost_guards",
+        "commit_operations",
+        "pending_commit_closes",
+        "commit_failures",
+    ):
+        operation_records.extend(
+            _pop_close_records_for_identity(
+                state.get(map_name) or {},
+                close_tokens=close_tokens,
+                identity_pairs=identity_pairs,
+                map_name=map_name,
+            )
+        )
+
     stored_doc_key = ""
     stored_runtime_id = None
-    for record in (pending_record, repost_guard, commit_operation, commit_pending, commit_failure):
+    for record in operation_records:
         if not isinstance(record, dict):
             continue
         stored_doc_key = stored_doc_key or _safe_text(record.get("doc_key")).strip()
         if stored_runtime_id is None:
-            stored_runtime_id = _to_int(record.get("doc_runtime_id"))
-    _drop_doc_sessions(
-        _get_view_state(),
-        doc_key=doc_key or stored_doc_key,
-        doc_runtime_id=doc_runtime_id if doc_runtime_id is not None else stored_runtime_id,
+            stored_runtime_id = _to_int(
+                record.get("doc_runtime_id")
+                if record.get("doc_runtime_id") is not None
+                else record.get("event_document_id")
+            )
+        identity_pairs.append(
+            (
+                _safe_text(record.get("doc_key")),
+                _to_int(record.get("doc_runtime_id")),
+            )
+        )
+
+    resolved_doc_key = doc_key or stored_doc_key
+    resolved_runtime_id = (
+        doc_runtime_identity
+        if doc_runtime_identity is not None
+        else doc_runtime_id
+        if doc_runtime_id is not None
+        else stored_runtime_id
     )
+    identity_pairs = _unique_identity_pairs(
+        identity_pairs + [(resolved_doc_key, resolved_runtime_id)]
+    )
+    _drop_doc_sessions_for_identities(_get_view_state(), identity_pairs)
     _save_state(state)
-    _log("DocClosedCleared status={0} token={1}".format(status or "UNKNOWN", token))
+    _log(
+        "DocClosedIdentityResolved token={0} matched={1} docKey={2} "
+        "eventDocumentId={3} runtimeId={4}".format(
+            token,
+            len(closing_records),
+            resolved_doc_key,
+            "" if event_document_id is None else event_document_id,
+            "" if resolved_runtime_id is None else resolved_runtime_id,
+        )
+    )
+    _log(
+        "DocClosedCleared status={0} token={1} identityHandoffConsumed={2}".format(
+            status or "UNKNOWN",
+            token,
+            len(closing_records),
+        )
+    )
     return True
 
 
@@ -1334,6 +1474,191 @@ def _queue_pending_close(state, token, doc_key, doc_runtime_id, title, summary=N
     }
 
 
+def _remember_closing_identity(
+    state,
+    token,
+    doc,
+    event_args,
+    doc_key,
+    doc_runtime_id,
+    title,
+):
+    """Store the identities needed to match the later DocumentClosed event."""
+    if not isinstance(state, dict) or not token or token == "unknown":
+        return None
+    records = state.setdefault("closing_identities", {})
+    if not isinstance(records, dict):
+        records = {}
+        state["closing_identities"] = records
+    event_document_id = _event_document_id(event_args)
+    runtime_identity = _get_doc_runtime_id(doc)
+    if runtime_identity is None:
+        runtime_identity = _to_int(doc_runtime_id)
+    stable_key = _safe_text(doc_key).strip()
+    stable_path = _doc_path(doc)
+    current = records.get(token)
+    if isinstance(current, dict):
+        # Preserve the first stable identity but refresh the observation time
+        # and fill in fields that were unavailable on an earlier hook call.
+        if stable_key and not current.get("doc_key"):
+            current["doc_key"] = stable_key
+        if stable_path and not current.get("doc_path"):
+            current["doc_path"] = stable_path
+        if event_document_id is not None:
+            current["event_document_id"] = event_document_id
+        if runtime_identity is not None:
+            current["doc_runtime_id"] = runtime_identity
+        if title and not current.get("title"):
+            current["title"] = _safe_text(title)
+        current["last_seen_at"] = time.time()
+        current["expires_at"] = time.time() + CLOSING_IDENTITY_GUARD_SEC
+        return current
+
+    records[token] = {
+        "token": token,
+        "doc_key": stable_key,
+        "doc_path": stable_path,
+        "event_document_id": event_document_id,
+        "doc_runtime_id": runtime_identity,
+        "title": _safe_text(title),
+        "recorded_at": time.time(),
+        "last_seen_at": time.time(),
+        "expires_at": time.time() + CLOSING_IDENTITY_GUARD_SEC,
+    }
+    _log(
+        "DocClosingIdentityRecorded token={0} docKey={1} eventDocumentId={2} "
+        "runtimeId={3}".format(
+            token,
+            stable_key,
+            "" if event_document_id is None else event_document_id,
+            "" if runtime_identity is None else runtime_identity,
+        )
+    )
+    return records[token]
+
+
+def _find_closing_identity_records(
+    state,
+    token=None,
+    doc_key="",
+    event_document_id=None,
+    doc_runtime_id=None,
+):
+    records = state.get("closing_identities") if isinstance(state, dict) else None
+    if not isinstance(records, dict):
+        return []
+    matches = []
+    for identity_key, record in list(records.items()):
+        if not isinstance(record, dict):
+            continue
+        if _closing_identity_matches(
+            identity_key,
+            record,
+            token=token,
+            doc_key=doc_key,
+            event_document_id=event_document_id,
+            doc_runtime_id=doc_runtime_id,
+        ):
+            matches.append((identity_key, record))
+    return matches
+
+
+def _closing_identity_matches(
+    identity_key,
+    record,
+    token=None,
+    doc_key="",
+    event_document_id=None,
+    doc_runtime_id=None,
+):
+    if token and (identity_key == token or _safe_text(record.get("token")) == token):
+        return True
+    if doc_key and _safe_text(record.get("doc_key")).strip() == _safe_text(doc_key).strip():
+        return True
+    event_document_id = _to_int(event_document_id)
+    if event_document_id is not None:
+        if event_document_id == _to_int(record.get("event_document_id")):
+            return True
+        if event_document_id == _to_int(record.get("doc_runtime_id")):
+            return True
+    doc_runtime_id = _to_int(doc_runtime_id)
+    if doc_runtime_id is not None:
+        if doc_runtime_id == _to_int(record.get("doc_runtime_id")):
+            return True
+        if doc_runtime_id == _to_int(record.get("event_document_id")):
+            return True
+    return False
+
+
+def _remove_closing_identity_records(state, matches):
+    records = state.get("closing_identities") if isinstance(state, dict) else None
+    if not isinstance(records, dict):
+        return 0
+    removed = 0
+    for identity_key, unused_record in list(matches or []):
+        if identity_key in records:
+            records.pop(identity_key, None)
+            removed += 1
+    if removed:
+        _log("DocClosingIdentityHandoffConsumed count={0}".format(removed))
+    return removed
+
+
+def _pop_close_records_for_identity(mapping, close_tokens, identity_pairs, map_name=""):
+    """Pop close-operation records matching any resolved identity."""
+    if not isinstance(mapping, dict):
+        return []
+    popped = []
+    for key, record in list(mapping.items()):
+        if key in (close_tokens or set()) or _close_record_matches_identities(
+            record,
+            identity_pairs,
+        ):
+            mapping.pop(key, None)
+            if isinstance(record, dict):
+                popped.append(record)
+    if popped and map_name:
+        _log("DocClosedOperationRecordsCleared map={0} count={1}".format(map_name, len(popped)))
+    return popped
+
+
+def _close_record_matches_identities(record, identity_pairs):
+    if not isinstance(record, dict):
+        return False
+    stored_key = _safe_text(record.get("doc_key")).strip()
+    stored_runtime = _to_int(record.get("doc_runtime_id"))
+    stored_event = _to_int(record.get("event_document_id"))
+    for identity_key, identity_runtime in identity_pairs or []:
+        identity_key = _safe_text(identity_key).strip()
+        identity_runtime = _to_int(identity_runtime)
+        if identity_key and stored_key and identity_key == stored_key:
+            return True
+        if identity_runtime is not None:
+            if stored_runtime is not None and identity_runtime == stored_runtime:
+                return True
+            if stored_event is not None and identity_runtime == stored_event:
+                return True
+    return False
+
+
+def _unique_identity_pairs(pairs):
+    result = []
+    seen = set()
+    for pair in pairs or []:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            continue
+        key = _safe_text(pair[0]).strip()
+        runtime = _to_int(pair[1])
+        marker = (key, runtime)
+        if not key and runtime is None:
+            continue
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append((key, runtime))
+    return result
+
+
 def _retry_pending_close(record, now):
     attempts = (_to_int(record.get("attempts")) or 0) + 1
     record["attempts"] = attempts
@@ -1357,6 +1682,7 @@ def _consume_repost_guard(state, token):
 
 def _expire_repost_guards(state):
     now = time.time()
+    _expire_closing_identities(state, now=now)
     for token, guard in list((state.get("repost_guards") or {}).items()):
         if not isinstance(guard, dict) or now > float(guard.get("expires_at", 0.0) or 0.0):
             state.get("repost_guards", {}).pop(token, None)
@@ -1378,6 +1704,25 @@ def _expire_repost_guards(state):
             state.get("pending_commit_closes", {}).pop(token, None)
 
 
+def _expire_closing_identities(state, now=None):
+    records = state.get("closing_identities") if isinstance(state, dict) else None
+    if not isinstance(records, dict):
+        return 0
+    now = time.time() if now is None else now
+    removed = 0
+    for token, record in list(records.items()):
+        expires_at = _to_float(record.get("expires_at")) if isinstance(record, dict) else None
+        if (
+            not isinstance(record, dict)
+            or expires_at is None
+            or now > expires_at
+        ):
+            records.pop(token, None)
+            removed += 1
+            _log("TempPhaseClosingIdentityExpired token={0}".format(token))
+    return removed
+
+
 def _get_state():
     if script is not None:
         try:
@@ -1394,13 +1739,19 @@ def _get_state():
     state.setdefault("commit_operations", {})
     state.setdefault("pending_commit_closes", {})
     state.setdefault("commit_failures", {})
+    state.setdefault("closing_identities", {})
     state.setdefault("next_generation", 0)
     state.setdefault("last_idling_at", 0.0)
     if not isinstance(state.get("pending_closes"), dict):
         state["pending_closes"] = {}
     if not isinstance(state.get("repost_guards"), dict):
         state["repost_guards"] = {}
-    for key in ("commit_operations", "pending_commit_closes", "commit_failures"):
+    for key in (
+        "commit_operations",
+        "pending_commit_closes",
+        "commit_failures",
+        "closing_identities",
+    ):
         if not isinstance(state.get(key), dict):
             state[key] = {}
     return state
@@ -1436,10 +1787,13 @@ def _get_view_state():
         state = {}
     state.setdefault("last_seen_tvp", {})
     state.setdefault("view_sessions", {})
+    state.setdefault("armed_documents", {})
     if not isinstance(state.get("last_seen_tvp"), dict):
         state["last_seen_tvp"] = {}
     if not isinstance(state.get("view_sessions"), dict):
         state["view_sessions"] = {}
+    if not isinstance(state.get("armed_documents"), dict):
+        state["armed_documents"] = {}
     return state
 
 
@@ -1460,13 +1814,156 @@ def _save_view_state(state):
 
 
 def _drop_doc_sessions(view_state, doc_key, doc_runtime_id):
+    return _drop_doc_sessions_for_identities(
+        view_state,
+        [(doc_key, doc_runtime_id)],
+    )
+
+
+def _drop_doc_sessions_for_identities(view_state, identity_pairs):
     sessions = view_state.get("view_sessions") or {}
     last_seen = view_state.get("last_seen_tvp") or {}
+    armed_documents = view_state.get("armed_documents") or {}
+    removed_armed = 0
+    removed_sessions = 0
+    identity_pairs = _unique_identity_pairs(identity_pairs)
     for view_key, session in list(sessions.items()):
-        if _session_matches_doc(session, doc_key, doc_runtime_id):
+        if any(
+            _session_matches_doc(session, identity_key, identity_runtime)
+            for identity_key, identity_runtime in identity_pairs
+        ):
             sessions.pop(view_key, None)
             last_seen.pop(view_key, None)
+            removed_sessions += 1
+    # ``last_seen_tvp`` can contain an observation without a corresponding
+    # session (for example, after an earlier restore).  Stable document keys
+    # let us clear those entries as well without touching another document.
+    stable_keys = set(
+        _safe_text(identity_key).strip()
+        for identity_key, unused_runtime in identity_pairs
+        if _safe_text(identity_key).strip()
+    )
+    for view_key in list(last_seen):
+        if any(
+            view_key == stable_key or view_key.startswith(stable_key + "|")
+            for stable_key in stable_keys
+        ):
+            last_seen.pop(view_key, None)
+    for identity, record in list(armed_documents.items()):
+        if any(
+            _session_matches_doc(record, identity_key, identity_runtime)
+            for identity_key, identity_runtime in identity_pairs
+        ):
+            armed_documents.pop(identity, None)
+            removed_armed += 1
     _save_view_state(view_state)
+    if removed_armed or removed_sessions:
+        _log(
+            "PythonTempPhaseDocumentTriggerCleared docKey={0} runtimeId={1} "
+            "sessions={2} armed={3}".format(
+                identity_pairs[0][0] if identity_pairs else "",
+                "" if not identity_pairs or identity_pairs[0][1] is None else identity_pairs[0][1],
+                removed_sessions,
+                removed_armed,
+            )
+        )
+    return removed_sessions + removed_armed
+
+
+def _is_document_armed(view_state, doc_key, doc_runtime_id):
+    """Return whether close recovery is enabled for this document.
+
+    Existing tracked sessions are treated as an implicit arm so upgrades do
+    not strand a Temp Phase session created before ``armed_documents`` was
+    introduced.  New untracked TVP discovery is gated by the explicit arm.
+    """
+    if not isinstance(view_state, dict):
+        return False
+
+    tracked = _has_tracked_sessions_for_identity(
+        view_state,
+        doc_key=doc_key,
+        doc_runtime_id=doc_runtime_id,
+    )
+    changed = False
+    expected_schema = _arm_schema_version()
+    current_process_id = _get_revit_process_id()
+    armed_documents = view_state.get("armed_documents") or {}
+    stale_target_arm = False
+    for identity, record in list(armed_documents.items()):
+        if not isinstance(record, dict):
+            armed_documents.pop(identity, None)
+            changed = True
+            _log("TempPhaseArmStaleRemoved identity={0} reason=invalid_record".format(identity))
+            continue
+
+        schema = _to_int(record.get("arm_schema_version"))
+        process_id = _to_int(record.get("revit_process_id"))
+        record_matches = _session_matches_doc(record, doc_key, doc_runtime_id)
+
+        # Records written before schema/process metadata was introduced are
+        # safe only when a live tracked view session still proves that the
+        # user used Temp Phase in this document.
+        if schema is None or process_id is None:
+            legacy_session = _has_tracked_sessions_for_identity(
+                view_state,
+                doc_key=_safe_text(record.get("doc_key")),
+                doc_runtime_id=_to_int(record.get("doc_runtime_id")),
+            )
+            if record_matches and legacy_session:
+                _log("TempPhaseArmLegacyAccepted docKey={0}".format(doc_key))
+                return True
+            if not legacy_session:
+                armed_documents.pop(identity, None)
+                changed = True
+                _log(
+                    "TempPhaseArmStaleRemoved identity={0} reason=legacy_without_session".format(
+                        identity
+                    )
+                )
+            continue
+
+        if schema != expected_schema:
+            if record_matches:
+                stale_target_arm = True
+            armed_documents.pop(identity, None)
+            changed = True
+            _log(
+                "TempPhaseArmStaleRemoved identity={0} reason=schema expected={1} actual={2}".format(
+                    identity,
+                    expected_schema,
+                    schema,
+                )
+            )
+            continue
+        if current_process_id is not None and process_id != current_process_id:
+            if record_matches:
+                stale_target_arm = True
+            armed_documents.pop(identity, None)
+            changed = True
+            _log(
+                "TempPhaseArmStaleRemoved identity={0} reason=process expected={1} actual={2}".format(
+                    identity,
+                    current_process_id,
+                    process_id,
+                )
+            )
+            continue
+        if record_matches:
+            if changed:
+                _save_view_state(view_state)
+            return True
+
+    if changed:
+        _save_view_state(view_state)
+
+    # Existing tracked sessions remain a backward-compatible arm.  This is
+    # independent of a stale explicit arm record and ensures an in-progress
+    # session is not stranded by a pyRevit reload.
+    if tracked and not stale_target_arm:
+        _log("TempPhaseArmTrackedSessionFallback docKey={0}".format(doc_key))
+        return True
+    return False
 
 
 def _has_tracked_sessions_for_identity(view_state, doc_key, doc_runtime_id):
@@ -1673,6 +2170,11 @@ def _extract_doc_runtime_id(event_args, doc):
     return None
 
 
+def _event_document_id(event_args):
+    """Return the Revit DocumentId carried by an event, when available."""
+    return _eid_to_int(_getattr_safe(event_args, "DocumentId"))
+
+
 def _event_status(event_args):
     value = _getattr_safe(event_args, "Status")
     text = _safe_text(value).upper()
@@ -1800,6 +2302,15 @@ def _doc_key(doc):
     return "mem|{0}|{1}".format(_safe_text(getattr(doc, "Title", "")).lower(), hash_code)
 
 
+def _doc_path(doc):
+    if not _is_doc_valid(doc):
+        return ""
+    try:
+        return _safe_text(doc.PathName).strip()
+    except Exception:
+        return ""
+
+
 def _get_doc_runtime_id(doc):
     if not _is_doc_valid(doc):
         return None
@@ -1814,6 +2325,26 @@ def _get_doc_runtime_id(doc):
         return _to_int(doc.GetHashCode())
     except Exception:
         return None
+
+
+def _get_revit_process_id():
+    try:
+        return int(os.getpid())
+    except Exception:
+        return None
+
+
+def _arm_schema_version():
+    try:
+        value = _to_int(getattr(temp_phase_view, "ARM_SCHEMA_VERSION", None))
+        if value is not None:
+            return value
+    except Exception:
+        pass
+    # Version 2 is the first format that includes process and schema
+    # metadata.  Keeping the fallback here lets the close hook run while the
+    # command module is being reloaded, without accepting older records.
+    return 2
 
 
 def _identity_token(doc_key, doc_runtime_id):
@@ -1926,6 +2457,15 @@ def _to_int(value):
         return None
     try:
         return int(value)
+    except Exception:
+        return None
+
+
+def _to_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
     except Exception:
         return None
 
