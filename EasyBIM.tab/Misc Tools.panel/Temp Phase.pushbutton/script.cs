@@ -41,13 +41,13 @@ namespace EasyBIM.TempPhaseCommand
                     + " bundleDirectory=" + bundleDirectory
                     + " extensionRoot=" + extensionRoot);
 
-                Assembly controllerAssembly = FindControllerAssembly(version, bundleDirectory, extensionRoot);
+                Assembly controllerAssembly = FindControllerAssembly(version, extensionRoot);
                 if (controllerAssembly == null)
                 {
                     string error = "The Temp Phase controller module is not loaded for Revit " + version + ".";
                     Log("ControllerModuleMissing expectedAssembly=TempPhaseController.Revit" + version);
                     ShowFailure(error + Environment.NewLine + Environment.NewLine
-                        + "Expected: TempPhaseController.dll in this command bundle's bin folder or the extension root bin folder.");
+                        + "Expected: bin\\TempPhaseController.Revit" + version + ".dll in the EasyBIM extension folder.");
                     message = error;
                     return Result.Failed;
                 }
@@ -112,7 +112,7 @@ namespace EasyBIM.TempPhaseCommand
             }
         }
 
-        private static Assembly FindControllerAssembly(string version, string bundleDirectory, string extensionRoot)
+        private static Assembly FindControllerAssembly(string version, string extensionRoot)
         {
             string expectedName = "TempPhaseController.Revit" + version;
             Assembly mismatchedController = null;
@@ -148,13 +148,7 @@ namespace EasyBIM.TempPhaseCommand
                 Log("ControllerAssemblyLoadException expectedAssembly=" + expectedName + " " + ExceptionText(ex));
             }
 
-            Assembly commandModule = LoadControllerFromPath(GetModulePath(bundleDirectory), "command");
-            if (commandModule != null)
-            {
-                return commandModule;
-            }
-
-            Assembly rootModule = LoadControllerFromPath(GetRootModulePath(extensionRoot), "extension");
+            Assembly rootModule = LoadControllerFromPath(GetRootModulePath(extensionRoot, version), "extension");
             if (rootModule != null)
             {
                 return rootModule;
@@ -168,7 +162,7 @@ namespace EasyBIM.TempPhaseCommand
                     + " actualAssembly=" + mismatchedController.GetName().Name);
             }
 
-            return mismatchedController;
+            return null;
         }
 
         private static Assembly LoadControllerFromPath(string modulePath, string scope)
@@ -245,24 +239,7 @@ namespace EasyBIM.TempPhaseCommand
             }
         }
 
-        private static string GetModulePath(string bundleDirectory)
-        {
-            if (string.IsNullOrWhiteSpace(bundleDirectory))
-            {
-                return string.Empty;
-            }
-
-            try
-            {
-                return Path.Combine(bundleDirectory, "bin", "TempPhaseController.dll");
-            }
-            catch
-            {
-                return string.Empty;
-            }
-        }
-
-        private static string GetRootModulePath(string extensionRoot)
+        private static string GetRootModulePath(string extensionRoot, string version)
         {
             if (string.IsNullOrWhiteSpace(extensionRoot))
             {
@@ -271,7 +248,7 @@ namespace EasyBIM.TempPhaseCommand
 
             try
             {
-                return Path.Combine(extensionRoot, "bin", "TempPhaseController.dll");
+                return Path.Combine(extensionRoot, "bin", "TempPhaseController.Revit" + version + ".dll");
             }
             catch
             {

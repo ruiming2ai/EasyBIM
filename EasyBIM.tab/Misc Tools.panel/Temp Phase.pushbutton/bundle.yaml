@@ -3,5 +3,3 @@ tooltip: Set a temporary phase for the active view and restore temporary view pr
 author: Ruiming Liu
 min_revit_version: 2025
 max_revit_version: 2026
-modules:
-  - TempPhaseController.dll
