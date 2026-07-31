@@ -1,0 +1,55 @@
+# EasyBIM Temp Phase controller
+
+This source is the pyRevit 6.5 conversion of the standalone Temp Phase add-in.
+It targets Revit 2025 and 2026 separately because Revit API assemblies must not
+be mixed in one Revit process.
+
+Build and stage one host-specific module from the repository root. When pyRevit
+loads a Windows extension clone, pass that clone explicitly:
+
+    .\build\Build-TempPhase.ps1 -RevitVersion 2025 `
+        -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
+    .\build\Build-TempPhase.ps1 -RevitVersion 2026 `
+        -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
+
+The default extension root is
+`C:\Users\RML\Documents\GitHub\EasyBIM.extension`. The script validates that the
+target `Extension.yaml` is named EasyBIM and refuses to treat a differently
+named extension as the EasyBIM deployment. Run `-VerifyOnly` to inspect the live
+package before opening Revit.
+
+For a WSL-backed extension root, build the artifact with the .NET SDK and pass
+it explicitly so Windows PowerShell does not try to build through the UNC path:
+
+    .\build\Build-TempPhase.ps1 -RevitVersion 2025 `
+        -ExtensionRoot "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM" `
+        -ArtifactPath "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM\src\TempPhase\TempPhase.Revit2025\bin\Release\net8.0-windows\TempPhaseController.Revit2025.dll"
+
+The build produces a versioned controller artifact and stages the selected host
+version as TempPhaseController.dll in the command bundle `bin` folder and in the
+extension root `bin` folder. Only the staged artifact for the active Revit
+installation should be present in a live extension. The preflight refuses to
+stage when bundle.yaml, script.cs, or the Temp Phase hooks are missing, when the
+assembly identity is for the wrong Revit year, or when RevitAPI*.dll files are
+beside either controller copy. The generated DLL is intentionally gitignored, so
+a fresh clone must be built and staged before pyRevit can load the command.
+
+The controller is loaded by the Temp Phase command bundle's modules metadata.
+The C# hooks in hooks/ delegate into the same static controller instance so
+manual-command sessions and close recovery share state.
+
+## Blank command recovery
+
+Close all Revit processes before changing the deployed module. Build the
+matching controller, stage it into the exact EasyBIM extension root pyRevit has
+discovered, and restart or reload pyRevit. If Revit still executes an older
+wrapper, clear the generated pyRevit extension assembly/cache for the affected
+Revit year, for example the `pyRevit_2025_*_EasyBIM.dll` files under
+`%APPDATA%\pyRevit\2025`. The command writes diagnostics to
+`%APPDATA%\EasyBIM\Temp Phase\logs\events.log` before loading the controller,
+before and after the phase picker, and after each transaction. A missing or
+wrong-year module now produces a Revit TaskDialog with the expected deployment
+path instead of a blank pyRevit output window.
+
+Use `-NoStage` when only a build is needed. Keep the standalone add-in enabled
+until both Revit 2025 and 2026 pass the close-recovery acceptance tests.
