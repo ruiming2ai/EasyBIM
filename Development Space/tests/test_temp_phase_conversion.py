@@ -34,12 +34,13 @@ class TempPhaseConversionTests(unittest.TestCase):
             self.assertNotIn("Assembly.Load", text, str(hook_path))
 
         startup = (ROOT / "startup.py").read_text(encoding="utf-8")
-        self.assertIn("temp_phase_save.install", startup)
+        self.assertNotIn("temp_phase_save", startup)
+        self.assertIn("install_completion_handlers", startup)
 
         app_idling = (ROOT / "hooks" / "app-idling.py").read_text(encoding="utf-8")
-        self.assertIn("temp_phase_save.handle_app_idling", app_idling)
+        self.assertNotIn("temp_phase_save", app_idling)
         doc_closed = (ROOT / "hooks" / "doc-closed.py").read_text(encoding="utf-8")
-        self.assertIn("temp_phase_save.handle_doc_closed", doc_closed)
+        self.assertNotIn("temp_phase_save", doc_closed)
 
     def test_command_bundle_has_no_controller_preload(self):
         metadata = (BUTTON_ROOT / "bundle.yaml").read_text(encoding="utf-8")
@@ -50,6 +51,7 @@ class TempPhaseConversionTests(unittest.TestCase):
 
     def test_command_button_is_python_based_without_controller_bridge(self):
         self.assertFalse((BUTTON_ROOT / "script.cs").exists())
+        self.assertFalse((BUTTON_ROOT / "bin" / "TempPhaseController.dll").exists())
         self.assertTrue((BUTTON_ROOT / "icon.png").exists())
         self.assertTrue((BUTTON_ROOT / "icon.dark.png").exists())
 
@@ -76,22 +78,18 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("DocClosingHookEntry", close_runtime)
         self.assertIn("TempPhaseRestoreCommitted", close_runtime)
         self.assertIn("TempPhaseCloseReposted", close_runtime)
+        self.assertIn("DocumentSaved", close_runtime)
+        self.assertIn("DocumentSavedAs", close_runtime)
+        self.assertIn("DocumentSynchronizedWithCentral", close_runtime)
+        self.assertIn("SynchronizeAndModifySettings", close_runtime)
+        self.assertIn("Save Restored File and Close", close_runtime)
+        self.assertIn("Synchronize Restored File and Close", close_runtime)
+        self.assertIn("Keep File Open", close_runtime)
         self.assertIn("log_hook_context", close_runtime)
 
-        save_runtime = (ROOT / "lib" / "easybim" / "temp_phase_save.py").read_text(
-            encoding="utf-8"
+        self.assertFalse(
+            (ROOT / "lib" / "easybim" / "temp_phase_save.py").exists()
         )
-        for handler in (
-            "handle_document_saving",
-            "handle_document_saved",
-            "handle_app_idling",
-            "install",
-        ):
-            self.assertIn("def " + handler, save_runtime)
-        self.assertIn("DocumentSaving", save_runtime)
-        self.assertIn("DocumentSavingAs", save_runtime)
-        self.assertIn("PostableCommand.Save", save_runtime)
-        self.assertIn("PostableCommand.SaveAs", save_runtime)
 
         diagnostics = (
             TEMP_PHASE_ROOT / "TempPhase.RevitCommon" / "TempPhaseDiagnostics.cs"

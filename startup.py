@@ -22,17 +22,15 @@ try:
 except Exception:
     pass
 
-
 try:
-    from easybim import temp_phase_save
-    temp_phase_save.install()
+    from easybim import temp_phase_close
+    temp_phase_close.install_completion_handlers()
 except Exception as ex:
     try:
         from easybim import temp_phase_close
-        temp_phase_close.log_hook_exception("TempPhaseSaveStartupException", ex)
+        temp_phase_close.log_hook_exception("TempPhaseCompletionStartupException", ex)
     except Exception:
         pass
-
 
 try:
     from easybim import auto_update

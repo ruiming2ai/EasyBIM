@@ -47,6 +47,7 @@ class FakeDocument(object):
     IsValidObject = True
     IsFamilyDocument = False
     IsLinked = False
+    IsWorkshared = False
     PathName = r"C:\Models\sample.rvt"
     DocumentId = 42
     Title = "sample.rvt"
@@ -161,12 +162,11 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
         self.assertFalse(state["pending_closes"])
         self.assertFalse(self.uiapp.posted)
 
-    def test_close_file_now_posts_once_and_doc_closed_cleans_state(self):
+    def test_close_repost_posts_once_and_doc_closed_cleans_state(self):
         args = FakeClosingArgs(self.doc)
         self.runtime.handle_doc_closing(self.uiapp, args)
         state = self.runtime._get_state()
-        for record in state["pending_closes"].values():
-            record["next_try_at"] = 0
+        token, record = next(iter(state["pending_closes"].items()))
 
         class FakeCommandId(object):
             @staticmethod
@@ -180,12 +180,8 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
             PostableCommand = FakePostableCommand
             RevitCommandId = FakeCommandId
 
-        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi), mock.patch.object(
-            self.runtime, "_show_close_decision", return_value="close"
-        ), mock.patch.object(
-            self.runtime, "collect_tvp_summary", return_value={"has_restore_work": False}
-        ):
-            self.runtime.handle_app_idling(self.uiapp)
+        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi):
+            self.assertTrue(self.runtime._post_close_once(self.uiapp, state, token, record))
 
         self.assertEqual(1, len(self.uiapp.posted))
         self.assertTrue(state["repost_guards"])
@@ -213,12 +209,20 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
             TaskDialogCommandLinkId = type(
                 "TaskDialogCommandLinkId",
                 (object,),
-                {"CommandLink1": command_link_one, "CommandLink2": command_link_two},
+                {
+                    "CommandLink1": command_link_one,
+                    "CommandLink2": command_link_two,
+                    "CommandLink3": object(),
+                },
             )
             TaskDialogResult = type(
                 "TaskDialogResult",
                 (object,),
-                {"CommandLink1": result_command_link_one},
+                {
+                    "CommandLink1": result_command_link_one,
+                    "CommandLink2": object(),
+                    "CommandLink3": object(),
+                },
             )
             TaskDialogCommonButtons = type(
                 "TaskDialogCommonButtons", (object,), {"Cancel": object()}
@@ -230,11 +234,15 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
 
         with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi):
             decision = self.runtime._show_close_decision(
-                {"dialog_view_lines": [], "doc_title": "sample.rvt"},
+                {
+                    "dialog_view_lines": [],
+                    "doc_title": "sample.rvt",
+                    "doc_is_workshared": False,
+                },
                 {"title": "sample.rvt"},
             )
 
-        self.assertEqual("close", decision)
+        self.assertEqual("save_close", decision)
 
     def test_restore_summary_uses_one_transaction_and_clears_session(self):
         class FakeTransaction(object):
