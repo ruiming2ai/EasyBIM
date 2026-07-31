@@ -24,6 +24,17 @@ except Exception:
 
 
 try:
+    from easybim import temp_phase_save
+    temp_phase_save.install()
+except Exception as ex:
+    try:
+        from easybim import temp_phase_close
+        temp_phase_close.log_hook_exception("TempPhaseSaveStartupException", ex)
+    except Exception:
+        pass
+
+
+try:
     from easybim import auto_update
 
     if not auto_update.should_skip_startup(auto_update.get_startup_guard_state()):
