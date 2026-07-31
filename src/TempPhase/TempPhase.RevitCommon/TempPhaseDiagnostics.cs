@@ -130,7 +130,7 @@ namespace EasyBIM.TempPhase
                     AddinInfo.DialogTitle,
                     detail
                     + Environment.NewLine + Environment.NewLine
-                    + "Build and stage the matching TempPhaseController.dll, then restart or reload pyRevit."
+                    + "Update EasyBIM, rebuild packaged TempPhaseController.Revit2025/2026 DLLs if needed, then reload pyRevit."
                     + Environment.NewLine + Environment.NewLine
                     + "Diagnostic log:" + Environment.NewLine
                     + AddinInfo.GetLogPath());

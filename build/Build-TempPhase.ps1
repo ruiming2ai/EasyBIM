@@ -1,3 +1,5 @@
+# Developer-only fallback build.  The normal EasyBIM pyRevit workflow is
+# Python-only and does not load or stage these controller assemblies.
 [CmdletBinding()]
 param(
     [ValidateSet("2025", "2026", "All")]
@@ -11,7 +13,6 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $configuration = "Release"
 $sourceBundleDir = Join-Path $repoRoot "EasyBIM.tab\Misc Tools.panel\Temp Phase.pushbutton"
-$sourceHooksDir = Join-Path $repoRoot "hooks"
 $rootBinDir = Join-Path $repoRoot "bin"
 $targetVersions = if ($RevitVersion -eq "All") { @("2025", "2026") } else { @($RevitVersion) }
 
@@ -66,30 +67,39 @@ function Assert-NoRevitApiAssemblies {
 
 function Assert-SourcePackage {
     $bundleFile = Join-Path $sourceBundleDir "bundle.yaml"
-    $scriptFile = Join-Path $sourceBundleDir "script.cs"
+    $scriptFile = Join-Path $sourceBundleDir "script.py"
+    $removedScriptFile = Join-Path $sourceBundleDir "script.cs"
+    $controllerFile = Join-Path $repoRoot "src\TempPhase\TempPhase.RevitCommon\TempPhaseController.cs"
 
     if (-not (Test-Path -LiteralPath $bundleFile -PathType Leaf)) {
         throw "Temp Phase bundle.yaml was not found: $bundleFile"
     }
 
     if (-not (Test-Path -LiteralPath $scriptFile -PathType Leaf)) {
-        throw "Temp Phase script.cs was not found: $scriptFile"
+        throw "Temp Phase script.py was not found: $scriptFile"
+    }
+
+    if (Test-Path -LiteralPath $removedScriptFile -PathType Leaf) {
+        throw "Temp Phase must use the Python command wrapper; remove: $removedScriptFile"
+    }
+
+    if (-not (Test-Path -LiteralPath $controllerFile -PathType Leaf)) {
+        throw "Temp Phase controller source was not found: $controllerFile"
     }
 
     Assert-FileNotContains $bundleFile "modules:" "Temp Phase bundle metadata"
-    Assert-FileContains $scriptFile "TempPhaseController.Revit" "Temp Phase command wrapper"
-    Assert-FileContains $scriptFile "Assembly.LoadFrom" "Temp Phase command wrapper"
-    Assert-FileContains $scriptFile "ModuleCandidatePath" "Temp Phase command wrapper"
+    Assert-FileContains $scriptFile "from easybim import temp_phase_view" "Temp Phase Python command wrapper"
+    Assert-FileContains $scriptFile "run_pushbutton" "Temp Phase Python command wrapper"
+    Assert-FileNotContains $scriptFile "TempPhaseController" "Temp Phase Python command wrapper"
 
-    foreach ($hookName in @("doc-closing.cs", "app-idling.cs", "doc-closed.cs")) {
-        $hookPath = Join-Path $sourceHooksDir $hookName
+    foreach ($hookName in @("doc-closing.py", "app-idling.py", "doc-closed.py")) {
+        $hookPath = Join-Path $repoRoot "hooks\$hookName"
         if (-not (Test-Path -LiteralPath $hookPath -PathType Leaf)) {
-            throw "Temp Phase hook was not found: $hookPath"
+            throw "Python Temp Phase hook was not found: $hookPath"
         }
 
-        Assert-FileContains $hookPath "TempPhaseController.Revit" "Temp Phase hook $hookName"
-        Assert-FileContains $hookPath "Assembly.Load" "Temp Phase hook $hookName"
-        Assert-FileNotContains $hookPath "using EasyBIM.TempPhase" "Temp Phase hook $hookName"
+        Assert-FileContains $hookPath "temp_phase_close" "Temp Phase hook $hookName"
+        Assert-FileNotContains $hookPath "TempPhaseController" "Temp Phase hook $hookName"
     }
 }
 
@@ -121,6 +131,14 @@ function Assert-ControllerIdentity([string] $controllerFile, [string] $version, 
     }
 }
 
+function Assert-FileHashMatches([string] $source, [string] $destination, [string] $description) {
+    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+    if ($sourceHash -ne $destinationHash) {
+        throw "$description copy verification failed. Source: $source Destination: $destination"
+    }
+}
+
 function Build-Controller([string] $version) {
     $project = Get-ProjectPath $version
     if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
@@ -145,6 +163,7 @@ function Update-TrackedController([string] $version, [string] $artifact) {
     New-Item -ItemType Directory -Path $rootBinDir -Force | Out-Null
     $destination = Get-TrackedControllerPath $version
     Copy-Item -LiteralPath $artifact -Destination $destination -Force
+    Assert-FileHashMatches $artifact $destination "Temp Phase controller Revit $version"
     Assert-ControllerIdentity $destination $version -Required
     Write-Host ("Updated {0}" -f $destination)
 }
@@ -169,7 +188,7 @@ if ($VerifyOnly) {
         Write-ControllerStatus $version
     }
 
-    Write-Host "Temp Phase packaged-controller verification succeeded."
+    Write-Host "Temp Phase developer-only fallback controller verification succeeded."
     return
 }
 
@@ -184,4 +203,4 @@ foreach ($version in $targetVersions) {
     Write-ControllerStatus $version
 }
 
-Write-Host "Temp Phase packaged-controller update succeeded."
+Write-Host "Temp Phase developer-only fallback controller update succeeded."

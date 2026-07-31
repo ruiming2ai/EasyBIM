@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Process startup work and deferred Temp Phase close recovery."""
+"""Clear Temp Phase close state after Revit finishes closing a document."""
 
 try:
     from pyrevit import EXEC_PARAMS
 except Exception:
     EXEC_PARAMS = None
-
-from easybim.messages import has_pending_startup_jobs
-from easybim.messages import process_startup_jobs
 
 try:
     from easybim import temp_phase_close
@@ -28,19 +25,12 @@ except Exception:
         _UIAPP = None
 
 
-try:
-    if has_pending_startup_jobs():
-        process_startup_jobs()
-except Exception:
-    # Never hard-fail Revit idling because of startup automation.
-    pass
-
 if temp_phase_close is not None:
     try:
-        temp_phase_close.log_hook_context("AppIdling", __file__)
-        temp_phase_close.handle_app_idling(uiapp=_UIAPP, event_args=_EVENT_ARGS)
+        temp_phase_close.log_hook_context("DocClosed", __file__)
+        temp_phase_close.handle_doc_closed(uiapp=_UIAPP, event_args=_EVENT_ARGS)
     except Exception as ex:
         try:
-            temp_phase_close.log_hook_exception("AppIdlingHookException", ex)
+            temp_phase_close.log_hook_exception("DocClosedHookException", ex)
         except Exception:
             pass

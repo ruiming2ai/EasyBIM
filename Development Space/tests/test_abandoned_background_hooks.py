@@ -8,7 +8,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 ABANDONED_BACKGROUND_PATHS = (
-    "lib/easybim/temp_phase_view.py",
     "lib/easybim/close_stop.py",
     "lib/easybim/file_close_guard.py",
     "lib/easybim/save_tvp_prompt.py",
@@ -34,11 +33,9 @@ ABANDONED_BACKGROUND_PATHS = (
 
 ABANDONED_RUNTIME_IMPORTS = (
     "from easybim import close_stop",
-    "from easybim import temp_phase_view",
     "from easybim import file_saved_notice",
     "from easybim import save_tvp_prompt",
     "import close_stop",
-    "import temp_phase_view",
     "import file_saved_notice",
     "import save_tvp_prompt",
 )
@@ -53,7 +50,7 @@ def _load_easybim_module(module_name):
 
 
 class AbandonedBackgroundHookTests(unittest.TestCase):
-    def test_temp_phase_close_stop_and_file_saved_background_files_are_removed(self):
+    def test_abandoned_background_files_are_removed_except_temp_phase_button_engine(self):
         remaining = [
             relative_path
             for relative_path in ABANDONED_BACKGROUND_PATHS
@@ -61,6 +58,21 @@ class AbandonedBackgroundHookTests(unittest.TestCase):
         ]
 
         self.assertEqual([], remaining)
+
+    def test_temp_phase_manual_button_engine_is_intentionally_restored(self):
+        runtime = ROOT / "lib" / "easybim" / "temp_phase_view.py"
+        self.assertTrue(runtime.exists(), str(runtime))
+        text = runtime.read_text(encoding="utf-8")
+        self.assertIn("def run_pushbutton", text)
+        self.assertIn("EASYBIM_TEMP_PHASE_VIEW_STATE", text)
+        self.assertNotIn("TempPhaseController", text)
+
+        close_runtime = ROOT / "lib" / "easybim" / "temp_phase_close.py"
+        self.assertTrue(close_runtime.exists(), str(close_runtime))
+        close_text = close_runtime.read_text(encoding="utf-8")
+        self.assertIn("def handle_doc_closing", close_text)
+        self.assertIn("def handle_app_idling", close_text)
+        self.assertIn("def handle_doc_closed", close_text)
 
     def test_runtime_code_no_longer_imports_abandoned_background_modules(self):
         failures = []

@@ -146,6 +146,80 @@ namespace EasyBIM.TempPhase
             }
         }
 
+        public bool RegisterManualSession(
+            UIApplication uiapp,
+            Document doc,
+            View view,
+            int originalPhaseId,
+            int selectedPhaseId,
+            int templateId)
+        {
+            try
+            {
+                if (!TempPhaseCompat.IsSupportedProjectDocument(doc))
+                {
+                    Log("PythonManualSessionRegisterSkipped reason=unsupported-document");
+                    return false;
+                }
+
+                if (!TempPhaseCompat.IsValidProjectView(view))
+                {
+                    Log("PythonManualSessionRegisterSkipped reason=invalid-view");
+                    return false;
+                }
+
+                int? viewId = TempPhaseCompat.ToInt(view.Id);
+                if (!viewId.HasValue)
+                {
+                    Log("PythonManualSessionRegisterSkipped reason=missing-view-id");
+                    return false;
+                }
+
+                DocumentKey docKey = TempPhaseCompat.BuildDocumentKey(doc);
+                string sessionKey = TempPhaseCompat.BuildSessionKey(docKey, viewId.Value);
+                ViewSession session = new ViewSession();
+                session.DocumentKey = docKey;
+                session.ViewId = viewId.Value;
+                session.ViewName = TempPhaseCompat.GetViewDisplayName(view);
+                session.OriginalPhaseId = originalPhaseId;
+                session.SelectedPhaseId = selectedPhaseId;
+                session.TempTemplateId = templateId;
+                session.LastSeenTvpActive = TempPhaseCompat.IsTvpActive(view);
+                session.UpdatedAtUtc = DateTime.UtcNow;
+
+                lock (_syncRoot)
+                {
+                    _viewSessions[sessionKey] = session;
+                }
+
+                string version = string.Empty;
+                try
+                {
+                    version = uiapp == null || uiapp.Application == null
+                        ? string.Empty
+                        : TempPhaseCompat.SafeText(uiapp.Application.VersionNumber);
+                }
+                catch
+                {
+                    version = string.Empty;
+                }
+
+                Log(
+                    "PythonManualSessionRegistered"
+                    + " revitVersion=" + version
+                    + " view=" + session.ViewName
+                    + " originalPhase=" + session.OriginalPhaseId
+                    + " selectedPhase=" + session.SelectedPhaseId
+                    + " template=" + session.TempTemplateId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log("PythonManualSessionRegisterException " + ExceptionText(ex));
+                return false;
+            }
+        }
+
         public void OnIdling(object sender, IdlingEventArgs e)
         {
             UIApplication uiapp = sender as UIApplication;

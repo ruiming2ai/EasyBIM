@@ -38,6 +38,38 @@ namespace EasyBIM.TempPhase
             _service.OnDocumentClosed(sender, args);
         }
 
+        public bool RegisterManualSession(
+            UIApplication uiapp,
+            Document doc,
+            View view,
+            int originalPhaseId,
+            int selectedPhaseId,
+            int templateId)
+        {
+            try
+            {
+                TempPhaseDiagnostics.LogMessage(
+                    "PythonManualSessionRegisterDispatch"
+                    + " originalPhase=" + originalPhaseId
+                    + " selectedPhase=" + selectedPhaseId
+                    + " template=" + templateId);
+                bool registered = _service.RegisterManualSession(
+                    uiapp,
+                    doc,
+                    view,
+                    originalPhaseId,
+                    selectedPhaseId,
+                    templateId);
+                TempPhaseDiagnostics.LogMessage("PythonManualSessionRegisterReturn registered=" + registered);
+                return registered;
+            }
+            catch (Exception ex)
+            {
+                TempPhaseDiagnostics.ReportCommandException("PythonManualSessionRegister", ex);
+                return false;
+            }
+        }
+
         public Result ExecuteManualCommand(
             ExternalCommandData commandData,
             ref string message,
