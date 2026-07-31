@@ -12,6 +12,7 @@ ABANDONED_BACKGROUND_PATHS = (
     "lib/easybim/file_close_guard.py",
     "lib/easybim/save_tvp_prompt.py",
     "lib/easybim/file_saved_notice.py",
+    "lib/easybim/temp_phase_save.py",
     "hooks/command-before-exec.py",
     "hooks/command-before-exec[ID_FILE_CLOSE].py",
     "hooks/command-before-exec[ID_FILE_SAVE].py",
@@ -35,9 +36,11 @@ ABANDONED_RUNTIME_IMPORTS = (
     "from easybim import close_stop",
     "from easybim import file_saved_notice",
     "from easybim import save_tvp_prompt",
+    "from easybim import temp_phase_save",
     "import close_stop",
     "import file_saved_notice",
     "import save_tvp_prompt",
+    "import temp_phase_save",
 )
 
 

@@ -22,6 +22,7 @@ IronPython-compatible syntax and does not depend on a compiled DLL.
 from __future__ import print_function
 
 import os
+import sys
 import time
 
 try:
@@ -41,6 +42,7 @@ VIEW_STATE_ENVVAR = "EASYBIM_TEMP_PHASE_VIEW_STATE"
 MAX_RESTORE_ATTEMPTS = 8
 RETRY_DELAY_SEC = 0.25
 REPOST_GUARD_SEC = 12.0
+COMMIT_GUARD_SEC = 60.0
 IDLE_THROTTLE_SEC = 0.10
 
 
@@ -62,6 +64,12 @@ except Exception:
 
 
 _MEMORY_STATE = {}
+
+# Completion-event delegates are kept outside ``startup.py``.  pyRevit may
+# execute startup more than once during a reload while Revit still owns the
+# previous delegates; retaining the delegates here lets us detach them before
+# attaching a fresh copy and avoids duplicate completion handling.
+_RUNTIME = sys.modules.setdefault("easybim._temp_phase_close_runtime", {})
 
 
 def handle_doc_closing(uiapp=None, event_args=None):
@@ -95,6 +103,20 @@ def handle_doc_closing(uiapp=None, event_args=None):
     if _consume_repost_guard(state, token):
         _save_state(state)
         _log("DocClosingAllowedRepost token={0}".format(token))
+        return False
+
+    # A Save/Sync operation selected by the user owns the close attempt until
+    # its post-operation event arrives.  If another close command is issued in
+    # that window, cancel it and coalesce it rather than allowing the restored
+    # document to close before the commit is complete.
+    if token in (state.get("commit_operations") or {}) or token in (
+        state.get("pending_commit_closes") or {}
+    ):
+        if _event_is_cancellable(event_args) and _try_cancel_event(event_args):
+            _save_state(state)
+            _log("DocClosingCancelledCommitInProgress token={0}".format(token))
+            return True
+        _log("DocClosingCommitInProgressNotCancellable token={0}".format(token))
         return False
 
     summary = None
@@ -150,6 +172,7 @@ def handle_doc_closing(uiapp=None, event_args=None):
         doc_key=doc_key,
         doc_runtime_id=doc_runtime_id,
         title=_doc_title(closing_doc),
+        summary=summary,
     )
     _save_state(state)
     _log("DocClosingCancelSucceeded token={0}".format(token))
@@ -158,7 +181,14 @@ def handle_doc_closing(uiapp=None, event_args=None):
 
 
 def handle_idling(uiapp=None, event_args=None):
-    """Restore pending documents in a transaction and optionally repost close."""
+    """Restore pending documents and finish Save/Sync-before-close commits.
+
+    Revit's save and synchronize commands are asynchronous.  The command is
+    posted from this module only after restoration; the corresponding
+    ``DocumentSaved``/``DocumentSavedAs``/``DocumentSynchronizedWithCentral``
+    event then moves the operation into ``pending_commit_closes``.  The next
+    Idling callback posts the guarded Close command.
+    """
     del event_args
     uiapp = _get_uiapp(uiapp)
     _log("AppIdlingHookEntry")
@@ -167,13 +197,37 @@ def handle_idling(uiapp=None, event_args=None):
 
     state = _get_state()
     if _is_shutdown_context(uiapp):
-        if state.get("pending_closes"):
+        if (
+            state.get("pending_closes")
+            or state.get("commit_operations")
+            or state.get("pending_commit_closes")
+        ):
             state["pending_closes"] = {}
+            state["commit_operations"] = {}
+            state["pending_commit_closes"] = {}
+            state["commit_failures"] = {}
             _save_state(state)
         _log("AppIdlingSkippedShutdown")
         return False
     pending = state.get("pending_closes")
-    if not isinstance(pending, dict) or not pending:
+    if not isinstance(pending, dict):
+        pending = {}
+        state["pending_closes"] = pending
+
+    commit_pending = state.get("pending_commit_closes")
+    if not isinstance(commit_pending, dict):
+        commit_pending = {}
+        state["pending_commit_closes"] = commit_pending
+    commit_operations = state.get("commit_operations")
+    if not isinstance(commit_operations, dict):
+        commit_operations = {}
+        state["commit_operations"] = commit_operations
+    commit_failures = state.get("commit_failures")
+    if not isinstance(commit_failures, dict):
+        commit_failures = {}
+        state["commit_failures"] = commit_failures
+
+    if not pending and not commit_operations and not commit_pending and not commit_failures:
         _expire_repost_guards(state)
         _save_state(state)
         return False
@@ -184,6 +238,86 @@ def handle_idling(uiapp=None, event_args=None):
         return False
     state["last_idling_at"] = now
     changed = False
+
+    # Completion handlers run on Revit's application event thread, so failures
+    # are queued and the user-facing TaskDialog is shown from Idling instead.
+    for token, failure in list(commit_failures.items()):
+        if not isinstance(failure, dict):
+            commit_failures.pop(token, None)
+            changed = True
+            continue
+        commit_failures.pop(token, None)
+        changed = True
+        action = _safe_text(failure.get("action")) or "save"
+        operation_name = "synchronization" if action == "sync" else "save"
+        message = _safe_text(failure.get("message"))
+        if not message:
+            message = (
+                "The {0} was cancelled or failed. The restored document remains open; "
+                "the temporary state was not committed.".format(operation_name)
+            )
+        _show_alert(TITLE, message)
+        _log(
+            "TempPhaseCommitFailureShown action={0} token={1}".format(
+                action,
+                token,
+            )
+        )
+
+    # A successful Save/Sync completion is converted into one guarded Close
+    # request.  Keep retrying briefly when the target document is inactive;
+    # command availability failures eventually leave the document open.
+    for token, record in list(commit_pending.items()):
+        if not isinstance(record, dict):
+            commit_pending.pop(token, None)
+            changed = True
+            continue
+        expires_at = float(record.get("expires_at", 0.0) or 0.0)
+        if expires_at and now > expires_at:
+            commit_pending.pop(token, None)
+            changed = True
+            _show_alert(
+                TITLE,
+                "The restored file was committed, but Revit did not allow the "
+                "document to close. The file remains open.",
+            )
+            _log("TempPhaseCommitCloseExpired token={0}".format(token))
+            continue
+        next_try = float(record.get("next_try_at", 0.0) or 0.0)
+        if now < next_try:
+            continue
+        if _post_close_once(uiapp, state, token, record):
+            commit_pending.pop(token, None)
+            changed = True
+            _log("TempPhaseCommitCloseReposted token={0}".format(token))
+            _log("TempPhaseCloseReposted token={0}".format(token))
+            continue
+        attempts = (_to_int(record.get("attempts")) or 0) + 1
+        record["attempts"] = attempts
+        target_doc = _find_doc_by_identity(
+            uiapp,
+            doc_key=record.get("doc_key"),
+            doc_runtime_id=record.get("doc_runtime_id"),
+        )
+        active_doc = _get_active_document(uiapp)
+        if (
+            attempts < MAX_RESTORE_ATTEMPTS
+            and target_doc is not None
+            and active_doc is not None
+            and not _same_document(target_doc, active_doc)
+        ):
+            record["next_try_at"] = now + RETRY_DELAY_SEC
+            changed = True
+            _log("TempPhaseCommitCloseWaitingForActiveDocument token={0}".format(token))
+            continue
+        commit_pending.pop(token, None)
+        changed = True
+        _show_alert(
+            TITLE,
+            "The restored file was committed, but Revit could not post its Close "
+            "command. The document remains open.",
+        )
+        _log("TempPhaseCommitClosePostFailed token={0}".format(token))
 
     for token, record in list(pending.items()):
         if not isinstance(record, dict):
@@ -246,25 +380,52 @@ def handle_idling(uiapp=None, event_args=None):
                 )
             )
 
+        # Preserve the counts discovered at DocumentClosing when another hook
+        # has already disabled TVP by the time Idling runs.
+        if not summary.get("tracked_restore_views") and not summary.get("untracked_tvp_views"):
+            summary["tracked_restore_count"] = _to_int(record.get("tracked_restore_count")) or 0
+            summary["untracked_tvp_count"] = _to_int(record.get("untracked_tvp_count")) or 0
+        if "doc_is_workshared" not in summary:
+            summary["doc_is_workshared"] = bool(record.get("doc_is_workshared"))
         decision = _show_close_decision(summary, record)
         pending.pop(token, None)
         changed = True
 
-        if decision == "close":
-            if _post_close_once(uiapp, state, token, record):
-                _log("TempPhaseCloseReposted token={0}".format(token))
-                _log("IdlingCloseReposted token={0}".format(token))
-            else:
+        if decision == "save_close":
+            _log("TempPhaseSaveCloseSelected token={0}".format(token))
+            if not _begin_commit_close(uiapp, state, token, record, "save"):
                 _show_alert(
                     TITLE,
-                    "Temporary view properties were restored, but Revit's Close command "
-                    "could not be posted. You can close the file again manually.",
+                    "The restored file remains open because Revit could not start its "
+                    "Save command.",
                 )
-                _log("IdlingCloseRepostFailed token={0}".format(token))
+        elif decision == "sync_close":
+            _log("TempPhaseSyncCloseSelected token={0}".format(token))
+            if not _begin_commit_close(uiapp, state, token, record, "sync"):
+                _show_alert(
+                    TITLE,
+                    "The restored file remains open because Revit could not start "
+                    "synchronization with central.",
+                )
         else:
+            _log("TempPhaseCloseKeptOpen token={0}".format(token))
             _log("IdlingCloseCancelledByUser token={0}".format(token))
 
+    before_expiry = (
+        len(state.get("repost_guards") or {}),
+        len(state.get("commit_operations") or {}),
+        len(state.get("pending_commit_closes") or {}),
+        len(state.get("commit_failures") or {}),
+    )
     _expire_repost_guards(state)
+    after_expiry = (
+        len(state.get("repost_guards") or {}),
+        len(state.get("commit_operations") or {}),
+        len(state.get("pending_commit_closes") or {}),
+        len(state.get("commit_failures") or {}),
+    )
+    if before_expiry != after_expiry:
+        changed = True
     if changed:
         _save_state(state)
     return changed
@@ -301,9 +462,12 @@ def handle_doc_closed(uiapp=None, event_args=None):
 
     pending_record = state.get("pending_closes", {}).pop(token, None)
     repost_guard = state.get("repost_guards", {}).pop(token, None)
+    commit_operation = state.get("commit_operations", {}).pop(token, None)
+    commit_pending = state.get("pending_commit_closes", {}).pop(token, None)
+    commit_failure = state.get("commit_failures", {}).pop(token, None)
     stored_doc_key = ""
     stored_runtime_id = None
-    for record in (pending_record, repost_guard):
+    for record in (pending_record, repost_guard, commit_operation, commit_pending, commit_failure):
         if not isinstance(record, dict):
             continue
         stored_doc_key = stored_doc_key or _safe_text(record.get("doc_key")).strip()
@@ -331,6 +495,180 @@ def idling_handler(sender, args):
 
 def document_closed_handler(sender, args):
     return handle_doc_closed(uiapp=sender, event_args=args)
+
+
+def document_saved_handler(sender, args):
+    """Handle the post-Save completion event for a pending close."""
+    return handle_commit_completed(sender, args, action="save")
+
+
+def document_saved_as_handler(sender, args):
+    """DocumentSavedAs is also completion for a Save that opened Save As."""
+    return handle_commit_completed(sender, args, action="save")
+
+
+def document_synchronized_with_central_handler(sender, args):
+    """Handle the post-SynchronizeWithCentral completion event."""
+    return handle_commit_completed(sender, args, action="sync")
+
+
+def handle_document_saved(sender, event_args):
+    """Compatibility-friendly name for the post-Save completion delegate."""
+    return document_saved_handler(sender, event_args)
+
+
+def handle_document_saved_as(sender, event_args):
+    """Compatibility-friendly name for the post-SaveAs completion delegate."""
+    return document_saved_as_handler(sender, event_args)
+
+
+def handle_document_synchronized_with_central(sender, event_args):
+    """Compatibility-friendly name for the post-sync completion delegate."""
+    return document_synchronized_with_central_handler(sender, event_args)
+
+
+def install_completion_handlers():
+    """Install only post-operation completion handlers.
+
+    This deliberately subscribes only to post-operation completion events.
+    Save and synchronization are initiated by an explicit command link after
+    restoration; these handlers merely observe completion before the guarded
+    Close command is posted.
+    """
+    try:
+        from pyrevit import DB, HOST_APP, framework
+    except Exception as ex:
+        _log("TempPhaseCommitHandlersInstallFailed {0}".format(_exception_text(ex)))
+        return False
+
+    app = getattr(HOST_APP, "app", None)
+    if app is None:
+        _log("TempPhaseCommitHandlersInstallFailed missingApplication")
+        return False
+
+    existing = _RUNTIME.get("completion_registration")
+    if isinstance(existing, dict):
+        _uninstall_completion_registration(existing)
+
+    events = (
+        ("DocumentSaved", "DocumentSavedEventArgs", document_saved_handler),
+        ("DocumentSavedAs", "DocumentSavedAsEventArgs", document_saved_as_handler),
+        (
+            "DocumentSynchronizedWithCentral",
+            "DocumentSynchronizedWithCentralEventArgs",
+            document_synchronized_with_central_handler,
+        ),
+    )
+    handlers = {}
+    try:
+        db_events = getattr(DB, "Events", None)
+        for event_name, args_name, callback in events:
+            args_type = getattr(db_events, args_name, None) if db_events is not None else None
+            if args_type is None:
+                raise AttributeError("Missing {0}".format(args_name))
+            event_handler = framework.EventHandler[args_type](callback)
+            _attach_completion(app, event_name, event_handler)
+            handlers[event_name] = event_handler
+    except Exception as ex:
+        for event_name, handler in list(handlers.items()):
+            _detach_completion(app, event_name, handler)
+        _log("TempPhaseCommitHandlersInstallFailed {0}".format(_exception_text(ex)))
+        return False
+
+    _RUNTIME["completion_registration"] = {"app": app, "handlers": handlers}
+    _log(
+        "TempPhaseCommitHandlersInstalled events=DocumentSaved,DocumentSavedAs,"
+        "DocumentSynchronizedWithCentral"
+    )
+    return True
+
+
+def uninstall_completion_handlers():
+    registration = _RUNTIME.get("completion_registration")
+    if isinstance(registration, dict):
+        _uninstall_completion_registration(registration)
+        _RUNTIME.pop("completion_registration", None)
+        _log("TempPhaseCommitHandlersUninstalled")
+    return True
+
+
+def handle_commit_completed(sender, event_args, action):
+    """Move a completed Save/Sync operation to the guarded Close queue."""
+    doc = _resolve_doc_from_event_args(event_args, sender)
+    doc_runtime_id = _extract_doc_runtime_id(event_args, doc)
+    doc_key = _doc_key(doc)
+    token = _identity_token(doc_key, doc_runtime_id)
+    status = _event_status(event_args)
+    state = _get_state()
+    operations = state.get("commit_operations") or {}
+    operation = operations.get(token)
+    if not isinstance(operation, dict):
+        # Event DocumentId and the runtime identity used by a lightweight
+        # host/test wrapper can differ.  Fall back to the stable document key.
+        for candidate_token, candidate in list(operations.items()):
+            if not isinstance(candidate, dict):
+                continue
+            if doc_key and doc_key == _safe_text(candidate.get("doc_key")):
+                token = candidate_token
+                operation = candidate
+                break
+    if not isinstance(operation, dict):
+        _log(
+            "TempPhaseCommitCompletionIgnored action={0} token={1} status={2}".format(
+                action,
+                token,
+                status or "UNKNOWN",
+            )
+        )
+        return False
+
+    expected_action = _safe_text(operation.get("action")) or "save"
+    if expected_action != action:
+        _log(
+            "TempPhaseCommitCompletionIgnoredWrongAction expected={0} actual={1} token={2}".format(
+                expected_action,
+                action,
+                token,
+            )
+        )
+        return False
+    operations.pop(token, None)
+    if _completion_succeeded(status):
+        pending = state.setdefault("pending_commit_closes", {})
+        if token not in pending:
+            record = dict(operation)
+            record["completed_at"] = time.time()
+            record["next_try_at"] = 0.0
+            record["expires_at"] = time.time() + COMMIT_GUARD_SEC
+            pending[token] = record
+        _save_state(state)
+        _log(
+            "TempPhaseCommitCompleted action={0} token={1} status={2}".format(
+                action,
+                token,
+                status or "UNKNOWN",
+            )
+        )
+        return True
+
+    failure = state.setdefault("commit_failures", {})
+    failure[token] = {
+        "action": action,
+        "doc_key": _safe_text(operation.get("doc_key")),
+        "doc_runtime_id": _to_int(operation.get("doc_runtime_id")),
+        "status": status,
+        "message": _commit_failure_message(action, status),
+        "failed_at": time.time(),
+    }
+    _save_state(state)
+    _log(
+        "TempPhaseCommitFailed action={0} token={1} status={2}".format(
+            action,
+            token,
+            status or "UNKNOWN",
+        )
+    )
+    return False
 
 
 def collect_tvp_summary(uiapp, doc, view_state=None, include_all_discoverable=True):
@@ -405,10 +743,13 @@ def collect_tvp_summary(uiapp, doc, view_state=None, include_all_discoverable=Tr
         "doc_key": doc_key,
         "doc_runtime_id": doc_runtime_id,
         "doc_title": _doc_title(doc),
+        "doc_is_workshared": _doc_is_workshared(doc),
         "tracked_restore_views": tracked,
         "untracked_tvp_views": untracked,
         "discoverable_tvp_views": discoverable,
         "dialog_view_lines": lines,
+        "tracked_restore_count": len(tracked),
+        "untracked_tvp_count": len(untracked),
         "has_restore_work": bool(tracked or untracked),
     }
 
@@ -522,19 +863,40 @@ def _restore_failure(message, failed_views=None):
 
 
 def _show_close_decision(summary, record):
-    """Show the post-restore close decision; return ``close`` or ``cancel``."""
+    """Show the commit-aware post-restore decision.
+
+    Return ``save_close``, ``sync_close`` or ``cancel``.  There is intentionally
+    no immediate close option: the restored state must be committed before the
+    document is allowed to close.
+    """
     UI = _get_ui()
     title = _safe_text(record.get("title")) if isinstance(record, dict) else ""
     title = title or _safe_text(summary.get("doc_title")) or "the document"
     lines = list(summary.get("dialog_view_lines") or [])
+    tracked_count = _to_int(summary.get("tracked_restore_count"))
+    if tracked_count is None:
+        tracked_count = len(summary.get("tracked_restore_views") or [])
+    untracked_count = _to_int(summary.get("untracked_tvp_count"))
+    if untracked_count is None:
+        untracked_count = len(summary.get("untracked_tvp_views") or [])
+    workshared = bool(summary.get("doc_is_workshared"))
     main_content = (
-        "Temporary phase/view state was restored for {0}.\n\n"
-        "The document remains open. What would you like to do?"
-    ).format(title)
+        "EasyBIM removed temporary phase and view properties from {0} tracked "
+        "view(s) and {1} additional view(s) in {2}.\n\n"
+        "The restored state is currently only in this session. Save the file "
+        "to make the cleanup permanent."
+    ).format(tracked_count, untracked_count, title)
+    if workshared:
+        main_content += (
+            "\n\nFor a workshared local file, synchronize with central to update "
+            "the central model before closing."
+        )
     expanded = "\n".join(lines)
+    if expanded:
+        expanded += "\n\nThe document will remain open if Save or Synchronize is cancelled or fails."
 
     if UI is None:
-        _show_alert(TITLE, main_content + "\n\nClose the document manually if needed.")
+        _show_alert(TITLE, main_content + "\n\nKeep the document open and save it manually when ready.")
         return "cancel"
 
     try:
@@ -548,51 +910,77 @@ def _show_close_decision(summary, record):
         if expanded:
             dialog.ExpandedContent = expanded
 
-        command_link_id = getattr(UI.TaskDialogCommandLinkId, "CommandLink1", None)
-        command_link_two = getattr(UI.TaskDialogCommandLinkId, "CommandLink2", None)
-        if command_link_id is None:
-            _show_alert(TITLE, main_content + "\n\nClose the document manually if needed.")
+        command_ids = getattr(UI, "TaskDialogCommandLinkId", None)
+        link_one = getattr(command_ids, "CommandLink1", None)
+        link_two = getattr(command_ids, "CommandLink2", None)
+        link_three = getattr(command_ids, "CommandLink3", None)
+        if link_one is None or link_two is None:
+            _show_alert(TITLE, main_content + "\n\nSave the restored document manually when ready.")
             return "cancel"
 
-        dialog.AddCommandLink(command_link_id, "Close File Now")
-        if command_link_two is not None:
-            dialog.AddCommandLink(command_link_two, "Cancel Close")
+        dialog.AddCommandLink(link_one, "Save Restored File and Close")
+        if workshared:
+            dialog.AddCommandLink(link_two, "Synchronize Restored File and Close")
+            if link_three is not None:
+                dialog.AddCommandLink(link_three, "Keep File Open")
+            result_map = (
+                ("save_close", "CommandLink1"),
+                ("sync_close", "CommandLink2"),
+                ("cancel", "CommandLink3"),
+            )
+        else:
+            dialog.AddCommandLink(link_two, "Keep File Open")
+            result_map = (("save_close", "CommandLink1"), ("cancel", "CommandLink2"))
         try:
             dialog.CommonButtons = UI.TaskDialogCommonButtons.Cancel
         except Exception:
             pass
         result = dialog.Show()
 
-        # ``AddCommandLink`` accepts a TaskDialogCommandLinkId, but Show()
-        # returns a TaskDialogResult.  The two enum types happen to have the
-        # same member name, but they are not the same value in the Revit API.
-        # Comparing the command-link id directly therefore classified an
-        # actual "Close File Now" click as a cancellation.
-        result_enum = getattr(UI, "TaskDialogResult", None)
-        expected_result = getattr(result_enum, "CommandLink1", None)
-        selected_close = _is_close_command_result(
-            result,
-            expected_result,
-            command_link_id,
-        )
+        choice = _task_dialog_choice(result, UI, result_map)
         _log(
-            "CloseDecisionResult result={0} expected={1} commandLinkId={2} "
-            "selectedClose={3}".format(
+            "TempPhaseDialogShown result={0} choice={1} workshared={2} "
+            "tracked={3} untracked={4}".format(
                 _safe_text(result),
-                _safe_text(expected_result),
-                _safe_text(command_link_id),
-                selected_close,
+                choice,
+                workshared,
+                tracked_count,
+                untracked_count,
             )
         )
-        if selected_close:
-            _log("CloseDecisionCloseSelected")
-            return "close"
-        _log("CloseDecisionCancelSelected")
-        return "cancel"
+        return choice
     except Exception as ex:
         _log("CloseDecisionDialogFailed {0}".format(_exception_text(ex)))
-        _show_alert(TITLE, main_content + "\n\nClose the document manually if needed.")
+        _show_alert(TITLE, main_content + "\n\nSave the restored document manually when ready.")
         return "cancel"
+
+
+def _task_dialog_choice(result, UI, result_map):
+    """Map TaskDialogResult enums to semantic command choices.
+
+    The command-link ids passed to ``AddCommandLink`` are a different enum
+    from the result returned by ``Show``.  Compare against TaskDialogResult
+    first, then retain a textual fallback for Python.NET wrappers.
+    """
+    result_enum = getattr(UI, "TaskDialogResult", None)
+    for choice, member_name in result_map:
+        expected = getattr(result_enum, member_name, None) if result_enum is not None else None
+        if expected is not None:
+            try:
+                if result == expected:
+                    return choice
+            except Exception:
+                pass
+    result_text = _safe_text(result).strip().lower()
+    if result_text:
+        if "commandlink1" in result_text:
+            return result_map[0][0]
+        for choice, member_name in result_map[1:]:
+            if member_name.lower() in result_text:
+                return choice
+        if "cancel" in result_text:
+            return "cancel"
+    return "cancel"
 
 
 def _is_close_command_result(result, expected_result=None, command_link_id=None):
@@ -645,6 +1033,11 @@ def _post_close_once(uiapp, state, token, record):
         doc_runtime_id=(record or {}).get("doc_runtime_id") if isinstance(record, dict) else None,
     )
     active_doc = _get_active_document(uiapp)
+    target_key = _safe_text((record or {}).get("doc_key")) if isinstance(record, dict) else ""
+    target_runtime = _to_int((record or {}).get("doc_runtime_id")) if isinstance(record, dict) else None
+    if target_doc is None and (target_key or target_runtime is not None):
+        _log("CloseRepostSkippedUnavailableTarget token={0}".format(token))
+        return False
     if target_doc is not None:
         if active_doc is None or not _same_document(target_doc, active_doc):
             _log("CloseRepostSkippedInactiveTarget token={0}".format(token))
@@ -706,7 +1099,138 @@ def _post_close_once(uiapp, state, token, record):
         return False
 
 
-def _queue_pending_close(state, token, doc_key, doc_runtime_id, title):
+def _begin_commit_close(uiapp, state, token, record, action):
+    """Post Save or Synchronize and wait for its completion event."""
+    if action not in ("save", "sync") or not token:
+        return False
+    record = record if isinstance(record, dict) else {}
+    if action == "sync" and not bool(record.get("doc_is_workshared")):
+        _log("TempPhaseCommitUnavailableNotWorkshared token={0}".format(token))
+        return False
+
+    existing = (state.setdefault("commit_operations", {})).get(token)
+    if isinstance(existing, dict):
+        _log("TempPhaseCommitSkippedDuplicate action={0} token={1}".format(action, token))
+        return True
+
+    target_doc = _find_doc_by_identity(
+        uiapp,
+        doc_key=record.get("doc_key"),
+        doc_runtime_id=record.get("doc_runtime_id"),
+    )
+    active_doc = _get_active_document(uiapp)
+    if target_doc is None and (record.get("doc_key") or _to_int(record.get("doc_runtime_id")) is not None):
+        _log("TempPhaseCommitSkippedUnavailableTarget action={0} token={1}".format(action, token))
+        return False
+    if target_doc is not None and (active_doc is None or not _same_document(target_doc, active_doc)):
+        _log("TempPhaseCommitSkippedInactiveTarget action={0} token={1}".format(action, token))
+        return False
+
+    UI = _get_ui()
+    if UI is None:
+        _log("TempPhaseCommitUnavailableNoUi action={0} token={1}".format(action, token))
+        return False
+    try:
+        try:
+            from Autodesk.Revit.UI import PostableCommand
+        except Exception:
+            PostableCommand = getattr(UI, "PostableCommand", None)
+        if PostableCommand is None:
+            _log("TempPhaseCommitUnavailableNoPostableCommand action={0} token={1}".format(action, token))
+            return False
+        member_name = "SynchronizeAndModifySettings" if action == "sync" else "Save"
+        command = getattr(PostableCommand, member_name, None)
+        command_id_lookup = getattr(getattr(UI, "RevitCommandId", None), "LookupPostableCommandId", None)
+        if command is None or not callable(command_id_lookup):
+            _log("TempPhaseCommitUnavailableNoCommand action={0} token={1}".format(action, token))
+            return False
+        command_id = command_id_lookup(command)
+        if command_id is None:
+            _log("TempPhaseCommitUnavailableNoCommandId action={0} token={1}".format(action, token))
+            return False
+        can_post = getattr(uiapp, "CanPostCommand", None)
+        if not callable(can_post) or not bool(can_post(command_id)):
+            _log("TempPhaseCommitUnavailableCannotPost action={0} token={1}".format(action, token))
+            return False
+    except Exception as ex:
+        _log("TempPhaseCommitLookupFailed action={0} token={1} {2}".format(action, token, _exception_text(ex)))
+        return False
+
+    operation = {
+        "action": action,
+        "doc_key": _safe_text(record.get("doc_key")),
+        "doc_runtime_id": _to_int(record.get("doc_runtime_id")),
+        "title": _safe_text(record.get("title")),
+        "generation": _to_int(record.get("generation")) or 0,
+        "requested_at": time.time(),
+        "expires_at": time.time() + COMMIT_GUARD_SEC,
+        "command_name": "PostableCommand.{0}".format(member_name),
+    }
+    state["commit_operations"][token] = operation
+    try:
+        uiapp.PostCommand(command_id)
+    except Exception as ex:
+        state["commit_operations"].pop(token, None)
+        _log("TempPhaseCommitPostFailed action={0} token={1} {2}".format(action, token, _exception_text(ex)))
+        return False
+    _save_state(state)
+    _log(
+        "TempPhaseCommitPostRequested action={0} command={1} token={2}".format(
+            action,
+            member_name,
+            token,
+        )
+    )
+    return True
+
+
+def _completion_succeeded(status):
+    value = _safe_text(status).upper()
+    return value in ("SUCCEEDED", "SUCCESS", "SUCCEED", "COMPLETED", "COMPLETE", "OK")
+
+
+def _commit_failure_message(action, status):
+    status_text = _safe_text(status).strip()
+    suffix = " ({0})".format(status_text) if status_text else ""
+    if action == "sync":
+        return (
+            "Synchronization with central was cancelled or failed{0}. The restored "
+            "document remains open and central was not updated.".format(suffix)
+        )
+    return (
+        "The restored file could not be saved{0}. The restored document remains open; "
+        "the temporary state was not committed.".format(suffix)
+    )
+
+
+def _attach_completion(app, event_name, handler):
+    if event_name == "DocumentSaved":
+        app.DocumentSaved += handler
+    elif event_name == "DocumentSavedAs":
+        app.DocumentSavedAs += handler
+    elif event_name == "DocumentSynchronizedWithCentral":
+        app.DocumentSynchronizedWithCentral += handler
+
+
+def _detach_completion(app, event_name, handler):
+    try:
+        if event_name == "DocumentSaved":
+            app.DocumentSaved -= handler
+        elif event_name == "DocumentSavedAs":
+            app.DocumentSavedAs -= handler
+        elif event_name == "DocumentSynchronizedWithCentral":
+            app.DocumentSynchronizedWithCentral -= handler
+    except Exception:
+        pass
+
+
+def _uninstall_completion_registration(registration):
+    app = registration.get("app") if isinstance(registration, dict) else None
+    for event_name, handler in list((registration.get("handlers") or {}).items() if isinstance(registration, dict) else []):
+        _detach_completion(app, event_name, handler)
+
+
+def _queue_pending_close(state, token, doc_key, doc_runtime_id, title, summary=None):
     pending = state.setdefault("pending_closes", {})
     existing = pending.get(token)
     if isinstance(existing, dict):
@@ -716,6 +1240,7 @@ def _queue_pending_close(state, token, doc_key, doc_runtime_id, title):
 
     generation = (_to_int(state.get("next_generation")) or 0) + 1
     state["next_generation"] = generation
+    summary = summary if isinstance(summary, dict) else {}
     pending[token] = {
         "doc_key": _safe_text(doc_key),
         "doc_runtime_id": _to_int(doc_runtime_id),
@@ -725,6 +1250,9 @@ def _queue_pending_close(state, token, doc_key, doc_runtime_id, title):
         "last_seen_at": time.time(),
         "attempts": 0,
         "next_try_at": time.time() + 0.05,
+        "doc_is_workshared": bool(summary.get("doc_is_workshared")),
+        "tracked_restore_count": _to_int(summary.get("tracked_restore_count")) or len(summary.get("tracked_restore_views") or []),
+        "untracked_tvp_count": _to_int(summary.get("untracked_tvp_count")) or len(summary.get("untracked_tvp_views") or []),
     }
 
 
@@ -754,6 +1282,22 @@ def _expire_repost_guards(state):
     for token, guard in list((state.get("repost_guards") or {}).items()):
         if not isinstance(guard, dict) or now > float(guard.get("expires_at", 0.0) or 0.0):
             state.get("repost_guards", {}).pop(token, None)
+    for token, operation in list((state.get("commit_operations") or {}).items()):
+        if not isinstance(operation, dict) or now > float(operation.get("expires_at", 0.0) or 0.0):
+            state.get("commit_operations", {}).pop(token, None)
+            action = _safe_text(operation.get("action")) if isinstance(operation, dict) else "save"
+            state.setdefault("commit_failures", {})[token] = {
+                "action": action,
+                "status": "TIMEOUT",
+                "message": _commit_failure_message(
+                    action,
+                    "TIMEOUT",
+                ),
+            }
+            _log("TempPhaseCommitFailed action={0} token={1} status=TIMEOUT".format(action, token))
+    for token, pending in list((state.get("pending_commit_closes") or {}).items()):
+        if not isinstance(pending, dict) or now > float(pending.get("expires_at", 0.0) or 0.0):
+            state.get("pending_commit_closes", {}).pop(token, None)
 
 
 def _get_state():
@@ -769,12 +1313,18 @@ def _get_state():
         state = {}
     state.setdefault("pending_closes", {})
     state.setdefault("repost_guards", {})
+    state.setdefault("commit_operations", {})
+    state.setdefault("pending_commit_closes", {})
+    state.setdefault("commit_failures", {})
     state.setdefault("next_generation", 0)
     state.setdefault("last_idling_at", 0.0)
     if not isinstance(state.get("pending_closes"), dict):
         state["pending_closes"] = {}
     if not isinstance(state.get("repost_guards"), dict):
         state["repost_guards"] = {}
+    for key in ("commit_operations", "pending_commit_closes", "commit_failures"):
+        if not isinstance(state.get(key), dict):
+            state[key] = {}
     return state
 
 
@@ -1122,6 +1672,15 @@ def _is_doc_supported(doc):
     except Exception:
         pass
     return True
+
+
+def _doc_is_workshared(doc):
+    if not _is_doc_valid(doc):
+        return False
+    try:
+        return bool(doc.IsWorkshared)
+    except Exception:
+        return False
 
 
 def _get_db():
