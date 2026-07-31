@@ -562,13 +562,71 @@ def _show_close_decision(summary, record):
         except Exception:
             pass
         result = dialog.Show()
-        if result == command_link_id:
+
+        # ``AddCommandLink`` accepts a TaskDialogCommandLinkId, but Show()
+        # returns a TaskDialogResult.  The two enum types happen to have the
+        # same member name, but they are not the same value in the Revit API.
+        # Comparing the command-link id directly therefore classified an
+        # actual "Close File Now" click as a cancellation.
+        result_enum = getattr(UI, "TaskDialogResult", None)
+        expected_result = getattr(result_enum, "CommandLink1", None)
+        selected_close = _is_close_command_result(
+            result,
+            expected_result,
+            command_link_id,
+        )
+        _log(
+            "CloseDecisionResult result={0} expected={1} commandLinkId={2} "
+            "selectedClose={3}".format(
+                _safe_text(result),
+                _safe_text(expected_result),
+                _safe_text(command_link_id),
+                selected_close,
+            )
+        )
+        if selected_close:
+            _log("CloseDecisionCloseSelected")
             return "close"
+        _log("CloseDecisionCancelSelected")
         return "cancel"
     except Exception as ex:
         _log("CloseDecisionDialogFailed {0}".format(_exception_text(ex)))
         _show_alert(TITLE, main_content + "\n\nClose the document manually if needed.")
         return "cancel"
+
+
+def _is_close_command_result(result, expected_result=None, command_link_id=None):
+    """Return True only for the first TaskDialog command link.
+
+    Revit returns ``TaskDialogResult.CommandLink1`` from ``Show`` while the
+    command link was registered with ``TaskDialogCommandLinkId.CommandLink1``.
+    Keep a textual fallback for older Python.NET enum wrappers, but never
+    treat CommandLink2 or the common Cancel button as a close request.
+    """
+    for expected in (expected_result,):
+        if expected is None:
+            continue
+        try:
+            if result == expected:
+                return True
+        except Exception:
+            pass
+
+    result_text = _safe_text(result).strip().lower()
+    if not result_text or "commandlink2" in result_text:
+        return False
+    if "cancel" in result_text:
+        return False
+    if "commandlink1" in result_text:
+        return True
+
+    # Some test/runtime wrappers expose only a comparable command-link id.
+    if command_link_id is not None:
+        try:
+            return result == command_link_id
+        except Exception:
+            return False
+    return False
 
 
 def _post_close_once(uiapp, state, token, record):

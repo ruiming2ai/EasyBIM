@@ -33,6 +33,14 @@ class TempPhaseConversionTests(unittest.TestCase):
             self.assertNotIn("TempPhaseController", text, str(hook_path))
             self.assertNotIn("Assembly.Load", text, str(hook_path))
 
+        startup = (ROOT / "startup.py").read_text(encoding="utf-8")
+        self.assertIn("temp_phase_save.install", startup)
+
+        app_idling = (ROOT / "hooks" / "app-idling.py").read_text(encoding="utf-8")
+        self.assertIn("temp_phase_save.handle_app_idling", app_idling)
+        doc_closed = (ROOT / "hooks" / "doc-closed.py").read_text(encoding="utf-8")
+        self.assertIn("temp_phase_save.handle_doc_closed", doc_closed)
+
     def test_command_bundle_has_no_controller_preload(self):
         metadata = (BUTTON_ROOT / "bundle.yaml").read_text(encoding="utf-8")
         self.assertIn("min_revit_version: 2025", metadata)
@@ -42,6 +50,8 @@ class TempPhaseConversionTests(unittest.TestCase):
 
     def test_command_button_is_python_based_without_controller_bridge(self):
         self.assertFalse((BUTTON_ROOT / "script.cs").exists())
+        self.assertTrue((BUTTON_ROOT / "icon.png").exists())
+        self.assertTrue((BUTTON_ROOT / "icon.dark.png").exists())
 
         script = (BUTTON_ROOT / "script.py").read_text(encoding="utf-8")
         self.assertIn("from easybim import temp_phase_view", script)
@@ -67,6 +77,21 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("TempPhaseRestoreCommitted", close_runtime)
         self.assertIn("TempPhaseCloseReposted", close_runtime)
         self.assertIn("log_hook_context", close_runtime)
+
+        save_runtime = (ROOT / "lib" / "easybim" / "temp_phase_save.py").read_text(
+            encoding="utf-8"
+        )
+        for handler in (
+            "handle_document_saving",
+            "handle_document_saved",
+            "handle_app_idling",
+            "install",
+        ):
+            self.assertIn("def " + handler, save_runtime)
+        self.assertIn("DocumentSaving", save_runtime)
+        self.assertIn("DocumentSavingAs", save_runtime)
+        self.assertIn("PostableCommand.Save", save_runtime)
+        self.assertIn("PostableCommand.SaveAs", save_runtime)
 
         diagnostics = (
             TEMP_PHASE_ROOT / "TempPhase.RevitCommon" / "TempPhaseDiagnostics.cs"

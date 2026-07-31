@@ -194,6 +194,48 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
         self.assertFalse(state["repost_guards"])
         self.assertFalse(self.view_state["view_sessions"])
 
+    def test_close_dialog_distinguishes_result_enum_from_command_link_id(self):
+        command_link_one = object()
+        command_link_two = object()
+        result_command_link_one = object()
+
+        class FakeDialog(object):
+            def __init__(self, title):
+                self.title = title
+
+            def AddCommandLink(self, link_id, text):
+                return None
+
+            def Show(self):
+                return result_command_link_one
+
+        class FakeUi(object):
+            TaskDialogCommandLinkId = type(
+                "TaskDialogCommandLinkId",
+                (object,),
+                {"CommandLink1": command_link_one, "CommandLink2": command_link_two},
+            )
+            TaskDialogResult = type(
+                "TaskDialogResult",
+                (object,),
+                {"CommandLink1": result_command_link_one},
+            )
+            TaskDialogCommonButtons = type(
+                "TaskDialogCommonButtons", (object,), {"Cancel": object()}
+            )
+
+            @staticmethod
+            def TaskDialog(title):
+                return FakeDialog(title)
+
+        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi):
+            decision = self.runtime._show_close_decision(
+                {"dialog_view_lines": [], "doc_title": "sample.rvt"},
+                {"title": "sample.rvt"},
+            )
+
+        self.assertEqual("close", decision)
+
     def test_restore_summary_uses_one_transaction_and_clears_session(self):
         class FakeTransaction(object):
             def __init__(self, doc, name):
