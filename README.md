@@ -15,6 +15,11 @@ Build and stage the controller for the Revit installation being tested:
     .\build\Build-TempPhase.ps1 -RevitVersion 2026 `
         -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
 
+When `-ExtensionRoot` is omitted, the build script uses
+`C:\Users\RML\Documents\GitHub\EasyBIM.extension`. That folder must be the exact
+EasyBIM extension root discovered by pyRevit; the script intentionally refuses
+to stage into any extension whose metadata is not named EasyBIM.
+
 When the live extension is the WSL-backed clone, use `-ArtifactPath` with the
 freshly built versioned DLL. This stages into the exact path pyRevit loads:
 
@@ -23,10 +28,11 @@ freshly built versioned DLL. This stages into the exact path pyRevit loads:
         -ArtifactPath "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM\src\TempPhase\TempPhase.Revit2025\bin\Release\net8.0-windows\TempPhaseController.Revit2025.dll"
 
 Only the matching TempPhaseController.dll should be present in the live
-pyRevit extension. The build preflight verifies the live bundle, controller
-assembly identity, and absence of Revit API DLLs beside the module. Because the
-controller DLL is generated and gitignored, the exact extension copy discovered
-by pyRevit must be supplied when it differs from this checkout.
+pyRevit extension. The build script stages it into both the command bundle
+`bin` folder and the extension root `bin` folder so the command wrapper and C#
+hooks resolve the same controller. Use `-VerifyOnly` before opening Revit to
+print the live package path and both detected assembly identities without
+building or copying files.
 
 If the button opens a blank pyRevit window, close Revit, clear that year's
 generated pyRevit extension assembly/cache, rebuild and stage the matching
