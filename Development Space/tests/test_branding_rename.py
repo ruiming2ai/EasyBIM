@@ -27,7 +27,16 @@ class BrandingRenameTests(unittest.TestCase):
             universal_newlines=True,
         )
         forbidden = _forbidden_terms()
-        binary_suffixes = {".dark.png", ".png", ".ico", ".jpg", ".jpeg", ".gif", ".pyc"}
+        binary_suffixes = {
+            ".dark.png",
+            ".png",
+            ".ico",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".pyc",
+            ".dll",
+        }
         binary_file_names = {".DS_Store"}
         failures = []
 
