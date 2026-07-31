@@ -31,6 +31,40 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("modules:", metadata)
         self.assertIn("TempPhaseController.dll", metadata)
 
+    def test_command_wrapper_reports_module_load_failures(self):
+        script = (BUTTON_ROOT / "script.cs").read_text(encoding="utf-8")
+        self.assertIn("FindControllerAssembly", script)
+        self.assertIn("ControllerModuleMissing", script)
+        self.assertIn("ControllerModuleWrongYearLoaded", script)
+        self.assertIn("TaskDialog.Show", script)
+        self.assertIn("TargetInvocationException", script)
+
+        diagnostics = (
+            TEMP_PHASE_ROOT / "TempPhase.RevitCommon" / "TempPhaseDiagnostics.cs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ValidateControllerForHost", diagnostics)
+        self.assertIn("VersionNumber", diagnostics)
+        self.assertIn("AssemblyName", diagnostics)
+        self.assertIn("ReportCommandException", diagnostics)
+        self.assertIn("TaskDialog.Show", diagnostics)
+
+    def test_manual_command_emits_startup_and_picker_diagnostics(self):
+        controller = (
+            TEMP_PHASE_ROOT
+            / "TempPhase.RevitCommon"
+            / "TempPhaseController.cs"
+        ).read_text(encoding="utf-8")
+        service = (
+            TEMP_PHASE_ROOT
+            / "TempPhase.RevitCommon"
+            / "TempPhaseService.cs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("LogCommandStart", controller)
+        self.assertIn("ManualCommandDispatch", controller)
+        self.assertIn("ManualPhasePickerOpening", service)
+        self.assertIn("ManualPhasePickerClosed", service)
+        self.assertIn("ManualApplyTransactionCommitted", service)
+
     def test_controller_uses_typed_close_command_and_per_document_state(self):
         service = (
             TEMP_PHASE_ROOT
@@ -66,6 +100,11 @@ class TempPhaseConversionTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('ValidateSet("2025", "2026")', script)
+        self.assertIn("ExtensionRoot", script)
+        self.assertIn("bundle.yaml", script)
+        self.assertIn("script.cs", script)
+        self.assertIn("GetAssemblyName", script)
+        self.assertIn("RevitAPI", script)
         self.assertIn("TempPhaseController.dll", script)
 
 

@@ -10,9 +10,22 @@ the typed PostableCommand.Close command when requested.
 
 Build and stage the controller for the Revit installation being tested:
 
-    .\build\Build-TempPhase.ps1 -RevitVersion 2025
-    .\build\Build-TempPhase.ps1 -RevitVersion 2026
+    .\build\Build-TempPhase.ps1 -RevitVersion 2025 `
+        -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
+    .\build\Build-TempPhase.ps1 -RevitVersion 2026 `
+        -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
 
 Only the matching TempPhaseController.dll should be present in the live
-pyRevit extension. The original standalone add-in remains the
-fallback until runtime parity is verified in both Revit versions.
+pyRevit extension. The build preflight verifies the live bundle, controller
+assembly identity, and absence of Revit API DLLs beside the module. Because the
+controller DLL is generated and gitignored, the exact extension copy discovered
+by pyRevit must be supplied when it differs from this checkout.
+
+If the button opens a blank pyRevit window, close Revit, clear that year's
+generated pyRevit extension assembly/cache, rebuild and stage the matching
+module, then reload pyRevit. The command logs its Revit version, loaded
+extension/controller paths, loader/type-load failures, picker events, and
+transaction completion at `%APPDATA%\EasyBIM\Temp Phase\logs\events.log` and
+shows a Revit TaskDialog for missing or wrong-year modules. The original
+standalone add-in remains the fallback until runtime parity is verified in both
+Revit versions.
