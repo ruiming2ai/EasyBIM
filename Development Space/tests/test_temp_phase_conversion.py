@@ -109,6 +109,57 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("PythonApplyTransactionCommitted", runtime)
         self.assertIn("PythonApplySuccess", runtime)
 
+    def test_manual_picker_is_wpf_first_with_winforms_fallback(self):
+        runtime = (ROOT / "lib" / "easybim" / "temp_phase_view.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_show_phase_picker_wpf", runtime)
+        self.assertIn("_show_phase_picker_winforms", runtime)
+        self.assertIn("_WPF_UNAVAILABLE", runtime)
+        self.assertIn("PresentationFramework", runtime)
+        self.assertIn("TextWrapping", runtime)
+        self.assertIn('ok_button.Content = "Apply"', runtime)
+        self.assertIn('cancel_button.Content = "Cancel"', runtime)
+
+    def test_close_warning_uses_compact_rich_dialog_with_native_fallback(self):
+        dialog = (ROOT / "lib" / "easybim" / "temp_phase_dialog.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Please Sync or Save the model again to remove all the Temporary Phases", dialog)
+        self.assertIn("and Views Settings before closing!!", dialog)
+        self.assertIn("build_warning_runs", dialog)
+        self.assertIn("WPFWindow", dialog)
+        self.assertIn("temp_phase_warning.xaml", dialog)
+        self.assertIn("warning_icon_image", dialog)
+        self.assertIn("warning_icon_fallback", dialog)
+        self.assertIn("SystemIcons.Warning", dialog)
+        self.assertIn("\\u26a0", dialog)
+        self.assertIn("IsDefault", dialog)
+        self.assertIn("IsCancel", dialog)
+
+        close_runtime = (ROOT / "lib" / "easybim" / "temp_phase_close.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("show_close_decision", close_runtime)
+        self.assertIn("TempPhaseDialogWpfUnavailable", close_runtime)
+        self.assertIn("TaskDialogIcon", close_runtime)
+        self.assertIn("MainInstruction = compact_message", close_runtime)
+        self.assertIn("MainContent = restored_message", close_runtime)
+
+        picker_xaml = (ROOT / "lib" / "easybim" / "ui" / "temp_phase_picker.xaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('x:Name="phase_cb"', picker_xaml)
+        self.assertIn('x:Name="apply_btn"', picker_xaml)
+        self.assertIn('x:Name="cancel_btn"', picker_xaml)
+
+        warning_xaml = (ROOT / "lib" / "easybim" / "ui" / "temp_phase_warning.xaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('x:Name="warning_icon_image"', warning_xaml)
+        self.assertIn('x:Name="warning_icon_fallback"', warning_xaml)
+        self.assertIn('x:Name="warning_message"', warning_xaml)
+
     def test_python_close_runtime_uses_per_document_state_and_native_close(self):
         runtime = (ROOT / "lib" / "easybim" / "temp_phase_close.py").read_text(
             encoding="utf-8"

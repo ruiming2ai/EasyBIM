@@ -20,6 +20,11 @@ except Exception:
 TITLE = "Temp Phase"
 STATE_ENVVAR = "EASYBIM_TEMP_PHASE_VIEW_STATE"
 
+# ``None`` is a valid result from a picker (the user cancelled), so use a
+# private sentinel to distinguish a cancelled WPF dialog from a WPF load
+# failure.  The latter is the only case that should fall back to WinForms.
+_WPF_UNAVAILABLE = object()
+
 
 class _NullLogger(object):
     def debug(self, *args, **kwargs):
@@ -208,6 +213,314 @@ def _show_phase_picker(doc, view, current_phase_id):
         _show_alert(TITLE, "No phases are available in this document.")
         return None
 
+    # WPF gives the phase picker the same visual language as the compact
+    # close-warning dialog.  It is loaded lazily so importing this module does
+    # not require a WPF-capable engine; older hosts and CPython engines can
+    # still use the WinForms implementation below.
+    wpf_result = _show_phase_picker_wpf(phases, view, current_phase_id)
+    if wpf_result is not _WPF_UNAVAILABLE:
+        return wpf_result
+
+    return _show_phase_picker_winforms(phases, view, current_phase_id)
+
+
+def _show_phase_picker_wpf(phases, view, current_phase_id):
+    """Show the phase picker through pyRevit's XAML/WPFWindow first.
+
+    ``forms.WPFWindow`` uses pyRevit's supported XAML loader and is more
+    reliable than constructing every control from Python in IronPython.  The
+    direct WPF implementation remains the second fallback for hosts where
+    pyRevit's forms module is not available (for example isolated tests or a
+    non-pyRevit CPython process), and WinForms remains the final fallback in
+    ``_show_phase_picker``.
+    """
+    wpf_window_result = _show_phase_picker_wpfwindow(
+        phases,
+        view,
+        current_phase_id,
+    )
+    if wpf_window_result is not _WPF_UNAVAILABLE:
+        return wpf_window_result
+    return _show_phase_picker_wpf_direct(phases, view, current_phase_id)
+
+
+def _show_phase_picker_wpfwindow(phases, view, current_phase_id):
+    """Show the picker with pyRevit's ``forms.WPFWindow`` XAML host.
+
+    Returns the selected phase id, ``None`` for a user cancellation, or the
+    private unavailable sentinel when pyRevit/WPF cannot load.  The sentinel
+    lets callers distinguish a normal Cancel from a host-loading failure.
+    """
+    try:
+        import os
+        from pyrevit import forms
+    except Exception as ex:
+        _log("PythonPhasePickerWpfWindowUnavailable {0}".format(_exception_text(ex)))
+        return _WPF_UNAVAILABLE
+
+    xaml_path = os.path.join(os.path.dirname(__file__), "ui", "temp_phase_picker.xaml")
+    result = {"selected_id": None, "accepted": False}
+    phase_rows = list(phases or [])
+    selected_index = 0
+    for index, phase_data in enumerate(phase_rows):
+        try:
+            if int(phase_data.get("id")) == int(current_phase_id):
+                selected_index = index
+                break
+        except Exception:
+            continue
+
+    class _TempPhasePickerWindow(forms.WPFWindow):
+        def __init__(self):
+            forms.WPFWindow.__init__(self, xaml_path)
+            self.Topmost = True
+            self.view_label.Text = "Active view: {0}".format(
+                _view_display_name(view)
+            )
+            self._phase_ids = []
+            for phase_data in phase_rows:
+                phase_id = int(phase_data.get("id"))
+                self._phase_ids.append(phase_id)
+                self.phase_cb.Items.Add(
+                    "{0} ({1})".format(phase_data.get("name", ""), phase_id)
+                )
+            if self._phase_ids:
+                self.phase_cb.SelectedIndex = selected_index
+            else:
+                self.phase_cb.SelectedIndex = -1
+                self.apply_btn.IsEnabled = False
+            self.apply_btn.Click += self._on_apply
+            self.cancel_btn.Click += self._on_cancel
+
+        def _selected_index(self):
+            try:
+                return int(self.phase_cb.SelectedIndex)
+            except Exception:
+                return -1
+
+        def _on_apply(self, sender, args):
+            del sender, args
+            index = self._selected_index()
+            if index < 0 or index >= len(self._phase_ids):
+                return
+            result["selected_id"] = self._phase_ids[index]
+            result["accepted"] = True
+            self.Close()
+
+        def _on_cancel(self, sender, args):
+            del sender, args
+            result["selected_id"] = None
+            result["accepted"] = False
+            self.Close()
+
+    try:
+        window = _TempPhasePickerWindow()
+        window.ShowDialog()
+    except Exception as ex:
+        _log("PythonPhasePickerWpfWindowUnavailable {0}".format(_exception_text(ex)))
+        return _WPF_UNAVAILABLE
+
+    _log(
+        "PythonPhasePickerWpfWindowShown xaml={0} accepted={1}".format(
+            _safe_text(xaml_path),
+            bool(result.get("accepted")),
+        )
+    )
+
+    if result.get("accepted"):
+        return result.get("selected_id")
+    return None
+
+
+def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
+    """Show the phase picker with basic, netfx-compatible WPF controls.
+
+    Returns the selected phase id, ``None`` for an intentional cancellation,
+    or ``_WPF_UNAVAILABLE`` if WPF cannot be loaded/constructed.  Keeping the
+    unavailable result separate prevents a WPF load failure from silently
+    turning into two dialogs while preserving the existing WinForms fallback.
+    """
+    try:
+        import clr
+
+        clr.AddReference("PresentationFramework")
+        clr.AddReference("PresentationCore")
+        clr.AddReference("WindowsBase")
+
+        from System.Windows import (
+            CornerRadius,
+            HorizontalAlignment,
+            ResizeMode,
+            SizeToContent,
+            Thickness,
+            TextWrapping,
+            VerticalAlignment,
+            Window,
+            WindowStartupLocation,
+        )
+        from System.Windows.Controls import (
+            Border,
+            Button,
+            ComboBox,
+            Orientation,
+            StackPanel,
+            TextBlock,
+        )
+        from System.Windows.Media import Brushes, FontWeights
+
+        window = Window()
+        window.Title = "Select Temporary Phase for view"
+        window.WindowStartupLocation = WindowStartupLocation.CenterScreen
+        window.ResizeMode = ResizeMode.NoResize
+        window.SizeToContent = SizeToContent.WidthAndHeight
+        window.MinWidth = 470
+        window.MaxWidth = 680
+        window.ShowInTaskbar = False
+        window.Topmost = True
+        window.Background = getattr(Brushes, "Gainsboro", Brushes.White)
+
+        shell = Border()
+        shell.Background = Brushes.White
+        shell.BorderBrush = getattr(Brushes, "LightGray", Brushes.Silver)
+        shell.BorderThickness = Thickness(1)
+        shell.CornerRadius = CornerRadius(8)
+        shell.Padding = Thickness(24, 20, 24, 20)
+
+        root = StackPanel()
+
+        header = StackPanel()
+        header.Orientation = Orientation.Horizontal
+
+        accent = Border()
+        accent.Width = 6
+        accent.Height = 54
+        accent.CornerRadius = CornerRadius(3)
+        accent.Background = getattr(Brushes, "SteelBlue", Brushes.Blue)
+        accent.Margin = Thickness(0, 0, 12, 0)
+        header.Children.Add(accent)
+
+        header_text = StackPanel()
+        badge = TextBlock()
+        badge.Text = "TEMP PHASE"
+        badge.FontSize = 10
+        badge.FontWeight = FontWeights.Bold
+        badge.Foreground = getattr(Brushes, "SteelBlue", Brushes.Blue)
+        header_text.Children.Add(badge)
+
+        heading = TextBlock()
+        heading.Text = "Select Temporary Phase for view"
+        heading.FontSize = 20
+        heading.FontWeight = FontWeights.SemiBold
+        heading.Foreground = getattr(Brushes, "DarkSlateGray", Brushes.Black)
+        header_text.Children.Add(heading)
+
+        header.Children.Add(header_text)
+        root.Children.Add(header)
+
+        view_label = TextBlock()
+        view_label.Text = "Active view: {0}".format(_view_display_name(view))
+        view_label.Margin = Thickness(18, 8, 0, 18)
+        view_label.FontSize = 12
+        view_label.Foreground = getattr(Brushes, "DimGray", Brushes.Gray)
+        view_label.TextWrapping = TextWrapping.Wrap
+        root.Children.Add(view_label)
+
+        prompt = TextBlock()
+        prompt.Text = "Choose the phase to apply temporarily:"
+        prompt.FontSize = 12
+        prompt.Foreground = getattr(Brushes, "DarkSlateGray", Brushes.Black)
+        prompt.Margin = Thickness(0, 0, 0, 6)
+        root.Children.Add(prompt)
+
+        combo = ComboBox()
+        combo.MinWidth = 420
+        combo.Height = 32
+        combo.Padding = Thickness(8, 2, 8, 2)
+        combo.VerticalContentAlignment = VerticalAlignment.Center
+        combo.Margin = Thickness(0, 0, 0, 20)
+        phase_ids = []
+        selected_index = 0
+        for index, phase_data in enumerate(phases):
+            phase_ids.append(int(phase_data["id"]))
+            combo.Items.Add(
+                "{0} ({1})".format(phase_data["name"], phase_data["id"])
+            )
+            if int(phase_data["id"]) == int(current_phase_id):
+                selected_index = index
+        if phase_ids:
+            combo.SelectedIndex = selected_index
+        root.Children.Add(combo)
+
+        buttons = StackPanel()
+        buttons.Orientation = Orientation.Horizontal
+        buttons.HorizontalAlignment = HorizontalAlignment.Right
+
+        choice_holder = {"accepted": False}
+
+        ok_button = Button()
+        ok_button.Content = "Apply"
+        ok_button.MinWidth = 96
+        ok_button.Height = 32
+        ok_button.Background = getattr(Brushes, "SteelBlue", Brushes.Blue)
+        ok_button.Foreground = Brushes.White
+        ok_button.BorderBrush = getattr(Brushes, "SteelBlue", Brushes.Blue)
+        ok_button.IsDefault = True
+
+        cancel_button = Button()
+        cancel_button.Content = "Cancel"
+        cancel_button.MinWidth = 96
+        cancel_button.Height = 32
+        cancel_button.Margin = Thickness(10, 0, 0, 0)
+        cancel_button.Background = Brushes.White
+        cancel_button.Foreground = getattr(Brushes, "DimGray", Brushes.Gray)
+        cancel_button.BorderBrush = getattr(Brushes, "Silver", Brushes.Gray)
+        cancel_button.IsCancel = True
+
+        def accept(sender, args):
+            del sender, args
+            if int(combo.SelectedIndex) < 0:
+                return
+            choice_holder["accepted"] = True
+            try:
+                window.DialogResult = True
+            except Exception:
+                window.Close()
+
+        def cancel(sender, args):
+            del sender, args
+            choice_holder["accepted"] = False
+            try:
+                window.DialogResult = False
+            except Exception:
+                window.Close()
+
+        ok_button.Click += accept
+        cancel_button.Click += cancel
+        buttons.Children.Add(ok_button)
+        buttons.Children.Add(cancel_button)
+        root.Children.Add(buttons)
+
+        shell.Child = root
+        window.Content = shell
+        window.ShowDialog()
+        if not choice_holder["accepted"]:
+            _log("PythonPhasePickerWpfDirectShown accepted=False")
+            return None
+
+        selected = int(combo.SelectedIndex)
+        if selected < 0 or selected >= len(phase_ids):
+            _log("PythonPhasePickerWpfDirectShown accepted=False invalidSelection=True")
+            return None
+        _log("PythonPhasePickerWpfDirectShown accepted=True")
+        return int(phase_ids[selected])
+    except Exception as ex:
+        _log("PythonPhasePickerWpfUnavailable {0}".format(_exception_text(ex)))
+        return _WPF_UNAVAILABLE
+
+
+def _show_phase_picker_winforms(phases, view, current_phase_id):
+    """Show the legacy picker when WPF is unavailable in the host engine."""
+
     try:
         import clr
 
@@ -275,12 +588,15 @@ def _show_phase_picker(doc, view, current_phase_id):
 
     result = form.ShowDialog()
     if result != WinForms.DialogResult.OK:
+        _log("PythonPhasePickerWinFormsShown accepted=False")
         return None
 
     index = int(combo.SelectedIndex)
     if index < 0 or index >= len(phase_ids):
+        _log("PythonPhasePickerWinFormsShown accepted=False invalidSelection=True")
         return None
 
+    _log("PythonPhasePickerWinFormsShown accepted=True")
     return int(phase_ids[index])
 
 
