@@ -4,12 +4,18 @@ using System.Reflection;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using PyRevitLabs.PyRevit.Runtime.Shared;
 
 namespace EasyBIM.TempPhaseCommand
 {
     [Transaction(TransactionMode.Manual)]
     public class Script : IExternalCommand
     {
+        // pyRevit fills this field before invoking Execute. Assembly.Location is
+        // empty for the in-memory command assembly, so this is the reliable way
+        // to recover the physical command bundle path.
+        public ExecParams PyRevitExecParams;
+
         public Result Execute(
             ExternalCommandData commandData,
             ref string message,
@@ -21,13 +27,19 @@ namespace EasyBIM.TempPhaseCommand
             {
                 entryAssemblyPath = Assembly.GetExecutingAssembly().Location;
                 string version = GetRevitVersion(commandData);
+                string scriptPath = GetScriptPath();
+                string bundleDirectory = GetBundleDirectory(scriptPath);
                 Log(
                     "PyRevitCommandStart"
                     + " revitVersion=" + version
                     + " entryAssembly=" + entryAssemblyPath
-                    + " entryAssemblyDirectory=" + GetDirectory(entryAssemblyPath));
+                    + " entryAssemblyDirectory=" + GetDirectory(entryAssemblyPath)
+                    + " scriptPath=" + scriptPath
+                    + " commandBundle=" + GetCommandBundle()
+                    + " commandExtension=" + GetCommandExtension()
+                    + " bundleDirectory=" + bundleDirectory);
 
-                Assembly controllerAssembly = FindControllerAssembly(version);
+                Assembly controllerAssembly = FindControllerAssembly(version, bundleDirectory);
                 if (controllerAssembly == null)
                 {
                     string error = "The Temp Phase controller module is not loaded for Revit " + version + ".";
@@ -98,7 +110,7 @@ namespace EasyBIM.TempPhaseCommand
             }
         }
 
-        private static Assembly FindControllerAssembly(string version)
+        private static Assembly FindControllerAssembly(string version, string bundleDirectory)
         {
             string expectedName = "TempPhaseController.Revit" + version;
             Assembly mismatchedController = null;
@@ -134,6 +146,32 @@ namespace EasyBIM.TempPhaseCommand
                 Log("ControllerAssemblyLoadException expectedAssembly=" + expectedName + " " + ExceptionText(ex));
             }
 
+            string modulePath = GetModulePath(bundleDirectory);
+            Log(
+                "ModuleCandidatePath"
+                + " path=" + modulePath
+                + " exists=" + File.Exists(modulePath));
+
+            if (File.Exists(modulePath))
+            {
+                try
+                {
+                    Assembly loadedFromBundle = Assembly.LoadFrom(modulePath);
+                    Log(
+                        "ControllerAssemblyLoadFromSuccess"
+                        + " assembly=" + loadedFromBundle.GetName().Name
+                        + " controllerPath=" + loadedFromBundle.Location);
+                    return loadedFromBundle;
+                }
+                catch (Exception ex)
+                {
+                    Log(
+                        "ControllerAssemblyLoadFromException"
+                        + " path=" + modulePath
+                        + " " + ExceptionText(ex));
+                }
+            }
+
             if (mismatchedController != null)
             {
                 Log(
@@ -143,6 +181,63 @@ namespace EasyBIM.TempPhaseCommand
             }
 
             return mismatchedController;
+        }
+
+        private string GetScriptPath()
+        {
+            return PyRevitExecParams == null
+                ? string.Empty
+                : (PyRevitExecParams.ScriptPath ?? string.Empty);
+        }
+
+        private string GetCommandBundle()
+        {
+            return PyRevitExecParams == null
+                ? string.Empty
+                : (PyRevitExecParams.CommandBundle ?? string.Empty);
+        }
+
+        private string GetCommandExtension()
+        {
+            return PyRevitExecParams == null
+                ? string.Empty
+                : (PyRevitExecParams.CommandExtension ?? string.Empty);
+        }
+
+        private static string GetBundleDirectory(string scriptPath)
+        {
+            if (string.IsNullOrWhiteSpace(scriptPath))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return File.Exists(scriptPath)
+                    ? (Path.GetDirectoryName(scriptPath) ?? string.Empty)
+                    : scriptPath;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string GetModulePath(string bundleDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(bundleDirectory))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return Path.Combine(bundleDirectory, "bin", "TempPhaseController.dll");
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         private static string GetRevitVersion(ExternalCommandData commandData)

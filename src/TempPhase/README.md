@@ -12,6 +12,13 @@ loads a Windows extension clone, pass that clone explicitly:
     .\build\Build-TempPhase.ps1 -RevitVersion 2026 `
         -ExtensionRoot "C:\Users\RML\Documents\GitHub\EasyBIM.extension"
 
+For a WSL-backed extension root, build the artifact with the .NET SDK and pass
+it explicitly so Windows PowerShell does not try to build through the UNC path:
+
+    .\build\Build-TempPhase.ps1 -RevitVersion 2025 `
+        -ExtensionRoot "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM" `
+        -ArtifactPath "\\wsl.localhost\Ubuntu\home\rml\repos\EasyBIM\src\TempPhase\TempPhase.Revit2025\bin\Release\net8.0-windows\TempPhaseController.Revit2025.dll"
+
 The build produces a versioned controller artifact and stages the selected host
 version as TempPhaseController.dll beside the pyRevit command. Only the staged
 artifact for the active Revit installation should be present in a live extension.

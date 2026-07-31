@@ -6,6 +6,8 @@ param(
 
     [string] $ExtensionRoot,
 
+    [string] $ArtifactPath,
+
     [switch] $NoStage
 )
 
@@ -16,7 +18,7 @@ if ([string]::IsNullOrWhiteSpace($ExtensionRoot)) {
 }
 
 try {
-    $ExtensionRoot = (Resolve-Path -LiteralPath $ExtensionRoot -ErrorAction Stop).Path
+    $ExtensionRoot = (Resolve-Path -LiteralPath $ExtensionRoot -ErrorAction Stop).ProviderPath
 }
 catch {
     throw "The EasyBIM extension root does not exist: $ExtensionRoot"
@@ -71,35 +73,47 @@ function Assert-DeploymentBundle([string] $targetBundleDir, [string] $targetStag
     }
 }
 
-if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
-    throw "Temp Phase project not found: $project"
-}
-
-$dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-$dotnetPath = if ($dotnetCommand) {
-    $dotnetCommand.Source
-} else {
-    Join-Path ${env:ProgramFiles} "dotnet\dotnet.exe"
-}
-
-if (-not (Test-Path -LiteralPath $dotnetPath -PathType Leaf)) {
-    throw "dotnet SDK was not found. Install the .NET 8 SDK before building."
-}
-
-Write-Host ("Building Temp Phase controller for Revit {0}" -f $RevitVersion)
 Write-Host ("Source repository: {0}" -f $repoRoot)
 Write-Host ("Deployment root: {0}" -f $ExtensionRoot)
 
-$buildOutput = & $dotnetPath build $project --configuration $configuration --nologo 2>&1
-$buildExitCode = $LASTEXITCODE
-$buildOutput | ForEach-Object { Write-Host $_ }
-if ($buildExitCode -ne 0) {
-    throw "Temp Phase Revit $RevitVersion build failed."
+if ([string]::IsNullOrWhiteSpace($ArtifactPath)) {
+    if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
+        throw "Temp Phase project not found: $project"
+    }
+
+    $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+    $dotnetPath = if ($dotnetCommand) {
+        $dotnetCommand.Source
+    } else {
+        Join-Path ${env:ProgramFiles} "dotnet\dotnet.exe"
+    }
+
+    if (-not (Test-Path -LiteralPath $dotnetPath -PathType Leaf)) {
+        throw "dotnet SDK was not found. Install the .NET 8 SDK before building."
+    }
+
+    Write-Host ("Building Temp Phase controller for Revit {0}" -f $RevitVersion)
+    $buildOutput = & $dotnetPath build $project --configuration $configuration --nologo 2>&1
+    $buildExitCode = $LASTEXITCODE
+    $buildOutput | ForEach-Object { Write-Host $_ }
+    if ($buildExitCode -ne 0) {
+        throw "Temp Phase Revit $RevitVersion build failed."
+    }
+
+    $artifact = Join-Path $repoRoot ("src\TempPhase\TempPhase.Revit{0}\bin\{1}\net8.0-windows\TempPhaseController.Revit{0}.dll" -f $RevitVersion, $configuration)
+}
+else {
+    try {
+        $artifact = (Resolve-Path -LiteralPath $ArtifactPath -ErrorAction Stop).ProviderPath
+    }
+    catch {
+        throw "The prebuilt Temp Phase artifact does not exist: $ArtifactPath"
+    }
+    Write-Host ("Using prebuilt Temp Phase artifact: {0}" -f $artifact)
 }
 
-$artifact = Join-Path $repoRoot ("src\TempPhase\TempPhase.Revit{0}\bin\{1}\net8.0-windows\TempPhaseController.Revit{0}.dll" -f $RevitVersion, $configuration)
 if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
-    throw "Build completed but expected artifact was not found: $artifact"
+    throw "Temp Phase artifact was not found: $artifact"
 }
 
 $artifactIdentity = Get-AssemblyIdentity $artifact
