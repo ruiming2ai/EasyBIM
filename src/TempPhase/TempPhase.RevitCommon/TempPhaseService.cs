@@ -42,6 +42,7 @@ namespace EasyBIM.TempPhase
 
         public Result RunManualCommand(UIApplication uiapp, ref string message)
         {
+            Log("ManualCommandBegin");
             try
             {
                 UIDocument uidoc = uiapp == null ? null : uiapp.ActiveUIDocument;
@@ -49,12 +50,14 @@ namespace EasyBIM.TempPhase
                 View view = uidoc == null ? null : uidoc.ActiveView;
                 if (!TempPhaseCompat.IsSupportedProjectDocument(doc))
                 {
+                    Log("ManualCommandNoProjectDocument");
                     ShowInfoDialog("Open a project document to use this tool.");
                     return Result.Failed;
                 }
 
                 if (!TempPhaseCompat.IsValidProjectView(view))
                 {
+                    Log("ManualCommandInvalidProjectView");
                     ShowInfoDialog("Open a valid project view to use this tool.");
                     return Result.Failed;
                 }
@@ -87,9 +90,15 @@ namespace EasyBIM.TempPhase
                     ? existing.TempTemplateId
                     : (TempPhaseCompat.GetTemporaryTemplateReferenceId(view) ?? viewId.Value);
 
+                Log(
+                    "ManualPhasePickerOpening"
+                    + " view=" + TempPhaseCompat.GetViewDisplayName(view)
+                    + " phaseCount=" + phases.Count);
                 using (PhasePickerForm picker = new PhasePickerForm(TempPhaseCompat.GetViewDisplayName(view), phases, originalPhaseId.Value))
                 {
-                    if (picker.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+                    System.Windows.Forms.DialogResult pickerResult = picker.ShowDialog();
+                    Log("ManualPhasePickerClosed result=" + pickerResult);
+                    if (pickerResult != System.Windows.Forms.DialogResult.OK)
                     {
                         return Result.Cancelled;
                     }
@@ -659,6 +668,11 @@ namespace EasyBIM.TempPhase
                 }
 
                 transaction.Commit();
+                Log(
+                    "RestoreTransactionCommitted"
+                    + " tracked=" + result.RestoredTrackedCount
+                    + " untracked=" + result.DisabledUntrackedCount
+                    + " failed=" + result.FailedViews.Count);
                 result.Succeeded = result.FailedViews.Count == 0;
                 ClearSessions(result.ClearedSessionKeys);
                 result.Message = BuildRestoreMessage(result);
@@ -697,6 +711,10 @@ namespace EasyBIM.TempPhase
                 }
 
                 transaction.Commit();
+                Log(
+                    "RestoreTrackedTransactionCommitted"
+                    + " view=" + TempPhaseCompat.GetViewDisplayName(view)
+                    + " phase=" + session.OriginalPhaseId);
                 return true;
             }
             catch (Exception ex)
@@ -745,6 +763,10 @@ namespace EasyBIM.TempPhase
                 }
 
                 transaction.Commit();
+                Log(
+                    "ManualApplyTransactionCommitted"
+                    + " view=" + TempPhaseCompat.GetViewDisplayName(view)
+                    + " phase=" + selectedPhaseId);
                 return true;
             }
             catch (Exception ex)

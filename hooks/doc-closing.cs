@@ -1,3 +1,4 @@
+using System;
 using Autodesk.Revit.DB.Events;
 using EasyBIM.TempPhase;
 
@@ -7,7 +8,14 @@ namespace EasyBIM.TempPhaseHooks
     {
         public void HandleDocumentClosing(object sender, DocumentClosingEventArgs e)
         {
-            TempPhaseController.Shared.HandleDocumentClosing(sender, e);
+            try
+            {
+                TempPhaseController.Shared.HandleDocumentClosing(sender, e);
+            }
+            catch (Exception ex)
+            {
+                TempPhaseDiagnostics.LogMessage("DocClosingHookException " + ex);
+            }
         }
     }
 }

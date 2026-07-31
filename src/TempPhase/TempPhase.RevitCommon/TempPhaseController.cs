@@ -2,6 +2,8 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
+using System;
+using System.Reflection;
 
 namespace EasyBIM.TempPhase
 {
@@ -41,8 +43,32 @@ namespace EasyBIM.TempPhase
             ref string message,
             ElementSet elements)
         {
-            UIApplication uiapp = commandData == null ? null : commandData.Application;
-            return _service.RunManualCommand(uiapp, ref message);
+            TempPhaseDiagnostics.LogCommandStart(
+                commandData,
+                Assembly.GetExecutingAssembly().Location);
+
+            string validationError;
+            if (!TempPhaseDiagnostics.ValidateControllerForHost(commandData, out validationError))
+            {
+                message = validationError;
+                TempPhaseDiagnostics.ShowControllerLoadFailure(validationError);
+                return Result.Failed;
+            }
+
+            try
+            {
+                TempPhaseDiagnostics.LogMessage("ManualCommandDispatch");
+                UIApplication uiapp = commandData == null ? null : commandData.Application;
+                Result result = _service.RunManualCommand(uiapp, ref message);
+                TempPhaseDiagnostics.LogMessage("ManualCommandReturn result=" + result);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                TempPhaseDiagnostics.ReportCommandException("ControllerManualCommand", ex);
+                return Result.Failed;
+            }
         }
     }
 }
