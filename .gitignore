@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+src/TempPhase/**/bin/
+src/TempPhase/**/obj/
+EasyBIM.tab/Misc Tools.panel/Temp Phase.pushbutton/bin/*.dll
+bin/TempPhaseController.dll
