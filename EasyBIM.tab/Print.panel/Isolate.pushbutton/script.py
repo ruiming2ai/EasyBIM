@@ -49,13 +49,21 @@ def eid_int(eid):
         return None
 
 
-def eid_from_int(value):
+def _make_eid_factory():
+    # This script constructs ElementIds inside a views x categories hot loop,
+    # so the Int32-vs-Int64 constructor question (Revit 2026 removed the
+    # Int32 overload) is resolved once here instead of via a try/except per
+    # construction - on 2026 that would throw and catch ~a million times.
     try:
-        return ElementId(int(value))
+        ElementId(1)
+        return lambda value: ElementId(int(value))
     except Exception:
-        # Revit 2026 removed ElementId(Int32); retry with Int64.
         import System
-        return ElementId(System.Int64(int(value)))
+
+        return lambda value: ElementId(System.Int64(int(value)))
+
+
+eid_from_int = _make_eid_factory()
 
 
 def format_ids(values):
@@ -265,18 +273,22 @@ hide_ops = 0
 cannot_hide_ids = set()
 failed_ops = []
 
+# The same category ids are applied to every view; build the ElementIds once
+# instead of views x categories times inside the transaction.
+hide_eids = [(cid_int, eid_from_int(cid_int)) for cid_int in hide_ids]
+
 transaction = Transaction(doc, "Isolate Categories in All Views and Sheets")
 transaction.Start()
 try:
     for view in views:
         view_changed = False
         views_processed += 1
+        can_hide_supported = hasattr(view, "CanCategoryBeHidden")
 
-        for cid_int in hide_ids:
-            cid = eid_from_int(cid_int)
+        for cid_int, cid in hide_eids:
             try:
                 can_hide = True
-                if hasattr(view, "CanCategoryBeHidden"):
+                if can_hide_supported:
                     try:
                         can_hide = view.CanCategoryBeHidden(cid)
                     except Exception:

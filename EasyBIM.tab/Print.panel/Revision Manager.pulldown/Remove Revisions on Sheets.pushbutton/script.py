@@ -201,6 +201,14 @@ def hide_clouds_in_all_views(cloud_element_ids, revision_ids_int, cloud_ids_int)
     if not cloud_element_ids:
         return result
 
+    # The same cloud elements are checked in every view; resolve them from
+    # the document once instead of views x clouds times.
+    resolved_clouds = []
+    for cloud_id in cloud_element_ids:
+        cloud = doc.GetElement(cloud_id)
+        if cloud is not None:
+            resolved_clouds.append((cloud_id, cloud))
+
     transaction = Transaction(doc, "Auto Hide Revision Clouds for Leftovers")
     transaction.Start()
     try:
@@ -210,10 +218,7 @@ def hide_clouds_in_all_views(cloud_element_ids, revision_ids_int, cloud_ids_int)
                     continue
 
                 to_hide = []
-                for cloud_id in cloud_element_ids:
-                    cloud = doc.GetElement(cloud_id)
-                    if cloud is None:
-                        continue
+                for cloud_id, cloud in resolved_clouds:
                     try:
                         if cloud.CanBeHidden(view) and (not cloud.IsHidden(view)):
                             to_hide.append(cloud_id)

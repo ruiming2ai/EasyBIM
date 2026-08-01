@@ -556,16 +556,19 @@ def _collect_parameter_catalog(instance_elements, type_elements):
                 if param_id_int is None:
                     continue
 
-                storage_type = _safe_text(param.StorageType)
-                data_key, data_label, discipline_label = _data_type_from_parameter(param)
-                origin = _origin_from_parameter(param, param_id_int)
+                # Dedupe before the descriptor derivations: the catalog
+                # converges within the first few elements, so nearly every
+                # later parameter takes this early exit.
                 descriptor_key = "{}|{}".format("I" if is_instance else "T", param_id_int)
-
                 if descriptor_key in catalog:
                     desc = catalog[descriptor_key]
                     if not param.IsReadOnly:
                         desc.has_writable = True
                     continue
+
+                storage_type = _safe_text(param.StorageType)
+                data_key, data_label, discipline_label = _data_type_from_parameter(param)
+                origin = _origin_from_parameter(param, param_id_int)
 
                 desc = ParamDescriptor(
                     param_id_int=param_id_int,

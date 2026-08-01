@@ -291,6 +291,14 @@ total_hidden_instances = 0
 processed_view_ids = []
 failed_views = []
 
+# The same cloud elements are checked in every view; resolve them from the
+# document once instead of views x clouds times.
+target_clouds = []
+for cloud_id in target_cloud_ids:
+    cloud = doc.GetElement(cloud_id)
+    if cloud is not None:
+        target_clouds.append((cloud_id, cloud))
+
 transaction = Transaction(doc, "Hide Revision Clouds by Sequences")
 transaction.Start()
 try:
@@ -300,10 +308,7 @@ try:
                 continue
 
             to_hide = []
-            for cloud_id in target_cloud_ids:
-                cloud = doc.GetElement(cloud_id)
-                if cloud is None:
-                    continue
+            for cloud_id, cloud in target_clouds:
                 try:
                     if cloud.CanBeHidden(view) and (not cloud.IsHidden(view)):
                         to_hide.append(cloud_id)
