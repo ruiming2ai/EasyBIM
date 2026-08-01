@@ -2420,7 +2420,22 @@ def _int_to_eid(value):
     if DB is None or value is None:
         return None
     try:
-        return DB.ElementId(int(value))
+        value = int(value)
+    except Exception:
+        return None
+    # Keep the plain-int constructor first: it is the exact call this module
+    # has always made and binds ElementId(Int32) on Revit 2015-2025 unchanged.
+    try:
+        return DB.ElementId(value)
+    except Exception:
+        pass
+    # Revit 2026 removed ElementId(Int32), so the plain call above raises
+    # "Multiple targets could match".  Retry with an explicit Int64, which
+    # binds the ElementId(Int64) constructor introduced in Revit 2024.
+    try:
+        import System
+
+        return DB.ElementId(System.Int64(value))
     except Exception:
         return None
 
