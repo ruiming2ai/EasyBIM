@@ -7,11 +7,36 @@ import time
 
 
 AUTO_UPDATE_GUARD_ENVVAR = "EASYBIM_AUTO_UPDATE_RAN"
+AUTO_UPDATE_PENDING_ENVVAR = "EASYBIM_AUTO_UPDATE_PENDING"
 AUTO_UPDATE_MUTEX_NAME = "Global\\EasyBIMAutoUpdate"
 TITLE = "Auto Update"
 STATUS_NO_OP = "no_op"
 STATUS_SKIPPED_LOCKED = "skipped_locked"
 STATUS_UPDATED = "updated"
+
+# Once the deferred-update flag has been consumed (or was never set), quiet
+# Idling ticks skip the envvar read entirely.
+_PENDING_RESOLVED = [False]
+
+
+def _get_envvar(name, default=None):
+    try:
+        from pyrevit import script
+
+        value = script.get_envvar(name)
+        return default if value is None else value
+    except Exception:
+        return default
+
+
+def _set_envvar(name, value):
+    try:
+        from pyrevit import script
+
+        script.set_envvar(name, value)
+        return True
+    except Exception:
+        return False
 
 
 def should_skip_startup(guard_state):
@@ -51,6 +76,40 @@ def mark_startup_attempted():
         return False
 
 
+def queue_startup_auto_update():
+    """Defer the startup auto-update to the first Idling tick.
+
+    Running git fetch/pull while Revit is starting blocks the UI thread at
+    the moment users are least tolerant of it.  The first idle tick runs the
+    same guarded update after Revit has become interactive.
+    """
+    if should_skip_startup(get_startup_guard_state()):
+        return False
+    if not _set_envvar(AUTO_UPDATE_PENDING_ENVVAR, True):
+        return False
+    _PENDING_RESOLVED[0] = False
+    return True
+
+
+def has_pending_startup_auto_update():
+    if _PENDING_RESOLVED[0]:
+        return False
+    pending = bool(_get_envvar(AUTO_UPDATE_PENDING_ENVVAR, False))
+    if not pending:
+        _PENDING_RESOLVED[0] = True
+    return pending
+
+
+def run_pending_startup_auto_update():
+    """Consume the deferred-update flag and run the guarded startup update."""
+    _set_envvar(AUTO_UPDATE_PENDING_ENVVAR, None)
+    _PENDING_RESOLVED[0] = True
+    if should_skip_startup(get_startup_guard_state()):
+        return None
+    mark_startup_attempted()
+    return run_startup_auto_update()
+
+
 def run_startup_auto_update():
     startup_lock = _try_acquire_startup_lock()
     if startup_lock is False:
@@ -76,10 +135,13 @@ def _run_startup_update_after_precheck():
     try:
         updater = _get_native_updater()
     except Exception:
-        return _run_native_update(trigger="startup")
+        # Fail closed: without the native updater there is nothing safe to run.
+        return _result(trigger="startup", updated_repos=[])
 
     pending_updates = _try_check_for_pending_updates(updater)
-    if pending_updates is False:
+    if pending_updates is not True:
+        # Fail closed: an errored pre-check (auth, transient network, API
+        # change) must not escalate into the full git-pull-everything path.
         return _result(trigger="startup", updated_repos=[])
 
     return _run_native_update(trigger="startup", updater=updater)

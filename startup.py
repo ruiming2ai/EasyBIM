@@ -35,8 +35,8 @@ except Exception as ex:
 try:
     from easybim import auto_update
 
-    if not auto_update.should_skip_startup(auto_update.get_startup_guard_state()):
-        auto_update.mark_startup_attempted()
-        auto_update.run_startup_auto_update()
+    # Deferred: the first Idling tick runs the guarded update, so git and
+    # network work never block the Revit startup thread.
+    auto_update.queue_startup_auto_update()
 except Exception:
     pass
