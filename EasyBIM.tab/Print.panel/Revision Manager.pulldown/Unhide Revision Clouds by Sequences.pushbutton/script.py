@@ -271,6 +271,14 @@ total_unhidden = 0
 processed_view_ids = []
 failed_views = []
 
+# The same cloud elements are checked in every view; resolve them from the
+# document once instead of views x clouds times.
+target_clouds = []
+for cloud_id in target_cloud_ids:
+    element = doc.GetElement(cloud_id)
+    if element is not None:
+        target_clouds.append((cloud_id, element))
+
 transaction = Transaction(doc, "Unhide Revision Clouds by Sequences")
 transaction.Start()
 try:
@@ -280,10 +288,7 @@ try:
                 continue
 
             unhide_list = ClrList[ElementId]()
-            for cloud_id in target_cloud_ids:
-                element = doc.GetElement(cloud_id)
-                if element is None:
-                    continue
+            for cloud_id, element in target_clouds:
                 is_hidden = False
                 try:
                     if hasattr(view, "IsElementHidden"):
