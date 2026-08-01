@@ -86,6 +86,45 @@ _MEMORY_STATE = {}
 # attaching a fresh copy and avoids duplicate completion handling.
 _RUNTIME = sys.modules.setdefault("easybim._temp_phase_close_runtime", {})
 
+# ``sys.modules`` does not survive a pyRevit reload that recreates the script
+# engine, so the registration is mirrored in a pyRevit envvar (AppDomain
+# storage) as well.  Without it, each engine recreation would attach a fresh
+# set of DocumentSaved/SavedAs/Synchronized delegates on top of the previous
+# engine's still-live ones.
+COMPLETION_ENVVAR = "EASYBIM_TEMP_PHASE_COMPLETION_HANDLERS"
+
+
+def _load_completion_registration():
+    existing = _RUNTIME.get("completion_registration")
+    if isinstance(existing, dict):
+        return existing
+    if script is not None:
+        try:
+            stored = script.get_envvar(COMPLETION_ENVVAR)
+            if isinstance(stored, dict):
+                return stored
+        except Exception:
+            pass
+    return None
+
+
+def _store_completion_registration(registration):
+    _RUNTIME["completion_registration"] = registration
+    if script is not None:
+        try:
+            script.set_envvar(COMPLETION_ENVVAR, registration)
+        except Exception:
+            pass
+
+
+def _clear_completion_registration():
+    _RUNTIME.pop("completion_registration", None)
+    if script is not None:
+        try:
+            script.set_envvar(COMPLETION_ENVVAR, None)
+        except Exception:
+            pass
+
 
 def handle_doc_closing(uiapp=None, event_args=None):
     """Inspect and synchronously cancel a document close when cleanup is needed.
@@ -695,7 +734,7 @@ def install_completion_handlers():
         _log("TempPhaseCommitHandlersInstallFailed missingApplication")
         return False
 
-    existing = _RUNTIME.get("completion_registration")
+    existing = _load_completion_registration()
     if isinstance(existing, dict):
         _uninstall_completion_registration(existing)
 
@@ -724,7 +763,7 @@ def install_completion_handlers():
         _log("TempPhaseCommitHandlersInstallFailed {0}".format(_exception_text(ex)))
         return False
 
-    _RUNTIME["completion_registration"] = {"app": app, "handlers": handlers}
+    _store_completion_registration({"app": app, "handlers": handlers})
     _log(
         "TempPhaseCommitHandlersInstalled events=DocumentSaved,DocumentSavedAs,"
         "DocumentSynchronizedWithCentral"
@@ -733,10 +772,10 @@ def install_completion_handlers():
 
 
 def uninstall_completion_handlers():
-    registration = _RUNTIME.get("completion_registration")
+    registration = _load_completion_registration()
     if isinstance(registration, dict):
         _uninstall_completion_registration(registration)
-        _RUNTIME.pop("completion_registration", None)
+        _clear_completion_registration()
         _log("TempPhaseCommitHandlersUninstalled")
     return True
 

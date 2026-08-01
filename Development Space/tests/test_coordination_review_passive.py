@@ -1,6 +1,4 @@
 import importlib.util
-import json
-import os
 import pathlib
 import unittest
 
@@ -181,45 +179,18 @@ class PassiveCoordinationReviewTests(unittest.TestCase):
         self.assertFalse(report.get("detection_error"))
         self.assertTrue(followup["detection_error"])
 
-    def test_debug_events_are_bounded(self):
+    def test_debug_pipeline_is_removed(self):
+        """The per-event JSON debug pipeline must not return; it wrote a file
+        on every transaction warning and every Revit dialog."""
         module = _load_module()
-        module.DEBUG_EVENT_LIMIT = 3
-
-        for index in range(5):
-            module.append_debug_event("event_{}".format(index), {"index": index})
-
-        state = module.get_debug_state()
-        self.assertEqual([item["type"] for item in state["events"]], ["event_2", "event_3", "event_4"])
-
-    def test_debug_file_path_and_write_output(self):
-        module = _load_module()
-        path = module.passive_debug_file_path()
-
-        self.assertTrue(path.replace("\\", "/").endswith("/EasyBIM/CoordinationReview/passive_detection_debug.json"))
-
-        module.append_debug_event("sample_event", {"value": 7})
-        written_path = module.write_debug_file()
-
-        self.assertEqual(written_path, path)
-        with open(written_path, "r") as handle:
-            data = json.load(handle)
-        self.assertEqual(data["events"][-1]["type"], "sample_event")
-
-        try:
-            os.remove(written_path)
-        except Exception:
-            pass
-
-    def test_detection_error_report_adds_debug_event(self):
-        module = _load_module()
-        doc = FakeDocument()
-
-        report = module.build_passive_coordination_report(doc, consume=False)
-        state = module.get_debug_state()
-
-        self.assertTrue(report["detection_error"])
-        self.assertIn("report_build", [item["type"] for item in state["events"]])
-        self.assertEqual(state["events"][-1]["type"], "report_detection_error")
+        for removed_name in (
+            "append_debug_event",
+            "write_debug_file",
+            "get_debug_state",
+            "passive_debug_file_path",
+            "_handle_dialog_box_showing",
+        ):
+            self.assertFalse(hasattr(module, removed_name), removed_name)
 
 
 if __name__ == "__main__":

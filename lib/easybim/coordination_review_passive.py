@@ -6,17 +6,11 @@ Revit failure processing and records only the built-in warning that a linked
 model needs Coordination Review.
 """
 
-import json
-import os
-import tempfile
 import time
 
 
 STATE_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_STATE"
 HANDLER_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_HANDLER"
-DEBUG_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_DEBUG"
-DIALOG_HANDLER_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_DIALOG_HANDLER"
-DEBUG_EVENT_LIMIT = 200
 SOURCE = "passive_coordination_review_warning"
 ISSUE_TEXT = "Needs Coordination Review"
 GENERIC_LINK_KEY = "__COORDINATION_REVIEW_LINK__"
@@ -24,11 +18,8 @@ GENERIC_LINK_NAME = "Linked model needs Coordination Review"
 STATUS = "needs_coordination_review"
 
 _FALLBACK_STATE = {"documents": {}}
-_FALLBACK_DEBUG_STATE = {"events": []}
 _HANDLER_REF = None
 _HANDLER_APP = None
-_DIALOG_HANDLER_REF = None
-_DIALOG_HANDLER_APP = None
 
 
 def _safe_text(value):
@@ -130,84 +121,6 @@ def _save_state(state):
     state = _normalize_state(state)
     _FALLBACK_STATE = state
     _set_envvar(STATE_ENVVAR, state)
-    return state
-
-
-def _normalize_debug_state(state):
-    if not isinstance(state, dict):
-        return {"events": []}
-    events = state.get("events", [])
-    if not isinstance(events, list):
-        events = []
-    return {"events": list(events[-int(DEBUG_EVENT_LIMIT):])}
-
-
-def get_debug_state():
-    state = _get_envvar(DEBUG_ENVVAR, None)
-    if state is None:
-        state = _FALLBACK_DEBUG_STATE
-    return _normalize_debug_state(state)
-
-
-def _save_debug_state(state):
-    global _FALLBACK_DEBUG_STATE
-    state = _normalize_debug_state(state)
-    _FALLBACK_DEBUG_STATE = state
-    _set_envvar(DEBUG_ENVVAR, state)
-    return state
-
-
-def _json_safe(value):
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, dict):
-        return dict((_safe_text(key), _json_safe(item)) for key, item in value.items())
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(item) for item in list(value)]
-    return _safe_text(value)
-
-
-def passive_debug_file_path():
-    return os.path.join(
-        tempfile.gettempdir(),
-        "EasyBIM",
-        "CoordinationReview",
-        "passive_detection_debug.json",
-    )
-
-
-def _ensure_dir(path):
-    if path and not os.path.isdir(path):
-        os.makedirs(path)
-
-
-def write_debug_file():
-    path = passive_debug_file_path()
-    _ensure_dir(os.path.dirname(path))
-    with open(path, "w") as handle:
-        json.dump(_json_safe(get_debug_state()), handle, indent=2, sort_keys=True)
-    return path
-
-
-def _write_debug_file_silent():
-    try:
-        return write_debug_file()
-    except Exception:
-        return ""
-
-
-def append_debug_event(event_type, payload=None):
-    state = get_debug_state()
-    events = state.setdefault("events", [])
-    events.append(
-        {
-            "timestamp": time.time(),
-            "type": _safe_text(event_type) or "unknown",
-            "payload": _json_safe(payload or {}),
-        }
-    )
-    state = _save_debug_state(state)
-    _write_debug_file_silent()
     return state
 
 
@@ -460,15 +373,6 @@ def record_coordination_review_failure(doc, failure, timestamp=None):
     if not is_coordination_review_failure(failure):
         return []
 
-    append_debug_event(
-        "coordination_failure_matched",
-        {
-            "doc_key": _doc_key(doc),
-            "failure_id": _safe_text(_call_no_args(failure, "GetFailureDefinitionId")),
-            "description": _failure_description(failure),
-        },
-    )
-
     timestamp = time.time() if timestamp is None else float(timestamp)
     state = _load_state()
     entry = _doc_entry(state, doc, create=True)
@@ -482,15 +386,6 @@ def record_coordination_review_failure(doc, failure, timestamp=None):
         record["timestamp"] = timestamp
         records.append(record)
         existing.add(link_key)
-        append_debug_event(
-            "record_saved",
-            {
-                "doc_key": _doc_key(doc),
-                "link_key": link_key,
-                "link_name": record.get("link_name"),
-                "element_id": record.get("element_id"),
-            },
-        )
 
     _save_state(state)
     return list(records)
@@ -513,25 +408,12 @@ def build_passive_coordination_report(doc, consume=True):
     state = _load_state()
     entry = _doc_entry(state, doc, create=False)
     records = list((entry or {}).get("records", []) or [])
-    stored_doc_keys = sorted(list((state.get("documents", {}) or {}).keys()))
-
-    report_payload = {
-        "doc_key": _doc_key(doc),
-        "doc_title": _get_doc_title(doc),
-        "doc_path": _get_doc_path(doc),
-        "consume": bool(consume),
-        "record_count": len(records),
-        "stored_doc_keys": stored_doc_keys,
-    }
-    append_debug_event("report_build", report_payload)
 
     if not records:
-        append_debug_event("report_detection_error", report_payload)
         _log_debug(
-            "Detection Error. doc_key={} stored_doc_keys={} debug_file={}".format(
-                report_payload.get("doc_key"),
-                stored_doc_keys,
-                passive_debug_file_path(),
+            "Detection Error. doc_key={} stored_doc_keys={}".format(
+                _doc_key(doc),
+                sorted(list((state.get("documents", {}) or {}).keys())),
             )
         )
         return _empty_report(doc, detection_error=True)
@@ -628,31 +510,6 @@ def _revit_application(uiapp):
     return None
 
 
-def _event_source(uiapp, event_name):
-    uiapp = uiapp or _get_uiapp()
-    candidates = []
-    if uiapp is not None:
-        candidates.append(uiapp)
-        try:
-            candidates.append(uiapp.Application)
-        except Exception:
-            pass
-        try:
-            candidates.append(uiapp.ControlledApplication)
-        except Exception:
-            pass
-
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        try:
-            getattr(candidate, event_name)
-            return candidate
-        except Exception:
-            pass
-    return None
-
-
 def _active_doc_from_sender(sender):
     try:
         uidoc = sender.ActiveUIDocument
@@ -674,24 +531,8 @@ def _handle_failures_processing(sender, args):
         doc = _active_doc_from_sender(sender)
 
     failures = _call_no_args(accessor, "GetFailureMessages", []) or []
-    append_debug_event(
-        "failures_processing_event",
-        {
-            "doc_key": _doc_key(doc),
-            "failure_count": len(list(failures or [])),
-        },
-    )
     for failure in list(failures):
         try:
-            append_debug_event(
-                "failure_seen",
-                {
-                    "doc_key": _doc_key(doc),
-                    "failure_id": _safe_text(_call_no_args(failure, "GetFailureDefinitionId")),
-                    "description": _failure_description(failure),
-                    "is_coordination_review": is_coordination_review_failure(failure),
-                },
-            )
             record_coordination_review_failure(doc, failure)
         except Exception:
             pass
@@ -709,173 +550,58 @@ def _make_failures_processing_handler():
         return _handle_failures_processing
 
 
-def _dialog_message(args):
-    for method_name in ("GetMessage", "GetDialogMessage"):
-        value = _call_no_args(args, method_name, "")
-        if value:
-            return _safe_text(value)
-    for attr in ("Message", "DialogMessage"):
-        try:
-            value = getattr(args, attr)
-            if value:
-                return _safe_text(value)
-        except Exception:
-            pass
-    return ""
-
-
-def _dialog_id(args):
-    for method_name in ("GetDialogId",):
-        value = _call_no_args(args, method_name, "")
-        if value:
-            return _safe_text(value)
-    for attr in ("DialogId", "Id"):
-        try:
-            value = getattr(args, attr)
-            if value:
-                return _safe_text(value)
-        except Exception:
-            pass
-    return ""
-
-
-def _handle_dialog_box_showing(sender, args):
-    append_debug_event(
-        "dialog_box_showing_event",
-        {
-            "dialog_id": _dialog_id(args),
-            "message": _dialog_message(args),
-            "args_type": _safe_text(type(args)),
-        },
-    )
-
-
-def _make_dialog_box_showing_handler():
-    try:
-        from System import EventHandler
-        try:
-            from Autodesk.Revit.UI.Events import DialogBoxShowingEventArgs
-        except Exception:
-            from Autodesk.Revit.UI import DialogBoxShowingEventArgs
-        return EventHandler[DialogBoxShowingEventArgs](_handle_dialog_box_showing)
-    except Exception:
-        return _handle_dialog_box_showing
-
-
 def register_passive_detector(uiapp=None):
     """Register the session-level Revit failure listener."""
-    global _HANDLER_REF, _HANDLER_APP, _DIALOG_HANDLER_REF, _DIALOG_HANDLER_APP
-
-    append_debug_event(
-        "startup_register_attempt",
-        {
-            "uiapp_type": _safe_text(type(uiapp or _get_uiapp())),
-        },
-    )
+    global _HANDLER_REF, _HANDLER_APP
 
     if _HANDLER_REF is not None:
-        append_debug_event("startup_register_success", {"reason": "existing_module_handler"})
         return True
-
-    existing_handler = _get_envvar(HANDLER_ENVVAR, None)
-    if existing_handler is not None:
-        append_debug_event(
-            "startup_existing_handler_found",
-            {
-                "handler_type": _safe_text(type(existing_handler)),
-                "handler_is_marker": existing_handler is True,
-            },
-        )
 
     app = _revit_application(uiapp)
     if app is None:
-        append_debug_event("startup_register_failed", {"reason": "failures_processing_source_not_found"})
         _log_debug("FailuresProcessing registration failed: event source not found.")
         return False
 
+    # A previous pyRevit engine may have left its delegate attached; detach it
+    # before adding a fresh one so subscriptions can never stack.  A legacy
+    # ``True`` marker (written by an older version when the envvar store
+    # failed) carries no delegate to detach and is simply ignored.
+    existing_handler = _get_envvar(HANDLER_ENVVAR, None)
     if existing_handler is not None and existing_handler is not True:
         try:
             app.FailuresProcessing -= existing_handler
-            append_debug_event("startup_existing_handler_removed", {})
         except Exception:
-            append_debug_event("startup_existing_handler_remove_failed", {})
+            pass
 
     handler = _make_failures_processing_handler()
     try:
         app.FailuresProcessing += handler
     except Exception:
-        append_debug_event("startup_register_failed", {"reason": "failures_processing_add_failed"})
         _log_debug("FailuresProcessing registration failed while adding handler.")
         return False
 
     _HANDLER_REF = handler
     _HANDLER_APP = app
-    if not _set_envvar(HANDLER_ENVVAR, handler):
-        _set_envvar(HANDLER_ENVVAR, True)
-
-    dialog_registered = False
-    existing_dialog_handler = _get_envvar(DIALOG_HANDLER_ENVVAR, None)
-    dialog_source = _event_source(uiapp, "DialogBoxShowing")
-    if dialog_source is not None:
-        if existing_dialog_handler is not None and existing_dialog_handler is not True:
-            try:
-                dialog_source.DialogBoxShowing -= existing_dialog_handler
-                append_debug_event("dialog_existing_handler_removed", {})
-            except Exception:
-                append_debug_event("dialog_existing_handler_remove_failed", {})
-        dialog_handler = _make_dialog_box_showing_handler()
-        try:
-            dialog_source.DialogBoxShowing += dialog_handler
-            _DIALOG_HANDLER_REF = dialog_handler
-            _DIALOG_HANDLER_APP = dialog_source
-            if not _set_envvar(DIALOG_HANDLER_ENVVAR, dialog_handler):
-                _set_envvar(DIALOG_HANDLER_ENVVAR, True)
-            dialog_registered = True
-        except Exception:
-            append_debug_event("dialog_register_failed", {"reason": "dialog_box_showing_add_failed"})
-    else:
-        append_debug_event("dialog_register_failed", {"reason": "dialog_box_showing_source_not_found"})
-
-    append_debug_event(
-        "startup_register_success",
-        {
-            "failures_processing_source": _safe_text(type(app)),
-            "dialog_registered": dialog_registered,
-            "debug_file": passive_debug_file_path(),
-        },
-    )
-    _log_debug(
-        "FailuresProcessing registered. dialog_registered={} debug_file={}".format(
-            dialog_registered,
-            passive_debug_file_path(),
-        )
-    )
+    # Never store a bare ``True`` marker: it would block the detach path above
+    # on the next registration.  If the envvar store fails, the module globals
+    # still guard against re-registration within this engine.
+    _set_envvar(HANDLER_ENVVAR, handler)
+    _log_debug("FailuresProcessing registered.")
     return True
 
 
 def unregister_passive_detector(uiapp=None):
     """Unregister the passive detector when the stored handler is available."""
-    global _HANDLER_REF, _HANDLER_APP, _DIALOG_HANDLER_REF, _DIALOG_HANDLER_APP
+    global _HANDLER_REF, _HANDLER_APP
 
     handler = _HANDLER_REF or _get_envvar(HANDLER_ENVVAR, None)
     app = _HANDLER_APP or _revit_application(uiapp)
-    if handler is not None and app is not None:
+    if handler is not None and handler is not True and app is not None:
         try:
             app.FailuresProcessing -= handler
         except Exception:
             pass
 
-    dialog_handler = _DIALOG_HANDLER_REF or _get_envvar(DIALOG_HANDLER_ENVVAR, None)
-    dialog_app = _DIALOG_HANDLER_APP or _event_source(uiapp, "DialogBoxShowing")
-    if dialog_handler is not None and dialog_app is not None:
-        try:
-            dialog_app.DialogBoxShowing -= dialog_handler
-        except Exception:
-            pass
-
     _HANDLER_REF = None
     _HANDLER_APP = None
-    _DIALOG_HANDLER_REF = None
-    _DIALOG_HANDLER_APP = None
     _set_envvar(HANDLER_ENVVAR, None)
-    _set_envvar(DIALOG_HANDLER_ENVVAR, None)
