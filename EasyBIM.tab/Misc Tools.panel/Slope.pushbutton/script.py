@@ -93,29 +93,14 @@ FALLBACK_UNIT_ID_ATTRS = {
 }
 
 
-def _safe_text(value):
-    if value is None:
-        return ""
-    try:
-        return str(value)
-    except Exception:
-        return ""
+from easybim.compat import safe_text as _safe_text
 
 
 def _normalize_text(value):
     return _safe_text(value).strip()
 
 
-def _eid_int(element_id):
-    if not element_id:
-        return None
-    try:
-        return int(get_elementid_value(element_id))
-    except Exception:
-        try:
-            return int(element_id.IntegerValue)
-        except Exception:
-            return None
+from easybim.compat import eid_to_int as _eid_int
 
 
 def _parse_number_token(token):

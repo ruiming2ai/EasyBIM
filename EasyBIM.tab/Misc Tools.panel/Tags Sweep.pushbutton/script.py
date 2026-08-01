@@ -21,16 +21,7 @@ SCOPE_ENTIRE = "Entire Project"
 SCOPE_ACTIVE = "Active View Only"
 
 
-def _eid_int(eid):
-    if eid is None:
-        return None
-    try:
-        return int(get_elementid_value(eid))
-    except Exception:
-        try:
-            return int(eid.IntegerValue)
-        except Exception:
-            return None
+from easybim.compat import eid_to_int as _eid_int
 
 
 def _safe_get_attr(obj, name):

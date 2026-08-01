@@ -43,25 +43,8 @@ MODE_HELPERS = {
 EMPTY_SELECTION_STATUS_TEXT = "Select one or more elements before running."
 
 
-def _safe_text(value):
-    if value is None:
-        return ""
-    try:
-        return str(value)
-    except Exception:
-        return ""
-
-
-def _eid_int(eid):
-    if eid is None:
-        return None
-    try:
-        return int(get_elementid_value(eid))
-    except Exception:
-        try:
-            return int(eid.IntegerValue)
-        except Exception:
-            return None
+from easybim.compat import safe_text as _safe_text
+from easybim.compat import eid_to_int as _eid_int
 
 
 def _parse_angle_degrees(value_text):
