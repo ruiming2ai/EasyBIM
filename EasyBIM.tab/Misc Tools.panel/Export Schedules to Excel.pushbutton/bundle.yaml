@@ -1,0 +1,12 @@
+title: "Export Schedules\nto Excel"
+tooltip: |-
+  Export selected schedules to Excel workbooks.
+
+  One .xlsx file per schedule, named "<Schedule Name> - <Model Name>.xlsx",
+  saved to a folder you pick. Columns are the schedule's visible fields;
+  rows follow the schedule's displayed order. A hidden _metadata sheet keeps
+  files compatible with pyRevit's Import Parameters from Excel.
+
+  Note: in workshared models the ordering step may temporarily borrow
+  elements (all edits are rolled back automatically).
+min_revit_version: 2022
