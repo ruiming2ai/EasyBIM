@@ -1,5 +1,5 @@
 title: Temp Phase
 tooltip: Set a temporary phase for the active view and restore temporary view properties before closing.
 author: Ruiming Liu
-min_revit_version: 2025
+min_revit_version: 2015
 max_revit_version: 2026

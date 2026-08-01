@@ -1,7 +1,7 @@
 # PyRevit_EasyBIM
 PyRevit Tools created by Ruiming Liu
 
-## Temp Phase recovery (Revit 2025-2026)
+## Temp Phase recovery (Revit 2015-2026)
 
 Temp Phase is a Python-only pyRevit workflow. The button applies the selected
 phase and records the original view state in the EasyBIM session. When a file
