@@ -79,10 +79,10 @@ def build_warning_segments():
 def action_labels(workshared):
     """Return semantic action/label pairs in their visual order."""
     actions = [
-        ("save_close", "Save Restored File and Close"),
+        ("save_close", "Save and Close"),
     ]
     if bool(workshared):
-        actions.append(("sync_close", "Synchronize Restored File and Close"))
+        actions.append(("sync_close", "Synchronize and Close"))
     actions.append(("cancel", "Keep File Open"))
     return actions
 

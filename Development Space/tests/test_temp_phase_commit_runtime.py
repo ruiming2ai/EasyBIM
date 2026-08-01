@@ -237,7 +237,7 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
 
         self.assertEqual("save_close", decision)
         labels = [text for _, text in ui.dialogs[0].links]
-        self.assertIn("Save Restored File and Close", labels)
+        self.assertIn("Save and Close", labels)
         self.assertIn("Keep File Open", labels)
         self.assertFalse(any("Synchronize" in text for text in labels))
 
@@ -258,8 +258,8 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
         self.assertEqual("sync_close", decision)
         labels = [text for _, text in ui.dialogs[0].links]
         self.assertEqual(3, len(labels))
-        self.assertIn("Save Restored File and Close", labels)
-        self.assertIn("Synchronize Restored File and Close", labels)
+        self.assertIn("Save and Close", labels)
+        self.assertIn("Synchronize and Close", labels)
         self.assertIn("Keep File Open", labels)
 
     def test_keep_open_choice_does_not_start_commit(self):

@@ -1100,7 +1100,13 @@ def _show_close_decision(summary, record):
         dialog.MainInstruction = compact_message
         dialog.MainContent = restored_message
         task_dialog_icon = getattr(UI, "TaskDialogIcon", None)
-        warning_icon = getattr(task_dialog_icon, "Warning", None)
+        # Revit's enum member is ``TaskDialogIconWarning``; the short
+        # ``Warning`` name is kept as a fallback for wrapper hosts.
+        warning_icon = None
+        for icon_member in ("TaskDialogIconWarning", "Warning"):
+            warning_icon = getattr(task_dialog_icon, icon_member, None)
+            if warning_icon is not None:
+                break
         if warning_icon is not None:
             try:
                 dialog.MainIcon = warning_icon
@@ -1122,9 +1128,9 @@ def _show_close_decision(summary, record):
             _log("TempPhaseDialogFallbackMissingCommandLinks choice=cancel")
             return "cancel"
 
-        dialog.AddCommandLink(link_one, "Save Restored File and Close")
+        dialog.AddCommandLink(link_one, "Save and Close")
         if workshared:
-            dialog.AddCommandLink(link_two, "Synchronize Restored File and Close")
+            dialog.AddCommandLink(link_two, "Synchronize and Close")
             if link_three is not None:
                 dialog.AddCommandLink(link_three, "Keep File Open")
             result_map = (
