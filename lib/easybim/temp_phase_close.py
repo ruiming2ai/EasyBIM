@@ -60,6 +60,16 @@ COMMIT_GUARD_SEC = 60.0
 CLOSING_IDENTITY_GUARD_SEC = 120.0
 IDLE_THROTTLE_SEC = 0.10
 
+# Idling fires continuously, so the throttle lives in a module global rather
+# than in the stored state: checking it costs one subtraction and no envvar
+# traffic, and it gates every other per-tick cost below.
+_LAST_IDLE_AT = [0.0]
+
+# Revit's Application object exposes none of the shutdown-probe attributes,
+# so without this cache every idle tick would raise and swallow four
+# AttributeErrors through the CLR interop boundary.
+_SHUTDOWN_PROBE_UNSUPPORTED = [False]
+
 
 class _NullLogger(object):
     def debug(self, *args, **kwargs):
@@ -276,6 +286,11 @@ def handle_idling(uiapp=None, event_args=None):
     Idling callback posts the guarded Close command.
     """
     del event_args
+    now = time.time()
+    if now - _LAST_IDLE_AT[0] < IDLE_THROTTLE_SEC:
+        return False
+    _LAST_IDLE_AT[0] = now
+
     uiapp = _get_uiapp(uiapp)
     _log("AppIdlingHookEntry")
     if uiapp is None:
@@ -316,15 +331,12 @@ def handle_idling(uiapp=None, event_args=None):
         state["commit_failures"] = commit_failures
 
     if not pending and not commit_operations and not commit_pending and not commit_failures:
-        _expire_repost_guards(state)
-        _save_state(state)
+        # The quiet-session path: only write state back when the expiry sweep
+        # actually removed or added something.
+        if _expire_repost_guards(state):
+            _save_state(state)
         return False
 
-    now = time.time()
-    last_idle = float(state.get("last_idling_at", 0.0) or 0.0)
-    if now - last_idle < IDLE_THROTTLE_SEC:
-        return False
-    state["last_idling_at"] = now
     changed = False
 
     # Completion handlers run on Revit's application event thread, so failures
@@ -499,22 +511,7 @@ def handle_idling(uiapp=None, event_args=None):
             _log("TempPhaseCloseKeptOpen token={0}".format(token))
             _log("IdlingCloseCancelledByUser token={0}".format(token))
 
-    before_expiry = (
-        len(state.get("repost_guards") or {}),
-        len(state.get("commit_operations") or {}),
-        len(state.get("pending_commit_closes") or {}),
-        len(state.get("commit_failures") or {}),
-        len(state.get("closing_identities") or {}),
-    )
-    _expire_repost_guards(state)
-    after_expiry = (
-        len(state.get("repost_guards") or {}),
-        len(state.get("commit_operations") or {}),
-        len(state.get("pending_commit_closes") or {}),
-        len(state.get("commit_failures") or {}),
-        len(state.get("closing_identities") or {}),
-    )
-    if before_expiry != after_expiry:
+    if _expire_repost_guards(state):
         changed = True
     if changed:
         _save_state(state)
@@ -1726,14 +1723,17 @@ def _consume_repost_guard(state, token):
 
 
 def _expire_repost_guards(state):
+    """Sweep expired records; return the number of mutations made."""
     now = time.time()
-    _expire_closing_identities(state, now=now)
+    removed = _expire_closing_identities(state, now=now)
     for token, guard in list((state.get("repost_guards") or {}).items()):
         if not isinstance(guard, dict) or now > float(guard.get("expires_at", 0.0) or 0.0):
             state.get("repost_guards", {}).pop(token, None)
+            removed += 1
     for token, operation in list((state.get("commit_operations") or {}).items()):
         if not isinstance(operation, dict) or now > float(operation.get("expires_at", 0.0) or 0.0):
             state.get("commit_operations", {}).pop(token, None)
+            removed += 1
             action = _safe_text(operation.get("action")) if isinstance(operation, dict) else "save"
             state.setdefault("commit_failures", {})[token] = {
                 "action": action,
@@ -1747,6 +1747,8 @@ def _expire_repost_guards(state):
     for token, pending in list((state.get("pending_commit_closes") or {}).items()):
         if not isinstance(pending, dict) or now > float(pending.get("expires_at", 0.0) or 0.0):
             state.get("pending_commit_closes", {}).pop(token, None)
+            removed += 1
+    return removed
 
 
 def _expire_closing_identities(state, now=None):
@@ -2252,13 +2254,27 @@ def _get_uiapp(uiapp=None):
 
 
 def _is_shutdown_context(uiapp):
+    if _SHUTDOWN_PROBE_UNSUPPORTED[0]:
+        return False
     app = getattr(uiapp, "Application", None) if uiapp is not None else None
+    if app is None:
+        return False
+    probes_found = 0
     for name in ("IsClosing", "IsShuttingDown", "IsQuitting", "IsShutdown"):
         try:
-            if bool(getattr(app, name)):
+            value = getattr(app, name)
+        except Exception:
+            continue
+        probes_found += 1
+        try:
+            if bool(value):
                 return True
         except Exception:
             pass
+    if not probes_found:
+        # This host's Application exposes none of the probes; cache that so
+        # every subsequent idle tick skips the raise/catch cycle entirely.
+        _SHUTDOWN_PROBE_UNSUPPORTED[0] = True
     return False
 
 
