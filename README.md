@@ -31,10 +31,9 @@ coordinate the per-document trigger/state and prevent duplicate close reposts.
 Using Temp Phase in one file does not arm close recovery for other open files.
 
 Normal users only need to update EasyBIM from GitHub and reload pyRevit. No DLL
-staging, build step, or cache clearing is required. The standalone C# add-in
-and its source remain installed as a fallback until Revit 2025 and 2026 runtime
-parity is proven; the C# projects under `src/TempPhase` are not loaded by the
-normal pyRevit command or hooks.
+staging, build step, or cache clearing is required. The standalone C# fallback
+add-in and its source have been removed from the repository; the Python command
+and hooks are the only Temp Phase implementation.
 
 Diagnostics are emitted only through pyRevit's standard debug logging (enable
 pyRevit debug mode to see markers such as `DocClosingCancelSucceeded` or
