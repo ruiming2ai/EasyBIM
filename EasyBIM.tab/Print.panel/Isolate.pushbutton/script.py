@@ -49,6 +49,15 @@ def eid_int(eid):
         return None
 
 
+def eid_from_int(value):
+    try:
+        return ElementId(int(value))
+    except Exception:
+        # Revit 2026 removed ElementId(Int32); retry with Int64.
+        import System
+        return ElementId(System.Int64(int(value)))
+
+
 def format_ids(values):
     ids = sorted(set([x for x in values if x is not None]))
     return ", ".join(str(x) for x in ids) if ids else "N/A"
@@ -264,7 +273,7 @@ try:
         views_processed += 1
 
         for cid_int in hide_ids:
-            cid = ElementId(int(cid_int))
+            cid = eid_from_int(cid_int)
             try:
                 can_hide = True
                 if hasattr(view, "CanCategoryBeHidden"):

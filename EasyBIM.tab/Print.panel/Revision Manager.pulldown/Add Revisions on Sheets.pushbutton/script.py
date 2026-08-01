@@ -61,6 +61,15 @@ def eid_int(eid):
         return None
 
 
+def eid_from_int(value):
+    try:
+        return ElementId(int(value))
+    except Exception:
+        # Revit 2026 removed ElementId(Int32); retry with Int64.
+        import System
+        return ElementId(System.Int64(int(value)))
+
+
 def doc_key():
     try:
         base = doc.PathName or doc.Title or "Untitled"
@@ -527,7 +536,7 @@ rev_ids_ints, rev_numbers = pick_revisions()
 if rev_ids_ints is None:
     raise SystemExit
 
-selected_rev_eids = [ElementId(int(x)) for x in rev_ids_ints]
+selected_rev_eids = [eid_from_int(x) for x in rev_ids_ints]
 chosen_sheets = pick_sheets()
 if chosen_sheets is None:
     raise SystemExit

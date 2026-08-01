@@ -130,6 +130,14 @@ def _is_param_match(param, desc):
     return data_key == desc.data_key
 
 
+def _param_element_id(param_id_int):
+    try:
+        return DB.ElementId(int(param_id_int))
+    except Exception:
+        # Revit 2026 removed ElementId(Int32); retry with Int64.
+        return DB.ElementId(System.Int64(int(param_id_int)))
+
+
 def _get_param_by_descriptor(element, desc):
     if not element:
         return None
@@ -140,7 +148,7 @@ def _get_param_by_descriptor(element, desc):
             bip = System.Enum.ToObject(DB.BuiltInParameter, desc.param_id_int)
             param = element.get_Parameter(bip)
         else:
-            param = element.get_Parameter(DB.ElementId(desc.param_id_int))
+            param = element.get_Parameter(_param_element_id(desc.param_id_int))
     except Exception:
         param = None
 
