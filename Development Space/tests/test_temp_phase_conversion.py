@@ -104,15 +104,6 @@ class TempPhaseConversionTests(unittest.TestCase):
             (ROOT / "lib" / "easybim" / "temp_phase_save.py").exists()
         )
 
-        diagnostics = (
-            TEMP_PHASE_ROOT / "TempPhase.RevitCommon" / "TempPhaseDiagnostics.cs"
-        ).read_text(encoding="utf-8")
-        self.assertIn("ValidateControllerForHost", diagnostics)
-        self.assertIn("VersionNumber", diagnostics)
-        self.assertIn("AssemblyName", diagnostics)
-        self.assertIn("ReportCommandException", diagnostics)
-        self.assertIn("TaskDialog.Show", diagnostics)
-
     def test_manual_command_emits_python_picker_and_transaction_diagnostics(self):
         runtime = (ROOT / "lib" / "easybim" / "temp_phase_view.py").read_text(
             encoding="utf-8"
@@ -189,30 +180,15 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("PostableCommand.Close", runtime)
         self.assertNotIn("ID_REVIT_FILE_CLOSE", runtime)
 
-    def test_version_projects_target_revit_2025_and_2026(self):
-        for version in ("2025", "2026"):
-            project = (
-                TEMP_PHASE_ROOT
-                / ("TempPhase.Revit" + version)
-                / ("TempPhase.Revit" + version + ".csproj")
-            ).read_text(encoding="utf-8")
-            self.assertIn("<TargetFramework>net8.0-windows</TargetFramework>", project)
-            self.assertIn(
-                'Include="Revit_All_Main_Versions_API_x64"',
-                project,
-            )
-            self.assertIn('Version="' + version + '.0.0"', project)
-
-    def test_controller_release_script_is_developer_only(self):
-        script = (ROOT / "build" / "Build-TempPhase.ps1").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("developer-only", script)
-        self.assertIn('ValidateSet("2025", "2026", "All")', script)
-        self.assertIn("VerifyOnly", script)
-        self.assertIn("TempPhaseController.Revit", script)
-        self.assertNotIn("RegisterManualSession", script)
-        self.assertNotIn("Stage-PackageFiles", script)
+    def test_csharp_fallback_is_fully_removed(self):
+        """The Python runtime stands alone; no C# fallback ships with EasyBIM."""
+        self.assertFalse(TEMP_PHASE_ROOT.exists())
+        self.assertFalse((ROOT / "src").exists())
+        self.assertFalse((ROOT / "build" / "Build-TempPhase.ps1").exists())
+        self.assertFalse((ROOT / "bin" / "TempPhaseController.Revit2025.dll").exists())
+        self.assertFalse((ROOT / "bin" / "TempPhaseController.Revit2026.dll").exists())
+        self.assertFalse((ROOT / "hooks" / "TempPhase").exists())
+        self.assertFalse((ROOT / "lib" / "TempPhase").exists())
 
 
 if __name__ == "__main__":
