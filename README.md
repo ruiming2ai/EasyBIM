@@ -13,10 +13,10 @@ temporary phase; files where the button has not been used close normally.
 After restoration, the Close-Stop dialog explains that the cleanup is currently
 only in the open session. Choose one of the following actions:
 
-- **Save Restored File and Close** — save the restored project, then close it
+- **Save and Close** — save the restored project, then close it
   only after Revit reports that the save completed successfully. Save As cases
   are handled through the same completion flow.
-- **Synchronize Restored File and Close** — available for workshared files;
+- **Synchronize and Close** — available for workshared files;
   opens Revit's normal Synchronize with Central/options command and closes only
   after `DocumentSynchronizedWithCentral` reports success. Synchronizing is
   required when the restored state must be reflected in the central model.

@@ -207,11 +207,11 @@ class CompactTempPhaseDialogTests(unittest.TestCase):
 
         non_labels = labels(non_workshared)
         work_labels = labels(workshared)
-        self.assertIn("Save Restored File and Close", non_labels)
+        self.assertIn("Save and Close", non_labels)
         self.assertIn("Keep File Open", non_labels)
         self.assertFalse(any("Synchronize" in text for text in non_labels))
-        self.assertIn("Save Restored File and Close", work_labels)
-        self.assertIn("Synchronize Restored File and Close", work_labels)
+        self.assertIn("Save and Close", work_labels)
+        self.assertIn("Synchronize and Close", work_labels)
         self.assertIn("Keep File Open", work_labels)
 
     def test_choice_mapper_uses_task_dialog_result_not_command_link_id(self):
@@ -261,7 +261,11 @@ class CompactTempPhaseDialogTests(unittest.TestCase):
         native_dialog.Show = lambda: _EnumUi.TaskDialogResult.CommandLink2
 
         class NativeUi(_EnumUi):
-            TaskDialogIcon = type("TaskDialogIcon", (object,), {"Warning": object()})
+            # Mirror the real Revit API member name so the lookup is tested
+            # against what Revit actually exposes.
+            TaskDialogIcon = type(
+                "TaskDialogIcon", (object,), {"TaskDialogIconWarning": object()}
+            )
 
             @staticmethod
             def TaskDialog(title):
@@ -283,11 +287,13 @@ class CompactTempPhaseDialogTests(unittest.TestCase):
                 )
 
         self.assertEqual("sync_close", choice)
-        self.assertEqual(NativeUi.TaskDialogIcon.Warning, native_dialog.MainIcon)
+        self.assertEqual(
+            NativeUi.TaskDialogIcon.TaskDialogIconWarning, native_dialog.MainIcon
+        )
         self.assertEqual(
             [
-                "Save Restored File and Close",
-                "Synchronize Restored File and Close",
+                "Save and Close",
+                "Synchronize and Close",
                 "Keep File Open",
             ],
             [text for _, text in native_dialog.links],

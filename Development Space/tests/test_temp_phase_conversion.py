@@ -95,8 +95,8 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertIn("DocumentSavedAs", close_runtime)
         self.assertIn("DocumentSynchronizedWithCentral", close_runtime)
         self.assertIn("SynchronizeAndModifySettings", close_runtime)
-        self.assertIn("Save Restored File and Close", close_runtime)
-        self.assertIn("Synchronize Restored File and Close", close_runtime)
+        self.assertIn("Save and Close", close_runtime)
+        self.assertIn("Synchronize and Close", close_runtime)
         self.assertIn("Keep File Open", close_runtime)
         self.assertIn("log_hook_context", close_runtime)
 
