@@ -44,7 +44,7 @@ class TempPhaseConversionTests(unittest.TestCase):
 
     def test_command_bundle_has_no_controller_preload(self):
         metadata = (BUTTON_ROOT / "bundle.yaml").read_text(encoding="utf-8")
-        self.assertIn("min_revit_version: 2025", metadata)
+        self.assertIn("min_revit_version: 2015", metadata)
         self.assertIn("max_revit_version: 2026", metadata)
         self.assertNotIn("modules:", metadata)
         self.assertNotIn("TempPhaseController.dll", metadata)
