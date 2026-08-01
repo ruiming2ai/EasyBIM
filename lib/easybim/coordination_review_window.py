@@ -314,7 +314,12 @@ class CoordinationReviewWindow(forms.WPFWindow):
             return
 
         try:
-            element_id = DB.ElementId(int(element_id_int))
+            try:
+                element_id = DB.ElementId(int(element_id_int))
+            except Exception:
+                # Revit 2026 removed ElementId(Int32); retry with Int64.
+                import System
+                element_id = DB.ElementId(System.Int64(int(element_id_int)))
             element = self.doc.GetElement(element_id)
         except Exception:
             element = None

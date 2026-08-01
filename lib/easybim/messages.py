@@ -1194,7 +1194,13 @@ def _format_instance_link_html(output, instance_id):
         return _escape_html(str(instance_id))
     try:
         from Autodesk.Revit.DB import ElementId
-        linked = output.linkify(ElementId(int(instance_id)))
+        try:
+            element_id = ElementId(int(instance_id))
+        except Exception:
+            # Revit 2026 removed ElementId(Int32); retry with Int64.
+            import System
+            element_id = ElementId(System.Int64(int(instance_id)))
+        linked = output.linkify(element_id)
         if linked:
             return linked
     except Exception:

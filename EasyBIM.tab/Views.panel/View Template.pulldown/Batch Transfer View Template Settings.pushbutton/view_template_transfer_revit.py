@@ -45,11 +45,20 @@ def _eid_int(element_id):
         return element_id_to_int(element_id)
 
 
+def _int_to_element_id(id_int):
+    try:
+        return DB.ElementId(int(id_int))
+    except Exception:
+        # Revit 2026 removed ElementId(Int32); retry with Int64.
+        import System
+        return DB.ElementId(System.Int64(int(id_int)))
+
+
 def _to_element_ids(id_ints):
     ids = List[DB.ElementId]()
     for id_int in id_ints or []:
         try:
-            ids.Add(DB.ElementId(int(id_int)))
+            ids.Add(_int_to_element_id(id_int))
         except Exception:
             pass
     return ids

@@ -62,6 +62,15 @@ def eid_int(eid):
         return None
 
 
+def eid_from_int(value):
+    try:
+        return ElementId(int(value))
+    except Exception:
+        # Revit 2026 removed ElementId(Int32); retry with Int64.
+        import System
+        return ElementId(System.Int64(int(value)))
+
+
 def format_ids(ids):
     values = sorted(set([x for x in ids if x is not None]))
     return ", ".join(str(x) for x in values) if values else "N/A"
@@ -617,19 +626,19 @@ try:
             if has_set_additional and has_get_additional:
                 new_list = ClrList[ElementId]()
                 for rid in after_ints:
-                    new_list.Add(ElementId(int(rid)))
+                    new_list.Add(eid_from_int(rid))
                 try:
                     sheet.SetAdditionalRevisionIds(new_list)
                 except Exception:
                     for rid in (before_set - set(after_ints)):
                         try:
-                            sheet.RemoveRevision(ElementId(int(rid)))
+                            sheet.RemoveRevision(eid_from_int(rid))
                         except Exception:
                             pass
             else:
                 for rid in (before_set - set(after_ints)):
                     try:
-                        sheet.RemoveRevision(ElementId(int(rid)))
+                        sheet.RemoveRevision(eid_from_int(rid))
                     except Exception:
                         pass
 
