@@ -1,0 +1,553 @@
+# -*- coding: utf-8 -*-
+"""Excel writer for the Export Schedules to Excel command.
+
+Ported from pyRevit's "Export Parameters to Excel" (XLS Export.pushbutton,
+xlsex_script.py) so the produced workbooks stay compatible with pyRevit's
+"Import Parameters from Excel": ElementId column, one column per visible
+schedule field, and a hidden _metadata sheet. The one intentional change is
+that rows are written in the caller-provided (schedule display) order instead
+of raw collector order.
+"""
+
+# pylint: disable=import-error,invalid-name,broad-except
+import re
+from collections import namedtuple
+
+from pyrevit import DB
+from pyrevit import coreutils
+from pyrevit import revit
+from pyrevit import script
+
+from easybim import print_sets
+
+try:
+    import xlsxwriter
+    XLSXWRITER_AVAILABLE = True
+except Exception:
+    xlsxwriter = None
+    XLSXWRITER_AVAILABLE = False
+
+try:
+    from pyrevit.revit import get_parameter_data_type
+except Exception:
+    def get_parameter_data_type(definition):
+        try:
+            return definition.GetDataType()
+        except Exception:
+            return None
+
+try:
+    from pyrevit.revit import is_yesno_parameter
+except Exception:
+    def is_yesno_parameter(definition):
+        try:
+            return definition.GetDataType() == DB.SpecTypeId.Boolean.YesNo
+        except Exception:
+            return False
+
+
+LOGGER = script.get_logger()
+
+BIP = DB.BuiltInParameter
+
+try:
+    measurable = DB.UnitUtils.IsMeasurableSpec
+except Exception:
+    def measurable(forge_type_id):
+        del forge_type_id
+        return False
+
+get_elementid_value = print_sets.get_element_id_value
+
+unit_postfix_pattern = re.compile(r"\s*\[.*\]$")
+
+ParamDef = namedtuple(
+    "ParamDef",
+    [
+        "name",
+        "istype",
+        "definition",
+        "isreadonly",
+        "isunit",
+        "storagetype",
+        "forge_type_id",
+        "unit_type_id",
+    ],
+)
+
+
+def get_unit_label_and_value(param, forge_type_id, field, project_units):
+    """Return (converted_value, label, unit_type_id, symbol_type_id).
+
+    Respects schedule field format overrides, otherwise uses project units.
+    """
+    if not forge_type_id or not measurable(forge_type_id):
+        return param.AsValueString(), "", None, None
+
+    fmt_opts = None
+    if field:
+        try:
+            field_fmt = field.GetFormatOptions()
+            if field_fmt and not field_fmt.UseDefault:
+                fmt_opts = field_fmt
+        except Exception:
+            pass
+
+    if not fmt_opts:
+        fmt_opts = project_units.GetFormatOptions(forge_type_id)
+
+    if fmt_opts.UseDefault:
+        fmt_opts = project_units.GetFormatOptions(forge_type_id)
+
+    unit_id = fmt_opts.GetUnitTypeId()
+    symbol_id = fmt_opts.GetSymbolTypeId()
+
+    val = DB.UnitUtils.ConvertFromInternalUnits(param.AsDouble(), unit_id)
+
+    label = ""
+    try:
+        label = DB.LabelUtils.GetLabelForSymbol(symbol_id)
+    except Exception:
+        try:
+            label = DB.LabelUtils.GetLabelForUnit(unit_id)
+        except Exception:
+            label = ""
+
+    return val, "[{}]".format(label) if label else "", unit_id, symbol_id
+
+
+def collect_schedule_param_defs(schedule, elements):
+    """Build ParamDefs for the schedule's visible non-calculated fields.
+
+    Columns follow GetFieldOrder(); each ParamDef is derived from the first
+    provided element carrying that parameter (same behavior as the native
+    tool). Returns (param_defs, field_mapping).
+    """
+    schedule_def = schedule.Definition
+
+    visible_fields = []
+    param_defs_list = []
+    field_mapping = {}
+    non_storage_type = coreutils.get_enum_none(DB.StorageType)
+    processed_params = set()
+
+    for field_id in schedule_def.GetFieldOrder():
+        field = schedule_def.GetField(field_id)
+        if field.IsHidden:
+            continue
+
+        if field.IsCalculatedField:
+            LOGGER.warning(
+                "Skipping calculated field: {}".format(field.GetName())
+            )
+            continue
+
+        param_id = field.ParameterId
+        if param_id and param_id != DB.ElementId.InvalidElementId:
+            visible_fields.append(field)
+
+    if not elements:
+        raise ValueError("No elements found in schedule")
+
+    for field in visible_fields:
+        param_id = field.ParameterId
+        for el in elements:
+            param = None
+            try:
+                param = el.get_Parameter(param_id)
+            except Exception:
+                field_name = field.GetName()
+                if field_name:
+                    param = el.LookupParameter(field_name)
+
+            if param and param.StorageType != non_storage_type:
+                def_name = param.Definition.Name
+                if def_name not in processed_params:
+                    param_data_type = get_parameter_data_type(param.Definition)
+
+                    unit_type_id = None
+                    if param_data_type and measurable(param_data_type):
+                        try:
+                            fmt_opts = field.GetFormatOptions()
+                            if fmt_opts:
+                                unit_type_id = fmt_opts.GetUnitTypeId()
+                        except Exception:
+                            pass
+
+                    param_defs_list.append(ParamDef(
+                        name=def_name,
+                        istype=False,
+                        definition=param.Definition,
+                        isreadonly=param.IsReadOnly,
+                        isunit=(
+                            measurable(param_data_type)
+                            if param_data_type
+                            else False
+                        ),
+                        storagetype=param.StorageType,
+                        forge_type_id=param_data_type,
+                        unit_type_id=unit_type_id,
+                    ))
+                    field_mapping[def_name] = field
+                    processed_params.add(def_name)
+                break
+
+    if not param_defs_list:
+        raise ValueError("No valid parameters found in schedule")
+
+    return param_defs_list, field_mapping
+
+
+def create_dropdown_validation(doc, worksheet, workbook, col_idx, param,
+                               src_elements, hidden_sheets):
+    """Create dropdown validation for ElementId and Workset parameters."""
+    storage_type = param.storagetype
+
+    if storage_type == DB.StorageType.Integer:
+        if param.definition.BuiltInParameter == BIP.ELEM_PARTITION_PARAM:
+            try:
+                worksets = DB.FilteredWorksetCollector(doc)
+                workset_names = sorted(
+                    [ws.Name for ws in worksets if ws.Name]
+                )
+
+                if workset_names:
+                    hidden_sheet_name = "_worksets"
+
+                    if hidden_sheet_name not in hidden_sheets:
+                        hidden_sheet = workbook.add_worksheet(hidden_sheet_name)
+                        hidden_sheet.hide()
+                        hidden_sheets[hidden_sheet_name] = hidden_sheet
+
+                        for idx, name in enumerate(workset_names):
+                            hidden_sheet.write(idx, 0, name)
+
+                    formula = "={}!$A$1:$A${}".format(
+                        hidden_sheet_name, len(workset_names)
+                    )
+
+                    worksheet.data_validation(
+                        1,
+                        col_idx,
+                        len(src_elements),
+                        col_idx,
+                        {
+                            "validate": "list",
+                            "source": formula,
+                            "error_message": "Please select a valid workset",
+                            "error_type": "stop",
+                        },
+                    )
+
+            except Exception as e:
+                LOGGER.warning(
+                    "Could not create workset dropdown for '{}': {}".format(
+                        param.name, e
+                    )
+                )
+
+    elif storage_type == DB.StorageType.ElementId:
+        try:
+            sample_category = None
+
+            for el in src_elements:
+                param_el = el.LookupParameter(param.name)
+                if param_el and param_el.HasValue:
+                    el_id = param_el.AsElementId()
+                    if el_id and el_id != DB.ElementId.InvalidElementId:
+                        ref_element = doc.GetElement(el_id)
+                        if (
+                            ref_element
+                            and hasattr(ref_element, "Category")
+                            and ref_element.Category
+                        ):
+                            sample_category = \
+                                ref_element.Category.BuiltInCategory
+                            break
+
+            if sample_category is not None:
+                collector = revit.query.get_elements_by_categories(
+                    [sample_category], doc=doc
+                )
+                element_names = sorted(
+                    list(
+                        set(
+                            [
+                                el.Name
+                                for el in collector
+                                if hasattr(el, "Name") and el.Name
+                            ]
+                        )
+                    )
+                )
+
+                if element_names:
+                    safe_param_name = (
+                        re.sub(r"[^\w\s-]", "", param.name)
+                        .strip()
+                        .replace(" ", "_")
+                    )
+                    hidden_sheet_name = "_elem_{}".format(safe_param_name[:25])
+
+                    if hidden_sheet_name not in hidden_sheets:
+                        hidden_sheet = workbook.add_worksheet(hidden_sheet_name)
+                        hidden_sheet.hide()
+                        hidden_sheets[hidden_sheet_name] = hidden_sheet
+
+                        for idx, name in enumerate(element_names):
+                            hidden_sheet.write(idx, 0, name)
+
+                    formula = "={}!$A$1:$A${}".format(
+                        hidden_sheet_name, len(element_names)
+                    )
+
+                    worksheet.data_validation(
+                        1,
+                        col_idx,
+                        len(src_elements),
+                        col_idx,
+                        {
+                            "validate": "list",
+                            "source": formula,
+                            "error_message": "Please select a valid element",
+                            "error_type": "stop",
+                        },
+                    )
+
+        except Exception as e:
+            LOGGER.warning(
+                "Could not create ElementId dropdown for '{}': {}".format(
+                    param.name, e
+                )
+            )
+
+
+def _write_workbook(doc, src_elements, valid_params, field_mapping,
+                    workbook, project_units):
+    worksheet = workbook.add_worksheet("Export")
+    metadata_sheet = workbook.add_worksheet("_metadata")
+    metadata_sheet.hide()
+
+    hidden_sheets = {}
+
+    bold = workbook.add_format({"bold": True})
+    unlocked = workbook.add_format({"locked": False})
+    locked = workbook.add_format({"locked": True})
+
+    worksheet.freeze_panes(1, 0)
+    worksheet.write(0, 0, "ElementId", bold)
+
+    metadata_sheet.write(0, 0, "Parameter Name", bold)
+    metadata_sheet.write(0, 1, "ForgeTypeId", bold)
+    metadata_sheet.write(0, 2, "UnitTypeId", bold)
+    metadata_sheet.write(0, 3, "SymbolTypeId", bold)
+    metadata_sheet.write(0, 4, "IsScheduleOverride", bold)
+
+    for col_idx, param in enumerate(valid_params):
+        postfix = ""
+        header_format = bold
+
+        if param.storagetype == DB.StorageType.ElementId:
+            header_format = workbook.add_format(
+                {"bold": True, "bg_color": "#FFBD80"}
+            )
+        if param.isreadonly:
+            header_format = workbook.add_format(
+                {"bold": True, "bg_color": "#FF3131"}
+            )
+
+        forge_type_id = param.forge_type_id
+        unit_type_id = None
+        symbol_type_id = None
+        is_schedule_override = param.name in field_mapping
+
+        if forge_type_id and measurable(forge_type_id):
+            field = field_mapping.get(param.name)
+
+            fmt_opts = None
+            if field:
+                try:
+                    field_fmt = field.GetFormatOptions()
+                    if field_fmt and not field_fmt.UseDefault:
+                        fmt_opts = field_fmt
+                except Exception:
+                    pass
+
+            if not fmt_opts:
+                fmt_opts = project_units.GetFormatOptions(forge_type_id)
+
+            if not fmt_opts.UseDefault:
+                unit_type_id = fmt_opts.GetUnitTypeId()
+                symbol_type_id = fmt_opts.GetSymbolTypeId()
+
+                if not symbol_type_id.Empty():
+                    try:
+                        symbol = DB.LabelUtils.GetLabelForSymbol(
+                            symbol_type_id
+                        )
+                        postfix = " [" + symbol + "]"
+                    except Exception:
+                        try:
+                            symbol = DB.LabelUtils.GetLabelForUnit(
+                                unit_type_id
+                            )
+                            postfix = " [" + symbol + "]"
+                        except Exception:
+                            pass
+
+        worksheet.write(0, col_idx + 1, param.name + postfix, header_format)
+
+        metadata_sheet.write(col_idx + 1, 0, param.name)
+        metadata_sheet.write(
+            col_idx + 1, 1, forge_type_id.TypeId if forge_type_id else ""
+        )
+        metadata_sheet.write(
+            col_idx + 1, 2, unit_type_id.TypeId if unit_type_id else ""
+        )
+        metadata_sheet.write(
+            col_idx + 1, 3, symbol_type_id.TypeId if symbol_type_id else ""
+        )
+        metadata_sheet.write(
+            col_idx + 1, 4, "Yes" if is_schedule_override else "No"
+        )
+
+    max_widths = [len("ElementId")] + [len(p.name) for p in valid_params]
+
+    for row_idx, el in enumerate(src_elements, start=1):
+        worksheet.write(row_idx, 0, str(get_elementid_value(el.Id)), locked)
+
+        for col_idx, param in enumerate(valid_params):
+            param_name = param.name
+            param_el = el.LookupParameter(param_name)
+            val = "<does not exist>"
+            cell_format = locked
+            if param_el:
+                val = ""
+                if param_el.HasValue:
+                    try:
+                        if param_el.StorageType == DB.StorageType.Double:
+                            forge_type_id = param.forge_type_id
+                            field = field_mapping.get(param_name)
+
+                            if forge_type_id and measurable(forge_type_id):
+                                val, _, _, _ = get_unit_label_and_value(
+                                    param_el, forge_type_id, field,
+                                    project_units
+                                )
+                            else:
+                                val = param_el.AsDouble()
+                        elif param_el.StorageType == DB.StorageType.String:
+                            val = param_el.AsString()
+                        elif param_el.StorageType == DB.StorageType.Integer:
+                            if get_elementid_value(param_el.Id) == \
+                                    int(BIP.ELEM_PARTITION_PARAM):
+                                val = str(
+                                    revit.query.get_element_workset(el).Name
+                                )
+                            elif is_yesno_parameter(param.definition):
+                                val = "Yes" if param_el.AsInteger() else "No"
+                            else:
+                                val = str(param_el.AsInteger())
+                        elif param_el.StorageType == DB.StorageType.ElementId:
+                            val = param_el.AsValueString()
+                        else:
+                            val = "<unsupported>"
+                    except Exception as e:
+                        LOGGER.warning(
+                            "Error reading param '{}' from element {}: {}"
+                            .format(param_name, el.Id, e)
+                        )
+                        val = "<Error>"
+
+                if not param.isreadonly:
+                    cell_format = unlocked
+
+            worksheet.write(row_idx, col_idx + 1, val, cell_format)
+            if len(str(val)) > max_widths[col_idx + 1]:
+                max_widths[col_idx + 1] = min(len(str(val)), 50)
+
+    for col_idx, param in enumerate(valid_params):
+        create_dropdown_validation(
+            doc,
+            worksheet,
+            workbook,
+            col_idx + 1,
+            param,
+            src_elements,
+            hidden_sheets,
+        )
+
+    for col_idx, width in enumerate(max_widths):
+        worksheet.set_column(col_idx, col_idx, width + 3)
+
+    worksheet.autofilter(0, 0, len(src_elements), len(valid_params))
+    worksheet.protect(
+        "",
+        {
+            "autofilter": True,
+            "sort": True,
+            "format_cells": True,
+            "format_columns": True,
+            "format_rows": True,
+            "delete_columns": True,
+            "delete_rows": True,
+            "select_locked_cells": True,
+            "select_unlocked_cells": True,
+        },
+    )
+
+
+def export_schedule_to_xlsx(doc, schedule, ordered_elements, file_path):
+    """Write one workbook for the schedule; returns the written row count."""
+    if not XLSXWRITER_AVAILABLE:
+        raise Exception("The 'xlsxwriter' module is not available.")
+
+    src_elements = []
+    for el in ordered_elements or []:
+        if not el.Category or el.Category.IsTagCategory:
+            continue
+        src_elements.append(el)
+
+    param_defs, field_mapping = collect_schedule_param_defs(
+        schedule, src_elements
+    )
+
+    valid_params = []
+    for param in param_defs:
+        if unit_postfix_pattern.search(param.name):
+            LOGGER.warning(
+                "Dropping {} from export. Parameter name already contains "
+                "brackets.".format(param.name)
+            )
+            continue
+        valid_params.append(param)
+
+    if not valid_params:
+        raise ValueError("No valid parameters found in schedule")
+
+    project_units = doc.GetUnits()
+    workbook = xlsxwriter.Workbook(file_path)
+    body_error = None
+    try:
+        _write_workbook(
+            doc, src_elements, valid_params, field_mapping,
+            workbook, project_units
+        )
+    except Exception as write_error:
+        body_error = write_error
+    try:
+        workbook.close()
+    except Exception as close_error:
+        if body_error is None:
+            raise Exception(
+                "Could not write '{}'. Close it in Excel and retry. "
+                "({})".format(file_path, close_error)
+            )
+        LOGGER.warning("Could not close workbook: %s", close_error)
+    if body_error is not None:
+        raise body_error
+
+    LOGGER.info(
+        "Exported {} elements to {}".format(len(src_elements), file_path)
+    )
+    return len(src_elements)
