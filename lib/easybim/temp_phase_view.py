@@ -1100,36 +1100,16 @@ def _find_extension_root(start_path):
 
 
 def _log(message):
-    text = "{0} {1}".format(_timestamp(), _safe_text(message))
+    """Forward a diagnostic marker to pyRevit's logger.
 
+    The legacy per-event file log under ``%APPDATA%\\EasyBIM`` grew without
+    bound and paid a file open/append on every logged event, so it was
+    removed.  Markers stay visible through pyRevit's debug logging.
+    """
     try:
         LOGGER.debug(_safe_text(message))
     except Exception:
         pass
-
-    try:
-        log_path = _get_log_path()
-        log_dir = os.path.dirname(log_path)
-        if not os.path.isdir(log_dir):
-            os.makedirs(log_dir)
-        with open(log_path, "a") as stream:
-            stream.write(text + os.linesep)
-    except Exception:
-        pass
-
-
-def _get_log_path():
-    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(appdata, "EasyBIM", "Temp Phase", "logs", "events.log")
-
-
-def _timestamp():
-    try:
-        import datetime
-
-        return datetime.datetime.now().isoformat()
-    except Exception:
-        return _safe_text(time.time())
 
 
 def _exception_text(exception):

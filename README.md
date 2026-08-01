@@ -36,13 +36,8 @@ and its source remain installed as a fallback until Revit 2025 and 2026 runtime
 parity is proven; the C# projects under `src/TempPhase` are not loaded by the
 normal pyRevit command or hooks.
 
-Diagnostics are written to
-`%APPDATA%\EasyBIM\Temp Phase\logs\events.log`. Useful markers include
-`PythonTempPhaseDocumentArmed`, `DocClosingSkippedUnarmedDocument`,
-`DocClosingArmedDocument`, `PythonTempPhaseDocumentTriggerCleared`,
-`DocClosingIdentityRecorded`, `DocClosedIdentityResolved`,
-`TempPhaseArmStaleRemoved`,
-`DocClosingCancelSucceeded`, `TempPhaseRestoreCommitted`,
-`TempPhaseSaveCloseSelected`, `TempPhaseSyncCloseSelected`,
-`TempPhaseCommitCompleted`, `TempPhaseCommitFailed`,
-`TempPhaseCommitCloseReposted`, and `TempPhaseCloseKeptOpen`.
+Diagnostics are emitted only through pyRevit's standard debug logging (enable
+pyRevit debug mode to see markers such as `DocClosingCancelSucceeded` or
+`TempPhaseRestoreCommitted`). The legacy per-event file log at
+`%APPDATA%\EasyBIM\Temp Phase\logs\events.log` is no longer written; the
+folder can be deleted on machines where it exists.

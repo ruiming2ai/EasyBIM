@@ -2514,34 +2514,17 @@ def _exception_text(exception):
 
 
 def _log(message):
-    text = "{0} {1}".format(_timestamp(), _safe_text(message))
+    """Forward a diagnostic marker to pyRevit's logger.
+
+    The legacy per-event file log under ``%APPDATA%\\EasyBIM`` grew without
+    bound and paid a file open/append on every hook event — including every
+    Idling tick — so it was removed.  Markers stay visible through pyRevit's
+    debug logging.
+    """
     try:
         LOGGER.debug(_safe_text(message))
     except Exception:
         pass
-    try:
-        path = _get_log_path()
-        directory = os.path.dirname(path)
-        if not os.path.isdir(directory):
-            os.makedirs(directory)
-        with open(path, "a") as stream:
-            stream.write(text + os.linesep)
-    except Exception:
-        pass
-
-
-def _get_log_path():
-    appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(appdata, "EasyBIM", "Temp Phase", "logs", "events.log")
-
-
-def _timestamp():
-    try:
-        import datetime
-
-        return datetime.datetime.now().isoformat()
-    except Exception:
-        return _safe_text(time.time())
 
 
 def log_hook_exception(stage, exception):
