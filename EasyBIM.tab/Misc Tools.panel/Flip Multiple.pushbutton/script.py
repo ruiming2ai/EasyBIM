@@ -44,25 +44,8 @@ PICK_PROMPT = "Select elements to flip"
 EPS = 1e-9
 
 
-def _safe_text(value):
-    if value is None:
-        return ""
-    try:
-        return str(value)
-    except Exception:
-        return ""
-
-
-def _eid_int(eid):
-    if eid is None:
-        return None
-    try:
-        return int(get_elementid_value(eid))
-    except Exception:
-        try:
-            return int(eid.IntegerValue)
-        except Exception:
-            return None
+from easybim.compat import safe_text as _safe_text
+from easybim.compat import eid_to_int as _eid_int
 
 
 def _set_ui_selection(uidoc, element_ids):

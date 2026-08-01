@@ -54,13 +54,7 @@ STEP_TARGETS = "targets"
 STEP_ACTION = "action"
 
 
-def _safe_text(value):
-    if value is None:
-        return ""
-    try:
-        return str(value)
-    except Exception:
-        return ""
+from easybim.compat import safe_text as _safe_text
 
 
 def _is_cancelled_pick(ex):

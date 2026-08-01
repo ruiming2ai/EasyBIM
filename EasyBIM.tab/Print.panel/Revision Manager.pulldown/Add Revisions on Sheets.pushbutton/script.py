@@ -44,30 +44,10 @@ if doc is None:
     raise SystemExit
 
 
-def eid_int(eid):
-    if eid is None:
-        return None
-    try:
-        return int(eid.IntegerValue)
-    except Exception:
-        pass
-    try:
-        return int(eid.Value)
-    except Exception:
-        pass
-    try:
-        return int(str(eid))
-    except Exception:
-        return None
+from easybim.compat import eid_to_int as eid_int
+from easybim.compat import element_id_factory
 
-
-def eid_from_int(value):
-    try:
-        return ElementId(int(value))
-    except Exception:
-        # Revit 2026 removed ElementId(Int32); retry with Int64.
-        import System
-        return ElementId(System.Int64(int(value)))
+eid_from_int = element_id_factory(ElementId)
 
 
 def doc_key():

@@ -25,25 +25,8 @@ except Exception:
     INVALID_EID = DB.ElementId(-1)
 
 
-def _eid_int(element_id):
-    if not element_id:
-        return None
-    try:
-        return int(get_elementid_value(element_id))
-    except Exception:
-        try:
-            return int(element_id.IntegerValue)
-        except Exception:
-            return None
-
-
-def _safe_text(value):
-    if value is None:
-        return ""
-    try:
-        return str(value)
-    except Exception:
-        return ""
+from easybim.compat import eid_to_int as _eid_int
+from easybim.compat import safe_text as _safe_text
 
 
 def _xyz(x, y, z):
