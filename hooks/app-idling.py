@@ -35,14 +35,8 @@ except Exception:
     # Never hard-fail Revit idling because of startup automation.
     pass
 
-if temp_phase_close is not None:
-    try:
-        temp_phase_close.log_hook_context("AppIdling", __file__)
-    except Exception as ex:
-        try:
-            temp_phase_close.log_hook_exception("AppIdlingHookException", ex)
-        except Exception:
-            pass
+# Note: no per-tick log_hook_context call here - Idling fires continuously
+# and the hook path never changes within a session.
 
 if temp_phase_close is not None:
     try:

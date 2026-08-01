@@ -334,7 +334,9 @@ def _load_startup_state():
 
     state = dict(default_state)
     jobs = raw_state.get("jobs", [])
-    if isinstance(jobs, list):
+    # This loader runs on every Idling tick via has_pending_startup_jobs;
+    # skip the per-job copy when the list is empty (the normal case).
+    if isinstance(jobs, list) and jobs:
         state["jobs"] = [job for job in jobs if isinstance(job, dict)]
 
     try:

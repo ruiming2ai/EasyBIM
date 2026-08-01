@@ -219,7 +219,9 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
         return state
 
     def _set_idle_ready(self, state):
-        state["last_idling_at"] = 0
+        del state
+        # The idle throttle lives in a module global now, not in the state.
+        self.runtime._LAST_IDLE_AT[0] = 0.0
 
     def test_non_workshared_dialog_exposes_save_and_keep_open_only(self):
         ui = FakeUi(FakeUi.TaskDialogResult.CommandLink1)
@@ -261,6 +263,21 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
         self.assertIn("Save and Close", labels)
         self.assertIn("Synchronize and Close", labels)
         self.assertIn("Keep File Open", labels)
+
+    def test_quiet_idling_tick_does_not_save_state(self):
+        """The nothing-pending tick must not write state back."""
+        self.runtime._LAST_IDLE_AT[0] = 0.0
+        with mock.patch.object(self.runtime, "_save_state") as save_state:
+            self.runtime.handle_app_idling(self.uiapp)
+        save_state.assert_not_called()
+
+    def test_idling_is_throttled_before_any_state_read(self):
+        """Within the throttle window the tick pays no state traffic at all."""
+        self.runtime._LAST_IDLE_AT[0] = 0.0
+        self.runtime.handle_app_idling(self.uiapp)
+        with mock.patch.object(self.runtime, "_get_state") as get_state:
+            self.runtime.handle_app_idling(self.uiapp)
+        get_state.assert_not_called()
 
     def test_keep_open_choice_does_not_start_commit(self):
         state = self._queue_restore_and_choose("cancel")
