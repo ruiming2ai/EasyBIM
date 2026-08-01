@@ -15,6 +15,11 @@ except Exception:
     temp_phase_close = None
 
 try:
+    from easybim import auto_update
+except Exception:
+    auto_update = None
+
+try:
     _EVENT_ARGS = EXEC_PARAMS.event_args if EXEC_PARAMS is not None else None
 except Exception:
     _EVENT_ARGS = None
@@ -33,6 +38,14 @@ try:
         process_startup_jobs()
 except Exception:
     # Never hard-fail Revit idling because of startup automation.
+    pass
+
+try:
+    # The startup auto-update is deferred here so its git/network work runs
+    # after Revit is interactive instead of blocking the startup thread.
+    if auto_update is not None and auto_update.has_pending_startup_auto_update():
+        auto_update.run_pending_startup_auto_update()
+except Exception:
     pass
 
 # Note: no per-tick log_hook_context call here - Idling fires continuously

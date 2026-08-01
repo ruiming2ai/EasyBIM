@@ -116,10 +116,12 @@ class AutoUpdateTests(unittest.TestCase):
         }
 
         with mock.patch.object(module, "_try_acquire_startup_lock", return_value=startup_lock):
-            with mock.patch.object(module, "_run_native_update", return_value=expected_result) as run_update:
+            with mock.patch.object(
+                module, "_run_startup_update_after_precheck", return_value=expected_result
+            ) as run_update:
                 result = module.run_startup_auto_update()
 
-        run_update.assert_called_once_with(trigger="startup")
+        run_update.assert_called_once_with()
         self.assertEqual(result, expected_result)
         self.assertTrue(startup_lock.released)
         self.assertTrue(startup_lock.disposed)
@@ -141,7 +143,9 @@ class AutoUpdateTests(unittest.TestCase):
         startup_lock = _FakeStartupLock()
 
         with mock.patch.object(module, "_try_acquire_startup_lock", return_value=startup_lock):
-            with mock.patch.object(module, "_run_native_update", side_effect=RuntimeError("failed")):
+            with mock.patch.object(
+                module, "_run_startup_update_after_precheck", side_effect=RuntimeError("failed")
+            ):
                 with self.assertRaises(RuntimeError):
                     module.run_startup_auto_update()
 
@@ -219,7 +223,9 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertEqual(updater.call_count, 1)
         self.assertEqual(result["status"], module.STATUS_NO_OP)
 
-    def test_startup_precheck_exception_falls_back_to_full_native_update(self):
+    def test_startup_precheck_exception_fails_closed_and_skips_update(self):
+        """A broken pre-check (auth/network) must not escalate into the full
+        git-pull-everything path."""
         module = _load_module()
         sessionmgr = _FakeSessionManager()
         updater = _FakeUpdater(
@@ -235,8 +241,42 @@ class AutoUpdateTests(unittest.TestCase):
                     result = module.run_startup_auto_update()
 
         self.assertEqual(updater.check_count, 1)
-        self.assertEqual(updater.call_count, 1)
+        self.assertEqual(updater.call_count, 0)
         self.assertEqual(result["status"], module.STATUS_NO_OP)
+
+    def test_queue_defers_and_pending_flag_is_consumed(self):
+        module = _load_module()
+        store = {}
+
+        def fake_set(name, value):
+            store[name] = value
+            return True
+
+        with mock.patch.object(module, "_set_envvar", side_effect=fake_set), mock.patch.object(
+            module, "_get_envvar", side_effect=lambda name, default=None: store.get(name, default)
+        ), mock.patch.object(
+            module, "get_startup_guard_state", return_value={"attempted": False}
+        ), mock.patch.object(
+            module, "mark_startup_attempted"
+        ) as mark_attempted, mock.patch.object(
+            module, "run_startup_auto_update", return_value={"status": module.STATUS_NO_OP}
+        ) as run_update:
+            self.assertTrue(module.queue_startup_auto_update())
+            self.assertTrue(module.has_pending_startup_auto_update())
+
+            module.run_pending_startup_auto_update()
+            mark_attempted.assert_called_once()
+            run_update.assert_called_once()
+            self.assertFalse(module.has_pending_startup_auto_update())
+
+    def test_queue_skips_when_startup_already_attempted(self):
+        module = _load_module()
+
+        with mock.patch.object(
+            module, "get_startup_guard_state", return_value={"attempted": True}
+        ), mock.patch.object(module, "_set_envvar") as set_envvar:
+            self.assertFalse(module.queue_startup_auto_update())
+        set_envvar.assert_not_called()
 
     def test_manual_auto_update_bypasses_pending_update_precheck(self):
         module = _load_module()
