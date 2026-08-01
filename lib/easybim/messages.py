@@ -118,13 +118,22 @@ def run_start_message_on_file_open(doc=None):
     """Run Start Message for a qualifying opened file with context fallback."""
     if _is_doc_eligible_for_file_open(doc):
         _clear_file_open_trigger_pending()
-        return run_start_message_workflow(doc=doc, force=False)
+        try:
+            return run_start_message_workflow(doc=doc, force=False)
+        finally:
+            # The passive detector only needs to observe the document-open
+            # phase.  Detach here unconditionally so an early bail inside the
+            # workflow can never leave the FailuresProcessing handler attached
+            # for the rest of the session.
+            _disable_passive_coordination_review_detector()
 
     # Only defer when hook timing did not provide a usable document context.
+    # The deferred startup job detaches the detector after its report runs.
     if not _is_doc_valid(doc):
         _mark_file_open_trigger_pending()
     else:
         _clear_file_open_trigger_pending()
+        _disable_passive_coordination_review_detector()
     return None
 
 
