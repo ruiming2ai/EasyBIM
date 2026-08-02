@@ -596,6 +596,77 @@ def populate_new_column(row, column, value):
     setattr(row, column.attr + "_state", cell_state)
 
 
+def export_columns(columns):
+    """Columns that appear in an Excel export (everything but select/#)."""
+    return [column for column in columns
+            if column.kind not in (KIND_SELECT, KIND_INDEX)]
+
+
+def build_export_matrix(columns, rows):
+    """WYSIWYG export payload from the staged table.
+
+    -> (header_cells, metadata_rows, data_rows, lock_rows)
+    header_cells: ["ElementId", header, ...]
+    metadata_rows: per export column [key, kind, header, param_name,
+        param_id_value, revision_id, revision_seq, read_only]
+    data_rows: per row ["<sheet id>", cell text..., revisions as Yes/No]
+    lock_rows: booleans mirroring data_rows (True = write cell locked)
+    """
+    cols = export_columns(columns)
+    header_cells = [u"ElementId"]
+    metadata_rows = []
+    for column in cols:
+        header_cells.append(column.header)
+        metadata_rows.append([
+            column.key,
+            column.kind,
+            column.header,
+            column.param_name or u"",
+            u"" if column.param_id_value is None
+            else u"{0}".format(column.param_id_value),
+            u"" if column.revision_id is None
+            else u"{0}".format(column.revision_id),
+            u"" if column.revision_seq is None
+            else u"{0}".format(column.revision_seq),
+            u"Yes" if column.is_read_only else u"No",
+        ])
+    data_rows = []
+    lock_rows = []
+    for row in rows:
+        cells = [u"" if row.sheet_id is None
+                 else u"{0}".format(row.sheet_id)]
+        locks = [True]
+        for column in cols:
+            value = getattr(row, column.attr, None)
+            if column.kind == KIND_REVISION:
+                cells.append(u"Yes" if value else u"No")
+                locks.append(row.get_state(column.attr) == STATE_LOCKED)
+            else:
+                cells.append(u"" if value is None
+                             else u"{0}".format(value))
+                locks.append(base_state(row, column)
+                             in (STATE_LOCKED, STATE_DUPLICATED))
+        data_rows.append(cells)
+        lock_rows.append(locks)
+    return header_cells, metadata_rows, data_rows, lock_rows
+
+
+def mark_pending_row_dirty(row, columns):
+    """Render an import-created row entirely as staged (red) content."""
+    for column in columns:
+        if column.kind in (KIND_SELECT, KIND_INDEX):
+            continue
+        if column.kind == KIND_REVISION:
+            if getattr(row, column.attr, False):
+                row.original[column.attr] = False
+                refresh_cell_state(row, column)
+        else:
+            value = getattr(row, column.attr, u"")
+            if value:
+                row.original[column.attr] = u""
+                refresh_cell_state(row, column)
+
+
 class CopySheetRequest(object):
     """Copy Sheet Info payload: source sheet info onto target sheets."""
 
