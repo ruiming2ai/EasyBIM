@@ -1,0 +1,51 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Copy Sheet Info"
+        Height="330"
+        Width="520"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen">
+    <StackPanel Margin="12">
+        <TextBlock x:Name="targets_tb"
+                   FontWeight="SemiBold"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,8"/>
+        <TextBlock Text="Copy from sheet:" Margin="0,0,0,4"/>
+        <ComboBox x:Name="source_cb" Height="26"/>
+        <CheckBox x:Name="sheetinfo_cb"
+                  Margin="0,12,0,0"
+                  IsChecked="True"
+                  Content="Duplicate Sheet Info"
+                  ToolTip="Stages the source sheet's parameter values (columns currently in the table) onto the selected sheets."/>
+        <CheckBox x:Name="tbinfo_cb"
+                  Margin="0,6,0,0"
+                  Content="Duplicate Title Block Info"
+                  ToolTip="Stages the source title block's parameter values (TB columns currently in the table) onto the selected sheets' title blocks."/>
+        <CheckBox x:Name="detailing_cb"
+                  Margin="0,6,0,0"
+                  Content="Duplicate Sheet Detailing"
+                  ToolTip="Copies on-sheet detailing (lines, text, symbols) onto the selected sheets when you Apply Changes. Revision clouds are not copied."/>
+        <CheckBox x:Name="withviews_cb"
+                  Margin="0,6,0,0"
+                  Content="Duplicate with Views"
+                  ToolTip="Duplicates the source sheet's views and places them on the selected sheets at the same positions when you Apply Changes. Legends and schedules are placed directly."/>
+        <DockPanel Margin="0,16,0,0" LastChildFill="False">
+            <Button x:Name="ok_b"
+                    Content="Run"
+                    IsDefault="True"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
+            <Button x:Name="cancel_b"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="cancel_clicked"/>
+        </DockPanel>
+    </StackPanel>
+</Window>

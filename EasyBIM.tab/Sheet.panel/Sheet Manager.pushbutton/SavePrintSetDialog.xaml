@@ -1,0 +1,37 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Save Print Set"
+        Height="200"
+        Width="480"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen">
+    <StackPanel Margin="12">
+        <TextBlock x:Name="summary_tb"
+                   FontWeight="SemiBold"
+                   Margin="0,0,0,6"/>
+        <TextBlock Text="Print set name (pick an existing set to overwrite it, or type a new name):"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,4"/>
+        <ComboBox x:Name="name_cb"
+                  Height="26"
+                  IsEditable="True"/>
+        <DockPanel Margin="0,16,0,0" LastChildFill="False">
+            <Button x:Name="ok_b"
+                    Content="Save"
+                    IsDefault="True"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
+            <Button x:Name="cancel_b"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="cancel_clicked"/>
+        </DockPanel>
+    </StackPanel>
+</Window>

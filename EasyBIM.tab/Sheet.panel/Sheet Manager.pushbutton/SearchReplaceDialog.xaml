@@ -1,0 +1,107 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Search &amp; Replace"
+        Height="520"
+        Width="760"
+        MinHeight="360"
+        MinWidth="560"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Grid.Column="0"
+                       Text="Search for:"
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,6"/>
+            <TextBox x:Name="find_tb"
+                     Grid.Row="0" Grid.Column="1"
+                     Height="26"
+                     Margin="0,0,0,6"/>
+            <TextBlock Grid.Row="1" Grid.Column="0"
+                       Text="Replace with:"
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,0"/>
+            <TextBox x:Name="replace_tb"
+                     Grid.Row="1" Grid.Column="1"
+                     Height="26"/>
+        </Grid>
+        <DockPanel Grid.Row="1" Margin="0,8,0,8" LastChildFill="False">
+            <CheckBox x:Name="matchcase_cb"
+                      Content="Match case"
+                      IsChecked="True"
+                      VerticalAlignment="Center"
+                      DockPanel.Dock="Left"/>
+            <TextBlock x:Name="count_tb"
+                       VerticalAlignment="Center"
+                       Margin="16,0,0,0"
+                       DockPanel.Dock="Left"/>
+            <Button x:Name="preview_b"
+                    Content="Preview"
+                    Height="26"
+                    MinWidth="90"
+                    DockPanel.Dock="Right"
+                    Click="preview_clicked"/>
+        </DockPanel>
+        <DataGrid x:Name="preview_dg"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  RowHeaderWidth="0"
+                  CanUserSortColumns="False"
+                  Foreground="#c00000"
+                  HorizontalGridLinesBrush="#dedede"
+                  VerticalGridLinesBrush="#dedede"
+                  EnableColumnVirtualization="True"
+                  EnableRowVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Sheet"
+                                    Binding="{Binding sheet}"
+                                    Width="110"/>
+                <DataGridTextColumn Header="Column"
+                                    Binding="{Binding column}"
+                                    Width="170"/>
+                <DataGridTextColumn Header="Old Value"
+                                    Binding="{Binding old_value}"
+                                    Width="*"/>
+                <DataGridTextColumn Header="New Value"
+                                    Binding="{Binding new_value}"
+                                    Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+        <DockPanel Grid.Row="3" Margin="0,10,0,0" LastChildFill="False">
+            <Button x:Name="ok_b"
+                    Content="Stage Replacements"
+                    IsDefault="True"
+                    IsEnabled="False"
+                    Height="28"
+                    MinWidth="130"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
+            <Button x:Name="cancel_b"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="cancel_clicked"/>
+        </DockPanel>
+    </Grid>
+</Window>
