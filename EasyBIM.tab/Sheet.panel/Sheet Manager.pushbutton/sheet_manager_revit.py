@@ -562,6 +562,8 @@ def apply_staged_changes(doc, changes, sheets_by_id, tb_map,
 
     with revit.TransactionGroup("Sheet Manager - Apply Changes", doc=doc):
         _apply_renumbers(doc, changes, sheets_by_id, results)
+        _apply_creates(doc, changes, sheets_by_id, tb_map, results,
+                       eid_from_int)
         _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results)
         _apply_copy_content(doc, changes.copy_content_ops, sheets_by_id,
                             results, clr_factory)
@@ -623,6 +625,64 @@ def _apply_renumbers(doc, changes, sheets_by_id, results):
                     sheet.SheetNumber = old
                 except Exception:
                     pass
+
+
+def _default_titleblock_type_id(doc, tb_map, eid_from_int):
+    """Most-used title block type in the model (fallback: first type,
+    then no title block)."""
+    counts = {}
+    for tblocks in tb_map.values():
+        for tblock in tblocks:
+            try:
+                type_int = eid_to_int(tblock.GetTypeId())
+            except Exception:
+                continue
+            if type_int is None:
+                continue
+            counts[type_int] = counts.get(type_int, 0) + 1
+    if counts:
+        best = sorted(counts.items(),
+                      key=lambda pair: (-pair[1], pair[0]))[0][0]
+        try:
+            return eid_from_int(best)
+        except Exception:
+            pass
+    try:
+        first_type = DB.FilteredElementCollector(doc)\
+            .OfCategory(DB.BuiltInCategory.OST_TitleBlocks)\
+            .WhereElementIsElementType()\
+            .FirstElement()
+        if first_type is not None:
+            return first_type.Id
+    except Exception:
+        pass
+    return DB.ElementId.InvalidElementId
+
+
+def _apply_creates(doc, changes, sheets_by_id, tb_map, results,
+                   eid_from_int):
+    if not changes.pending_sheets:
+        return
+    tb_type_id = _default_titleblock_type_id(doc, tb_map, eid_from_int)
+    with revit.Transaction("Sheet Manager - Create Sheets", doc=doc):
+        for row in changes.pending_sheets:
+            try:
+                sheet = DB.ViewSheet.Create(doc, tb_type_id)
+                sheet.SheetNumber = row.number
+                if row.name:
+                    sheet.Name = row.name
+                row.sheet_id = eid_to_int(sheet.Id)
+                row.is_pending = False
+                sheets_by_id[row.sheet_id] = sheet
+                results.created_count += 1
+                results.modified_sheet_ids.add(row.sheet_id)
+                results.sheet_changes.append(state.ResultItem(
+                    row.number, "Create sheet", u"", row.name, "applied"))
+                results.applied_cells.append((row, "number"))
+                results.applied_cells.append((row, "name"))
+            except Exception as err:
+                results.add_error(row.number, "Create sheet",
+                                  exception_text(err))
 
 
 def _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results):

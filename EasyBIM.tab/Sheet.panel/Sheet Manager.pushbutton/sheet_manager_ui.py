@@ -42,6 +42,8 @@ from pyrevit import forms
 from pyrevit import revit
 from pyrevit import script
 
+from easybim import excel_print_sets
+from easybim import excel_workbook
 from easybim import link_reload
 from easybim import print_sets
 from easybim.compat import eid_to_int
@@ -49,6 +51,7 @@ from easybim.compat import eid_to_int
 import sheet_manager_dialogs as dialogs
 import sheet_manager_revit as smrevit
 import sheet_manager_state as state
+import sheet_manager_xlsx as smxlsx
 
 
 LOGGER = script.get_logger()
@@ -809,11 +812,130 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def export_to_excel(self, sender, args):
         del sender, args
-        self._not_available("Export to Excel")
+        self._commit_pending_edit()
+        if not smxlsx.XLSXWRITER_AVAILABLE:
+            forms.alert(
+                "The 'xlsxwriter' module is not available in this "
+                "pyRevit installation.", title="Sheet Manager")
+            return
+        if not self._visible_rows:
+            forms.alert("There are no rows to export.",
+                        title="Sheet Manager")
+            return
+        doc_title = getattr(revit.doc, "Title", u"") or u""
+        default_name = smxlsx.build_export_filename(doc_title)
+        file_path = forms.save_file(file_ext="xlsx",
+                                    default_name=default_name)
+        if not file_path:
+            return
+        import time
+        try:
+            count = smxlsx.export_table_to_xlsx(
+                doc_title, self._columns, self._visible_rows, file_path,
+                time.strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception as err:
+            forms.alert("Export failed.", expanded=str(err),
+                        title="Sheet Manager")
+            return
+        forms.alert(
+            "Exported {0} sheet row(s) (all visible columns, staged "
+            "values) to:\n{1}".format(count, file_path),
+            title="Export to Excel")
 
     def import_from_excel(self, sender, args):
         del sender, args
-        self._not_available("Import from Excel")
+        self._commit_pending_edit()
+        file_path = forms.pick_file(
+            files_filter="Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm"
+                         "|All files (*.*)|*.*")
+        if not file_path:
+            return
+        try:
+            sheets = excel_workbook.read_workbook_sheets(
+                file_path, [smxlsx.EXPORT_SHEET_NAME,
+                            smxlsx.METADATA_SHEET_NAME])
+        except excel_workbook.UnsupportedWorkbook as err:
+            forms.alert("Could not read the workbook.",
+                        expanded=str(err), title="Import from Excel")
+            return
+        export_data = sheets.get(smxlsx.EXPORT_SHEET_NAME)
+        if export_data is None or not export_data.rows:
+            forms.alert(
+                "Worksheet '{0}' was not found or is empty. Export from "
+                "Sheet Manager first, edit, then import that "
+                "workbook.".format(smxlsx.EXPORT_SHEET_NAME),
+                title="Import from Excel")
+            return
+        metadata = sheets.get(smxlsx.METADATA_SHEET_NAME)
+        plan = smxlsx.plan_import(
+            export_data.rows, metadata.rows if metadata else [],
+            self._all_rows, self._columns,
+            normalize=excel_print_sets.normalize_key)
+        if plan.is_empty() and not plan.skipped_rows:
+            forms.alert("No differences were found - nothing to stage.",
+                        title="Import from Excel")
+            return
+        staged = 0
+        collisions = []
+        for row, column, value in plan.cell_edits:
+            if column.kind == state.KIND_REVISION:
+                if state.apply_revision_toggle(row, column, value):
+                    staged += 1
+                continue
+            if column.kind == state.KIND_NUMBER:
+                error = self._validate_number_edit(row, value)
+                if error:
+                    collisions.append(
+                        u"{0} -> {1}".format(row.number, value))
+                    continue
+            if state.apply_cell_edit(row, column, value):
+                staged += 1
+        created = 0
+        for item in plan.creatable:
+            row = SheetRow(None, item["number"], item["name"], False, 0)
+            values = {}
+            for column in self._columns:
+                if column.kind == state.KIND_REVISION:
+                    values[column.key] = \
+                        column.revision_id in item["revisions"]
+            state.populate_row(row, self._columns, values)
+            column_map = state.columns_by_key(self._columns)
+            for key, text in item["values"].items():
+                column = column_map.get(key)
+                if column is not None:
+                    state.apply_cell_edit(row, column, text)
+            state.mark_pending_row_dirty(row, self._columns)
+            self._all_rows.append(row)
+            created += 1
+        self._refresh_visible_rows()
+        message = [
+            "Matched sheets: {0}".format(plan.matched_count),
+            "Staged edits (red): {0}".format(staged),
+            "New sheets staged for creation: {0}".format(created),
+        ]
+        if plan.skipped_readonly:
+            message.append("Skipped read-only cells: {0}".format(
+                plan.skipped_readonly))
+        if plan.unmatched_columns:
+            message.append("Ignored unknown columns: {0}".format(
+                len(plan.unmatched_columns)))
+        expanded_lines = []
+        if collisions:
+            message.append("Skipped colliding sheet numbers: {0}".format(
+                len(collisions)))
+            expanded_lines += [u"Number collision: {0}".format(text)
+                               for text in collisions]
+        if plan.skipped_rows:
+            message.append(
+                "SKIPPED ROWS (red flag): {0} - see details.".format(
+                    len(plan.skipped_rows)))
+            expanded_lines += [u"{0}: {1}".format(label, reason)
+                               for label, reason in plan.skipped_rows]
+        message.append(
+            "\nNothing is written until you click Apply Changes.")
+        forms.alert(u"\n".join(message),
+                    expanded=u"\n".join(expanded_lines) or None,
+                    title="Import from Excel")
 
     def copy_sheet_info(self, sender, args):
         del sender, args
