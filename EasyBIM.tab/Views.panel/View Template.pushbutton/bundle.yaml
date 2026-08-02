@@ -1,0 +1,9 @@
+title: |-
+  View
+  Template
+tooltip: |-
+  Transfer view or view template settings to views and view templates.
+
+  Choose a source view or view template, pick target views or view templates, then run Transfer All or Selective Transfer.
+min_revit_version: 2023
+author: Ruiming Liu
