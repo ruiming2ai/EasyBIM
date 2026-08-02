@@ -7,7 +7,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PRINT_SET_ROOT = (
     REPO_ROOT
     / "EasyBIM.tab"
-    / "Print.panel"
+    / "Sheet.panel"
     / "Print Set.pulldown"
 )
 
@@ -25,6 +25,10 @@ def _find_xaml_element(root, xaml_name):
 
 
 class PrintSetCommandNameTests(unittest.TestCase):
+    def test_panel_renamed_to_sheet(self):
+        self.assertTrue((REPO_ROOT / "EasyBIM.tab" / "Sheet.panel").is_dir())
+        self.assertFalse((REPO_ROOT / "EasyBIM.tab" / "Print.panel").exists())
+
     def test_schedule_button_uses_update_print_set_name(self):
         bundle = _read_text(
             PRINT_SET_ROOT
