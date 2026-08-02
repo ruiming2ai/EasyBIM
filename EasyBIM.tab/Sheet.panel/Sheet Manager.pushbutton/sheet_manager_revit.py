@@ -8,15 +8,21 @@ importable on desktop Python.
 from __future__ import print_function
 
 from pyrevit import DB
+from pyrevit import HOST_APP
 from pyrevit import framework
 from pyrevit import revit
+from pyrevit import script
 
+from easybim import print_sets
 from easybim import sheet_revisions
 from easybim.compat import eid_to_int
 from easybim.compat import element_id_factory
 from easybim.compat import exception_text
 
 import sheet_manager_state as state
+
+
+LOGGER = script.get_logger()
 
 
 def collect_sheets(doc):
@@ -166,6 +172,338 @@ def write_parameter(element, param_name, value_text):
         "Unsupported storage type for {0}".format(param_name))
 
 
+def _builtin_int(builtin_param):
+    try:
+        return int(builtin_param)
+    except Exception:
+        return None
+
+
+_EXCLUDED_SHEET_PARAM_IDS = set(x for x in (
+    _builtin_int(getattr(DB.BuiltInParameter, "SHEET_NUMBER", None)),
+    _builtin_int(getattr(DB.BuiltInParameter, "SHEET_NAME", None)),
+) if x is not None)
+
+
+def excluded_sheet_param_ids():
+    """Builtin param ids handled by the fixed Number/Name columns."""
+    return set(_EXCLUDED_SHEET_PARAM_IDS)
+
+
+def discover_instance_parameters(elements, exclude_id_values=None):
+    """-> {name: {"storage", "read_only", "id_value"}} across the samples.
+
+    ElementId-storage parameters are marked read-only (never staged)."""
+    exclude = set(exclude_id_values or [])
+    found = {}
+    for element in elements:
+        if element is None:
+            continue
+        try:
+            params = element.Parameters
+        except Exception:
+            continue
+        for param in params:
+            try:
+                name = param.Definition.Name
+            except Exception:
+                continue
+            if not name:
+                continue
+            try:
+                id_value = eid_to_int(param.Id)
+            except Exception:
+                id_value = None
+            if id_value in exclude:
+                continue
+            storage = u"{0}".format(param.StorageType)
+            read_only = bool(param.IsReadOnly) or storage == u"ElementId"
+            if name in found:
+                if not read_only and found[name]["read_only"]:
+                    found[name]["read_only"] = False
+                continue
+            found[name] = {
+                "storage": storage,
+                "read_only": read_only,
+                "id_value": id_value,
+            }
+    return found
+
+
+def discover_sheet_parameters(sheets):
+    samples = [sheet for sheet in sheets
+               if not getattr(sheet, "IsPlaceholder", False)][:20] \
+        or list(sheets)[:20]
+    return discover_instance_parameters(
+        samples, exclude_id_values=_EXCLUDED_SHEET_PARAM_IDS)
+
+
+def discover_titleblock_parameters(tb_map):
+    samples = []
+    for tblocks in tb_map.values():
+        if len(tblocks) == 1:
+            samples.append(tblocks[0])
+        if len(samples) >= 20:
+            break
+    if not samples:
+        for tblocks in tb_map.values():
+            samples.extend(tblocks[:1])
+            if samples:
+                break
+    return discover_instance_parameters(samples)
+
+
+def read_parameter_value(element, param_name):
+    if element is None:
+        return u""
+    try:
+        param = element.LookupParameter(param_name)
+    except Exception:
+        return u""
+    if param is None:
+        return u""
+    try:
+        if param.StorageType == DB.StorageType.String:
+            return param.AsString() or u""
+        value_string = param.AsValueString()
+        if value_string is not None:
+            return value_string
+        if param.StorageType == DB.StorageType.Integer:
+            return u"{0}".format(param.AsInteger())
+        if param.StorageType == DB.StorageType.Double:
+            return u"{0}".format(param.AsDouble())
+    except Exception:
+        pass
+    return u""
+
+
+def param_target_for_row(row, column, sheets_by_id, tb_map):
+    if column.kind == state.KIND_SHEET_PARAM:
+        return sheets_by_id.get(row.sheet_id)
+    tblocks = tb_map.get(row.sheet_id) or []
+    if len(tblocks) == 1:
+        return tblocks[0]
+    return None
+
+
+def collect_sheet_list_schedules(doc):
+    """Sheet-list ViewSchedules, cheaply (no text exports)."""
+    sheet_category = revit.query.get_category(DB.BuiltInCategory.OST_Sheets)
+    sheet_category_id = sheet_category.Id if sheet_category else None
+    schedules = DB.FilteredElementCollector(doc)\
+        .OfClass(framework.get_type(DB.ViewSchedule))\
+        .WhereElementIsNotElementType()\
+        .ToElements()
+    result = [s for s in schedules
+              if print_sets.is_sheet_list_schedule(s, sheet_category_id)]
+    result.sort(key=lambda s: (getattr(s, "Name", u"") or u"").lower())
+    return result
+
+
+def get_ordered_sheets_for_schedule(doc, schedule):
+    return print_sets.get_ordered_schedule_sheets(
+        doc, schedule, DB, framework, script,
+        logger=LOGGER, host_app=HOST_APP)
+
+
+def map_schedule_fields(schedule):
+    """Visible schedule fields in order.
+
+    -> [{"heading", "param_id_value", "is_param"}]; is_param False for
+    calculated/combined/percentage fields (those fall back to text columns).
+    """
+    result = []
+    try:
+        definition = schedule.Definition
+        field_ids = list(definition.GetFieldOrder())
+    except Exception:
+        return result
+    invalid_id = eid_to_int(DB.ElementId.InvalidElementId)
+    for field_id in field_ids:
+        try:
+            field = definition.GetField(field_id)
+            if getattr(field, "IsHidden", False):
+                continue
+            heading = getattr(field, "ColumnHeading", None) or u""
+            if not heading:
+                try:
+                    heading = field.GetName() or u""
+                except Exception:
+                    heading = u""
+            param_id_value = None
+            try:
+                param_id_value = eid_to_int(field.ParameterId)
+            except Exception:
+                param_id_value = None
+            is_param = param_id_value is not None \
+                and param_id_value != invalid_id \
+                and not getattr(field, "IsCalculatedField", False) \
+                and not getattr(field, "IsCombinedParameterField", False)
+            result.append({
+                "heading": heading,
+                "param_id_value": param_id_value,
+                "is_param": bool(is_param),
+            })
+        except Exception:
+            continue
+    return result
+
+
+def read_schedule_text_cells(doc, schedule, sheets):
+    """-> {sheet_id_int: [cell, ...]} from the schedule's text export."""
+    del doc
+    lines = print_sets.get_schedule_text_data(
+        schedule, script, LOGGER, HOST_APP)
+    per_sheet = {}
+    if not lines:
+        return per_sheet
+    for sheet in sheets:
+        for line in lines:
+            if print_sets.schedule_line_matches_sheet(line, sheet):
+                per_sheet[eid_to_int(sheet.Id)] = line.split(u"\t")
+                break
+    return per_sheet
+
+
+def get_print_set_sheets(doc, print_set_name):
+    """Sheets of a ViewSheetSet in its (ordered) view order."""
+    sheet_set = print_sets._find_print_set_by_name(
+        doc, DB, framework, print_set_name)
+    if sheet_set is None:
+        return []
+    views = None
+    try:
+        ordered = getattr(sheet_set, "OrderedViewList", None)
+        if ordered is not None:
+            views = list(ordered)
+    except Exception:
+        views = None
+    if not views:
+        try:
+            views = list(sheet_set.Views)
+        except Exception:
+            views = []
+    return [view for view in views if isinstance(view, DB.ViewSheet)]
+
+
+def copy_sheet_detailing(doc, source_sheet, target_sheet, clr_factory):
+    """Copy on-sheet detailing (lines, text, symbols...) between sheets.
+
+    Excludes viewports, title blocks, schedule instances, and revision
+    clouds (clouds would silently add revisions to the target sheet).
+    Returns the copied element count.
+    """
+    elements = DB.FilteredElementCollector(doc, source_sheet.Id)\
+        .WhereElementIsNotElementType()\
+        .ToElements()
+    tblock_cat = _builtin_int(DB.BuiltInCategory.OST_TitleBlocks)
+    source_id = eid_to_int(source_sheet.Id)
+    copy_ids = clr_factory()
+    count = 0
+    for element in elements:
+        if isinstance(element, DB.Viewport):
+            continue
+        if isinstance(element, DB.ScheduleSheetInstance):
+            continue
+        if isinstance(element, DB.RevisionCloud):
+            continue
+        category = getattr(element, "Category", None)
+        if category is None:
+            continue
+        try:
+            if eid_to_int(category.Id) == tblock_cat:
+                continue
+        except Exception:
+            pass
+        try:
+            if eid_to_int(element.OwnerViewId) != source_id:
+                continue
+        except Exception:
+            continue
+        copy_ids.Add(element.Id)
+        count += 1
+    if count:
+        DB.ElementTransformUtils.CopyElements(
+            source_sheet, copy_ids, target_sheet,
+            DB.Transform.Identity, DB.CopyPasteOptions())
+    return count
+
+
+def duplicate_views_onto(doc, source_sheet, target_sheet):
+    """Duplicate the source sheet's placed views onto the target sheet at
+    the same viewport positions. Legends and schedules are placed directly
+    (they can live on multiple sheets). -> (placed_count, skipped_names)."""
+    placed = 0
+    skipped = []
+    try:
+        viewport_ids = list(source_sheet.GetAllViewports())
+    except Exception:
+        viewport_ids = []
+    for viewport_id in viewport_ids:
+        viewport = doc.GetElement(viewport_id)
+        if viewport is None:
+            continue
+        view = doc.GetElement(viewport.ViewId)
+        if view is None:
+            continue
+        view_name = getattr(view, "Name", u"") or u"view"
+        try:
+            center = viewport.GetBoxCenter()
+        except Exception:
+            center = None
+        target_view_id = None
+        if getattr(view, "ViewType", None) == DB.ViewType.Legend:
+            target_view_id = view.Id
+        else:
+            try:
+                option = DB.ViewDuplicateOption.WithDetailing
+                if not view.CanViewBeDuplicated(option):
+                    option = DB.ViewDuplicateOption.Duplicate
+                if view.CanViewBeDuplicated(option):
+                    target_view_id = view.Duplicate(option)
+            except Exception:
+                target_view_id = None
+        if target_view_id is None or center is None:
+            skipped.append(view_name)
+            continue
+        try:
+            if not DB.Viewport.CanAddViewToSheet(
+                    doc, target_sheet.Id, target_view_id):
+                skipped.append(view_name)
+                continue
+            new_viewport = DB.Viewport.Create(
+                doc, target_sheet.Id, target_view_id, center)
+            if new_viewport is None:
+                skipped.append(view_name)
+                continue
+            try:
+                type_id = viewport.GetTypeId()
+                if type_id is not None:
+                    new_viewport.ChangeTypeId(type_id)
+            except Exception:
+                pass
+            placed += 1
+        except Exception:
+            skipped.append(view_name)
+    try:
+        schedule_instances = DB.FilteredElementCollector(
+            doc, source_sheet.Id)\
+            .OfClass(framework.get_type(DB.ScheduleSheetInstance))\
+            .ToElements()
+    except Exception:
+        schedule_instances = []
+    for instance in schedule_instances:
+        try:
+            if getattr(instance, "IsTitleblockRevisionSchedule", False):
+                continue
+            DB.ScheduleSheetInstance.Create(
+                doc, target_sheet.Id, instance.ScheduleId, instance.Point)
+            placed += 1
+        except Exception:
+            skipped.append(u"schedule instance")
+    return placed, skipped
+
+
 def _group_by_sheet(items):
     grouped = {}
     for item in items:
@@ -225,6 +563,8 @@ def apply_staged_changes(doc, changes, sheets_by_id, tb_map,
     with revit.TransactionGroup("Sheet Manager - Apply Changes", doc=doc):
         _apply_renumbers(doc, changes, sheets_by_id, results)
         _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results)
+        _apply_copy_content(doc, changes.copy_content_ops, sheets_by_id,
+                            results, clr_factory)
         _apply_revisions(doc, revision_adds, changes.revision_removes,
                          sheets_by_id, results, eid_from_int, clr_factory)
         _apply_clouds(doc, cloud_hides, cloud_unhides, sheets_by_id,
@@ -326,6 +666,57 @@ def _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results):
             except Exception as err:
                 results.add_error(row.number, column.header,
                                   exception_text(err))
+
+
+def _apply_copy_content(doc, ops, sheets_by_id, results, clr_factory):
+    if not ops:
+        return
+    with revit.Transaction("Sheet Manager - Copy Sheet Content", doc=doc):
+        for op in ops:
+            source = sheets_by_id.get(op.source_sheet_id)
+            if source is None:
+                results.add_error(op.source_number, "Copy Sheet Info",
+                                  "Source sheet not found in model.")
+                continue
+            for target_id in op.target_sheet_ids:
+                target = sheets_by_id.get(target_id)
+                if target is None:
+                    results.add_error(op.source_number, "Copy Sheet Info",
+                                      "Target sheet not found in model.")
+                    continue
+                target_number = getattr(target, "SheetNumber", u"") or u""
+                if op.dup_detailing:
+                    try:
+                        count = copy_sheet_detailing(
+                            doc, source, target, clr_factory)
+                        results.sheet_changes.append(state.ResultItem(
+                            target_number, "Copy sheet detailing", u"",
+                            u"{0} element(s) from {1}".format(
+                                count, op.source_number),
+                            "applied" if count else "nothing to copy"))
+                        if count:
+                            results.modified_sheet_ids.add(target_id)
+                    except Exception as err:
+                        results.add_error(target_number,
+                                          "Copy sheet detailing",
+                                          exception_text(err))
+                if op.dup_with_views:
+                    try:
+                        placed, skipped = duplicate_views_onto(
+                            doc, source, target)
+                        detail = u"{0} view(s) from {1}".format(
+                            placed, op.source_number)
+                        if skipped:
+                            detail += u"; skipped: {0}".format(
+                                u", ".join(skipped[:8]))
+                        results.sheet_changes.append(state.ResultItem(
+                            target_number, "Duplicate views", u"", detail,
+                            "applied" if placed else "nothing placed"))
+                        if placed:
+                            results.modified_sheet_ids.add(target_id)
+                    except Exception as err:
+                        results.add_error(target_number, "Duplicate views",
+                                          exception_text(err))
 
 
 def _apply_revisions(doc, adds, removes, sheets_by_id, results,

@@ -417,6 +417,200 @@ def compute_staged_changes(rows, columns):
     return changes
 
 
+FILTER_OPS = [
+    ("equals", "equals"),
+    ("not_equals", "does not equal"),
+    ("contains", "contains"),
+    ("not_contains", "does not contain"),
+    ("begins", "begins with"),
+    ("ends", "ends with"),
+    ("greater", "is greater than"),
+    ("less", "is less than"),
+    ("has_value", "has a value"),
+    ("no_value", "has no value"),
+]
+FILTER_OPS_NO_VALUE = ("has_value", "no_value")
+
+
+def evaluate_filter_rule(value_text, op, arg):
+    text = u"" if value_text is None else u"{0}".format(value_text)
+    lowered = text.strip().lower()
+    arg_text = u"" if arg is None else u"{0}".format(arg)
+    arg_lower = arg_text.strip().lower()
+    if op == "has_value":
+        return bool(text.strip())
+    if op == "no_value":
+        return not text.strip()
+    if op == "equals":
+        return lowered == arg_lower
+    if op == "not_equals":
+        return lowered != arg_lower
+    if op == "contains":
+        return arg_lower in lowered
+    if op == "not_contains":
+        return arg_lower not in lowered
+    if op == "begins":
+        return lowered.startswith(arg_lower)
+    if op == "ends":
+        return lowered.endswith(arg_lower)
+    if op in ("greater", "less"):
+        try:
+            left = float(text.strip())
+            right = float(arg_text.strip())
+        except (TypeError, ValueError):
+            left = lowered
+            right = arg_lower
+        if op == "greater":
+            return left > right
+        return left < right
+    return True
+
+
+def columns_by_key(columns):
+    result = {}
+    for column in columns:
+        result[column.key] = column
+    return result
+
+
+def filter_rows_by_rules(rows, column_map, rules, extra_lookup=None):
+    """AND of rules; rules = [(column_key, op, arg)].
+
+    ``extra_lookup(row, column_key)`` supplies values for rule keys that are
+    not table columns (params filtered without being shown); returning None
+    skips that rule for the row.
+    """
+    if not rules:
+        return list(rows)
+    result = []
+    for row in rows:
+        keep = True
+        for column_key, op, arg in rules:
+            column = column_map.get(column_key)
+            if column is not None:
+                value = getattr(row, column.attr, None)
+            elif extra_lookup is not None:
+                value = extra_lookup(row, column_key)
+                if value is None:
+                    continue
+            else:
+                continue
+            if not evaluate_filter_rule(value, op, arg):
+                keep = False
+                break
+        if keep:
+            result.append(row)
+    return result
+
+
+def checked_revision_ids(row, columns):
+    """Revision ids currently checked on the row (staged state)."""
+    result = set()
+    for column in columns:
+        if column.kind == KIND_REVISION and getattr(row, column.attr, False):
+            result.add(column.revision_id)
+    return result
+
+
+def filter_rows_by_revisions(rows, columns, selected_ids, all_revision_ids):
+    """Keep rows carrying any selected revision. All-selected = inactive
+    (otherwise sheets without revisions would always vanish)."""
+    if not selected_ids:
+        return list(rows)
+    if set(selected_ids) >= set(all_revision_ids):
+        return list(rows)
+    selected = set(selected_ids)
+    return [row for row in rows
+            if checked_revision_ids(row, columns) & selected]
+
+
+def sort_rows(rows, column_map, levels):
+    """Stable multi-level sort; levels = [(column_key, ascending)] applied
+    right-to-left. Numeric-aware: numbers sort before text."""
+    result = list(rows)
+
+    def make_key(column):
+        def _key(row):
+            value = getattr(row, column.attr, None)
+            text = u"" if value is None else u"{0}".format(value)
+            stripped = text.strip()
+            try:
+                return (0, float(stripped), u"")
+            except (TypeError, ValueError):
+                return (1, 0.0, stripped.lower())
+        return _key
+
+    for column_key, ascending in reversed(list(levels)):
+        column = column_map.get(column_key)
+        if column is None:
+            continue
+        result.sort(key=make_key(column), reverse=not ascending)
+    return result
+
+
+def plan_search_replace(rows, columns, find_text, replace_text,
+                        match_case=True):
+    """-> [(row, column, old_text, new_text)] over editable text cells."""
+    if not find_text:
+        return []
+    replace_text = u"" if replace_text is None else u"{0}".format(replace_text)
+    find_text = u"{0}".format(find_text)
+    plan = []
+    if not match_case:
+        import re
+        pattern = re.compile(re.escape(find_text), re.IGNORECASE)
+    for row in rows:
+        for column in columns:
+            if column.kind not in EDITABLE_TEXT_KINDS:
+                continue
+            if not can_edit_cell(row, column):
+                continue
+            value = getattr(row, column.attr, None)
+            text = u"" if value is None else u"{0}".format(value)
+            if match_case:
+                if find_text not in text:
+                    continue
+                new_text = text.replace(find_text, replace_text)
+            else:
+                if not pattern.search(text):
+                    continue
+                new_text = pattern.sub(
+                    replace_text.replace(u"\\", u"\\\\"), text)
+            if new_text != text:
+                plan.append((row, column, text, new_text))
+    return plan
+
+
+def populate_new_column(row, column, value):
+    """Initialize one late-added text column on an existing row."""
+    cell_state = base_state(row, column)
+    if value is None:
+        value = u""
+    if cell_state == STATE_DUPLICATED:
+        value = DUPLICATED_TEXT
+    elif column.kind == KIND_TB_PARAM and cell_state == STATE_LOCKED \
+            and (row.is_placeholder or row.tblock_count == 0):
+        value = u""
+    setattr(row, column.attr, value)
+    row.original[column.attr] = value
+    setattr(row, column.attr + "_state", cell_state)
+
+
+class CopySheetRequest(object):
+    """Copy Sheet Info payload: source sheet info onto target sheets."""
+
+    def __init__(self, source_sheet_id, source_number,
+                 dup_sheet_info, dup_tb_info, dup_detailing, dup_with_views,
+                 target_sheet_ids):
+        self.source_sheet_id = source_sheet_id
+        self.source_number = source_number
+        self.dup_sheet_info = bool(dup_sheet_info)
+        self.dup_tb_info = bool(dup_tb_info)
+        self.dup_detailing = bool(dup_detailing)
+        self.dup_with_views = bool(dup_with_views)
+        self.target_sheet_ids = list(target_sheet_ids)
+
+
 class ResultItem(object):
     """One line in the Apply Changes results dialog."""
 

@@ -1,0 +1,53 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Filter By Parameter"
+        Height="470"
+        Width="720"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0"
+                   Text="Rows must satisfy every rule (AND), like native schedule filters. Leave a field on (none) to skip a rule."
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,8"/>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="rules_sp"/>
+        </ScrollViewer>
+        <CheckBox x:Name="addparams_cb"
+                  Grid.Row="2"
+                  Margin="0,10,0,0"
+                  IsChecked="False"
+                  Content="Add Parameters to Table"
+                  ToolTip="Adds parameters referenced by rules as table columns when they are not shown yet."/>
+        <DockPanel Grid.Row="3" Margin="0,12,0,0" LastChildFill="False">
+            <Button x:Name="clear_b"
+                    Content="Clear Rules"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Left"
+                    Click="clear_clicked"/>
+            <Button x:Name="ok_b"
+                    Content="Apply Filter"
+                    IsDefault="True"
+                    Height="28"
+                    MinWidth="100"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
+            <Button x:Name="cancel_b"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="cancel_clicked"/>
+        </DockPanel>
+    </Grid>
+</Window>

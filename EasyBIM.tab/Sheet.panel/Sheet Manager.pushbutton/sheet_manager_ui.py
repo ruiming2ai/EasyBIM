@@ -36,6 +36,7 @@ from System.Windows.Markup import XamlReader
 from System.Windows.Media import VisualTreeHelper
 
 from pyrevit import DB
+from pyrevit import HOST_APP
 from pyrevit import framework
 from pyrevit import forms
 from pyrevit import revit
@@ -43,6 +44,7 @@ from pyrevit import script
 
 from easybim import link_reload
 from easybim import print_sets
+from easybim.compat import eid_to_int
 
 import sheet_manager_dialogs as dialogs
 import sheet_manager_revit as smrevit
@@ -151,6 +153,15 @@ class SheetManagerWindow(forms.WPFWindow):
         self._search_text = u""
         self._source_label = "All Sheets"
         self._selectall_cb = None
+        self._source_order = None
+        self._all_revision_ids = set()
+        self._revision_filter_ids = set()
+        self._param_rules = []
+        self._sort_levels = []
+        self._copy_content_ops = []
+        self._sheet_param_info = None
+        self._tb_param_info = None
+        self._filter_extra_cache = {}
 
         self._load_model()
         self._build_columns_ui()
@@ -167,6 +178,8 @@ class SheetManagerWindow(forms.WPFWindow):
         doc = revit.doc
         self._revision_rows = print_sets.collect_revision_rows(
             doc, DB, framework)
+        self._all_revision_ids = set(
+            revision.get("id") for revision in self._revision_rows)
         rows, tb_map, sheets_by_id = smrevit.build_rows(doc, SheetRow)
         self._tb_map = tb_map
         self._sheets_by_id = sheets_by_id
@@ -370,14 +383,66 @@ class SheetManagerWindow(forms.WPFWindow):
     # ---------------------------------------------------------- refresh
 
     def _refresh_visible_rows(self):
-        visible = state.search_rows(
-            self._all_rows, self._columns, self._search_text)
-        state.renumber(visible)
-        self._visible_rows = visible
+        rows = self._all_rows
+        if self._source_order is not None:
+            by_id = {}
+            for row in rows:
+                by_id[row.sheet_id] = row
+            scoped = [by_id[sheet_id] for sheet_id in self._source_order
+                      if sheet_id in by_id]
+            scoped += [row for row in rows if row.is_pending]
+            rows = scoped
+        rows = state.search_rows(rows, self._columns, self._search_text)
+        rows = state.filter_rows_by_revisions(
+            rows, self._columns, self._revision_filter_ids,
+            self._all_revision_ids)
+        rows = state.filter_rows_by_rules(
+            rows, state.columns_by_key(self._columns), self._param_rules,
+            extra_lookup=self._extra_filter_lookup)
+        if self._sort_levels:
+            rows = state.sort_rows(
+                rows, state.columns_by_key(self._columns),
+                self._sort_levels)
+        state.renumber(rows)
+        self._visible_rows = rows
         self.sheets_dg.ItemsSource = None
-        self.sheets_dg.ItemsSource = visible
+        self.sheets_dg.ItemsSource = rows
         self._update_selectall_state()
+        self._update_filter_labels()
         self._update_status()
+
+    def _extra_filter_lookup(self, row, column_key):
+        """Values for filter rules on params that are not table columns."""
+        cache_key = (row.sheet_id, column_key)
+        if cache_key in self._filter_extra_cache:
+            return self._filter_extra_cache[cache_key]
+        value = None
+        if column_key.startswith("p:") or column_key.startswith("tb:"):
+            param_name = column_key.split(":", 1)[1]
+            if column_key.startswith("p:"):
+                element = self._sheets_by_id.get(row.sheet_id)
+            else:
+                tblocks = self._tb_map.get(row.sheet_id) or []
+                element = tblocks[0] if len(tblocks) == 1 else None
+            value = smrevit.read_parameter_value(element, param_name)
+        self._filter_extra_cache[cache_key] = value
+        return value
+
+    def _update_filter_labels(self):
+        if self._revision_filter_ids:
+            self.filterrev_b.Content = "Filter By Revision ({0})".format(
+                len(self._revision_filter_ids))
+        else:
+            self.filterrev_b.Content = "Filter By Revision"
+        if self._param_rules:
+            self.filterparam_b.Content = "Filter By Parameter ({0})".format(
+                len(self._param_rules))
+        else:
+            self.filterparam_b.Content = "Filter By Parameter"
+        if self._sort_levels:
+            self.sort_b.Content = "Sort ({0})".format(len(self._sort_levels))
+        else:
+            self.sort_b.Content = "Sort"
 
     def _update_status(self):
         staged = state.count_staged_cells(self._all_rows, self._columns)
@@ -385,6 +450,9 @@ class SheetManagerWindow(forms.WPFWindow):
             len(self._visible_rows), len(self._all_rows))]
         if staged:
             bits.append("{0} staged change(s) pending Apply".format(staged))
+        if self._copy_content_ops:
+            bits.append("{0} copy operation(s) pending Apply".format(
+                len(self._copy_content_ops)))
         self.status_tb.Text = "  |  ".join(bits)
         self.source_tb.Text = "Source: {0}".format(self._source_label)
 
@@ -436,31 +504,308 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def load_sheet_list(self, sender, args):
         del sender, args
-        self._not_available("Load Sheet List")
+        self._commit_pending_edit()
+        doc = revit.doc
+        schedules = smrevit.collect_sheet_list_schedules(doc)
+        if not schedules:
+            forms.alert("No Sheet List schedules were found in the model.",
+                        title="Sheet Manager")
+            return
+        names = [getattr(s, "Name", u"") or u"" for s in schedules]
+        dialog = dialogs.LoadFromSourceWindow(
+            "LoadFromSourceDialog.xaml", "schedule", names)
+        dialog.ShowDialog()
+        if not dialog.result:
+            return
+        name, numbers_only = dialog.result
+        schedule = schedules[names.index(name)]
+        try:
+            ordered = smrevit.get_ordered_sheets_for_schedule(doc, schedule)
+        except Exception as err:
+            forms.alert("Could not read the sheet list order.",
+                        expanded=str(err), title="Sheet Manager")
+            return
+        self._source_order = [eid_to_int(sheet.Id) for sheet in ordered]
+        self._source_label = u"Sheet List: {0}".format(name)
+        if not numbers_only:
+            try:
+                self._load_schedule_columns(doc, schedule, ordered)
+            except Exception as err:
+                LOGGER.warning("Sheet list columns unavailable: %s", err)
+                forms.alert(
+                    "Loaded sheet order, but the sheet list's columns "
+                    "could not be read; showing numbers & names only.",
+                    expanded=str(err), title="Sheet Manager")
+        self._refresh_visible_rows()
+
+    def _load_schedule_columns(self, doc, schedule, ordered_sheets):
+        fields = smrevit.map_schedule_fields(schedule)
+        if not fields:
+            return
+        self._ensure_param_info()
+        id_to_name = {}
+        for param_name, info in self._sheet_param_info.items():
+            if info.get("id_value") is not None:
+                id_to_name[info["id_value"]] = param_name
+        excluded_ids = smrevit.excluded_sheet_param_ids()
+        existing_keys = set(column.key for column in self._columns)
+        param_counter = state.next_attr_index(self._columns, "p")
+        text_counter = state.next_attr_index(self._columns, "s")
+        new_param_specs = []
+        text_specs = []
+        for pos, field in enumerate(fields):
+            param_id_value = field.get("param_id_value")
+            if param_id_value in excluded_ids:
+                continue
+            if field.get("is_param") and param_id_value in id_to_name:
+                param_name = id_to_name[param_id_value]
+                key = u"p:{0}".format(param_name)
+                if key in existing_keys:
+                    continue
+                info = self._sheet_param_info.get(param_name, {})
+                spec = state.ColumnSpec(
+                    key, state.KIND_SHEET_PARAM, param_name,
+                    "p{0}".format(param_counter),
+                    param_name=param_name, param_id_value=param_id_value,
+                    storage_type=info.get("storage", u""),
+                    is_read_only=bool(info.get("read_only")),
+                    source="schedule", width=130)
+                param_counter += 1
+                existing_keys.add(key)
+                new_param_specs.append(spec)
+            else:
+                heading = field.get("heading") or \
+                    u"Column {0}".format(pos + 1)
+                key = u"sched:{0}".format(heading)
+                if key in existing_keys:
+                    continue
+                spec = state.ColumnSpec(
+                    key, state.KIND_SCHEDULE_TEXT, heading,
+                    "s{0}".format(text_counter),
+                    is_read_only=True, source="schedule", width=120)
+                text_counter += 1
+                existing_keys.add(key)
+                text_specs.append((pos, spec))
+        for spec in new_param_specs:
+            for row in self._all_rows:
+                element = smrevit.param_target_for_row(
+                    row, spec, self._sheets_by_id, self._tb_map)
+                state.populate_new_column(
+                    row, spec,
+                    smrevit.read_parameter_value(element, spec.param_name))
+        if text_specs:
+            cells_by_sheet = smrevit.read_schedule_text_cells(
+                doc, schedule, ordered_sheets)
+            for pos, spec in text_specs:
+                for row in self._all_rows:
+                    cells = cells_by_sheet.get(row.sheet_id)
+                    value = u""
+                    if cells and pos < len(cells):
+                        value = cells[pos]
+                    state.populate_new_column(row, spec, value)
+        new_specs = new_param_specs + [spec for _, spec in text_specs]
+        if new_specs:
+            self._insert_columns_before_revisions(new_specs)
+            self._build_columns_ui()
 
     def load_print_set(self, sender, args):
         del sender, args
-        self._not_available("Load Print Set")
+        self._commit_pending_edit()
+        names = print_sets.collect_print_set_names(revit.doc, DB, framework)
+        if not names:
+            forms.alert("No print sets were found in the model.",
+                        title="Sheet Manager")
+            return
+        dialog = dialogs.LoadFromSourceWindow(
+            "LoadFromSourceDialog.xaml", "printset", names)
+        dialog.ShowDialog()
+        if not dialog.result:
+            return
+        name = dialog.result[0]
+        sheets = smrevit.get_print_set_sheets(revit.doc, name)
+        if not sheets:
+            forms.alert(
+                u"Print set '{0}' contains no sheets.".format(name),
+                title="Sheet Manager")
+            return
+        self._source_order = [eid_to_int(sheet.Id) for sheet in sheets]
+        self._source_label = u"Print Set: {0}".format(name)
+        self._refresh_visible_rows()
 
     def filter_by_revision(self, sender, args):
         del sender, args
-        self._not_available("Filter By Revision")
+        if not self._revision_rows:
+            forms.alert("No revisions were found in the model.",
+                        title="Sheet Manager")
+            return
+        dialog = dialogs.FilterByRevisionWindow(
+            "FilterByRevisionDialog.xaml", self._revision_rows,
+            self._revision_filter_ids)
+        dialog.ShowDialog()
+        if dialog.result is None:
+            return
+        if dialog.result >= self._all_revision_ids:
+            self._revision_filter_ids = set()
+        else:
+            self._revision_filter_ids = set(dialog.result)
+        self._refresh_visible_rows()
+
+    def _ensure_param_info(self):
+        if self._sheet_param_info is None:
+            self._sheet_param_info = smrevit.discover_sheet_parameters(
+                list(self._sheets_by_id.values()))
+        if self._tb_param_info is None:
+            self._tb_param_info = smrevit.discover_titleblock_parameters(
+                self._tb_map)
+
+    def _filter_field_options(self):
+        options = [("number", "Sheet Number"), ("name", "Sheet Name")]
+        existing_keys = set()
+        for column in self._columns:
+            if column.kind in (state.KIND_SHEET_PARAM,
+                               state.KIND_TB_PARAM,
+                               state.KIND_SCHEDULE_TEXT):
+                options.append((column.key, column.header))
+                existing_keys.add(column.key)
+        for param_name in sorted(self._sheet_param_info or {}):
+            key = u"p:{0}".format(param_name)
+            if key not in existing_keys:
+                options.append((key, param_name))
+        for param_name in sorted(self._tb_param_info or {}):
+            key = u"tb:{0}".format(param_name)
+            if key not in existing_keys:
+                options.append(
+                    (key, state.TB_HEADER_PREFIX + param_name))
+        return options
 
     def filter_by_parameter(self, sender, args):
         del sender, args
-        self._not_available("Filter By Parameter")
+        self._ensure_param_info()
+        dialog = dialogs.FilterByParameterWindow(
+            "FilterByParameterDialog.xaml", self._filter_field_options(),
+            self._param_rules, False)
+        dialog.ShowDialog()
+        if dialog.result is None:
+            return
+        rules, add_params = dialog.result
+        self._param_rules = rules
+        self._filter_extra_cache = {}
+        if add_params:
+            self._add_rule_param_columns(rules)
+        self._refresh_visible_rows()
+
+    def _add_rule_param_columns(self, rules):
+        existing_keys = set(column.key for column in self._columns)
+        sheet_names = []
+        tb_names = []
+        for column_key, _, _ in rules:
+            if column_key in existing_keys:
+                continue
+            if column_key.startswith(u"p:"):
+                sheet_names.append(column_key.split(u":", 1)[1])
+            elif column_key.startswith(u"tb:"):
+                tb_names.append(column_key.split(u":", 1)[1])
+        if sheet_names:
+            self._add_param_columns(state.KIND_SHEET_PARAM, sheet_names)
+        if tb_names:
+            self._add_param_columns(state.KIND_TB_PARAM, tb_names)
 
     def sort_clicked(self, sender, args):
         del sender, args
-        self._not_available("Sort")
+        field_options = [(column.key, column.header)
+                         for column in self._columns
+                         if column.is_text_value]
+        dialog = dialogs.SortWindow(
+            "SortDialog.xaml", field_options, self._sort_levels)
+        dialog.ShowDialog()
+        if dialog.result is None:
+            return
+        self._sort_levels = dialog.result
+        self._refresh_visible_rows()
+
+    def _add_param_columns(self, kind, names):
+        self._ensure_param_info()
+        if kind == state.KIND_SHEET_PARAM:
+            info_map = self._sheet_param_info
+            key_prefix = u"p:"
+        else:
+            info_map = self._tb_param_info
+            key_prefix = u"tb:"
+        existing_keys = set(column.key for column in self._columns)
+        counter = state.next_attr_index(self._columns, "p")
+        new_specs = []
+        for param_name in names:
+            key = key_prefix + param_name
+            if key in existing_keys:
+                continue
+            info = info_map.get(param_name, {})
+            header = param_name if kind == state.KIND_SHEET_PARAM \
+                else state.TB_HEADER_PREFIX + param_name
+            spec = state.ColumnSpec(
+                key, kind, header, "p{0}".format(counter),
+                param_name=param_name,
+                param_id_value=info.get("id_value"),
+                storage_type=info.get("storage", u""),
+                is_read_only=bool(info.get("read_only", True)),
+                source="user", width=130)
+            counter += 1
+            existing_keys.add(key)
+            for row in self._all_rows:
+                element = smrevit.param_target_for_row(
+                    row, spec, self._sheets_by_id, self._tb_map)
+                state.populate_new_column(
+                    row, spec,
+                    smrevit.read_parameter_value(element, param_name))
+            new_specs.append(spec)
+        if new_specs:
+            self._insert_columns_before_revisions(new_specs)
+            self._build_columns_ui()
+            self._refresh_visible_rows()
+
+    def _insert_columns_before_revisions(self, new_specs):
+        insert_at = len(self._columns)
+        for pos, column in enumerate(self._columns):
+            if column.kind == state.KIND_REVISION:
+                insert_at = pos
+                break
+        self._columns = self._columns[:insert_at] + list(new_specs) + \
+            self._columns[insert_at:]
 
     def add_titleblock_parameter(self, sender, args):
         del sender, args
-        self._not_available("Add Title Block Parameter")
+        self._ensure_param_info()
+        existing = set(column.param_name for column in self._columns
+                       if column.kind == state.KIND_TB_PARAM)
+        names = sorted(param_name for param_name in self._tb_param_info
+                       if param_name not in existing)
+        if not names:
+            forms.alert("No more title block parameters to add.",
+                        title="Sheet Manager")
+            return
+        chosen = forms.SelectFromList.show(
+            names, multiselect=True, title="Add Title Block Parameter",
+            button_name="Add Columns")
+        if not chosen:
+            return
+        self._add_param_columns(state.KIND_TB_PARAM, chosen)
 
     def add_sheet_parameter(self, sender, args):
         del sender, args
-        self._not_available("Add Sheet Parameter")
+        self._ensure_param_info()
+        existing = set(column.param_name for column in self._columns
+                       if column.kind == state.KIND_SHEET_PARAM)
+        names = sorted(param_name for param_name in self._sheet_param_info
+                       if param_name not in existing)
+        if not names:
+            forms.alert("No more sheet parameters to add.",
+                        title="Sheet Manager")
+            return
+        chosen = forms.SelectFromList.show(
+            names, multiselect=True, title="Add Sheet Parameter",
+            button_name="Add Columns")
+        if not chosen:
+            return
+        self._add_param_columns(state.KIND_SHEET_PARAM, chosen)
 
     def export_to_excel(self, sender, args):
         del sender, args
@@ -472,15 +817,158 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def copy_sheet_info(self, sender, args):
         del sender, args
-        self._not_available("Copy Sheet Info")
+        self._commit_pending_edit()
+        targets = [item for item in self.sheets_dg.SelectedItems
+                   if isinstance(item, SheetRow)]
+        if not targets:
+            forms.alert(
+                "Select the target sheets in the table first "
+                "(shift-click or drag).", title="Copy Sheet Info")
+            return
+        source_options = [
+            (row.sheet_id, u"{0} - {1}".format(row.number, row.name))
+            for row in self._all_rows if not row.is_pending]
+        dialog = dialogs.CopySheetInfoWindow(
+            "CopySheetInfoDialog.xaml", source_options, len(targets))
+        dialog.ShowDialog()
+        if dialog.result is None:
+            return
+        source_id, dup_sheet, dup_tb, dup_detailing, dup_views = \
+            dialog.result
+        source_row = None
+        for row in self._all_rows:
+            if row.sheet_id == source_id:
+                source_row = row
+                break
+        if source_row is None:
+            return
+        targets = [row for row in targets if row is not source_row]
+        if not targets:
+            forms.alert("Pick target sheets different from the source.",
+                        title="Copy Sheet Info")
+            return
+        staged = 0
+        param_columns_missing = []
+        if dup_sheet:
+            columns = [column for column in self._columns
+                       if column.kind == state.KIND_SHEET_PARAM
+                       and not column.is_read_only]
+            if not columns:
+                param_columns_missing.append("sheet parameter")
+            for column in columns:
+                value = getattr(source_row, column.attr, u"")
+                staged += len(state.propagate_edit(targets, column, value))
+        if dup_tb:
+            columns = [column for column in self._columns
+                       if column.kind == state.KIND_TB_PARAM
+                       and not column.is_read_only]
+            if not columns:
+                param_columns_missing.append("title block parameter")
+            for column in columns:
+                value = getattr(source_row, column.attr, u"")
+                staged += len(state.propagate_edit(targets, column, value))
+        if dup_detailing or dup_views:
+            request = state.CopySheetRequest(
+                source_id, source_row.number, dup_sheet, dup_tb,
+                dup_detailing, dup_views,
+                [row.sheet_id for row in targets if not row.is_pending])
+            self._copy_content_ops.append(request)
+        message = ["Copy Sheet Info from {0}:".format(source_row.number)]
+        if dup_sheet or dup_tb:
+            message.append(
+                "{0} parameter value(s) staged (shown red).".format(staged))
+        if param_columns_missing:
+            message.append(
+                "Note: no editable {0} columns are in the table - add "
+                "columns first to copy those values.".format(
+                    " / ".join(param_columns_missing)))
+        if dup_detailing or dup_views:
+            message.append(
+                "Detailing/views will be copied when you Apply Changes.")
+        forms.alert("\n".join(message), title="Copy Sheet Info")
+        self._update_status()
 
     def search_replace(self, sender, args):
         del sender, args
-        self._not_available("Search & Replace")
+        self._commit_pending_edit()
+
+        def plan_provider(find_text, replace_text, match_case):
+            return state.plan_search_replace(
+                self._visible_rows, self._columns, find_text,
+                replace_text, match_case)
+
+        dialog = dialogs.SearchReplaceWindow(
+            "SearchReplaceDialog.xaml", plan_provider)
+        dialog.ShowDialog()
+        if not dialog.result:
+            return
+        applied = 0
+        skipped_numbers = []
+        for row, column, old_text, new_text in dialog.result:
+            if column.kind == state.KIND_NUMBER:
+                error = self._validate_number_edit(row, new_text)
+                if error:
+                    skipped_numbers.append(
+                        u"{0} -> {1}".format(old_text, new_text))
+                    continue
+            if state.apply_cell_edit(row, column, new_text):
+                applied += 1
+        self._update_status()
+        if skipped_numbers:
+            forms.alert(
+                "{0} replacement(s) staged. Skipped sheet-number "
+                "replacements that would collide:".format(applied),
+                expanded=u"\n".join(skipped_numbers),
+                title="Search & Replace")
 
     def save_print_set(self, sender, args):
         del sender, args
-        self._not_available("Save Print Set")
+        self._commit_pending_edit()
+        if not print_sets.supports_ordered_print_sets(HOST_APP):
+            forms.alert("Save Print Set requires Revit 2023 or newer.",
+                        title="Sheet Manager")
+            return
+        checked = [row for row in self._visible_rows
+                   if row.is_selected and not row.is_pending]
+        if not checked:
+            forms.alert(
+                "Check at least one sheet row first (checkbox column).",
+                title="Save Print Set")
+            return
+        names = print_sets.collect_print_set_names(revit.doc, DB, framework)
+        dialog = dialogs.SavePrintSetWindow(
+            "SavePrintSetDialog.xaml", names, len(checked))
+        dialog.ShowDialog()
+        if not dialog.result:
+            return
+        sheets = [self._sheets_by_id[row.sheet_id] for row in checked
+                  if row.sheet_id in self._sheets_by_id]
+        rows = print_sets.build_sheet_rows(sheets)
+        printable, skipped = print_sets.split_printable_rows(rows)
+        if not printable:
+            forms.alert(
+                "None of the checked sheets are printable "
+                "(placeholder sheets cannot join a print set).",
+                title="Save Print Set")
+            return
+        try:
+            print_sets.save_ordered_print_set(
+                revit.doc, dialog.result, printable, DB, framework,
+                revit, HOST_APP)
+        except print_sets.UnsupportedRevitVersion as version_err:
+            forms.alert(str(version_err), title="Save Print Set")
+            return
+        except Exception as err:
+            LOGGER.critical("Failed to save print set: %s", err)
+            forms.alert("Failed to create or update the print set.",
+                        expanded=str(err), title="Save Print Set")
+            return
+        message = ["Print set saved: {0}".format(dialog.result),
+                   "Sheets included: {0}".format(len(printable))]
+        if skipped:
+            message.append(
+                "Skipped non-printable rows: {0}".format(skipped))
+        forms.alert("\n".join(message), title="Save Print Set")
 
     def select_title_blocks(self, sender, args):
         del sender, args
@@ -569,12 +1057,15 @@ class SheetManagerWindow(forms.WPFWindow):
             column = columns_by_attr.get(attr)
             if column is not None:
                 state.refresh_cell_state(row, column)
+        self._copy_content_ops = []
+        self._filter_extra_cache = {}
         self._refresh_visible_rows()
 
     def apply_changes(self, sender, args):
         del sender, args
         self._commit_pending_edit()
         changes = state.compute_staged_changes(self._all_rows, self._columns)
+        changes.copy_content_ops = list(self._copy_content_ops)
         if changes.is_empty():
             forms.alert("No staged changes to apply.", title="Sheet Manager")
             return

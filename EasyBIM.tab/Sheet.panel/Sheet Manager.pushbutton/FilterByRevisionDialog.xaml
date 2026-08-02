@@ -1,0 +1,96 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Filter By Revision"
+        Height="520"
+        Width="760"
+        MinHeight="320"
+        MinWidth="560"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0"
+                   Text="Show only sheets carrying the checked revisions. Checking all revisions disables the filter."
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,8"/>
+        <DataGrid x:Name="revisions_dg"
+                  Grid.Row="1"
+                  AutoGenerateColumns="False"
+                  RowHeaderWidth="0"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserSortColumns="False"
+                  HorizontalGridLinesBrush="#dedede"
+                  VerticalGridLinesBrush="#dedede"
+                  EnableColumnVirtualization="True"
+                  EnableRowVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling">
+            <DataGrid.Columns>
+                <DataGridTemplateColumn Width="70">
+                    <DataGridTemplateColumn.HeaderTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="Select"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.HeaderTemplate>
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      IsChecked="{Binding is_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Seq"
+                                    Binding="{Binding sequence}"
+                                    Width="70"
+                                    IsReadOnly="True"/>
+                <DataGridTextColumn Header="Number"
+                                    Binding="{Binding number}"
+                                    Width="130"
+                                    IsReadOnly="True"/>
+                <DataGridTextColumn Header="Description"
+                                    Binding="{Binding description}"
+                                    Width="*"
+                                    IsReadOnly="True"/>
+            </DataGrid.Columns>
+        </DataGrid>
+        <DockPanel Grid.Row="2" Margin="0,10,0,0" LastChildFill="False">
+            <Button x:Name="selectall_b"
+                    Content="Select All"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Left"
+                    Click="select_all_clicked"/>
+            <Button x:Name="clearall_b"
+                    Content="Clear All"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="8,0,0,0"
+                    DockPanel.Dock="Left"
+                    Click="clear_all_clicked"/>
+            <Button x:Name="ok_b"
+                    Content="Save"
+                    IsDefault="True"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
+            <Button x:Name="cancel_b"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="cancel_clicked"/>
+        </DockPanel>
+    </Grid>
+</Window>
