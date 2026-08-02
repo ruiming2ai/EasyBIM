@@ -299,8 +299,9 @@ class ScheduleExportBundleTests(unittest.TestCase):
         self.assertNotIn(
             "autofilter(0, 0, len(src_elements), len(valid_params))", source
         )
-        self.assertIn('"#D9D9D9"', source)
-        self.assertIn('"#FFEB9C"', source)
+        self.assertIn('"#F2F2F2"', source)
+        self.assertIn('"#FFF2CC"', source)
+        self.assertIn('"#FFC7CE"', source)
         self.assertIn("unlocked_type if param.istype else unlocked", source)
 
     def test_bundle_modules_stay_ironpython_compatible(self):
