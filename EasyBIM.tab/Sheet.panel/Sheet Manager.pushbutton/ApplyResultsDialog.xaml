@@ -1,0 +1,146 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Apply Changes Results"
+        Height="560"
+        Width="880"
+        MinHeight="360"
+        MinWidth="640"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style x:Key="ResultsGridStyle" TargetType="{x:Type DataGrid}">
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="RowHeaderWidth" Value="0"/>
+            <Setter Property="CanUserSortColumns" Value="False"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#dedede"/>
+            <Setter Property="VerticalGridLinesBrush" Value="#dedede"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode"
+                    Value="Recycling"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Apply Changes Summary"
+                   FontSize="18"
+                   FontWeight="SemiBold"
+                   Margin="0,0,0,8"/>
+
+        <StackPanel Grid.Row="1" Margin="0,0,0,10">
+            <TextBlock x:Name="modified_tb" Margin="0,1,0,1"/>
+            <TextBlock x:Name="created_tb" Margin="0,1,0,1"/>
+            <TextBlock x:Name="params_tb" Margin="0,1,0,1"/>
+            <TextBlock x:Name="revadded_tb" Margin="0,1,0,1"/>
+            <TextBlock x:Name="revremoved_tb" Margin="0,1,0,1"/>
+        </StackPanel>
+
+        <TabControl Grid.Row="2">
+            <TabItem x:Name="params_tab">
+                <DataGrid x:Name="params_dg"
+                          Style="{StaticResource ResultsGridStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Sheet"
+                                            Binding="{Binding sheet}"
+                                            Width="110"/>
+                        <DataGridTextColumn Header="Parameter"
+                                            Binding="{Binding item}"
+                                            Width="180"/>
+                        <DataGridTextColumn Header="Old Value"
+                                            Binding="{Binding old_value}"
+                                            Width="*"/>
+                        <DataGridTextColumn Header="New Value"
+                                            Binding="{Binding new_value}"
+                                            Width="*"/>
+                        <DataGridTextColumn Header="Status"
+                                            Binding="{Binding status}"
+                                            Width="90"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="revisions_tab">
+                <DataGrid x:Name="revisions_dg"
+                          Style="{StaticResource ResultsGridStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Sheet"
+                                            Binding="{Binding sheet}"
+                                            Width="110"/>
+                        <DataGridTextColumn Header="Revision"
+                                            Binding="{Binding item}"
+                                            Width="220"/>
+                        <DataGridTextColumn Header="Was"
+                                            Binding="{Binding old_value}"
+                                            Width="90"/>
+                        <DataGridTextColumn Header="Now"
+                                            Binding="{Binding new_value}"
+                                            Width="90"/>
+                        <DataGridTextColumn Header="Status"
+                                            Binding="{Binding status}"
+                                            Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="sheets_tab">
+                <DataGrid x:Name="sheets_dg"
+                          Style="{StaticResource ResultsGridStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Sheet"
+                                            Binding="{Binding sheet}"
+                                            Width="110"/>
+                        <DataGridTextColumn Header="Change"
+                                            Binding="{Binding item}"
+                                            Width="220"/>
+                        <DataGridTextColumn Header="Detail"
+                                            Binding="{Binding new_value}"
+                                            Width="*"/>
+                        <DataGridTextColumn Header="Status"
+                                            Binding="{Binding status}"
+                                            Width="90"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="errors_tab">
+                <DataGrid x:Name="errors_dg"
+                          Style="{StaticResource ResultsGridStyle}"
+                          Foreground="#c00000">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Sheet"
+                                            Binding="{Binding sheet}"
+                                            Width="110"/>
+                        <DataGridTextColumn Header="Item"
+                                            Binding="{Binding item}"
+                                            Width="200"/>
+                        <DataGridTextColumn Header="Message"
+                                            Binding="{Binding new_value}"
+                                            Width="*"/>
+                        <DataGridTextColumn Header="Type"
+                                            Binding="{Binding status}"
+                                            Width="90"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+        </TabControl>
+
+        <Button Grid.Row="3"
+                x:Name="ok_b"
+                Content="OK"
+                Height="30"
+                MinWidth="110"
+                Margin="0,10,0,0"
+                HorizontalAlignment="Right"
+                IsDefault="True"
+                IsCancel="True"
+                Click="ok_clicked"/>
+    </Grid>
+</Window>
