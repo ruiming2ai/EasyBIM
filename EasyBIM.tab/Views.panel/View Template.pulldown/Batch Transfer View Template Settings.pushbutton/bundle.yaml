@@ -1,9 +1,0 @@
-title: |-
-  Batch Transfer View
-  Template Settings
-tooltip: |-
-  Transfer selected settings from one view template to selected target view templates.
-
-  The settings list follows the selected source template and uses Revit's native view-template parameter behavior.
-min_revit_version: 2023
-author: Ruiming Liu
