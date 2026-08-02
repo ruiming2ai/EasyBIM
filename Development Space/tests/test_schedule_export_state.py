@@ -256,6 +256,15 @@ class ScheduleExportBundleTests(unittest.TestCase):
         self.assertNotIn("tgroup.Assimilate", source)
         self.assertNotIn("group.Commit", source)
 
+    def test_xlsx_writer_resolves_type_parameters(self):
+        self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
+        source = XLSX_MODULE_PATH.read_text()
+
+        self.assertIn("GetTypeId", source)
+        self.assertIn("_lookup_row_param", source)
+        self.assertIn("istype=istype", source)
+        self.assertNotIn("istype=False", source)
+
     def test_bundle_modules_stay_ironpython_compatible(self):
         module_paths = [
             STATE_MODULE_PATH,

@@ -17,6 +17,7 @@ from pyrevit import DB
 from pyrevit import coreutils
 from pyrevit import revit
 from pyrevit import script
+from pyrevit.framework import System
 
 from easybim import print_sets
 
@@ -116,20 +117,101 @@ def get_unit_label_and_value(param, forge_type_id, field, project_units):
     return val, "[{}]".format(label) if label else "", unit_id, symbol_id
 
 
+def _field_name(field):
+    try:
+        return field.GetName()
+    except Exception:
+        return ""
+
+
+def _bip_from_id_value(id_value):
+    """Return the BuiltInParameter for a negative parameter id value."""
+    try:
+        id_int = int(id_value)
+    except Exception:
+        return None
+    if id_int >= 0:
+        return None
+    try:
+        return System.Enum.ToObject(DB.BuiltInParameter, id_int)
+    except Exception:
+        return None
+
+
+def _lookup_field_param(owner, field, param_id_value):
+    """Find the parameter backing a schedule field on the given element."""
+    bip = _bip_from_id_value(param_id_value)
+    if bip is not None:
+        try:
+            param = owner.get_Parameter(bip)
+            if param is not None:
+                return param
+        except Exception:
+            pass
+    field_name = _field_name(field)
+    if field_name:
+        try:
+            return owner.LookupParameter(field_name)
+        except Exception:
+            return None
+    return None
+
+
+def _lookup_param_by_def(owner, param_def):
+    try:
+        param = owner.get_Parameter(param_def.definition)
+        if param is not None:
+            return param
+    except Exception:
+        pass
+    try:
+        return owner.LookupParameter(param_def.name)
+    except Exception:
+        return None
+
+
+def _get_type_element(doc, element, type_cache):
+    try:
+        type_id = element.GetTypeId()
+    except Exception:
+        return None
+    if type_id is None or type_id == DB.ElementId.InvalidElementId:
+        return None
+    type_key = get_elementid_value(type_id)
+    if type_key not in type_cache:
+        try:
+            type_cache[type_key] = doc.GetElement(type_id)
+        except Exception:
+            type_cache[type_key] = None
+    return type_cache[type_key]
+
+
+def _lookup_row_param(doc, element, param_def, type_cache):
+    """Resolve a row value parameter: instance first, then element type."""
+    param_el = _lookup_param_by_def(element, param_def)
+    if param_el is None:
+        type_el = _get_type_element(doc, element, type_cache)
+        if type_el is not None:
+            param_el = _lookup_param_by_def(type_el, param_def)
+    return param_el
+
+
 def collect_schedule_param_defs(schedule, elements):
     """Build ParamDefs for the schedule's visible non-calculated fields.
 
     Columns follow GetFieldOrder(); each ParamDef is derived from the first
-    provided element carrying that parameter (same behavior as the native
-    tool). Returns (param_defs, field_mapping).
+    element (or, for type parameters, the first element type) carrying the
+    field's parameter. Returns (param_defs, field_mapping).
     """
     schedule_def = schedule.Definition
+    doc = schedule.Document
 
     visible_fields = []
     param_defs_list = []
     field_mapping = {}
     non_storage_type = coreutils.get_enum_none(DB.StorageType)
     processed_params = set()
+    type_cache = {}
 
     for field_id in schedule_def.GetFieldOrder():
         field = schedule_def.GetField(field_id)
@@ -138,7 +220,7 @@ def collect_schedule_param_defs(schedule, elements):
 
         if field.IsCalculatedField:
             LOGGER.warning(
-                "Skipping calculated field: {}".format(field.GetName())
+                "Skipping calculated field: {}".format(_field_name(field))
             )
             continue
 
@@ -150,47 +232,69 @@ def collect_schedule_param_defs(schedule, elements):
         raise ValueError("No elements found in schedule")
 
     for field in visible_fields:
-        param_id = field.ParameterId
+        param_id_value = get_elementid_value(field.ParameterId)
+        param = None
+        istype = False
+
         for el in elements:
-            param = None
-            try:
-                param = el.get_Parameter(param_id)
-            except Exception:
-                field_name = field.GetName()
-                if field_name:
-                    param = el.LookupParameter(field_name)
-
-            if param and param.StorageType != non_storage_type:
-                def_name = param.Definition.Name
-                if def_name not in processed_params:
-                    param_data_type = get_parameter_data_type(param.Definition)
-
-                    unit_type_id = None
-                    if param_data_type and measurable(param_data_type):
-                        try:
-                            fmt_opts = field.GetFormatOptions()
-                            if fmt_opts:
-                                unit_type_id = fmt_opts.GetUnitTypeId()
-                        except Exception:
-                            pass
-
-                    param_defs_list.append(ParamDef(
-                        name=def_name,
-                        istype=False,
-                        definition=param.Definition,
-                        isreadonly=param.IsReadOnly,
-                        isunit=(
-                            measurable(param_data_type)
-                            if param_data_type
-                            else False
-                        ),
-                        storagetype=param.StorageType,
-                        forge_type_id=param_data_type,
-                        unit_type_id=unit_type_id,
-                    ))
-                    field_mapping[def_name] = field
-                    processed_params.add(def_name)
+            param = _lookup_field_param(el, field, param_id_value)
+            if param is not None:
                 break
+
+        if param is None:
+            checked_type_keys = set()
+            for el in elements:
+                type_el = _get_type_element(doc, el, type_cache)
+                if type_el is None:
+                    continue
+                type_key = get_elementid_value(type_el.Id)
+                if type_key in checked_type_keys:
+                    continue
+                checked_type_keys.add(type_key)
+                param = _lookup_field_param(type_el, field, param_id_value)
+                if param is not None:
+                    istype = True
+                    break
+
+        if param is None or param.StorageType == non_storage_type:
+            LOGGER.warning(
+                "Skipping field with no matching parameter: {}".format(
+                    _field_name(field)
+                )
+            )
+            continue
+
+        def_name = param.Definition.Name
+        if def_name in processed_params:
+            continue
+
+        param_data_type = get_parameter_data_type(param.Definition)
+
+        unit_type_id = None
+        if param_data_type and measurable(param_data_type):
+            try:
+                fmt_opts = field.GetFormatOptions()
+                if fmt_opts:
+                    unit_type_id = fmt_opts.GetUnitTypeId()
+            except Exception:
+                pass
+
+        param_defs_list.append(ParamDef(
+            name=def_name,
+            istype=istype,
+            definition=param.Definition,
+            isreadonly=param.IsReadOnly,
+            isunit=(
+                measurable(param_data_type)
+                if param_data_type
+                else False
+            ),
+            storagetype=param.StorageType,
+            forge_type_id=param_data_type,
+            unit_type_id=unit_type_id,
+        ))
+        field_mapping[def_name] = field
+        processed_params.add(def_name)
 
     if not param_defs_list:
         raise ValueError("No valid parameters found in schedule")
@@ -249,9 +353,10 @@ def create_dropdown_validation(doc, worksheet, workbook, col_idx, param,
     elif storage_type == DB.StorageType.ElementId:
         try:
             sample_category = None
+            sample_type_cache = {}
 
             for el in src_elements:
-                param_el = el.LookupParameter(param.name)
+                param_el = _lookup_row_param(doc, el, param, sample_type_cache)
                 if param_el and param_el.HasValue:
                     el_id = param_el.AsElementId()
                     if el_id and el_id != DB.ElementId.InvalidElementId:
@@ -412,13 +517,14 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
         )
 
     max_widths = [len("ElementId")] + [len(p.name) for p in valid_params]
+    type_cache = {}
 
     for row_idx, el in enumerate(src_elements, start=1):
         worksheet.write(row_idx, 0, str(get_elementid_value(el.Id)), locked)
 
         for col_idx, param in enumerate(valid_params):
             param_name = param.name
-            param_el = el.LookupParameter(param_name)
+            param_el = _lookup_row_param(doc, el, param, type_cache)
             val = "<does not exist>"
             cell_format = locked
             if param_el:
