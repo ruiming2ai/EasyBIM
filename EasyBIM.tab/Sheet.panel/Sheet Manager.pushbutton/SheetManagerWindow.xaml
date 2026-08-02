@@ -1,0 +1,150 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Sheet Manager"
+        Height="680"
+        Width="1220"
+        MinHeight="420"
+        MinWidth="900"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <TextBox x:Name="search_tb"
+                     Height="28"
+                     VerticalContentAlignment="Center"
+                     Padding="6,0,6,0"
+                     TextChanged="search_changed"/>
+            <TextBlock IsHitTestVisible="False"
+                       Text="Search by sheet number, name, or parameter..."
+                       VerticalAlignment="Center"
+                       Margin="10,0,0,0"
+                       Foreground="Gray">
+                <TextBlock.Style>
+                    <Style TargetType="{x:Type TextBlock}">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Text, ElementName=search_tb}" Value="">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
+
+        <WrapPanel Grid.Row="1" Margin="0,0,0,8">
+            <WrapPanel.Resources>
+                <Style TargetType="{x:Type Button}">
+                    <Setter Property="Height" Value="26"/>
+                    <Setter Property="Margin" Value="0,0,6,4"/>
+                    <Setter Property="Padding" Value="10,0,10,0"/>
+                </Style>
+            </WrapPanel.Resources>
+            <Button x:Name="loadall_b"
+                    Content="Load All Sheets"
+                    Click="load_all_sheets"/>
+            <Button x:Name="loadsheetlist_b"
+                    Content="Load Sheet List"
+                    Click="load_sheet_list"/>
+            <Button x:Name="loadprintset_b"
+                    Content="Load Print Set"
+                    Click="load_print_set"/>
+            <Button x:Name="filterrev_b"
+                    Content="Filter By Revision"
+                    Click="filter_by_revision"/>
+            <Button x:Name="filterparam_b"
+                    Content="Filter By Parameter"
+                    Click="filter_by_parameter"/>
+            <Button x:Name="sort_b"
+                    Content="Sort"
+                    Click="sort_clicked"/>
+            <Button x:Name="addtbparam_b"
+                    Content="Add Title Block Parameter"
+                    Click="add_titleblock_parameter"/>
+            <Button x:Name="addsheetparam_b"
+                    Content="Add Sheet Parameter"
+                    Click="add_sheet_parameter"/>
+        </WrapPanel>
+
+        <DataGrid x:Name="sheets_dg"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Extended"
+                  SelectionUnit="FullRow"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserSortColumns="False"
+                  CanUserReorderColumns="False"
+                  RowHeaderWidth="0"
+                  FrozenColumnCount="4"
+                  BorderThickness="1"
+                  HorizontalGridLinesBrush="#dedede"
+                  VerticalGridLinesBrush="#dedede"
+                  EnableColumnVirtualization="True"
+                  EnableRowVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  SelectionChanged="grid_selection_changed"/>
+
+        <DockPanel Grid.Row="3" Margin="0,6,0,6">
+            <TextBlock x:Name="source_tb"
+                       DockPanel.Dock="Left"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center"/>
+            <TextBlock x:Name="status_tb"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"/>
+        </DockPanel>
+
+        <DockPanel Grid.Row="4">
+            <DockPanel.Resources>
+                <Style TargetType="{x:Type Button}">
+                    <Setter Property="Height" Value="30"/>
+                    <Setter Property="Padding" Value="12,0,12,0"/>
+                </Style>
+            </DockPanel.Resources>
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                <Button x:Name="export_b"
+                        Content="Export to Excel"
+                        Margin="0,0,6,0"
+                        Click="export_to_excel"/>
+                <Button x:Name="import_b"
+                        Content="Import from Excel"
+                        Click="import_from_excel"/>
+            </StackPanel>
+            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                <Button x:Name="copysheetinfo_b"
+                        Content="Copy Sheet Info"
+                        Margin="0,0,6,0"
+                        Click="copy_sheet_info"/>
+                <Button x:Name="searchreplace_b"
+                        Content="Search &amp; Replace"
+                        Margin="0,0,6,0"
+                        Click="search_replace"/>
+                <Button x:Name="saveprintset_b"
+                        Content="Save Print Set"
+                        Margin="0,0,6,0"
+                        Click="save_print_set"/>
+                <Button x:Name="selecttblocks_b"
+                        Content="Select Title Blocks"
+                        Margin="0,0,6,0"
+                        Click="select_title_blocks"/>
+                <Button x:Name="apply_b"
+                        Content="Apply Changes"
+                        MinWidth="130"
+                        FontWeight="SemiBold"
+                        Click="apply_changes"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>
