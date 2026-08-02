@@ -1,0 +1,25 @@
+title: "Excel"
+tooltip: |-
+  Export schedules to Excel workbooks and import edited values back.
+
+  Export: one file per selected schedule, named
+  "<Schedule Name> - <Model Name>", saved to a folder you pick. Columns
+  are the schedule's visible fields; rows follow the schedule's displayed
+  order. Grey cells are not editable, yellow cells are type parameters
+  (shared by every row of the type) and turn RED when rows of the same
+  type are edited to disagree. The hidden _EBIM_TypeId column is
+  internal - leave it alone.
+
+  Import: select exactly ONE schedule to enable "Import to Schedule",
+  then pick a workbook created by this tool. Rows are matched by
+  ElementId and limited to elements of the selected schedule. Conflicting
+  type-parameter values stop the import with a full report; otherwise a
+  preview shows what will change before anything is written.
+
+  When the optional VBA sync layer is set up (see the bundle's vba
+  folder), exports are .xlsm and editing any type-parameter cell updates
+  all rows of that type automatically.
+
+  Note: in workshared models the export ordering step may temporarily
+  borrow elements (all edits are rolled back automatically).
+min_revit_version: 2022

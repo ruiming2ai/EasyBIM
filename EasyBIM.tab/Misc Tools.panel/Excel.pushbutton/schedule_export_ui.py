@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""WPF window for the Export Schedules to Excel command."""
+"""WPF window for the Excel (export/import schedules) command."""
 
 # pylint: disable=import-error,invalid-name,broad-except
 import os
@@ -17,7 +17,7 @@ from schedule_export_state import get_selected_options
 from schedule_export_state import schedule_display_text
 
 
-TITLE = "Export Schedules to Excel"
+TITLE = "Excel"
 
 
 def _safe_text(value):
@@ -54,6 +54,7 @@ class ScheduleSelectionWindow(forms.WPFWindow):
         self._controls = []
 
         self._populate()
+        self._update_buttons()
         self._is_ready = True
 
     def _populate(self):
@@ -69,6 +70,8 @@ class ScheduleSelectionWindow(forms.WPFWindow):
             checkbox.IsChecked = bool(option.is_selected)
             checkbox.Tag = option
             checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
+            checkbox.Checked += self.selection_changed
+            checkbox.Unchecked += self.selection_changed
             self.ScheduleListPanel.Children.Add(checkbox)
             self._controls.append(checkbox)
 
@@ -102,18 +105,37 @@ class ScheduleSelectionWindow(forms.WPFWindow):
             if option is not None:
                 option.is_selected = bool(getattr(checkbox, "IsChecked", False))
 
+    def _update_buttons(self):
+        # Import needs exactly ONE selected schedule; selections hidden by
+        # the search filter still count.
+        try:
+            self.ImportButton.IsEnabled = \
+                len(get_selected_options(self.options)) == 1
+        except Exception:
+            pass
+
+    def selection_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._sync_controls()
+        self._update_buttons()
+        self._update_count_text(len(self._controls))
+
     def schedule_search_changed(self, sender, args):
         del sender, args
         if not getattr(self, "_is_ready", False):
             return
         self._sync_controls()
         self._populate()
+        self._update_buttons()
 
     def select_all_click(self, sender, args):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = True
         self._sync_controls()
+        self._update_buttons()
         self._update_count_text(len(self._controls))
 
     def select_none_click(self, sender, args):
@@ -121,6 +143,7 @@ class ScheduleSelectionWindow(forms.WPFWindow):
         for checkbox in self._controls:
             checkbox.IsChecked = False
         self._sync_controls()
+        self._update_buttons()
         self._update_count_text(len(self._controls))
 
     def export_click(self, sender, args):
@@ -130,6 +153,17 @@ class ScheduleSelectionWindow(forms.WPFWindow):
             forms.alert("Select at least one schedule to export.", title=TITLE)
             return
         self.result = "export"
+        self.Close()
+
+    def import_click(self, sender, args):
+        del sender, args
+        self._sync_controls()
+        if len(get_selected_options(self.options)) != 1:
+            forms.alert(
+                "Select exactly one schedule to import into.", title=TITLE
+            )
+            return
+        self.result = "import"
         self.Close()
 
     def cancel_click(self, sender, args):
