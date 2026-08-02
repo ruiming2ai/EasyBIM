@@ -235,8 +235,10 @@ def _type_key_text(element):
 def _add_type_conflict_formatting(workbook, worksheet, valid_params, type_col,
                                   row_count):
     """Turn type-parameter cells red when same-type rows disagree."""
+    # Excel's standard "Bad" style: light red fill, dark red text -
+    # loud enough to notice, light enough to keep the value readable.
     conflict_fmt = workbook.add_format(
-        {"bg_color": "#FF3131", "font_color": "#FFFFFF"}
+        {"bg_color": "#FFC7CE", "font_color": "#9C0006"}
     )
     first_row = 2
     last_row = row_count + 1
@@ -512,9 +514,10 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
     unlocked = workbook.add_format({"locked": False})
     # Grey = protected/non-editable; yellow = editable TYPE parameter
     # (shared by every row of the type; conflict formatting paints it red).
-    locked = workbook.add_format({"locked": True, "bg_color": "#D9D9D9"})
+    # Light tints on purpose - cell values must stay easy to read.
+    locked = workbook.add_format({"locked": True, "bg_color": "#F2F2F2"})
     unlocked_type = workbook.add_format(
-        {"locked": False, "bg_color": "#FFEB9C"}
+        {"locked": False, "bg_color": "#FFF2CC"}
     )
 
     worksheet.freeze_panes(1, 0)
