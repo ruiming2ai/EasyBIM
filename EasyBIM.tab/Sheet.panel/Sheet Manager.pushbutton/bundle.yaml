@@ -1,0 +1,11 @@
+title: |-
+  Sheet
+  Manager
+tooltip: |-
+  Bulk sheet, revision, and parameter editor.
+
+  Shows every project revision as its own checkbox column for all sheets.
+  Edit sheet numbers, names, sheet and title block parameters in one grid;
+  nothing is written to the model until Apply Changes.
+min_revit_version: 2023
+author: Ruiming Liu
