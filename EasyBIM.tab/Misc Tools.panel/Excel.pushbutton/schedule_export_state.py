@@ -138,8 +138,9 @@ def _fallback_clean_filename(value):
     return cleaned.strip(" .")
 
 
-def build_export_filename(schedule_name, model_name, cleaner=None):
-    """Build "<Schedule Name> - <Model Name>.xlsx" with a safe basename."""
+def build_export_filename(schedule_name, model_name, cleaner=None,
+                          extension=".xlsx"):
+    """Build "<Schedule Name> - <Model Name>{ext}" with a safe basename."""
     base = "{} - {}".format(
         _safe_text(schedule_name).strip(),
         _safe_text(model_name).strip(),
@@ -155,7 +156,7 @@ def build_export_filename(schedule_name, model_name, cleaner=None):
     cleaned = _fallback_clean_filename(cleaned)
     if not cleaned.strip(" -."):
         cleaned = DEFAULT_EXPORT_BASENAME
-    return "{}.xlsx".format(cleaned)
+    return "{}{}".format(cleaned, extension)
 
 
 def should_skip_token_candidate(candidate_id_value, filter_param_id_values,

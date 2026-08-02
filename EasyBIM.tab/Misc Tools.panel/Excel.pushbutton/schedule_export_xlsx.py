@@ -10,6 +10,7 @@ of raw collector order.
 """
 
 # pylint: disable=import-error,invalid-name,broad-except
+import os
 import re
 from collections import namedtuple
 
@@ -59,6 +60,28 @@ except Exception:
         return False
 
 get_elementid_value = print_sets.get_element_id_value
+
+try:
+    from xlsxwriter.utility import xl_col_to_name
+except Exception:
+    def xl_col_to_name(col_idx):
+        name = ""
+        index = int(col_idx)
+        while index >= 0:
+            name = chr(index % 26 + ord("A")) + name
+            index = index // 26 - 1
+        return name
+
+VBA_BIN_PATH = os.path.join(os.path.dirname(__file__), "vba", "vbaProject.bin")
+
+
+def vba_available():
+    """True when the user-authored VBA sync project is in the bundle."""
+    try:
+        return os.path.isfile(VBA_BIN_PATH)
+    except Exception:
+        return False
+
 
 unit_postfix_pattern = re.compile(r"\s*\[.*\]$")
 
@@ -194,6 +217,51 @@ def _lookup_row_param(doc, element, param_def, type_cache):
         if type_el is not None:
             param_el = _lookup_param_by_def(type_el, param_def)
     return param_el
+
+
+def _type_key_text(element):
+    """Text key of the element's type id; empty for typeless elements."""
+    try:
+        type_id = element.GetTypeId()
+        if type_id is not None and type_id != DB.ElementId.InvalidElementId:
+            id_value = get_elementid_value(type_id)
+            if id_value is not None:
+                return str(id_value)
+    except Exception:
+        pass
+    return ""
+
+
+def _add_type_conflict_formatting(workbook, worksheet, valid_params, type_col,
+                                  row_count):
+    """Turn type-parameter cells red when same-type rows disagree."""
+    conflict_fmt = workbook.add_format(
+        {"bg_color": "#FF3131", "font_color": "#FFFFFF"}
+    )
+    first_row = 2
+    last_row = row_count + 1
+    type_col_name = xl_col_to_name(type_col)
+    for col_idx, param in enumerate(valid_params):
+        if not param.istype or param.isreadonly:
+            continue
+        col_name = xl_col_to_name(col_idx + 1)
+        criteria = (
+            '=AND(${t}{fr}<>"",'
+            'COUNTIFS(${t}${fr}:${t}${lr},${t}{fr},'
+            '${c}${fr}:${c}${lr},"<>"&${c}{fr})>0)'
+        ).format(t=type_col_name, c=col_name, fr=first_row, lr=last_row)
+        try:
+            worksheet.conditional_format(
+                1, col_idx + 1, row_count, col_idx + 1,
+                {"type": "formula", "criteria": criteria,
+                 "format": conflict_fmt},
+            )
+        except Exception as fmt_error:
+            LOGGER.warning(
+                "Could not add conflict formatting for '{}': {}".format(
+                    param.name, fmt_error
+                )
+            )
 
 
 def collect_schedule_param_defs(schedule, elements):
@@ -428,8 +496,13 @@ def create_dropdown_validation(doc, worksheet, workbook, col_idx, param,
 
 
 def _write_workbook(doc, src_elements, valid_params, field_mapping,
-                    workbook, project_units):
+                    workbook, project_units, has_vba=False):
     worksheet = workbook.add_worksheet("Export")
+    if has_vba:
+        try:
+            worksheet.set_vba_name("Sheet1")
+        except Exception as vba_name_error:
+            LOGGER.warning("Could not set VBA sheet name: %s", vba_name_error)
     metadata_sheet = workbook.add_worksheet("_metadata")
     metadata_sheet.hide()
 
@@ -437,7 +510,12 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
 
     bold = workbook.add_format({"bold": True})
     unlocked = workbook.add_format({"locked": False})
-    locked = workbook.add_format({"locked": True})
+    # Grey = protected/non-editable; yellow = editable TYPE parameter
+    # (shared by every row of the type; conflict formatting paints it red).
+    locked = workbook.add_format({"locked": True, "bg_color": "#D9D9D9"})
+    unlocked_type = workbook.add_format(
+        {"locked": False, "bg_color": "#FFEB9C"}
+    )
 
     worksheet.freeze_panes(1, 0)
     worksheet.write(0, 0, "ElementId", bold)
@@ -447,6 +525,7 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
     metadata_sheet.write(0, 2, "UnitTypeId", bold)
     metadata_sheet.write(0, 3, "SymbolTypeId", bold)
     metadata_sheet.write(0, 4, "IsScheduleOverride", bold)
+    metadata_sheet.write(0, 5, "IsTypeParameter", bold)
 
     for col_idx, param in enumerate(valid_params):
         postfix = ""
@@ -515,12 +594,17 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
         metadata_sheet.write(
             col_idx + 1, 4, "Yes" if is_schedule_override else "No"
         )
+        metadata_sheet.write(col_idx + 1, 5, "Yes" if param.istype else "No")
+
+    type_col = len(valid_params) + 1
+    worksheet.write(0, type_col, "_EBIM_TypeId", bold)
 
     max_widths = [len("ElementId")] + [len(p.name) for p in valid_params]
     type_cache = {}
 
     for row_idx, el in enumerate(src_elements, start=1):
         worksheet.write(row_idx, 0, str(get_elementid_value(el.Id)), locked)
+        worksheet.write_string(row_idx, type_col, _type_key_text(el), locked)
 
         for col_idx, param in enumerate(valid_params):
             param_name = param.name
@@ -566,7 +650,7 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
                         val = "<Error>"
 
                 if not param.isreadonly:
-                    cell_format = unlocked
+                    cell_format = unlocked_type if param.istype else unlocked
 
             worksheet.write(row_idx, col_idx + 1, val, cell_format)
             if len(str(val)) > max_widths[col_idx + 1]:
@@ -583,10 +667,16 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
             hidden_sheets,
         )
 
+    if src_elements:
+        _add_type_conflict_formatting(
+            workbook, worksheet, valid_params, type_col, len(src_elements)
+        )
+
     for col_idx, width in enumerate(max_widths):
         worksheet.set_column(col_idx, col_idx, width + 3)
+    worksheet.set_column(type_col, type_col, None, locked, {"hidden": True})
 
-    worksheet.autofilter(0, 0, len(src_elements), len(valid_params))
+    worksheet.autofilter(0, 0, len(src_elements), type_col)
     worksheet.protect(
         "",
         {
@@ -633,11 +723,19 @@ def export_schedule_to_xlsx(doc, schedule, ordered_elements, file_path):
 
     project_units = doc.GetUnits()
     workbook = xlsxwriter.Workbook(file_path)
+    has_vba = vba_available() and file_path.lower().endswith(".xlsm")
+    if has_vba:
+        try:
+            workbook.add_vba_project(VBA_BIN_PATH)
+            workbook.set_vba_name("ThisWorkbook")
+        except Exception as vba_error:
+            LOGGER.warning("Could not attach VBA project: %s", vba_error)
+            has_vba = False
     body_error = None
     try:
         _write_workbook(
             doc, src_elements, valid_params, field_mapping,
-            workbook, project_units
+            workbook, project_units, has_vba=has_vba
         )
     except Exception as write_error:
         body_error = write_error

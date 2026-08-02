@@ -8,7 +8,7 @@ COMMAND_DIR = (
     pathlib.Path(__file__).resolve().parents[2]
     / "EasyBIM.tab"
     / "Misc Tools.panel"
-    / "Export Schedules to Excel.pushbutton"
+    / "Excel.pushbutton"
 )
 STATE_MODULE_PATH = COMMAND_DIR / "schedule_export_state.py"
 REVIT_MODULE_PATH = COMMAND_DIR / "schedule_export_revit.py"
@@ -140,6 +140,20 @@ class ScheduleExportStateTests(unittest.TestCase):
             "DoorSchedule - Tower.xlsx",
         )
 
+    def test_build_export_filename_supports_custom_extension(self):
+        module = _load_state_module()
+
+        self.assertEqual(
+            module.build_export_filename(
+                "Door Schedule", "Tower", extension=".xlsm"
+            ),
+            "Door Schedule - Tower.xlsm",
+        )
+        self.assertEqual(
+            module.build_export_filename("Door Schedule", "Tower"),
+            "Door Schedule - Tower.xlsx",
+        )
+
     def test_should_skip_token_candidate(self):
         module = _load_state_module()
 
@@ -242,9 +256,13 @@ class ScheduleExportBundleTests(unittest.TestCase):
         self.assertIn('Content="Select All"', source)
         self.assertIn('Content="Select None"', source)
         self.assertIn('Content="Export to Excel"', source)
+        self.assertIn('Content="Import to Schedule"', source)
+        self.assertIn('x:Name="ImportButton"', source)
+        self.assertIn('IsEnabled="False"', source)
         self.assertIn('Click="select_all_click"', source)
         self.assertIn('Click="select_none_click"', source)
         self.assertIn('Click="export_click"', source)
+        self.assertIn('Click="import_click"', source)
         self.assertNotIn('Content="Select"' + ' ', source)
 
     def test_ordering_pipeline_always_rolls_back_transaction_group(self):
@@ -264,6 +282,26 @@ class ScheduleExportBundleTests(unittest.TestCase):
         self.assertIn("_lookup_row_param", source)
         self.assertIn("istype=istype", source)
         self.assertNotIn("istype=False", source)
+
+    def test_xlsx_writer_has_type_conflict_interlock(self):
+        self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
+        source = XLSX_MODULE_PATH.read_text()
+
+        self.assertIn('"IsTypeParameter"', source)
+        self.assertIn('"_EBIM_TypeId"', source)
+        self.assertIn("conditional_format", source)
+        self.assertIn("COUNTIFS", source)
+        self.assertIn("add_vba_project", source)
+        self.assertIn("write_string", source)
+        self.assertIn(
+            "autofilter(0, 0, len(src_elements), type_col)", source
+        )
+        self.assertNotIn(
+            "autofilter(0, 0, len(src_elements), len(valid_params))", source
+        )
+        self.assertIn('"#D9D9D9"', source)
+        self.assertIn('"#FFEB9C"', source)
+        self.assertIn("unlocked_type if param.istype else unlocked", source)
 
     def test_bundle_modules_stay_ironpython_compatible(self):
         module_paths = [
