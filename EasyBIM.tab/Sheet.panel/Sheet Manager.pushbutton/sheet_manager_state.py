@@ -281,3 +281,168 @@ def renumber(rows):
 
 def multi_titleblock_rows(rows):
     return [row for row in rows if row.tblock_count > 1]
+
+
+def propagate_edit(rows, column, new_value, skip_row=None):
+    """Bulk-apply a text edit across ``rows`` (multi-select propagation).
+
+    Sheet Number and Sheet Name never propagate. Returns the changed rows.
+    """
+    if column.kind in (KIND_NUMBER, KIND_NAME):
+        return []
+    changed = []
+    for row in rows:
+        if row is skip_row:
+            continue
+        if apply_cell_edit(row, column, new_value):
+            changed.append(row)
+    return changed
+
+
+def propagate_revision_toggle(rows, column, checked, skip_row=None):
+    changed = []
+    for row in rows:
+        if row is skip_row:
+            continue
+        if apply_revision_toggle(row, column, checked):
+            changed.append(row)
+    return changed
+
+
+def find_number_problems(rows):
+    """-> (empty_rows, duplicate_groups) over projected (staged) numbers.
+
+    duplicate_groups: list of (number, [rows]) with more than one row.
+    """
+    empty_rows = []
+    by_number = {}
+    for row in rows:
+        number = u"{0}".format(row.number or u"").strip()
+        if not number:
+            empty_rows.append(row)
+            continue
+        by_number.setdefault(number, []).append(row)
+    duplicate_groups = []
+    for number in sorted(by_number.keys()):
+        group = by_number[number]
+        if len(group) > 1:
+            duplicate_groups.append((number, group))
+    return empty_rows, duplicate_groups
+
+
+def plan_number_assignments(renames, existing_numbers):
+    """Two-phase renumber plan safe for swaps and cycles.
+
+    ``renames``: [(key, old_number, new_number)]. ``existing_numbers``: every
+    current sheet number in the model. Every renamed sheet first gets a
+    unique temporary number, then its final number.
+    Returns (phase_temp, phase_final): lists of (key, number).
+    """
+    taken = set(u"{0}".format(n) for n in existing_numbers)
+    for _, old_number, new_number in renames:
+        taken.add(u"{0}".format(old_number))
+        taken.add(u"{0}".format(new_number))
+    phase_temp = []
+    phase_final = []
+    counter = 0
+    for key, _, new_number in renames:
+        while True:
+            temp = u"{0}~EBIMTMP{1}".format(new_number, counter)
+            counter += 1
+            if temp not in taken:
+                taken.add(temp)
+                break
+        phase_temp.append((key, temp))
+        phase_final.append((key, new_number))
+    return phase_temp, phase_final
+
+
+class StagedChanges(object):
+    """Diff of the grid against its original snapshot."""
+
+    def __init__(self):
+        self.renames = []                 # (row, old, new)
+        self.name_edits = []              # (row, old, new)
+        self.param_edits = []             # (row, column, old, new)
+        self.revision_adds = []           # (row, column, revision_id)
+        self.revision_removes = []        # (row, column, revision_id)
+        self.cloud_hide_requests = []     # (row, column, revision_id)
+        self.cloud_unhide_candidates = [] # (row, column, revision_id)
+        self.pending_sheets = []          # rows created by import
+        self.copy_content_ops = []        # CopySheetRequest payloads
+
+    def is_empty(self):
+        return not (self.renames or self.name_edits or self.param_edits
+                    or self.revision_adds or self.revision_removes
+                    or self.cloud_hide_requests
+                    or self.cloud_unhide_candidates
+                    or self.pending_sheets or self.copy_content_ops)
+
+
+def compute_staged_changes(rows, columns):
+    changes = StagedChanges()
+    for row in rows:
+        if row.is_pending:
+            changes.pending_sheets.append(row)
+        for column in columns:
+            if column.kind in (KIND_SELECT, KIND_INDEX):
+                continue
+            if row.get_state(column.attr) != STATE_DIRTY:
+                continue
+            current = getattr(row, column.attr, None)
+            original = row.original.get(column.attr)
+            if column.kind == KIND_NUMBER:
+                if not row.is_pending:
+                    changes.renames.append((row, original, current))
+            elif column.kind == KIND_NAME:
+                if not row.is_pending:
+                    changes.name_edits.append((row, original, current))
+            elif column.kind == KIND_REVISION:
+                if current and not original:
+                    if column.revision_id in row.hidden_cloud_revs:
+                        changes.cloud_unhide_candidates.append(
+                            (row, column, column.revision_id))
+                    else:
+                        changes.revision_adds.append(
+                            (row, column, column.revision_id))
+                elif original and not current:
+                    if column.revision_id in row.revisions_cloud:
+                        changes.cloud_hide_requests.append(
+                            (row, column, column.revision_id))
+                    else:
+                        changes.revision_removes.append(
+                            (row, column, column.revision_id))
+            elif column.kind in (KIND_SHEET_PARAM, KIND_TB_PARAM):
+                changes.param_edits.append((row, column, original, current))
+    return changes
+
+
+class ResultItem(object):
+    """One line in the Apply Changes results dialog."""
+
+    def __init__(self, sheet, item, old_value, new_value, status):
+        self.sheet = sheet
+        self.item = item
+        self.old_value = old_value
+        self.new_value = new_value
+        self.status = status
+
+
+class ApplyResults(object):
+    def __init__(self):
+        self.parameter_changes = []   # ResultItem
+        self.revision_changes = []    # ResultItem
+        self.sheet_changes = []       # ResultItem
+        self.errors = []              # ResultItem (status = error/skipped)
+        self.applied_cells = []       # (row, attr) successfully written
+        self.created_count = 0
+        self.updated_parameter_count = 0
+        self.revisions_added = 0
+        self.revisions_removed = 0
+        self.modified_sheet_ids = set()
+
+    def modified_count(self):
+        return len(self.modified_sheet_ids)
+
+    def add_error(self, sheet, item, message, status="error"):
+        self.errors.append(ResultItem(sheet, item, u"", message, status))

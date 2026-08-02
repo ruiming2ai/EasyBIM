@@ -78,7 +78,6 @@
         <DataGrid x:Name="sheets_dg"
                   Grid.Row="2"
                   AutoGenerateColumns="False"
-                  IsReadOnly="True"
                   SelectionMode="Extended"
                   SelectionUnit="FullRow"
                   CanUserAddRows="False"
@@ -94,6 +93,8 @@
                   EnableRowVirtualization="True"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
+                  BeginningEdit="grid_beginning_edit"
+                  CellEditEnding="grid_cell_edit_ending"
                   SelectionChanged="grid_selection_changed"/>
 
         <DockPanel Grid.Row="3" Margin="0,6,0,6">
