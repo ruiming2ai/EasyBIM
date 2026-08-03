@@ -17,7 +17,7 @@ import view_template_transfer_revit as vtrevit
 import view_template_transfer_state as state
 
 
-TITLE = "View Template"
+TITLE = "View Settings Transfer"
 XAML_FILE = "ViewTemplateTransferWindow.xaml"
 
 

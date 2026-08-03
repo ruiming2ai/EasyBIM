@@ -15,14 +15,14 @@ if SCRIPT_DIR not in sys.path:
 
 
 logger = script.get_logger()
-TITLE = "View Template"
+TITLE = "View Settings Transfer"
 
 
 def main():
     forms.check_modeldoc(exitscript=True)
     if getattr(revit.doc, "IsFamilyDocument", False):
         forms.alert(
-            "View Template requires an open project document.",
+            "View Settings Transfer requires an open project document.",
             title=TITLE,
             exitscript=True,
         )
@@ -32,7 +32,7 @@ def main():
     try:
         view_template_transfer_ui.show_window(revit.doc)
     except Exception as ex:
-        logger.exception("View Template transfer failed.")
+        logger.exception("View Settings Transfer failed.")
         forms.alert(str(ex), title=TITLE)
 
 
