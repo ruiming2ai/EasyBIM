@@ -178,6 +178,14 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("get_envvar", drop_body)
         self.assertNotIn("import clash_detection_engine", drop_body)
 
+    def test_tooltip_carries_a_build_tag(self):
+        # bundle.yaml is re-read by pyRevit's loader on every reload and never
+        # passes through sys.modules, so the tooltip is the one channel that
+        # proves whether new files reached Revit at all - independent of any
+        # Python module caching this tool's persistent engine may be doing.
+        bundle = _source(COMMAND_DIR / "bundle.yaml")
+        self.assertIn("Build 2026-", bundle)
+
     def test_build_stamp_is_read_from_disk(self):
         # A hand-bumped constant can claim a version that is not running.
         source = _source(LIB_DIR / "clash_detection_setup.py")
