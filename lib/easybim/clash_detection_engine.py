@@ -58,6 +58,7 @@ BBOX_PAD = 0.01
 MAX_LINK_SWEEP = 2000
 
 _ACTIVE = False
+_PAUSED = False
 _SESSION = None
 _DOC = None
 _UIAPP = None
@@ -275,10 +276,10 @@ def _build_category_filter(category_ids):
         return None, numeric_ids
 
 
-def _build_contexts(session, doc, link_instances_by_ref):
+def _build_contexts(side_a, side_b, doc, link_instances_by_ref):
     """Cache each side's document, transform and filters once at Start."""
     contexts = {}
-    for slot, side in (("a", session.side_a), ("b", session.side_b)):
+    for slot, side in (("a", side_a), ("b", side_b)):
         side.slot = slot
         category_filter, numeric_ids = _build_category_filter(side.category_ids)
         context = {
@@ -378,11 +379,20 @@ def _collect_solids(geometry_element, results, depth=0):
 
 
 def _element_solids(element):
+    """``(solids, completed)`` for an element.
+
+    The second value matters: an empty list because the element genuinely has
+    no solid geometry means "cannot clash", while an empty list because
+    ``get_Geometry`` threw means "do not know".  Collapsing the two is what let
+    the resolution pass delete real clashes.
+    """
     try:
         geometry_element = element.get_Geometry(_geometry_options())
     except Exception:
-        return []
-    return _collect_solids(geometry_element, [])
+        return [], False
+    if geometry_element is None:
+        return [], True
+    return _collect_solids(geometry_element, []), True
 
 
 def _outline_from_corners(points, pad=BBOX_PAD):
@@ -433,12 +443,28 @@ def _bbox_corners(bbox, extra_transform=None):
     return corners
 
 
-def _outline_for_element(element, extra_transform=None):
+def _outline_for_element(element, extra_transform=None, solids=None):
+    """Search outline built from the element's solids *and* its bounding box.
+
+    Both sources are used because either can be missing or wrong on its own:
+    the solids are the same geometry ``ElementIntersectsElementFilter`` tests
+    against, so they cannot disagree with it, and the element bounding box
+    covers anything the solid walk does not reach.
+
+    ``None`` means "no outline available".  Callers must then query without the
+    bounding-box quick filter - never treat it as "no clash".
+    """
+    points = []
+    for solid in solids or []:
+        try:
+            points.extend(_bbox_corners(solid.GetBoundingBox(), extra_transform))
+        except Exception:
+            continue
     try:
-        bbox = element.get_BoundingBox(None)
+        points.extend(_bbox_corners(element.get_BoundingBox(None), extra_transform))
     except Exception:
-        bbox = None
-    return _outline_from_corners(_bbox_corners(bbox, extra_transform))
+        pass
+    return _outline_from_corners(points)
 
 
 # -- clash queries --------------------------------------------------------
@@ -467,37 +493,51 @@ def _passes_category_fallback(context, element):
 
 
 def _find_clashes(element, source_context, target_context):
-    """Element ids in the target model whose solids overlap ``element``.
+    """``(element_ids, completed)`` for what ``element`` overlaps in the target.
 
     Ordering is the whole performance story: two quick filters (category and
-    bounding box, both served by Revit's spatial index) cut the candidate
-    set down to a handful before the expensive exact filter ever runs.
+    bounding box, both served by Revit's spatial index) cut the candidate set
+    down to a handful before the expensive exact filter ever runs.
+
+    ``completed`` is the important half of the return value.  An empty list
+    with ``completed=False`` means the query could not be carried out, and the
+    caller must NOT read that as "the user resolved everything on this
+    element" - doing so is what silently deleted clashes created by a move or
+    a paste.
     """
     same_model = source_context["model_ref"] == target_context["model_ref"]
+    solids, solids_ok = _element_solids(element)
+    if not solids_ok:
+        _log("Geometry unavailable for {0}".format(_eid_int(element.Id)))
+        return [], False
+    if not solids:
+        # Genuinely nothing to intersect with, so this really is "no clash".
+        return [], True
 
     if same_model:
-        outline = _outline_for_element(element)
-        if outline is None:
-            return []
-        collector = _base_collector(target_context, outline)
+        outline = _outline_for_element(element, solids=solids)
         try:
+            # A missing outline drops the quick filter rather than the query:
+            # slower, but it can never invent a false "no clash".
+            collector = _base_collector(target_context, outline)
             collector = collector.Excluding(_clr_id_list([element.Id]))
             collector = collector.WherePasses(DB.ElementIntersectsElementFilter(element))
             found = list(collector.ToElements())
-        except Exception:
-            # Elements without solid geometry make the exact filter throw.
-            return []
-        return [
-            _eid_int(item.Id)
-            for item in found
-            if _passes_category_fallback(target_context, item)
-        ]
+        except Exception as ex:
+            _log("Exact filter failed for {0}: {1}".format(_eid_int(element.Id), ex))
+            return [], False
+        return (
+            [
+                _eid_int(item.Id)
+                for item in found
+                if _passes_category_fallback(target_context, item)
+            ],
+            True,
+        )
 
-    solids = _element_solids(element)
-    if not solids:
-        return []
     transform = _relative_transform(source_context, target_context)
     found_ids = set()
+    completed = True
     for solid in solids:
         try:
             target_solid = (
@@ -506,19 +546,78 @@ def _find_clashes(element, source_context, target_context):
                 else solid
             )
         except Exception:
+            completed = False
             continue
         outline = _outline_from_corners(_bbox_corners(target_solid.GetBoundingBox()))
-        if outline is None:
-            continue
         try:
             collector = _base_collector(target_context, outline)
             collector = collector.WherePasses(DB.ElementIntersectsSolidFilter(target_solid))
             for item in collector.ToElements():
                 if _passes_category_fallback(target_context, item):
                     found_ids.add(_eid_int(item.Id))
-        except Exception:
+        except Exception as ex:
+            _log("Solid filter failed for {0}: {1}".format(_eid_int(element.Id), ex))
+            completed = False
             continue
-    return [element_id for element_id in found_ids if element_id is not None]
+    return [element_id for element_id in found_ids if element_id is not None], completed
+
+
+def _pair_still_clashes(record):
+    """``(still_clashing, completed)`` for one already-recorded pair.
+
+    Restricting the collector to the single counterpart id makes this exact
+    and cheap, so Resume and Edit Categories can re-check the whole list.
+    """
+    first, second = record.element_a, record.element_b
+    source_context = _context_for_model_ref(first.model_ref)
+    target_context = _context_for_model_ref(second.model_ref)
+    if source_context is None or target_context is None:
+        return False, False
+
+    try:
+        source_element = source_context["doc"].GetElement(_to_eid(first.element_id))
+        target_element = target_context["doc"].GetElement(_to_eid(second.element_id))
+    except Exception:
+        return False, False
+    if source_element is None or target_element is None:
+        return False, True
+
+    candidate_ids = _clr_id_list([target_element.Id])
+    if first.model_ref == second.model_ref:
+        try:
+            collector = DB.FilteredElementCollector(source_context["doc"], candidate_ids)
+            collector = collector.WherePasses(
+                DB.ElementIntersectsElementFilter(source_element)
+            )
+            return _has_any(collector), True
+        except Exception:
+            return False, False
+
+    solids, solids_ok = _element_solids(source_element)
+    if not solids_ok:
+        return False, False
+    if not solids:
+        return False, True
+    transform = _relative_transform(source_context, target_context)
+    for solid in solids:
+        try:
+            target_solid = (
+                DB.SolidUtils.CreateTransformed(solid, transform)
+                if transform is not None
+                else solid
+            )
+            collector = DB.FilteredElementCollector(target_context["doc"], candidate_ids)
+            collector = collector.WherePasses(DB.ElementIntersectsSolidFilter(target_solid))
+            if _has_any(collector):
+                return True, True
+        except Exception:
+            return False, False
+    return False, True
+
+
+def _has_any(collector):
+    first_id = collector.FirstElementId()
+    return first_id is not None and _eid_int(first_id) not in (None, -1)
 
 
 # -- element description --------------------------------------------------
@@ -672,6 +771,13 @@ def _process_work_item(model_ref, element_id):
                 return _handle_link_instance_change(element)
         except Exception:
             pass
+        member_ids = _container_member_ids(element)
+        if member_ids:
+            # Revit reports the container, not its contents, so a pasted or
+            # moved group would otherwise land on a category that is on
+            # neither side and vanish without a trace.
+            _SESSION.enqueue_elements(model_ref, member_ids)
+            return False
 
     try:
         category = element.Category
@@ -688,13 +794,18 @@ def _process_work_item(model_ref, element_id):
     source_key = state.element_key(model_ref, element_id)
     source_info = None
     current_partner_keys = set()
+    all_completed = True
     changed = False
 
     for target_side in target_sides:
         target_context = _context_for_side(target_side)
         if target_context is None:
+            all_completed = False
             continue
-        for other_id in _find_clashes(element, context, target_context):
+        partner_ids, completed = _find_clashes(element, context, target_context)
+        if not completed:
+            all_completed = False
+        for other_id in partner_ids:
             other_key = state.element_key(target_context["model_ref"], other_id)
             if other_key is None or other_key == source_key:
                 continue
@@ -717,16 +828,56 @@ def _process_work_item(model_ref, element_id):
                 changed = True
 
     # Anything previously recorded against this element that is no longer in
-    # the fresh result set has been resolved by the user's edit.  This is
-    # exact, and it costs nothing extra: the queries above already told us
-    # the current truth.
-    for record in _SESSION.pairs_for_element_key(source_key):
-        partners = [key for key in record.element_keys if key != source_key]
-        if partners and partners[0] not in current_partner_keys:
-            _SESSION.remove_pair(record.key)
-            changed = True
+    # the fresh result set has been resolved by the user's edit.
+    #
+    # Two guards, both learned the hard way.  Resolution runs only when every
+    # query actually completed, because an empty result from a failed query is
+    # not evidence of anything.  And a pair recorded during this pass is off
+    # limits: one edit routinely touches several elements, and without this
+    # the second element's turn deletes the clash the first element just
+    # found - which is why moves and pastes went unreported.
+    if all_completed:
+        for record in _SESSION.pairs_for_element_key(source_key):
+            if _SESSION.was_recorded_this_pass(record.key):
+                continue
+            partners = [key for key in record.element_keys if key != source_key]
+            if partners and partners[0] not in current_partner_keys:
+                _SESSION.remove_pair(record.key)
+                changed = True
+    elif _SESSION.pairs_for_element_key(source_key):
+        _log("Kept existing pairs for {0}: a query did not complete.".format(source_key))
 
     return changed
+
+
+def _container_member_ids(element):
+    """Member ids of a Group or AssemblyInstance, else an empty list.
+
+    Members that are themselves containers expand on their own turn through
+    the queue, so nesting needs no recursion here.
+    """
+    getter = getattr(element, "GetMemberIds", None)
+    if not callable(getter):
+        return []
+    try:
+        return [_eid_int(member_id) for member_id in getter()]
+    except Exception:
+        return []
+
+
+def _process_revalidation(pair_key):
+    """Re-check one recorded pair; drop it if out of scope or clear."""
+    record = _SESSION.get_pair(pair_key)
+    if record is None:
+        return False
+    if not _SESSION.is_pair_in_scope(record):
+        _SESSION.remove_pair(pair_key, count_resolved=False)
+        return True
+    still_clashing, completed = _pair_still_clashes(record)
+    if completed and not still_clashing:
+        _SESSION.remove_pair(pair_key)
+        return True
+    return False
 
 
 # -- passes ---------------------------------------------------------------
@@ -734,6 +885,7 @@ def _process_work_item(model_ref, element_id):
 
 def _run_pass():
     changed = False
+    _SESSION.begin_pass()
 
     deleted = _SESSION.take_deleted()
     if deleted:
@@ -758,6 +910,21 @@ def _run_pass():
                 changed = True
         except Exception as ex:
             _log("Work item {0} failed: {1}".format(item, ex))
+
+    # Re-validation shares the same budget so Resume / Edit Categories can
+    # re-check thousands of pairs without ever stalling Revit.
+    while processed < state.MAX_ELEMENTS_PER_TICK:
+        if processed and _SESSION.budget_exceeded(started_at, time.time()):
+            break
+        pair_key = _SESSION.take_revalidation()
+        if pair_key is None:
+            break
+        processed += 1
+        try:
+            if _process_revalidation(pair_key):
+                changed = True
+        except Exception as ex:
+            _log("Re-validation of {0} failed: {1}".format(pair_key, ex))
 
     new_pairs = _SESSION.drain_new_pairs()
     if new_pairs and not _SESSION.silent_mode:
@@ -790,10 +957,17 @@ def _raise_alert(new_pairs):
 # -- show requests --------------------------------------------------------
 
 
-def request_show(pair_key):
-    """Queue a Show request; Idling runs it in a valid API context."""
-    if pair_key and pair_key not in _SHOW_REQUESTS:
-        _SHOW_REQUESTS.append(pair_key)
+def request_show(pair_keys):
+    """Queue a Show request; Idling runs it in a valid API context.
+
+    Accepts one key or many: a clash involves at least two elements, and
+    ticking several rows shows all of them together in a single selection.
+    """
+    if isinstance(pair_keys, str):
+        pair_keys = [pair_keys]
+    for pair_key in pair_keys or []:
+        if pair_key and pair_key not in _SHOW_REQUESTS:
+            _SHOW_REQUESTS.append(pair_key)
 
 
 def _link_instance_for_ref(model_ref):
@@ -801,13 +975,19 @@ def _link_instance_for_ref(model_ref):
     return context.get("link_instance") if context else None
 
 
-def _show_record(uidoc, record):
+def _show_records(uidoc, records):
+    """Select and frame every element of every given pair, in one go."""
     host_doc = getattr(uidoc, "Document", None) or _DOC
     host_ids = []
     link_references = []
     zoom_points = []
 
-    for info in (record.element_a, record.element_b):
+    infos = []
+    for record in records or []:
+        infos.append(record.element_a)
+        infos.append(record.element_b)
+
+    for info in infos:
         context = _context_for_model_ref(info.model_ref)
         if context is None:
             continue
@@ -913,15 +1093,14 @@ def _drain_show_requests(uiapp):
         return
     if not _same_doc(getattr(uidoc, "Document", None), _DOC):
         return
-    records = dict((record.key, record) for record in _SESSION.records())
-    for pair_key in requests:
-        record = records.get(pair_key)
-        if record is None:
-            continue
-        try:
-            _show_record(uidoc, record)
-        except Exception as ex:
-            _log("Show failed for {0}: {1}".format(pair_key, ex))
+    by_key = dict((record.key, record) for record in _SESSION.records())
+    records = [by_key[key] for key in requests if key in by_key]
+    if not records:
+        return
+    try:
+        _show_records(uidoc, records)
+    except Exception as ex:
+        _log("Show failed for {0} pair(s): {1}".format(len(records), ex))
 
 
 # -- event callbacks ------------------------------------------------------
@@ -929,7 +1108,8 @@ def _drain_show_requests(uiapp):
 
 def _on_document_changed(sender, args):
     """Hot path.  Set unions only - no reads, no geometry, no allocation churn."""
-    if not _ACTIVE or _SESSION is None:
+    if not _ACTIVE or _PAUSED or _SESSION is None:
+        # Paused costs exactly what "off" costs: nothing is queued at all.
         return
     try:
         doc = args.GetDocument()
@@ -1075,6 +1255,83 @@ def get_document():
     return _DOC
 
 
+def is_paused():
+    return bool(_ACTIVE and _PAUSED)
+
+
+def _update_badge():
+    """Keep the ribbon icon telling the truth about the mode."""
+    try:
+        from easybim import clash_detection_ribbon
+
+        if not _ACTIVE:
+            clash_detection_ribbon.set_state(None)
+        else:
+            clash_detection_ribbon.set_state("paused" if _PAUSED else "on")
+    except Exception:
+        pass
+
+
+def pause():
+    """Stop watching, keep the list.  Queued edits are dropped, not banked."""
+    global _PAUSED
+    if not _ACTIVE or _PAUSED or _SESSION is None:
+        return False
+    _PAUSED = True
+    _SESSION.paused = True
+    _SESSION.drop_pending()
+    _update_badge()
+    _refresh_panel()
+    _log("Paused.")
+    return True
+
+
+def resume():
+    """Start watching again and re-check what is already listed.
+
+    Edits made while paused were never recorded, so rather than replaying them
+    the recorded pairs are re-tested: anything fixed during the pause drops
+    off, anything still clashing stays.
+    """
+    global _PAUSED
+    if not _ACTIVE or not _PAUSED or _SESSION is None:
+        return False
+    _PAUSED = False
+    _SESSION.paused = False
+    _SESSION.drop_pending()
+    _SESSION.enqueue_revalidation(now=time.time())
+    _update_badge()
+    _refresh_panel()
+    _log("Resumed; re-checking {0} pair(s).".format(_SESSION.revalidation_size))
+    return True
+
+
+def set_categories(side_a, side_b, link_instances_by_ref=None):
+    """Apply an edited category selection without restarting the session.
+
+    Recorded clashes survive if they are still in scope and still clashing,
+    which is why this queues a re-validation instead of clearing the list.
+    """
+    global _CONTEXTS
+
+    if not _ACTIVE or _SESSION is None:
+        return False, "Clash Detection Mode is not running."
+
+    contexts = _build_contexts(side_a, side_b, _DOC, link_instances_by_ref or {})
+    if contexts is None:
+        return False, "A selected linked model is not loaded. Reload it and try again."
+
+    _SESSION.side_a = side_a
+    _SESSION.side_b = side_b
+    _CONTEXTS = contexts
+    _TYPE_LABEL_CACHE.clear()
+    _SESSION.drop_pending()
+    _SESSION.enqueue_revalidation(now=time.time())
+    _refresh_panel()
+    _log("Categories updated; re-checking {0} pair(s).".format(_SESSION.revalidation_size))
+    return True, "Categories updated."
+
+
 def start(uiapp, doc, side_a, side_b, silent_mode=True, link_instances_by_ref=None):
     """Arm the mode.  Returns ``(ok, message)``.
 
@@ -1082,16 +1339,18 @@ def start(uiapp, doc, side_a, side_b, silent_mode=True, link_instances_by_ref=No
     moment on are ever tested, which is both why the mode starts instantly
     and why pre-existing clashes are never reported.
     """
-    global _ACTIVE, _SESSION, _DOC, _UIAPP, _CONTEXTS
+    global _ACTIVE, _PAUSED, _SESSION, _DOC, _UIAPP, _CONTEXTS
 
     if _ACTIVE:
         stop()
 
     session = state.ClashSession(side_a=side_a, side_b=side_b, silent_mode=silent_mode)
-    contexts = _build_contexts(session, doc, link_instances_by_ref or {})
+    session.started_at = time.time()
+    contexts = _build_contexts(side_a, side_b, doc, link_instances_by_ref or {})
     if contexts is None:
         return False, "A selected linked model is not loaded. Reload it and try again."
 
+    _PAUSED = False
     _SESSION = session
     _DOC = doc
     _UIAPP = _get_uiapp(uiapp)
@@ -1113,17 +1372,20 @@ def start(uiapp, doc, side_a, side_b, silent_mode=True, link_instances_by_ref=No
         clash_detection_panel.open_panel(session)
     except Exception as ex:
         _log("Panel open failed: {0}".format(ex))
+    _update_badge()
     _log("Started.")
     return True, "Clash Detection Mode is on."
 
 
 def stop(reason=None):
     """Disarm and wipe.  Nothing was written to disk, so nothing to delete."""
-    global _ACTIVE, _SESSION, _DOC, _UIAPP, _CONTEXTS
+    global _ACTIVE, _PAUSED, _SESSION, _DOC, _UIAPP, _CONTEXTS
 
     was_active = _ACTIVE
     _ACTIVE = False
+    _PAUSED = False
     _unsubscribe()
+    _update_badge()
 
     if _SESSION is not None:
         _SESSION.clear()

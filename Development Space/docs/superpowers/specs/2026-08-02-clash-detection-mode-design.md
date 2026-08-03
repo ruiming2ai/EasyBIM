@@ -30,6 +30,38 @@ updated live instead.
 - Do not persist results across Revit sessions.
 - Do not modify the model. The mode is read-only; it opens no transaction.
 
+## Why an empty query result is not "no clash"
+
+The first release lost any clash created by a *move* or a *copy*, and the
+cause is worth recording because it is easy to reintroduce.
+
+`_find_clashes` returned a bare list. An empty list meant three different
+things - genuinely no clash, no bounding box available, or the query threw -
+and the resolution pass treated all three as proof the user had resolved every
+clash on that element. `remove_pair` also strips the record from the
+not-yet-announced buffer, so a pair found moments earlier in the same pass
+vanished before reaching the panel.
+
+That produced a create-versus-edit asymmetry. A create makes one work item, so
+nothing can erase the pair. A move or a paste routinely touches several
+elements at once - multi-select, joined walls, connected MEP, a pasted group -
+so element 1 recorded the clash and element 4 deleted it.
+
+Three rules now hold, each with a test:
+
+1. `_find_clashes` returns `(ids, completed)`, and resolution runs only when
+   every target-side query completed.
+2. A pair recorded during the current pass is never eligible for removal in
+   that pass (`ClashSession.was_recorded_this_pass`).
+3. A missing outline drops the bounding-box quick filter rather than the
+   query. A bad outline may cost speed; it can never invent a "no clash".
+
+The related silent drop: Revit reports a *container* - a group or assembly -
+rather than its members, so a moved or pasted group landed on a category
+neither side watched and disappeared. Containers now expand via
+`GetMemberIds()`, and members that are themselves containers expand on their
+own turn through the queue.
+
 ## User Behavior
 
 The ribbon button (`Misc Tools` panel) opens the setup window. Both sides
@@ -42,10 +74,34 @@ spacebar toggles the selection; `All` / `None` / `Invert` act on the list.
 `Start Ongoing Detection Mode` replaces the native `OK`. `Silent Mode and
 Update Clash on Dynamic Panel` is on by default.
 
-While running, pressing the ribbon button again offers *Show Panel*,
-*Restart With New Categories* or *Stop Detection*. `Stop Detection` also
-appears on the panel and on the alert window. Closing the monitored document
-stops the mode automatically.
+While running, pressing the ribbon button opens the **status window**: running
+or paused, elapsed time, what is being watched, and live counts, with *Show
+Panel*, *Pause*, *Resume*, *Edit Categories*, *Stop Detection*. That, plus a
+dot on the ribbon icon - green running, amber paused - is how the mode stays
+discoverable once the panel is docked away and the alert dismissed. The dot is
+drawn over whatever image the button currently has, so it is correct in both
+Revit themes without shipping extra icons.
+
+**Pause** stops watching and keeps the list; edits made while paused are never
+queued, so paused costs exactly what off costs. **Resume** re-checks the
+recorded pairs rather than replaying those edits: anything fixed during the
+pause drops off, anything still clashing stays. Resume is disabled until the
+mode is actually paused, and Pause is disabled while it already is.
+
+**Edit Categories** reopens the setup window on the current selection - it is
+available while paused - and applies the change without tearing down the
+session. Pairs outside the new scope are dropped; the rest are re-tested and
+kept only if still clashing.
+
+Resume and Edit Categories are the same operation underneath,
+`_revalidate_pairs`, drained through the normal per-tick budget so re-checking
+the whole list never stalls Revit.
+
+Rows carry a checkbox and a single **Show** at the foot of the list selects and
+frames every ticked clash at once; double-clicking a row shows just that pair.
+`Stop Detection` and `Pause` / `Resume` appear on the panel, the alert window
+and the status window. Closing the monitored document stops the mode
+automatically.
 
 ## Detection Flow
 
@@ -103,9 +159,12 @@ result set is dropped. A dropped pair can be detected again later, so
 
 ## Bounds
 
-`MAX_QUEUE` 5000 (drop-oldest, counted and surfaced in the panel),
+`MAX_QUEUE` 20000 (drop-oldest, counted and surfaced in the panel),
 `MAX_PAIRS` 2000 (recording stops with a note), alert window capped at 50
 rows. Nothing accumulates without a ceiling, and `stop()` clears all of it.
+The queue is sized so a large paste is checked end to end rather than
+half-dropped: a work item is a small tuple, and at 25 items per tick a full
+queue still drains in seconds.
 
 ## Error Handling
 

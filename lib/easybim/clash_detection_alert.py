@@ -25,6 +25,8 @@ except Exception:
     script = None
 
 from easybim.clash_detection_panel import ClashRow
+from easybim.clash_detection_panel import checked_pair_keys
+from easybim.clash_detection_panel import set_row_checked
 
 
 ALERT_XAML = os.path.join(os.path.dirname(__file__), "ui", "clash_detection_alert.xaml")
@@ -45,6 +47,12 @@ def _log(message):
         pass
 
 
+def _engine():
+    from easybim import clash_detection_engine
+
+    return clash_detection_engine
+
+
 def _rows():
     global _ROWS
     if _ROWS is None:
@@ -52,6 +60,14 @@ def _rows():
 
         _ROWS = ObservableCollection[object]()
     return _ROWS
+
+
+def _rows_list():
+    rows = _rows()
+    try:
+        return [rows[index] for index in range(rows.Count)]
+    except Exception:
+        return []
 
 
 def _place_bottom_right(window):
@@ -97,30 +113,67 @@ def _window_type():
             _forget_window()
 
         def show_click(self, sender, args):
-            del args
-            row = getattr(sender, "DataContext", None)
-            pair_key = getattr(row, "pair_key", None)
-            if not pair_key:
-                return
-            from easybim import clash_detection_engine
+            del sender, args
+            keys = checked_pair_keys(_rows_list())
+            if keys:
+                _engine().request_show(keys)
 
-            clash_detection_engine.request_show(pair_key)
+        def rows_double_click(self, sender, args):
+            del args
+            row = getattr(sender, "SelectedItem", None)
+            pair_key = getattr(row, "pair_key", None)
+            if pair_key:
+                _engine().request_show(pair_key)
+
+        def row_check_click(self, sender, args):
+            del sender, args
+            self._update_buttons()
+
+        def select_all_click(self, sender, args):
+            del sender, args
+            for row in _rows_list():
+                set_row_checked(row, True)
+            self._update_buttons()
+
+        def select_none_click(self, sender, args):
+            del sender, args
+            for row in _rows_list():
+                set_row_checked(row, False)
+            self._update_buttons()
+
+        def pause_click(self, sender, args):
+            del sender, args
+            _engine().pause()
+            self._update_buttons()
+
+        def resume_click(self, sender, args):
+            del sender, args
+            _engine().resume()
+            self._update_buttons()
 
         def silent_click(self, sender, args):
             del sender, args
-            from easybim import clash_detection_engine
-
-            clash_detection_engine.set_silent_mode(True)
+            _engine().set_silent_mode(True)
 
         def stop_click(self, sender, args):
             del sender, args
-            from easybim import clash_detection_engine
-
-            clash_detection_engine.stop(reason="alert Stop Detection")
+            _engine().stop(reason="alert Stop Detection")
 
         def dismiss_click(self, sender, args):
             del sender, args
             self.Close()
+
+        def _update_buttons(self):
+            try:
+                paused = _engine().is_paused()
+            except Exception:
+                paused = False
+            try:
+                self.PauseButton.IsEnabled = not paused
+                self.ResumeButton.IsEnabled = paused
+                self.ShowButton.IsEnabled = bool(checked_pair_keys(_rows_list()))
+            except Exception:
+                pass
 
     return ClashDetectionAlertWindow
 
@@ -175,10 +228,8 @@ def show(records, session=None):
             "New clash detected" if count == 1 else "{0} new clashes detected".format(count)
         )
         if session is not None:
-            _WINDOW.ScopeText.Text = "{0}  vs  {1}".format(
-                session.side_a.model_label or "Current Project",
-                session.side_b.model_label or "Current Project",
-            )
+            _WINDOW.ScopeText.Text = session.scope_text()
+        _WINDOW._update_buttons()
     except Exception:
         pass
     return True

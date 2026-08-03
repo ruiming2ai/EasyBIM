@@ -44,26 +44,6 @@ def _uiapp():
         return None
 
 
-def _handle_already_running(engine):
-    answer = forms.alert(
-        "Clash Detection Mode is already running.",
-        title=TITLE,
-        options=["Show Panel", "Restart With New Categories", "Stop Detection"],
-    )
-    if not answer:
-        return True
-    if answer == "Stop Detection":
-        engine.stop(reason="ribbon button")
-        return True
-    if answer == "Show Panel":
-        from easybim import clash_detection_panel
-
-        clash_detection_panel.open_panel(engine.get_session())
-        return True
-    engine.stop(reason="restart with new categories")
-    return False
-
-
 def main():
     forms.check_modeldoc(exitscript=True)
     if getattr(revit.doc, "IsFamilyDocument", False):
@@ -75,14 +55,18 @@ def main():
 
     from easybim import clash_detection_engine
 
-    if clash_detection_engine.is_active():
-        if _handle_already_running(clash_detection_engine):
+    try:
+        if clash_detection_engine.is_active():
+            # Clicking the button while the mode runs is how you find out what
+            # it is doing - the panel may be closed and the alert dismissed.
+            from easybim import clash_detection_status
+
+            clash_detection_status.show_status_window()
             return
 
-    import clash_detection_ui
+        from easybim import clash_detection_setup
 
-    try:
-        clash_detection_ui.show_setup_window(revit.doc, uiapp=_uiapp())
+        clash_detection_setup.show_setup_window(revit.doc, uiapp=_uiapp())
     except Exception as ex:
         logger.exception("Clash Detection Mode failed.")
         forms.alert("Clash Detection Mode failed:\n{0}".format(ex), title=TITLE)

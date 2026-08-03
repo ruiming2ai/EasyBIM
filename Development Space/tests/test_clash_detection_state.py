@@ -430,6 +430,163 @@ class ClearTests(unittest.TestCase):
         self.assertFalse(session.has_work())
 
 
+class SamePassProtectionTests(unittest.TestCase):
+    """The bug that lost clashes created by a move or a paste.
+
+    One edit routinely touches several elements. Element 1's turn records the
+    clash; element 2's turn used to delete it before it ever reached the
+    panel, because an empty query result was read as "the user resolved it".
+    """
+
+    def setUp(self):
+        self.session = _session()
+        self.key = state.pair_key(HOST, 1, HOST, 2)
+
+    def test_a_pair_recorded_this_pass_is_protected(self):
+        self.session.begin_pass()
+        self.session.record_clash(self.key, _info(HOST, 1), _info(HOST, 2))
+        self.assertTrue(self.session.was_recorded_this_pass(self.key))
+
+    def test_protection_lifts_on_the_next_pass(self):
+        self.session.begin_pass()
+        self.session.record_clash(self.key, _info(HOST, 1), _info(HOST, 2))
+        self.session.begin_pass()
+        self.assertFalse(self.session.was_recorded_this_pass(self.key))
+
+    def test_a_pair_from_an_earlier_pass_is_not_protected(self):
+        self.session.begin_pass()
+        self.session.record_clash(self.key, _info(HOST, 1), _info(HOST, 2))
+        self.session.begin_pass()
+        other = state.pair_key(HOST, 3, HOST, 4)
+        self.session.record_clash(other, _info(HOST, 3), _info(HOST, 4))
+        self.assertTrue(self.session.was_recorded_this_pass(other))
+        self.assertFalse(self.session.was_recorded_this_pass(self.key))
+
+    def test_removing_a_pair_clears_its_protection(self):
+        self.session.begin_pass()
+        self.session.record_clash(self.key, _info(HOST, 1), _info(HOST, 2))
+        self.session.remove_pair(self.key)
+        self.assertFalse(self.session.was_recorded_this_pass(self.key))
+
+    def test_a_protected_pair_still_reaches_the_panel(self):
+        self.session.begin_pass()
+        self.session.record_clash(self.key, _info(HOST, 1), _info(HOST, 2))
+        self.assertEqual(len(self.session.drain_new_pairs()), 1)
+
+
+class ScopeTests(unittest.TestCase):
+    def _record(self, session, cat_a=1, cat_b=2, ref_a=HOST, ref_b=HOST):
+        key = state.pair_key(ref_a, 1, ref_b, 2)
+        first = state.ElementInfo(model_ref=ref_a, element_id=1, category_id=cat_a)
+        second = state.ElementInfo(model_ref=ref_b, element_id=2, category_id=cat_b)
+        return session.record_clash(key, first, second)
+
+    def test_element_info_keeps_its_category(self):
+        info = state.ElementInfo(element_id=5, category_id=-2008044)
+        self.assertEqual(info.category_id, -2008044)
+
+    def test_pair_in_scope_either_way_round(self):
+        session = _session(left_ids=(1,), right_ids=(2,))
+        record = self._record(session)
+        self.assertTrue(session.is_pair_in_scope(record))
+        flipped = self._record(_session(left_ids=(2,), right_ids=(1,)))
+        self.assertTrue(
+            _session(left_ids=(2,), right_ids=(1,)).is_pair_in_scope(flipped)
+        )
+
+    def test_pair_leaves_scope_when_a_category_is_unticked(self):
+        session = _session(left_ids=(1,), right_ids=(2,))
+        record = self._record(session)
+        session.side_b.category_ids = set([99])
+        self.assertFalse(session.is_pair_in_scope(record))
+
+    def test_pair_leaves_scope_when_the_model_changes(self):
+        session = _session(left_ids=(1,), right_ids=(2,))
+        record = self._record(session)
+        session.side_b.model_ref = LINK
+        self.assertFalse(session.is_pair_in_scope(record))
+
+    def test_same_side_pair_is_out_of_scope(self):
+        # Both elements on side A only is not a checkable pairing.
+        session = _session(left_ids=(1, 2), right_ids=(7,))
+        record = self._record(session)
+        self.assertFalse(session.is_pair_in_scope(record))
+
+
+class PauseTests(unittest.TestCase):
+    def test_paused_session_never_runs(self):
+        session = _session()
+        session.enqueue_changes(added_ids=[1], now=0.0)
+        session.paused = True
+        self.assertFalse(session.should_run(1000.0))
+        session.paused = False
+        self.assertTrue(session.should_run(1000.0))
+
+    def test_drop_pending_forgets_queued_edits(self):
+        session = _session()
+        session.enqueue_changes(added_ids=[1, 2], deleted_ids=[3], now=0.0)
+        self.assertEqual(session.drop_pending(), 2)
+        self.assertFalse(session.has_work())
+
+    def test_drop_pending_keeps_the_recorded_clashes(self):
+        session = _session()
+        key = state.pair_key(HOST, 1, HOST, 2)
+        session.record_clash(key, _info(HOST, 1), _info(HOST, 2))
+        session.drop_pending()
+        self.assertEqual(session.pair_count, 1)
+
+    def test_status_text_says_it_is_paused(self):
+        session = _session()
+        session.paused = True
+        self.assertIn("Paused", session.status_text())
+        self.assertTrue(session.summary()["paused"])
+
+
+class RevalidationTests(unittest.TestCase):
+    def setUp(self):
+        self.session = _session()
+        self.key = state.pair_key(HOST, 1, HOST, 2)
+        self.session.record_clash(self.key, _info(HOST, 1), _info(HOST, 2))
+
+    def test_enqueue_all_queues_every_recorded_pair(self):
+        self.assertEqual(self.session.enqueue_revalidation(), 1)
+        self.assertEqual(self.session.revalidation_size, 1)
+        self.assertTrue(self.session.has_work())
+
+    def test_revalidation_is_deduped(self):
+        self.session.enqueue_revalidation()
+        self.session.enqueue_revalidation()
+        self.assertEqual(self.session.revalidation_size, 1)
+
+    def test_unknown_keys_are_ignored(self):
+        self.assertEqual(self.session.enqueue_revalidation(["nope"]), 0)
+
+    def test_take_revalidation_drains(self):
+        self.session.enqueue_revalidation()
+        self.assertEqual(self.session.take_revalidation(), self.key)
+        self.assertIsNone(self.session.take_revalidation())
+
+    def test_removing_a_pair_pulls_it_from_the_queue(self):
+        self.session.enqueue_revalidation()
+        self.session.remove_pair(self.key)
+        self.assertEqual(self.session.revalidation_size, 0)
+        self.assertIsNone(self.session.take_revalidation())
+
+    def test_get_pair_round_trips(self):
+        self.assertIsNotNone(self.session.get_pair(self.key))
+        self.assertIsNone(self.session.get_pair("nope"))
+
+    def test_status_text_reports_re_checking(self):
+        self.session.enqueue_revalidation()
+        self.assertIn("re-checking 1", self.session.status_text())
+
+    def test_clear_empties_the_revalidation_queue(self):
+        self.session.enqueue_revalidation()
+        self.session.clear()
+        self.assertEqual(self.session.revalidation_size, 0)
+        self.assertFalse(self.session.has_work())
+
+
 class BoundsTests(unittest.TestCase):
     def test_tuning_constants_stay_bounded(self):
         # These are the guardrails that keep the mode cheap; a regression
@@ -437,7 +594,9 @@ class BoundsTests(unittest.TestCase):
         self.assertLessEqual(state.MAX_ELEMENTS_PER_TICK, 50)
         self.assertLessEqual(state.BUDGET_SEC, 0.1)
         self.assertGreater(state.DEBOUNCE_SEC, 0.0)
-        self.assertLessEqual(state.MAX_QUEUE, 10000)
+        # Sized so a large paste is checked end to end, not half-dropped.
+        self.assertLessEqual(state.MAX_QUEUE, 50000)
+        self.assertGreaterEqual(state.MAX_QUEUE, 20000)
         self.assertLessEqual(state.MAX_PAIRS, 5000)
 
     def test_dropped_changes_are_reported_not_silent(self):

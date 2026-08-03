@@ -10,10 +10,10 @@ If the host's pyRevit build has no dockable-panel support, the same content
 opens as a modeless window pinned to the right of the Revit window instead
 of failing outright.
 
-Rows are immutable value objects held in an ``ObservableCollection``: a
-clash description never changes, rows only appear when a clash is created
-and disappear when it is resolved.  That means the collection's own change
-notification is enough and no per-row binding plumbing is needed here.
+A clash description never changes - rows only appear when a clash is created
+and disappear when it is resolved - so the ``ObservableCollection`` handles
+the list.  The tick state does change under the user, which is why the rows
+implement ``INotifyPropertyChanged``.
 """
 
 from __future__ import print_function
@@ -59,16 +59,50 @@ def _log(message):
 # -- rows -----------------------------------------------------------------
 
 
-class ClashRow(object):
-    """One line in the panel.  Plain object: WPF only reads these."""
+try:
+    from easybim.wpf_notify import NotifyingObject as _RowBase
+
+    _NOTIFY_SUPPORTED = True
+except Exception:
+    _RowBase = object
+    _NOTIFY_SUPPORTED = False
+
+
+class ClashRow(_RowBase):
+    """One line in the panel.
+
+    ``is_checked`` is the only mutable field: a clash involves at least two
+    elements, so rows are ticked and shown together rather than one row at a
+    time.
+    """
 
     def __init__(self, record):
+        if _NOTIFY_SUPPORTED:
+            _RowBase.__init__(self)
         self.pair_key = record.key
         self.sequence = record.sequence
+        self.is_checked = False
         self.element_a_title = record.element_a.display_label
         self.element_a_detail = record.element_a.detail_label
         self.element_b_title = record.element_b.display_label
         self.element_b_detail = record.element_b.detail_label
+
+
+def set_row_checked(row, is_checked):
+    """Tick a row and tell WPF, so All / None move the checkboxes."""
+    if bool(row.is_checked) == bool(is_checked):
+        return False
+    row.is_checked = bool(is_checked)
+    if _NOTIFY_SUPPORTED:
+        try:
+            row.raise_property_changed("is_checked")
+        except Exception:
+            pass
+    return True
+
+
+def checked_pair_keys(rows):
+    return [row.pair_key for row in rows or [] if row.is_checked]
 
 
 def _observable_collection():
@@ -106,6 +140,7 @@ def _bind_view(view):
         _log("Could not bind rows: {0}".format(ex))
     _apply_text(_LAST_STATUS, _LAST_SCOPE)
     _apply_empty_state()
+    _update_buttons()
 
 
 def _apply_text(status_text, scope_text):
@@ -135,20 +170,92 @@ def _apply_empty_state():
         pass
 
 
-def _on_show_click(sender):
-    row = getattr(sender, "DataContext", None)
-    pair_key = getattr(row, "pair_key", None)
-    if not pair_key:
-        return
+def _engine():
     from easybim import clash_detection_engine
 
-    clash_detection_engine.request_show(pair_key)
+    return clash_detection_engine
+
+
+def _rows_list():
+    rows = _rows()
+    try:
+        return [rows[index] for index in range(rows.Count)]
+    except Exception:
+        return []
+
+
+def _on_show_checked():
+    """Show every ticked clash at once - one selection, one zoom."""
+    keys = checked_pair_keys(_rows_list())
+    if not keys:
+        _set_status_hint("Tick the clashes you want to see, then press Show.")
+        return
+    _engine().request_show(keys)
+
+
+def _on_show_row(sender):
+    row = getattr(sender, "DataContext", None) or getattr(
+        sender, "SelectedItem", None
+    )
+    pair_key = getattr(row, "pair_key", None)
+    if pair_key:
+        _engine().request_show(pair_key)
+
+
+def _on_select_all(is_checked):
+    for row in _rows_list():
+        set_row_checked(row, is_checked)
 
 
 def _on_stop_click():
-    from easybim import clash_detection_engine
+    _engine().stop(reason="panel Stop Detection")
 
-    clash_detection_engine.stop(reason="panel Stop Detection")
+
+def _on_pause_click():
+    _engine().pause()
+
+
+def _on_resume_click():
+    _engine().resume()
+
+
+def _on_edit_categories_click():
+    try:
+        from easybim import clash_detection_setup
+
+        clash_detection_setup.request_edit_categories()
+    except Exception as ex:
+        _log("Edit categories failed: {0}".format(ex))
+
+
+def _set_status_hint(text):
+    view = _VIEW
+    if view is None:
+        return
+    try:
+        view.StatusText.Text = text
+    except Exception:
+        pass
+
+
+def _update_buttons():
+    """Only ever offer the action that would actually do something."""
+    view = _VIEW
+    if view is None:
+        return
+    try:
+        paused = _engine().is_paused()
+    except Exception:
+        paused = False
+    try:
+        view.PauseButton.IsEnabled = not paused
+        view.ResumeButton.IsEnabled = paused
+    except Exception:
+        pass
+    try:
+        view.ShowButton.IsEnabled = bool(checked_pair_keys(_rows_list()))
+    except Exception:
+        pass
 
 
 def _panel_type():
@@ -184,8 +291,36 @@ def _panel_type():
                 pass
 
         def show_click(self, sender, args):
+            del sender, args
+            _on_show_checked()
+
+        def rows_double_click(self, sender, args):
             del args
-            _on_show_click(sender)
+            _on_show_row(sender)
+
+        def row_check_click(self, sender, args):
+            del sender, args
+            _update_buttons()
+
+        def select_all_click(self, sender, args):
+            del sender, args
+            _on_select_all(True)
+
+        def select_none_click(self, sender, args):
+            del sender, args
+            _on_select_all(False)
+
+        def pause_click(self, sender, args):
+            del sender, args
+            _on_pause_click()
+
+        def resume_click(self, sender, args):
+            del sender, args
+            _on_resume_click()
+
+        def edit_categories_click(self, sender, args):
+            del sender, args
+            _on_edit_categories_click()
 
         def stop_click(self, sender, args):
             del sender, args
@@ -209,8 +344,36 @@ def _fallback_window_type():
             _bind_view(self)
 
         def show_click(self, sender, args):
+            del sender, args
+            _on_show_checked()
+
+        def rows_double_click(self, sender, args):
             del args
-            _on_show_click(sender)
+            _on_show_row(sender)
+
+        def row_check_click(self, sender, args):
+            del sender, args
+            _update_buttons()
+
+        def select_all_click(self, sender, args):
+            del sender, args
+            _on_select_all(True)
+
+        def select_none_click(self, sender, args):
+            del sender, args
+            _on_select_all(False)
+
+        def pause_click(self, sender, args):
+            del sender, args
+            _on_pause_click()
+
+        def resume_click(self, sender, args):
+            del sender, args
+            _on_resume_click()
+
+        def edit_categories_click(self, sender, args):
+            del sender, args
+            _on_edit_categories_click()
 
         def stop_click(self, sender, args):
             del sender, args
@@ -399,6 +562,7 @@ def refresh(session):
         _apply_rows(records)
         _apply_text(status_text, scope_text)
         _apply_empty_state()
+        _update_buttons()
 
     view = _VIEW
     dispatcher = getattr(view, "Dispatcher", None) if view is not None else None
