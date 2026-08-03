@@ -372,7 +372,8 @@ def build_preview_lines(matched_rows, total_rows, instance_write_count,
 
 
 def build_import_summary_text(written_instance, written_type, failed_lines,
-                              skipped_lines, file_path, cleared_count=0):
+                              skipped_lines, file_path, cleared_count=0,
+                              clear_failure_lines=None):
     lines = [
         "Imported from:",
         _safe_text(file_path),
@@ -382,6 +383,13 @@ def build_import_summary_text(written_instance, written_type, failed_lines,
     ]
     if int(cleared_count or 0):
         lines.append("Values cleared: {}".format(int(cleared_count)))
+
+    # Refused clears get their own section: the value is still in the
+    # model, so this is the one outcome the user has to act on.
+    if clear_failure_lines:
+        lines.append("")
+        lines.append("COULD NOT BE CLEARED - clear these in Revit instead:")
+        lines.extend(_capped(clear_failure_lines))
     if skipped_lines:
         lines.append("")
         lines.append("Skipped:")

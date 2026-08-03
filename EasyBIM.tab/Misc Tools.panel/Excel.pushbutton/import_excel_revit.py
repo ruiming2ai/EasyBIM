@@ -177,12 +177,31 @@ class ImportPlan(object):
 
 class ImportResult(object):
     def __init__(self, written_instance, written_type, failed_lines, plan,
-                 cleared_count=0):
+                 cleared_count=0, clear_failure_lines=None):
         self.written_instance = int(written_instance)
         self.written_type = int(written_type)
         self.failed_lines = list(failed_lines or [])
         self.plan = plan
         self.cleared_count = int(cleared_count)
+        self.clear_failure_lines = list(clear_failure_lines or [])
+
+
+def _aggregate_clear_failures(failures):
+    """Group refused clears by parameter so one column is one line."""
+    counts = {}
+    order = []
+    for param_name, reason in failures or []:
+        key = (safe_text(param_name), safe_text(reason))
+        if key not in counts:
+            counts[key] = 0
+            order.append(key)
+        counts[key] += 1
+    return [
+        "'{}' - {} value(s) left unchanged: {}".format(
+            param_name, counts[(param_name, reason)], reason
+        )
+        for param_name, reason in order
+    ]
 
 
 def collect_scope_element_ids(doc, schedule):
@@ -449,27 +468,30 @@ def _already_clear(param):
         return False
 
 
+CLEAR_REFUSED = "Revit does not allow this parameter to be empty"
+
+
 def clear_param(param):
-    """Unset a parameter. Returns (ok, error_text).
+    """Restore a parameter to having no value. Returns (ok, error_text).
 
-    Parameter.ClearValue (Revit 2022+) is the real "no value" operation,
-    but Revit restricts it and declines for many built-in and family
-    parameters. Each storage type therefore has a fallback that expresses
-    emptiness the way Revit models it:
+    Parameter.ClearValue (Revit 2022+) restores the unset state a
+    parameter has before anyone assigns it, and is tried for every storage
+    type - numbers included, since Revit does allow a number to hold no
+    value.
 
-      text       -> "" (what a cleared text parameter holds)
-      Yes/No     -> No, the only "off" state a checkbox has
-      reference  -> InvalidElementId, Revit's "None"
-
-    Plain numbers get no fallback on purpose: 0 is a real measurement, not
-    an absence, so inventing it would be worse than reporting the failure.
+    The two fallbacks below are not substitutes: each one IS the empty
+    state for that storage type ("" is empty text, InvalidElementId is
+    Revit's None). A value is NEVER swapped for a different value - a
+    Yes/No is never turned into No and a dimension is never zeroed,
+    because that changes the meaning instead of removing it. When Revit
+    refuses, the parameter is left exactly as it was and the caller
+    reports it.
     """
     clear_error = None
     try:
         if hasattr(param, "ClearValue"):
             if param.ClearValue():
                 return True, None
-            clear_error = "Revit declined to clear this parameter"
     except Exception as error:
         clear_error = exception_text(error)
 
@@ -478,17 +500,13 @@ def clear_param(param):
         if storage == DB.StorageType.String:
             param.Set("")
             return True, None
-        if storage == DB.StorageType.Integer \
-                and is_yesno_parameter(param.Definition):
-            param.Set(0)
-            return True, None
         if storage == DB.StorageType.ElementId:
             param.Set(DB.ElementId.InvalidElementId)
             return True, None
     except Exception as set_error:
         clear_error = clear_error or exception_text(set_error)
 
-    return False, clear_error or "this parameter cannot be cleared"
+    return False, clear_error or CLEAR_REFUSED
 
 
 def _values_equal(param, new_value):
@@ -669,6 +687,7 @@ def apply_import_plan(doc, plan):
     written_type = 0
     cleared_count = 0
     failed_lines = []
+    clear_failures = []
 
     transaction = DB.Transaction(doc, "Import Schedules from Excel")
     transaction.Start()
@@ -678,10 +697,9 @@ def apply_import_plan(doc, plan):
                 if write.is_clear:
                     ok, clear_error = clear_param(write.param)
                     if not ok:
-                        failed_lines.append("Row {} - '{}': {}".format(
-                            write.excel_row, write.spec.param_name,
-                            clear_error,
-                        ))
+                        clear_failures.append(
+                            (write.spec.param_name, clear_error)
+                        )
                         continue
                     cleared_count += 1
                 else:
@@ -698,10 +716,9 @@ def apply_import_plan(doc, plan):
                 if write.is_clear:
                     ok, clear_error = clear_param(write.param)
                     if not ok:
-                        failed_lines.append("Type '{}' - '{}': {}".format(
-                            write.type_name, write.spec.param_name,
-                            clear_error,
-                        ))
+                        clear_failures.append(
+                            (write.spec.param_name, clear_error)
+                        )
                         continue
                     cleared_count += 1
                 else:
@@ -732,6 +749,10 @@ def apply_import_plan(doc, plan):
         written_instance = 0
         written_type = 0
         cleared_count = 0
+        clear_failures = []
 
     return ImportResult(written_instance, written_type, failed_lines, plan,
-                        cleared_count=cleared_count)
+                        cleared_count=cleared_count,
+                        clear_failure_lines=_aggregate_clear_failures(
+                            clear_failures
+                        ))
