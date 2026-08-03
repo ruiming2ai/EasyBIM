@@ -510,7 +510,7 @@ def main():
                 continue
 
             if result == ui.ACTION_SWITCH_SCOPE:
-                session.scope = SCOPE_EXACT_TYPE
+                session.scope = conflict_window.narrowed_scope or SCOPE_EXACT_TYPE
                 continue
 
             if result == ui.ACTION_RESELECT:

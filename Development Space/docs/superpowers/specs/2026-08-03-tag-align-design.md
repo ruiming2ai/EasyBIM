@@ -21,10 +21,26 @@ they are what makes the offset unambiguous:
 
 1. **One tag family type per reference set.** Mixed tag types are a hard stop.
 2. **One element category per reference set.** Cross-category is never matched.
-3. **Two scopes only:** exact family + type, or same family / any type
-   (the default). There is no "all families" scope.
+3. **Three scopes**, widest first and defaulting to the widest: all families in
+   the same category, same family / any type, exact family + type.
 4. A reference set that would put two different tags in the same place is
    **blocked** until the user picks a winner per conflict group.
+
+### Scope is a fallback ladder, not a filter
+
+`candidates_for_target` always prefers the narrowest match available - the
+target's own type, then its family, then anything in the category - and the
+scope only decides how far down that ladder it is allowed to fall. Widening the
+scope therefore never steals a target from a reference that matches it more
+precisely; it only decides what happens to elements that nothing matches
+closely. `scope_key` mirrors the same ladder on the validation side, so the
+category scope puts every reference in one group and two references on
+different families at the same orientation correctly collide.
+
+`narrower_scope` steps down exactly one level, which is what the conflict
+window's *Narrow to:* button offers. A set that is ambiguous across a whole
+category is usually well defined per family, so the jump straight to exact type
+is rarely the right first move.
 
 ## Two ways in
 
@@ -83,7 +99,7 @@ side of a bucket edge are not split), then compares offsets.
 | `CATEGORY_MIXED` | hosts span categories | fatal, whole set discarded |
 | `DUPLICATE` | same key, same offset | merged silently, reported as a note |
 | `POSITION_CONFLICT` | same type + orientation, different offset | resolvable |
-| `SCOPE_AMBIGUITY` | two types of one family claim the same orientation | resolvable |
+| `SCOPE_AMBIGUITY` | two types (or, under category scope, two families) claim the same orientation | resolvable |
 
 Multi-reference tags, orphaned tags and tags on linked elements are dropped
 individually with a reason, not treated as fatal.

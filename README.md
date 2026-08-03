@@ -84,10 +84,22 @@ then either align the tags that already exist or tag and align in one pass.
   one reference for horizontal walls, another for vertical, and so on.
 
 All reference tags must share one tag family type and one element category, and
-a different category is never matched. Two scopes are offered: exact family and
-type, or "different types, but only paired family" (the default). Anything that
-would put two different tags in the same place is reported as a conflict, with a
-window to pick the winner per group, before a single tag moves.
+a different category is never matched. Three scopes are offered, widest first:
+
+1. **All the families in the same category** (the default)
+2. **Apply to different types, but only paired family**
+3. **Exact same family and type match only**
+
+The closest reference always wins, whatever the scope: one measured on the
+element's own type beats one on a sibling type, which beats one from another
+family in the category. A wider setting therefore only ever adds a fallback - it
+never steals a target from a reference that matches it more precisely.
+
+Anything that would put two different tags in the same place is reported as a
+conflict, with a window to pick the winner per group, before a single tag moves.
+That window also offers to narrow the scope one step, which is usually the
+quickest way out: a set that is ambiguous across a whole category is often
+perfectly well defined per family.
 
 Elements are picked either one at a time - each click is processed immediately
 and Esc ends the loop - or as a batch, where a small bar offers Filter, Select,

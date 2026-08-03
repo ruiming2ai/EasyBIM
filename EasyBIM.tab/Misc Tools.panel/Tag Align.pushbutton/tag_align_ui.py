@@ -17,12 +17,15 @@ from pyrevit.framework import Windows
 
 from tag_align_state import DROP_ALL
 from tag_align_state import SCOPE_EXACT_TYPE
+from tag_align_state import SCOPE_LABELS
 from tag_align_state import SCOPE_PAIRED_FAMILY
+from tag_align_state import SCOPE_SAME_CATEGORY
 from tag_align_state import build_reference_row
 from tag_align_state import build_report_text
 from tag_align_state import build_running_text
 from tag_align_state import checked_type_keys
 from tag_align_state import describe_offset
+from tag_align_state import narrower_scope
 from tag_align_state import safe_text
 from tag_align_state import unresolved_conflicts
 from tag_align_state import validate_references
@@ -123,8 +126,9 @@ class TagAlignWindow(forms.WPFWindow):
         self.show_callback = show_callback
         self.next_action = ACTION_CANCEL
 
+        self.ScopeCategoryRadio.IsChecked = session.scope == SCOPE_SAME_CATEGORY
+        self.ScopePairedRadio.IsChecked = session.scope == SCOPE_PAIRED_FAMILY
         self.ScopeExactRadio.IsChecked = session.scope == SCOPE_EXACT_TYPE
-        self.ScopePairedRadio.IsChecked = session.scope != SCOPE_EXACT_TYPE
         self.ScaleWithViewCheck.IsChecked = bool(session.scale_with_view)
         self.CopyLeaderCheck.IsChecked = bool(session.copy_leader)
         self.ChangeTagTypeCheck.IsChecked = bool(session.change_tag_type)
@@ -268,9 +272,12 @@ class TagAlignWindow(forms.WPFWindow):
 
     def _capture_options(self):
         session = self.session
-        session.scope = (
-            SCOPE_EXACT_TYPE if bool(self.ScopeExactRadio.IsChecked) else SCOPE_PAIRED_FAMILY
-        )
+        if bool(self.ScopeExactRadio.IsChecked):
+            session.scope = SCOPE_EXACT_TYPE
+        elif bool(self.ScopePairedRadio.IsChecked):
+            session.scope = SCOPE_PAIRED_FAMILY
+        else:
+            session.scope = SCOPE_SAME_CATEGORY
         session.scale_with_view = bool(self.ScaleWithViewCheck.IsChecked)
         session.copy_leader = bool(self.CopyLeaderCheck.IsChecked)
         session.change_tag_type = bool(self.ChangeTagTypeCheck.IsChecked)
@@ -383,16 +390,21 @@ class ReferenceOrientationWindow(forms.WPFWindow):
 
 class ReferenceConflictWindow(forms.WPFWindow):
     def __init__(self, xaml_file_name, validation, format_length=None,
-                 scope=SCOPE_PAIRED_FAMILY, show_callback=None):
+                 scope=SCOPE_SAME_CATEGORY, show_callback=None):
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.validation = validation
         self.format_length = format_length
         self.show_callback = show_callback
         self.result = ACTION_CANCEL
+        self.narrowed_scope = narrower_scope(scope)
 
-        if scope == SCOPE_EXACT_TYPE:
+        if self.narrowed_scope is None:
             self.SwitchScopeButton.IsEnabled = False
             self.SwitchScopeButton.ToolTip = "Already matching on exact type."
+        else:
+            self.SwitchScopeButton.Content = "Narrow to: {0}".format(
+                SCOPE_LABELS.get(self.narrowed_scope, self.narrowed_scope)
+            )
 
         self._render()
         self._refresh_status()

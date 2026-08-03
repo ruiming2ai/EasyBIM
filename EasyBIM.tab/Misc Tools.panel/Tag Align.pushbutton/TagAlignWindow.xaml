@@ -112,22 +112,27 @@
                 <TextBlock Text="Apply the reference to"
                            FontWeight="SemiBold"
                            Margin="0,0,0,6" />
-                <RadioButton x:Name="ScopeExactRadio"
+                <RadioButton x:Name="ScopeCategoryRadio"
                              GroupName="TagAlignScope"
-                             Content="Exact same family and type match only"
+                             Content="All the families in the same category"
+                             IsChecked="True"
                              Margin="0,2,0,2"
                              Checked="scope_changed" />
                 <RadioButton x:Name="ScopePairedRadio"
                              GroupName="TagAlignScope"
                              Content="Apply to different types, but only paired family"
-                             IsChecked="True"
+                             Margin="0,2,0,2"
+                             Checked="scope_changed" />
+                <RadioButton x:Name="ScopeExactRadio"
+                             GroupName="TagAlignScope"
+                             Content="Exact same family and type match only"
                              Margin="0,2,0,2"
                              Checked="scope_changed" />
                 <TextBlock Foreground="DimGray"
                            FontSize="11"
                            TextWrapping="Wrap"
-                           Margin="22,2,0,0"
-                           Text="A different category is never matched. When several reference tags could claim the same family, the conflict window asks which one wins." />
+                           Margin="22,6,0,0"
+                           Text="A different category is never matched. The closest reference always wins - one on the element's own type beats one on a sibling type, which beats one from another family - so a wider setting only ever adds a fallback. When two references would claim the same element at the same orientation, the conflict window asks which one wins." />
             </StackPanel>
         </Border>
 
