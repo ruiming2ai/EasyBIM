@@ -227,12 +227,18 @@
                    Grid.ColumnSpan="3"
                    LastChildFill="False"
                    Margin="0,12,0,0">
-            <TextBlock x:Name="StatusText"
-                       DockPanel.Dock="Left"
-                       VerticalAlignment="Center"
-                       Foreground="DimGray"
-                       TextWrapping="Wrap"
-                       MaxWidth="380" />
+            <StackPanel DockPanel.Dock="Left"
+                        VerticalAlignment="Center"
+                        MaxWidth="380">
+                <TextBlock x:Name="StatusText"
+                           Foreground="DimGray"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="BuildText"
+                           Foreground="#909090"
+                           FontSize="10"
+                           TextWrapping="Wrap"
+                           ToolTip="When the loaded code was last written. If this does not move after an update, Revit is still running the old files." />
+            </StackPanel>
             <Button x:Name="CancelButton"
                     Content="Cancel"
                     Width="110"
