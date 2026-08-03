@@ -227,6 +227,7 @@ def _run_import(doc, option):
         plan.skipped_lines(),
         file_path,
         cleared_count=result.cleared_count,
+        clear_failure_lines=result.clear_failure_lines,
     ))
 
 
