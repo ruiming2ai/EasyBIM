@@ -351,7 +351,7 @@ def _clearing_suffix(clear_count):
 def build_preview_lines(matched_rows, total_rows, instance_write_count,
                         type_write_count, type_write_row_count,
                         skipped_lines, instance_clear_count=0,
-                        type_clear_count=0):
+                        type_clear_count=0, unclearable_lines=None):
     lines = [
         "Rows matched to elements: {} of {}".format(
             int(matched_rows), int(total_rows)
@@ -364,6 +364,12 @@ def build_preview_lines(matched_rows, total_rows, instance_write_count,
             _clearing_suffix(type_clear_count)
         ),
     ]
+    # Shown before the user commits: these blanks cannot be honoured, so
+    # the value stays in the model.
+    if unclearable_lines:
+        lines.append("")
+        lines.append("CANNOT BE CLEARED - these keep their current value:")
+        lines.extend(_capped(unclearable_lines))
     if skipped_lines:
         lines.append("")
         lines.append("Skipped:")

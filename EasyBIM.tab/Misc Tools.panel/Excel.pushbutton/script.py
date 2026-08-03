@@ -203,6 +203,7 @@ def _run_import(doc, option):
         plan.skipped_lines(),
         instance_clear_count=plan.instance_clear_count(),
         type_clear_count=plan.type_clear_count(),
+        unclearable_lines=plan.unclearable_lines(),
     )
 
     if not plan.instance_writes and not plan.type_writes:

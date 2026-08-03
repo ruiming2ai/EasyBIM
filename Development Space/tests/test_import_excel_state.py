@@ -399,6 +399,24 @@ class ImportExcelStateTests(unittest.TestCase):
         self.assertIn("...and 3 more.", summary)
         self.assertIn("C:/f.xlsx", summary)
 
+    def test_preview_warns_before_import_about_unclearable_values(self):
+        module = _load_state_module()
+
+        preview = "\n".join(module.build_preview_lines(
+            4, 4, 2, 0, 0, [],
+            unclearable_lines=[
+                "'Fire Rated' - 12 value(s) left unchanged: Revit only "
+                "empties shared parameters",
+            ],
+        ))
+
+        self.assertIn("CANNOT BE CLEARED", preview)
+        self.assertIn("'Fire Rated' - 12 value(s)", preview)
+        self.assertNotIn(
+            "CANNOT BE CLEARED",
+            "\n".join(module.build_preview_lines(1, 1, 1, 0, 0, [])),
+        )
+
     def test_summary_calls_out_values_that_could_not_be_cleared(self):
         module = _load_state_module()
 
@@ -508,7 +526,11 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("param.Set(DB.ElementId.InvalidElementId)", source)
         self.assertNotIn("param.Set(0)", source)
         self.assertIn("CLEAR_REFUSED", source)
-        self.assertIn("def _aggregate_clear_failures", source)
+        self.assertIn("def _aggregate_param_reasons", source)
+        # Whether a clear is even possible is decided before writing.
+        self.assertIn("def clearable_kind", source)
+        self.assertIn("param.IsShared", source)
+        self.assertIn("def unclearable_lines", source)
         # HasValue alone must not decide that a clear is a no-op.
         self.assertIn("param.AsValueString()", source)
         self.assertIn("def instance_clear_count", source)
