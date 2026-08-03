@@ -1,5 +1,10 @@
 # VBA type-parameter sync layer (optional)
 
+> **If you authored `vbaProject.bin` before August 2026, re-author it.** The
+> Export sheet gained a second trailing helper column (`_EBIM_RowId`), and the
+> macro source below was updated to match. An older macro silently stops
+> propagating instead of failing loudly.
+
 When `vbaProject.bin` exists in this folder, "Export Schedules to Excel"
 writes macro-enabled `.xlsm` files in which editing ANY type-parameter cell
 automatically copies the value to every other row of the same element type.

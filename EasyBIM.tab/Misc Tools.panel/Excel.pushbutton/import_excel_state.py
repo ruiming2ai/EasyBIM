@@ -7,7 +7,7 @@ import re
 
 UNIT_POSTFIX_PATTERN = re.compile(r"\s*\[.*\]$")
 SENTINEL_VALUES = ("<does not exist>", "<unsupported>", "<Error>")
-HELPER_HEADERS = ("_EBIM_TypeId", "TypeId")
+HELPER_HEADERS = ("_EBIM_TypeId", "_EBIM_RowId", "TypeId")
 ELEMENT_ID_HEADER = "ElementId"
 SUMMARY_DISPLAY_LIMIT = 20
 

@@ -12,6 +12,7 @@ Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
     Dim editArea As Range
     Dim cell As Range
     Dim lastCol As Long
+    Dim typeCol As Long
     Dim lastRow As Long
     Dim r As Long
     Dim typeKey As String
@@ -24,15 +25,19 @@ Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
     On Error GoTo 0
     If meta Is Nothing Then Exit Sub
 
+    ' Trailing hidden helper columns: ... | _EBIM_TypeId | _EBIM_RowId
     lastCol = Sh.Cells(1, Sh.Columns.Count).End(xlToLeft).Column
-    If CStr(Sh.Cells(1, lastCol).Value) <> "_EBIM_TypeId" Then Exit Sub
+    typeCol = lastCol - 1
+    If typeCol < 2 Then Exit Sub
+    If CStr(Sh.Cells(1, lastCol).Value) <> "_EBIM_RowId" Then Exit Sub
+    If CStr(Sh.Cells(1, typeCol).Value) <> "_EBIM_TypeId" Then Exit Sub
 
     lastRow = Sh.Cells(Sh.Rows.Count, 1).End(xlUp).Row
     If lastRow < 2 Then Exit Sub
 
     ' Parameter data area: rows 2..lastRow, columns B..(one left of _EBIM_TypeId)
     Set editArea = Application.Intersect( _
-        Target, Sh.Range(Sh.Cells(2, 2), Sh.Cells(lastRow, lastCol - 1)))
+        Target, Sh.Range(Sh.Cells(2, 2), Sh.Cells(lastRow, typeCol - 1)))
     If editArea Is Nothing Then Exit Sub
 
     On Error GoTo CleanUp
@@ -41,12 +46,12 @@ Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
     For Each cell In editArea.Cells
         ' _metadata row N describes Export column N; column F = IsTypeParameter
         If UCase$(CStr(meta.Cells(cell.Column, 6).Value)) = "YES" Then
-            typeKey = CStr(Sh.Cells(cell.Row, lastCol).Value)
+            typeKey = CStr(Sh.Cells(cell.Row, typeCol).Value)
             If Len(typeKey) > 0 Then
                 newValue = cell.Value
                 For r = 2 To lastRow
                     If r <> cell.Row _
-                       And CStr(Sh.Cells(r, lastCol).Value) = typeKey _
+                       And CStr(Sh.Cells(r, typeCol).Value) = typeKey _
                        And Sh.Cells(r, cell.Column).Locked = False _
                        And Sh.Cells(r, cell.Column).Value <> newValue Then
                         Sh.Cells(r, cell.Column).Value = newValue
