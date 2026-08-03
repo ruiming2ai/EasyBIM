@@ -16,6 +16,7 @@ upward out of ``lib``.
 from __future__ import print_function
 
 import os
+import time
 
 from pyrevit import forms
 from pyrevit import script
@@ -31,6 +32,29 @@ XAML_FILE = os.path.join(
 )
 START_LABEL = "Start Ongoing Detection Mode"
 APPLY_LABEL = "Apply Category Changes"
+
+
+def build_stamp():
+    """When the loaded code was last written, so "did my update land?" is
+    answerable at a glance instead of by comparing screenshots.
+
+    Read from the modules' own file timestamps rather than a hand-bumped
+    constant, so it can never claim a version that is not what is running.
+    """
+    newest = 0.0
+    folder = os.path.dirname(__file__)
+    for name in os.listdir(folder):
+        if name.startswith("clash_detection") and name.endswith(".py"):
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(folder, name)))
+            except Exception:
+                continue
+    if not newest:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(newest))
+    except Exception:
+        return ""
 
 try:
     from easybim.wpf_notify import NotifyingObject as _RowBase
@@ -90,6 +114,9 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self._load_side("right")
         self._refresh_session_panel()
         self._update_start_enabled()
+
+        stamp = build_stamp()
+        self.BuildText.Text = "Build {0}".format(stamp) if stamp else ""
 
     # -- running session ---------------------------------------------------
 
