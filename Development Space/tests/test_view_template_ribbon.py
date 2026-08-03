@@ -52,18 +52,18 @@ class _FakeItem(object):
 
 
 class ViewTemplateRibbonTests(unittest.TestCase):
-    def test_target_aliases_match_view_template_pushbutton_title(self):
+    def test_target_aliases_match_view_settings_transfer_pushbutton_title(self):
         module = _load_module()
 
         self.assertEqual(
             module.TARGET_ITEM_ALIASES,
-            ("View Template", "View\nTemplate"),
+            ("View Settings Transfer", "View Settings\nTransfer"),
         )
 
     def test_apply_native_view_template_icon_copies_native_images_to_easybim_button(self):
         module = _load_module()
         native_item = _FakeItem("View Templates", image="native-small", large_image="native-large")
-        target_item = _FakeItem("View\nTemplate")
+        target_item = _FakeItem("View Settings\nTransfer")
         ribbon = _FakeRibbon(
             [
                 _FakeTab("View", panels=[_FakePanel("Graphics", [native_item])]),

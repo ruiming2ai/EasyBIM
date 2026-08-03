@@ -7,7 +7,7 @@ MODULE_PATH = (
     pathlib.Path(__file__).resolve().parents[2]
     / "EasyBIM.tab"
     / "Views.panel"
-    / "View Template.pushbutton"
+    / "View Settings Transfer.pushbutton"
     / "view_template_transfer_state.py"
 )
 COMMAND_DIR = MODULE_PATH.parent
@@ -465,14 +465,16 @@ class SelectiveTransferStateTests(unittest.TestCase):
 
 
 class BundleAndXamlTests(unittest.TestCase):
-    def test_pyrevit_bundle_names_single_view_template_pushbutton(self):
+    def test_pyrevit_bundle_names_single_view_settings_transfer_pushbutton(self):
         button_yaml = (COMMAND_DIR / "bundle.yaml").read_text()
 
-        self.assertIn("View\n  Template", button_yaml)
+        self.assertIn("View Settings\n  Transfer", button_yaml)
         self.assertIn("min_revit_version: 2023", button_yaml)
         self.assertIn("author: Ruiming Liu", button_yaml)
         self.assertFalse((PANEL_DIR / "View Template.pulldown").exists())
+        self.assertFalse((PANEL_DIR / "View Template.pushbutton").exists())
         self.assertTrue((COMMAND_DIR / "icon.png").exists())
+        self.assertTrue((COMMAND_DIR / "icon.dark.png").exists())
 
     def test_main_window_xaml_exposes_mode_controls_and_buttons(self):
         source = (COMMAND_DIR / "ViewTemplateTransferWindow.xaml").read_text()
