@@ -1,0 +1,86 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="V/G Overrides"
+        Height="620"
+        Width="960"
+        MinHeight="420"
+        MinWidth="640"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        Closing="window_closing">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="hint_tb"
+                   Grid.Row="0"
+                   Text="Source values are shown read-only. Check Transfer on the items to copy to the targets."
+                   Margin="0,0,0,10"
+                   FontSize="12"
+                   Foreground="DimGray"
+                   TextWrapping="Wrap"/>
+
+        <DataGrid x:Name="items_dg"
+                  Grid.Row="1"
+                  AutoGenerateColumns="False"
+                  HeadersVisibility="Column"
+                  GridLinesVisibility="All"
+                  HorizontalGridLinesBrush="#D0D0D0"
+                  VerticalGridLinesBrush="#D0D0D0"
+                  BorderBrush="#8F8F8F"
+                  BorderThickness="1"
+                  Background="White"
+                  RowHeaderWidth="0"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="False"
+                  CanUserResizeRows="False"
+                  CanUserSortColumns="False"
+                  SelectionMode="Single"
+                  SelectionUnit="FullRow"/>
+
+        <TextBlock x:Name="empty_hint_tb"
+                   Grid.Row="1"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   FontSize="13"
+                   Foreground="DimGray"
+                   Visibility="Collapsed"/>
+
+        <DockPanel Grid.Row="2" Margin="0,10,0,0">
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                <Button x:Name="check_all_btn"
+                        Content="Check All"
+                        Width="92"
+                        Height="28"
+                        Margin="0,0,8,0"
+                        Click="check_all_click"/>
+                <Button x:Name="clear_btn"
+                        Content="Clear"
+                        Width="74"
+                        Height="28"
+                        Click="clear_click"/>
+            </StackPanel>
+            <StackPanel DockPanel.Dock="Right"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right">
+                <Button x:Name="ok_btn"
+                        Content="OK"
+                        Width="100"
+                        Height="30"
+                        Margin="0,0,8,0"
+                        IsDefault="True"
+                        Click="ok_click"/>
+                <Button Content="Cancel"
+                        Width="100"
+                        Height="30"
+                        IsCancel="True"
+                        Click="cancel_click"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>
