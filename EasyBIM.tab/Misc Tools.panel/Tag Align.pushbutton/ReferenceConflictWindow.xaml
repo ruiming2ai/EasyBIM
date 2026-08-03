@@ -51,11 +51,11 @@
 
             <StackPanel Grid.Column="0" Orientation="Horizontal">
                 <Button x:Name="SwitchScopeButton"
-                        Content="Switch to exact type match"
+                        Content="Narrow the scope"
                         Height="34"
                         Padding="12,0,12,0"
                         Margin="0,0,8,0"
-                        ToolTip="Most family-level conflicts disappear when each reference only covers its own type."
+                        ToolTip="Most conflicts disappear one step down, when each reference stops claiming elements it was not measured on."
                         Click="switch_scope_click" />
                 <Button x:Name="ReselectButton"
                         Content="Re-select references"

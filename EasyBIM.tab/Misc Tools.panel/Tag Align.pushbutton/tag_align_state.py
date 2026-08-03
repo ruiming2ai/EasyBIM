@@ -20,14 +20,22 @@ import math
 
 # --- scope -----------------------------------------------------------------
 
-SCOPE_EXACT_TYPE = "exact_type"
+SCOPE_SAME_CATEGORY = "same_category"
 SCOPE_PAIRED_FAMILY = "paired_family"
-DEFAULT_SCOPE = SCOPE_PAIRED_FAMILY
+SCOPE_EXACT_TYPE = "exact_type"
+DEFAULT_SCOPE = SCOPE_SAME_CATEGORY
 
 SCOPE_LABELS = {
-    SCOPE_EXACT_TYPE: "Exact same family and type match only",
+    SCOPE_SAME_CATEGORY: "All the families in the same category",
     SCOPE_PAIRED_FAMILY: "Apply to different types, but only paired family",
+    SCOPE_EXACT_TYPE: "Exact same family and type match only",
 }
+
+# Widest first.  Resolution always prefers the closest reference it can find
+# (exact type, then same family, then anything in the category), so a wider
+# scope only ever adds a fallback - it never steals a target from a reference
+# that matches it more precisely.
+SCOPE_ORDER = (SCOPE_SAME_CATEGORY, SCOPE_PAIRED_FAMILY, SCOPE_EXACT_TYPE)
 
 # --- reference picking mode ------------------------------------------------
 
@@ -281,10 +289,19 @@ class ReferenceRule(object):
     def family_key(self):
         return safe_text(self.host_family_name).strip().lower()
 
+    def category_key(self):
+        return safe_text(self.host_category_id)
+
     def scope_key(self, scope):
+        """What has to be unique for this reference to be unambiguous."""
         if scope == SCOPE_EXACT_TYPE:
             return self.type_key()
-        return self.family_key()
+        if scope == SCOPE_PAIRED_FAMILY:
+            return self.family_key()
+        # Category scope puts every reference in one group, so two references
+        # on different families at the same orientation now collide - which is
+        # exactly right, because under this scope both claim every element.
+        return self.category_key()
 
     def host_label(self):
         family = safe_text(self.host_family_name).strip()
@@ -592,6 +609,22 @@ def compose_target_secondary(rule, target, use_local_frame, target_view_scale,
 # ---------------------------------------------------------------------------
 
 
+def narrower_scope(scope):
+    """The next step down from ``scope``, or ``None`` at the narrowest.
+
+    Stepping down one level is the usual way out of a conflict: a set that is
+    ambiguous across a whole category is often perfectly well defined per
+    family, and only rarely needs the jump all the way to exact type.
+    """
+    try:
+        index = SCOPE_ORDER.index(scope)
+    except ValueError:
+        return SCOPE_EXACT_TYPE
+    if index + 1 < len(SCOPE_ORDER):
+        return SCOPE_ORDER[index + 1]
+    return None
+
+
 def cluster_by_orientation(rules, collapse_flip, tol=ORIENTATION_TOL_DEG):
     """Greedy grouping of references that point the same way.
 
@@ -711,15 +744,28 @@ def validate_references(references, scope=DEFAULT_SCOPE, scale_with_view=True,
                 continue
 
             type_keys = set([rule.type_key() for rule in winners])
+            family_keys = set([rule.family_key() for rule in winners])
             code = POSITION_CONFLICT if len(type_keys) == 1 else SCOPE_AMBIGUITY
             head = winners[0]
+
             if code == POSITION_CONFLICT:
-                key_label = "{0} - {1}".format(head.host_label(), head.orientation_label())
+                subject = head.host_label()
+            elif len(family_keys) == 1:
+                subject = safe_text(head.host_family_name) or "family"
             else:
-                key_label = "{0} - {1}".format(
-                    safe_text(head.host_family_name) or "family", head.orientation_label()
+                # Category scope: the references do not even share a family, so
+                # naming one of them would read as if the others belonged to it.
+                subject = "{0} (any family)".format(
+                    safe_text(head.host_category_name) or "category"
                 )
-            conflicts.append(ConflictGroup(code, key_label, winners))
+
+            conflicts.append(
+                ConflictGroup(
+                    code,
+                    "{0} - {1}".format(subject, head.orientation_label()),
+                    winners,
+                )
+            )
 
     return ValidationResult(accepted=accepted, fatals=fatals, conflicts=conflicts, notes=notes)
 
@@ -747,7 +793,12 @@ def unresolved_conflicts(validation):
 
 
 def candidates_for_target(references, target, scope):
-    """References whose category and scope allow them to cover ``target``."""
+    """References whose category and scope allow them to cover ``target``.
+
+    Narrowest match wins regardless of scope: a reference on the target's own
+    type beats one on a sibling type, which beats one from another family in
+    the category.  Widening the scope therefore only adds fallbacks.
+    """
     same_category = [
         rule
         for rule in references
@@ -766,7 +817,11 @@ def candidates_for_target(references, target, scope):
     family = [rule for rule in same_category if rule.family_key() == target.family_key()]
     if family:
         return family, ""
-    return [], SKIP_NO_RULE_FOR_FAMILY
+
+    if scope == SCOPE_PAIRED_FAMILY:
+        return [], SKIP_NO_RULE_FOR_FAMILY
+
+    return same_category, ""
 
 
 def resolve_reference_for_target(references, target, scope=DEFAULT_SCOPE,
