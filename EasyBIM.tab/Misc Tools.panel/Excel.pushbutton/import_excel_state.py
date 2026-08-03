@@ -29,6 +29,13 @@ def _safe_text(value):
         return ""
 
 
+def _safe_int(value, fallback=0):
+    try:
+        return int(value)
+    except Exception:
+        return fallback
+
+
 class MetaEntry(object):
     """One _metadata row describing an exported column."""
 
@@ -312,11 +319,60 @@ def detect_type_conflicts(records, type_param_names, type_key_by_row,
     return conflicts, agreed
 
 
+def format_row_list(excel_rows):
+    """Name every row, collapsing consecutive runs to "rows 3-18, 25".
+
+    Lets a whole blanked column be listed in full without turning into
+    hundreds of comma-separated numbers.
+    """
+    numbers = sorted(set(_safe_int(row, None) for row in excel_rows or []))
+    numbers = [number for number in numbers if number is not None]
+    if not numbers:
+        return ""
+
+    groups = []
+    start = previous = numbers[0]
+    for number in numbers[1:]:
+        if number == previous + 1:
+            previous = number
+            continue
+        groups.append((start, previous))
+        start = previous = number
+    groups.append((start, previous))
+
+    parts = []
+    for first, last in groups:
+        if first == last:
+            parts.append(str(first))
+        elif last == first + 1:
+            parts.append("{}, {}".format(first, last))
+        else:
+            parts.append("{}-{}".format(first, last))
+
+    label = "row" if len(numbers) == 1 else "rows"
+    return "{} {}".format(label, ", ".join(parts))
+
+
 def _rows_label(excel_rows):
-    row_texts = [str(row) for row in excel_rows]
-    if len(row_texts) == 1:
-        return "row {}".format(row_texts[0])
-    return "rows {}".format(", ".join(row_texts))
+    return format_row_list(excel_rows)
+
+
+def build_unclearable_lines(entries):
+    """Lines naming every cell that cannot be cleared.
+
+    entries: [(param_name, reason, [excel_rows])] - one block per column,
+    listing all of its rows, so nothing is hidden behind a count.
+    """
+    lines = []
+    for param_name, reason, rows in entries or []:
+        rows = list(rows or [])
+        lines.append("'{}' - {} cell(s) keep their value: {}".format(
+            _safe_text(param_name), len(rows), _safe_text(reason)
+        ))
+        row_text = format_row_list(rows)
+        if row_text:
+            lines.append("    {}".format(row_text))
+    return lines
 
 
 def build_conflict_report_lines(conflicts):
@@ -369,7 +425,8 @@ def build_preview_lines(matched_rows, total_rows, instance_write_count,
     if unclearable_lines:
         lines.append("")
         lines.append("CANNOT BE CLEARED - these keep their current value:")
-        lines.extend(_capped(unclearable_lines))
+        # Never capped: the point is to name every affected cell.
+        lines.extend(unclearable_lines)
     if skipped_lines:
         lines.append("")
         lines.append("Skipped:")
@@ -395,7 +452,8 @@ def build_import_summary_text(written_instance, written_type, failed_lines,
     if clear_failure_lines:
         lines.append("")
         lines.append("COULD NOT BE CLEARED - clear these in Revit instead:")
-        lines.extend(_capped(clear_failure_lines))
+        # Never capped: the point is to name every affected cell.
+        lines.extend(clear_failure_lines)
     if skipped_lines:
         lines.append("")
         lines.append("Skipped:")
