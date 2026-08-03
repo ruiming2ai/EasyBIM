@@ -244,6 +244,56 @@ class IdlingDispatcherTests(unittest.TestCase):
 
         self.assertEqual([], calls)
 
+    def test_auto_update_detaches_the_delegate_before_running(self):
+        """The update can end in reload_pyrevit(), which disposes the engine
+        that owns this delegate; Revit would keep invoking a dead object."""
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+        installed_before = len(uiapp.added)
+        observed = {}
+
+        class FakeAutoUpdate(object):
+            @staticmethod
+            def has_pending_startup_auto_update():
+                return True
+
+            @staticmethod
+            def run_pending_startup_auto_update():
+                observed["detached_during_run"] = len(uiapp.removed) > 0
+
+        self.idling.auto_update = FakeAutoUpdate
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling._on_idling(uiapp, None)
+
+        self.assertTrue(observed["detached_during_run"])
+        # ... and re-subscribed afterwards, since this engine survived.
+        self.assertEqual(installed_before + 1, len(uiapp.added))
+        self.assertTrue(self.idling.is_installed())
+
+    def test_auto_update_is_skipped_when_nothing_is_pending(self):
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+        calls = []
+
+        class FakeAutoUpdate(object):
+            @staticmethod
+            def has_pending_startup_auto_update():
+                return False
+
+            @staticmethod
+            def run_pending_startup_auto_update():
+                calls.append(True)
+
+        self.idling.auto_update = FakeAutoUpdate
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling._on_idling(uiapp, None)
+
+        self.assertEqual([], calls)
+        # No pointless detach/re-attach churn on the quiet path.
+        self.assertEqual([], uiapp.removed)
+
     def test_a_failing_startup_job_pass_still_runs_close_recovery(self):
         ran = []
 
