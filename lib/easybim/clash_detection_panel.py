@@ -34,6 +34,13 @@ except Exception:
 PANEL_TITLE = "EasyBIM Clash Detection"
 PANEL_ID = "1a7c3f42-9d16-4b8e-8f52-6c0d3a9e77b4"
 REGISTERED_ENVVAR = "EASYBIM_CLASH_PANEL_REGISTERED"
+#: The live pane and its row collection are mirrored here because an
+#: extension update re-imports this module while Revit keeps the pane
+#: instance created from the *previous* module object.  The envvar store
+#: lives in the AppDomain rather than the engine, so the fresh module can
+#: still find - and keep updating - the pane that is actually on screen.
+VIEW_ENVVAR = "EASYBIM_CLASH_PANEL_VIEW"
+ROWS_ENVVAR = "EASYBIM_CLASH_PANEL_ROWS"
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 PANEL_XAML = os.path.join(UI_DIR, "clash_detection_panel.xaml")
@@ -129,11 +136,37 @@ def _observable_collection():
     return ObservableCollection[object]()
 
 
+def _get_envvar(name):
+    try:
+        return script.get_envvar(name)
+    except Exception:
+        return None
+
+
+def _set_envvar(name, value):
+    try:
+        script.set_envvar(name, value)
+    except Exception:
+        pass
+
+
 def _rows():
     global _ROWS
     if _ROWS is None:
-        _ROWS = _observable_collection()
+        existing = _get_envvar(ROWS_ENVVAR)
+        if existing is not None:
+            _ROWS = existing
+        else:
+            _ROWS = _observable_collection()
+            _set_envvar(ROWS_ENVVAR, _ROWS)
     return _ROWS
+
+
+def _view():
+    """The pane on screen, even if it was built by a previous module load."""
+    if _VIEW is not None:
+        return _VIEW
+    return _get_envvar(VIEW_ENVVAR)
 
 
 def _scope_text(session):
@@ -152,6 +185,7 @@ def _bind_view(view):
     """Attach a freshly constructed panel/window to the live row collection."""
     global _VIEW
     _VIEW = view
+    _set_envvar(VIEW_ENVVAR, view)
     try:
         view.RowsListView.ItemsSource = _rows()
     except Exception as ex:
@@ -162,7 +196,7 @@ def _bind_view(view):
 
 
 def _apply_text(status_text, scope_text):
-    view = _VIEW
+    view = _view()
     if view is None:
         return
     try:
@@ -176,7 +210,7 @@ def _apply_text(status_text, scope_text):
 
 
 def _apply_empty_state():
-    view = _VIEW
+    view = _view()
     if view is None:
         return
     try:
@@ -248,7 +282,7 @@ def _on_edit_categories_click():
 
 
 def _set_status_hint(text):
-    view = _VIEW
+    view = _view()
     if view is None:
         return
     try:
@@ -259,7 +293,7 @@ def _set_status_hint(text):
 
 def _update_buttons():
     """Only ever offer the action that would actually do something."""
-    view = _VIEW
+    view = _view()
     if view is None:
         return
     try:
@@ -514,6 +548,10 @@ def close_panel():
     _clear_rows()
     _apply_text("", "")
     _apply_empty_state()
+    # The view mirror is deliberately left alone: Revit keeps the dockable
+    # pane instance alive when it is closed, and its __init__ - the only
+    # place that binds it - never runs again.  A stale reference to a hidden
+    # pane is harmless; every write to it is already guarded.
 
 
 # -- refresh --------------------------------------------------------------
@@ -583,7 +621,7 @@ def refresh(session):
         _apply_empty_state()
         _update_buttons()
 
-    view = _VIEW
+    view = _view()
     dispatcher = getattr(view, "Dispatcher", None) if view is not None else None
     if dispatcher is not None:
         try:

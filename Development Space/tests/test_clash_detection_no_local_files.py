@@ -166,6 +166,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("if all_completed:", body)
         self.assertIn("was_recorded_this_pass", body)
 
+    def test_update_takes_effect_without_restarting_revit(self):
+        # __persistentengine__ keeps sys.modules alive across a pyRevit
+        # reload, so without this the documented "pull and reload" flow would
+        # keep running the old code until Revit restarts.
+        source = _source(COMMAND_DIR / "script.py")
+        self.assertIn("def _drop_stale_modules", source)
+        self.assertIn("_drop_stale_modules()", source.split("def main(")[1])
+        # It must consult the envvar, not the engine module it may replace.
+        drop_body = source.split("def _drop_stale_modules():")[1].split("\ndef ")[0]
+        self.assertIn("get_envvar", drop_body)
+        self.assertNotIn("import clash_detection_engine", drop_body)
+
+    def test_build_stamp_is_read_from_disk(self):
+        # A hand-bumped constant can claim a version that is not running.
+        source = _source(LIB_DIR / "clash_detection_setup.py")
+        self.assertIn("def build_stamp", source)
+        self.assertIn("os.path.getmtime", source)
+
     def test_containers_are_expanded(self):
         engine = _source(LIB_DIR / "clash_detection_engine.py")
         self.assertIn("_container_member_ids", engine)
