@@ -1,7 +1,0 @@
-title: |-
-  Temp Phase
-  & View
-tooltip: Apply a temporary phase to the active view, then restore the original phase and temporary view settings when you are finished.
-author: Ruiming Liu
-min_revit_version: 2015
-max_revit_version: 2027

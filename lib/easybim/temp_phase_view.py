@@ -31,6 +31,13 @@ ARM_SCHEMA_VERSION = 2
 # failure.  The latter is the only case that should fall back to WinForms.
 _WPF_UNAVAILABLE = object()
 
+# The single ribbon button opens one window that offers every Temp Phase
+# option, so the picker reports which action the user chose rather than just
+# a phase id.
+ACTION_APPLY = "apply"
+ACTION_RESTORE_VIEW = "restore_view"
+ACTION_RESTORE_ALL = "restore_all"
+
 
 class _NullLogger(object):
     def debug(self, *args, **kwargs):
@@ -84,24 +91,36 @@ def run_pushbutton(command_script_path=""):
     state = _get_state()
     existing = state["view_sessions"].get(view_key)
     original_phase_id = _phase_from_session_or_view(existing, view)
-    if original_phase_id is None:
-        _show_alert(TITLE, "Active view does not support editable Phase.")
+    # A view that cannot take a temporary phase can still be restored, so the
+    # window opens with Apply disabled instead of refusing the command.
+    allow_apply = original_phase_id is not None
+    if not allow_apply:
         _log("PythonCommandMissingOriginalPhase view={0}".format(_view_display_name(view)))
-        return
 
     _log(
         "PythonPhasePickerOpening view={0} originalPhase={1}".format(
             _view_display_name(view),
-            original_phase_id,
+            "" if original_phase_id is None else original_phase_id,
         )
     )
-    selected_phase_id = _show_phase_picker(doc, view, original_phase_id)
+    action, selected_phase_id = _show_phase_picker(
+        doc,
+        view,
+        original_phase_id,
+        allow_apply=allow_apply,
+    )
     _log(
-        "PythonPhasePickerClosed selectedPhase={0}".format(
-            "" if selected_phase_id is None else selected_phase_id
+        "PythonPhasePickerClosed action={0} selectedPhase={1}".format(
+            _safe_text(action),
+            "" if selected_phase_id is None else selected_phase_id,
         )
     )
-    if selected_phase_id is None:
+
+    if action == ACTION_RESTORE_VIEW:
+        return run_restore_active_view(command_script_path=command_script_path)
+    if action == ACTION_RESTORE_ALL:
+        return run_restore_all_views(command_script_path=command_script_path)
+    if action != ACTION_APPLY or selected_phase_id is None or original_phase_id is None:
         return
 
     template_id = _template_from_session_or_view(existing, view)
@@ -430,24 +449,44 @@ def _apply_selected_phase_transaction(doc, view, selected_phase_id, template_id)
         return False
 
 
-def _show_phase_picker(doc, view, current_phase_id):
+def _show_phase_picker(doc, view, current_phase_id, allow_apply=True):
+    """Show the Temp Phase window and return ``(action, phase_id)``.
+
+    ``action`` is ``None`` when the user cancels.  The window always offers
+    the restore commands, so it still opens when the active view cannot take
+    a temporary phase - ``allow_apply`` False only disables the phase list
+    and the Apply button.
+    """
     phases = _collect_document_phases(doc)
     if not phases:
-        _show_alert(TITLE, "No phases are available in this document.")
-        return None
+        allow_apply = False
 
     # WPF gives the phase picker the same visual language as the compact
     # close-warning dialog.  It is loaded lazily so importing this module does
     # not require a WPF-capable engine; older hosts and CPython engines can
     # still use the WinForms implementation below.
-    wpf_result = _show_phase_picker_wpf(phases, view, current_phase_id)
+    wpf_result = _show_phase_picker_wpf(phases, view, current_phase_id, allow_apply)
     if wpf_result is not _WPF_UNAVAILABLE:
         return wpf_result
 
-    return _show_phase_picker_winforms(phases, view, current_phase_id)
+    return _show_phase_picker_winforms(phases, view, current_phase_id, allow_apply)
 
 
-def _show_phase_picker_wpf(phases, view, current_phase_id):
+def _selected_phase_index(phases, current_phase_id):
+    """Return the row to preselect, tolerating a missing current phase."""
+    phases = list(phases or [])
+    if not phases:
+        return -1
+    current = _to_int(current_phase_id)
+    if current is None:
+        return 0
+    for index, phase_data in enumerate(phases):
+        if _to_int((phase_data or {}).get("id")) == current:
+            return index
+    return 0
+
+
+def _show_phase_picker_wpf(phases, view, current_phase_id, allow_apply=True):
     """Show the phase picker through pyRevit's XAML/WPFWindow first.
 
     ``forms.WPFWindow`` uses pyRevit's supported XAML loader and is more
@@ -461,18 +500,19 @@ def _show_phase_picker_wpf(phases, view, current_phase_id):
         phases,
         view,
         current_phase_id,
+        allow_apply,
     )
     if wpf_window_result is not _WPF_UNAVAILABLE:
         return wpf_window_result
-    return _show_phase_picker_wpf_direct(phases, view, current_phase_id)
+    return _show_phase_picker_wpf_direct(phases, view, current_phase_id, allow_apply)
 
 
-def _show_phase_picker_wpfwindow(phases, view, current_phase_id):
+def _show_phase_picker_wpfwindow(phases, view, current_phase_id, allow_apply=True):
     """Show the picker with pyRevit's ``forms.WPFWindow`` XAML host.
 
-    Returns the selected phase id, ``None`` for a user cancellation, or the
-    private unavailable sentinel when pyRevit/WPF cannot load.  The sentinel
-    lets callers distinguish a normal Cancel from a host-loading failure.
+    Returns ``(action, phase_id)``, or the private unavailable sentinel when
+    pyRevit/WPF cannot load.  The sentinel lets callers distinguish a normal
+    Cancel from a host-loading failure.
     """
     try:
         import os
@@ -482,16 +522,9 @@ def _show_phase_picker_wpfwindow(phases, view, current_phase_id):
         return _WPF_UNAVAILABLE
 
     xaml_path = os.path.join(os.path.dirname(__file__), "ui", "temp_phase_picker.xaml")
-    result = {"selected_id": None, "accepted": False}
+    result = {"action": None, "selected_id": None}
     phase_rows = list(phases or [])
-    selected_index = 0
-    for index, phase_data in enumerate(phase_rows):
-        try:
-            if int(phase_data.get("id")) == int(current_phase_id):
-                selected_index = index
-                break
-        except Exception:
-            continue
+    selected_index = _selected_phase_index(phase_rows, current_phase_id)
 
     class _TempPhasePickerWindow(forms.WPFWindow):
         def __init__(self):
@@ -507,12 +540,13 @@ def _show_phase_picker_wpfwindow(phases, view, current_phase_id):
                 self.phase_cb.Items.Add(
                     "{0} ({1})".format(phase_data.get("name", ""), phase_id)
                 )
-            if self._phase_ids:
-                self.phase_cb.SelectedIndex = selected_index
-            else:
-                self.phase_cb.SelectedIndex = -1
-                self.apply_btn.IsEnabled = False
+            can_apply = bool(allow_apply and self._phase_ids)
+            self.phase_cb.SelectedIndex = selected_index if can_apply else -1
+            self.phase_cb.IsEnabled = can_apply
+            self.apply_btn.IsEnabled = can_apply
             self.apply_btn.Click += self._on_apply
+            self.restore_btn.Click += self._make_action_handler(ACTION_RESTORE_VIEW)
+            self.restore_all_btn.Click += self._make_action_handler(ACTION_RESTORE_ALL)
             self.cancel_btn.Click += self._on_cancel
 
         def _selected_index(self):
@@ -521,19 +555,28 @@ def _show_phase_picker_wpfwindow(phases, view, current_phase_id):
             except Exception:
                 return -1
 
+        def _make_action_handler(self, action):
+            def _handler(sender, args):
+                del sender, args
+                result["action"] = action
+                result["selected_id"] = None
+                self.Close()
+
+            return _handler
+
         def _on_apply(self, sender, args):
             del sender, args
             index = self._selected_index()
             if index < 0 or index >= len(self._phase_ids):
                 return
+            result["action"] = ACTION_APPLY
             result["selected_id"] = self._phase_ids[index]
-            result["accepted"] = True
             self.Close()
 
         def _on_cancel(self, sender, args):
             del sender, args
+            result["action"] = None
             result["selected_id"] = None
-            result["accepted"] = False
             self.Close()
 
     try:
@@ -544,24 +587,21 @@ def _show_phase_picker_wpfwindow(phases, view, current_phase_id):
         return _WPF_UNAVAILABLE
 
     _log(
-        "PythonPhasePickerWpfWindowShown xaml={0} accepted={1}".format(
+        "PythonPhasePickerWpfWindowShown xaml={0} action={1}".format(
             _safe_text(xaml_path),
-            bool(result.get("accepted")),
+            _safe_text(result.get("action")),
         )
     )
-
-    if result.get("accepted"):
-        return result.get("selected_id")
-    return None
+    return (result.get("action"), result.get("selected_id"))
 
 
-def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
+def _show_phase_picker_wpf_direct(phases, view, current_phase_id, allow_apply=True):
     """Show the phase picker with basic, netfx-compatible WPF controls.
 
-    Returns the selected phase id, ``None`` for an intentional cancellation,
-    or ``_WPF_UNAVAILABLE`` if WPF cannot be loaded/constructed.  Keeping the
-    unavailable result separate prevents a WPF load failure from silently
-    turning into two dialogs while preserving the existing WinForms fallback.
+    Returns ``(action, phase_id)``, or ``_WPF_UNAVAILABLE`` if WPF cannot be
+    loaded/constructed.  Keeping the unavailable result separate prevents a
+    WPF load failure from silently turning into two dialogs while preserving
+    the existing WinForms fallback.
     """
     try:
         import clr
@@ -662,32 +702,60 @@ def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
         combo.VerticalContentAlignment = VerticalAlignment.Center
         combo.Margin = Thickness(0, 0, 0, 20)
         phase_ids = []
-        selected_index = 0
-        for index, phase_data in enumerate(phases):
+        for phase_data in phases or []:
             phase_ids.append(int(phase_data["id"]))
             combo.Items.Add(
                 "{0} ({1})".format(phase_data["name"], phase_data["id"])
             )
-            if int(phase_data["id"]) == int(current_phase_id):
-                selected_index = index
-        if phase_ids:
-            combo.SelectedIndex = selected_index
+        can_apply = bool(allow_apply and phase_ids)
+        combo.SelectedIndex = (
+            _selected_phase_index(phases, current_phase_id) if can_apply else -1
+        )
+        combo.IsEnabled = can_apply
         root.Children.Add(combo)
 
         buttons = StackPanel()
         buttons.Orientation = Orientation.Horizontal
         buttons.HorizontalAlignment = HorizontalAlignment.Right
 
-        choice_holder = {"accepted": False}
+        choice_holder = {"action": None}
+
+        def _make_secondary_button(content, action, left_margin):
+            button = Button()
+            button.Content = content
+            button.MinWidth = 96
+            button.Height = 32
+            button.Margin = Thickness(left_margin, 0, 0, 0)
+            button.Background = Brushes.White
+            button.Foreground = getattr(Brushes, "SteelBlue", Brushes.Blue)
+            button.BorderBrush = getattr(Brushes, "Silver", Brushes.Gray)
+
+            def _handler(sender, args):
+                del sender, args
+                choice_holder["action"] = action
+                try:
+                    window.DialogResult = True
+                except Exception:
+                    window.Close()
+
+            button.Click += _handler
+            return button
+
+        restore_button = _make_secondary_button("Restore", ACTION_RESTORE_VIEW, 0)
+        restore_all_button = _make_secondary_button(
+            "Restore All Views", ACTION_RESTORE_ALL, 8
+        )
 
         ok_button = Button()
         ok_button.Content = "Apply"
         ok_button.MinWidth = 96
         ok_button.Height = 32
+        ok_button.Margin = Thickness(16, 0, 0, 0)
         ok_button.Background = getattr(Brushes, "SteelBlue", Brushes.Blue)
         ok_button.Foreground = Brushes.White
         ok_button.BorderBrush = getattr(Brushes, "SteelBlue", Brushes.Blue)
         ok_button.IsDefault = True
+        ok_button.IsEnabled = can_apply
 
         cancel_button = Button()
         cancel_button.Content = "Cancel"
@@ -703,7 +771,7 @@ def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
             del sender, args
             if int(combo.SelectedIndex) < 0:
                 return
-            choice_holder["accepted"] = True
+            choice_holder["action"] = ACTION_APPLY
             try:
                 window.DialogResult = True
             except Exception:
@@ -711,7 +779,7 @@ def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
 
         def cancel(sender, args):
             del sender, args
-            choice_holder["accepted"] = False
+            choice_holder["action"] = None
             try:
                 window.DialogResult = False
             except Exception:
@@ -719,6 +787,8 @@ def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
 
         ok_button.Click += accept
         cancel_button.Click += cancel
+        buttons.Children.Add(restore_button)
+        buttons.Children.Add(restore_all_button)
         buttons.Children.Add(ok_button)
         buttons.Children.Add(cancel_button)
         root.Children.Add(buttons)
@@ -726,22 +796,25 @@ def _show_phase_picker_wpf_direct(phases, view, current_phase_id):
         shell.Child = root
         window.Content = shell
         window.ShowDialog()
-        if not choice_holder["accepted"]:
-            _log("PythonPhasePickerWpfDirectShown accepted=False")
-            return None
+
+        action = choice_holder["action"]
+        _log("PythonPhasePickerWpfDirectShown action={0}".format(_safe_text(action)))
+        if action in (ACTION_RESTORE_VIEW, ACTION_RESTORE_ALL):
+            return (action, None)
+        if action != ACTION_APPLY:
+            return (None, None)
 
         selected = int(combo.SelectedIndex)
         if selected < 0 or selected >= len(phase_ids):
-            _log("PythonPhasePickerWpfDirectShown accepted=False invalidSelection=True")
-            return None
-        _log("PythonPhasePickerWpfDirectShown accepted=True")
-        return int(phase_ids[selected])
+            _log("PythonPhasePickerWpfDirectShown invalidSelection=True")
+            return (None, None)
+        return (ACTION_APPLY, int(phase_ids[selected]))
     except Exception as ex:
         _log("PythonPhasePickerWpfUnavailable {0}".format(_exception_text(ex)))
         return _WPF_UNAVAILABLE
 
 
-def _show_phase_picker_winforms(phases, view, current_phase_id):
+def _show_phase_picker_winforms(phases, view, current_phase_id, allow_apply=True):
     """Show the legacy picker when WPF is unavailable in the host engine."""
 
     try:
@@ -753,7 +826,7 @@ def _show_phase_picker_winforms(phases, view, current_phase_id):
     except Exception as ex:
         _log("PythonPhasePickerLoadException {0}".format(_exception_text(ex)))
         _show_alert(TITLE, "Could not load Windows Forms UI. Phase selection cancelled.")
-        return None
+        return (None, None)
 
     form = WinForms.Form()
     form.Text = TITLE
@@ -779,23 +852,45 @@ def _show_phase_picker_winforms(phases, view, current_phase_id):
     combo.DropDownStyle = WinForms.ComboBoxStyle.DropDownList
 
     phase_ids = []
-    selected_index = 0
-    for index, phase_data in enumerate(phases):
+    for phase_data in phases or []:
         combo.Items.Add("{0} ({1})".format(phase_data["name"], phase_data["id"]))
         phase_ids.append(int(phase_data["id"]))
-        if int(phase_data["id"]) == int(current_phase_id):
-            selected_index = index
 
-    if phase_ids:
-        combo.SelectedIndex = selected_index
+    can_apply = bool(allow_apply and phase_ids)
+    combo.SelectedIndex = (
+        _selected_phase_index(phases, current_phase_id) if can_apply else -1
+    )
+    combo.Enabled = can_apply
     form.Controls.Add(combo)
 
+    choice_holder = {"action": None}
+
+    def _make_restore_button(text, action, left, width):
+        button = WinForms.Button()
+        button.Text = text
+        button.Left = left
+        button.Top = 132
+        button.Width = width
+
+        def _handler(sender, args):
+            del sender, args
+            choice_holder["action"] = action
+            form.Close()
+
+        button.Click += _handler
+        form.Controls.Add(button)
+        return button
+
+    _make_restore_button("Restore", ACTION_RESTORE_VIEW, 14, 84)
+    _make_restore_button("Restore All Views", ACTION_RESTORE_ALL, 104, 120)
+
     ok_btn = WinForms.Button()
-    ok_btn.Text = "OK"
+    ok_btn.Text = "Apply"
     ok_btn.DialogResult = WinForms.DialogResult.OK
     ok_btn.Left = 270
     ok_btn.Top = 132
     ok_btn.Width = 84
+    ok_btn.Enabled = can_apply
     form.Controls.Add(ok_btn)
 
     cancel_btn = WinForms.Button()
@@ -810,17 +905,23 @@ def _show_phase_picker_winforms(phases, view, current_phase_id):
     form.CancelButton = cancel_btn
 
     result = form.ShowDialog()
+
+    action = choice_holder["action"]
+    if action in (ACTION_RESTORE_VIEW, ACTION_RESTORE_ALL):
+        _log("PythonPhasePickerWinFormsShown action={0}".format(action))
+        return (action, None)
+
     if result != WinForms.DialogResult.OK:
         _log("PythonPhasePickerWinFormsShown accepted=False")
-        return None
+        return (None, None)
 
     index = int(combo.SelectedIndex)
     if index < 0 or index >= len(phase_ids):
         _log("PythonPhasePickerWinFormsShown accepted=False invalidSelection=True")
-        return None
+        return (None, None)
 
     _log("PythonPhasePickerWinFormsShown accepted=True")
-    return int(phase_ids[index])
+    return (ACTION_APPLY, int(phase_ids[index]))
 
 
 def _collect_document_phases(doc):

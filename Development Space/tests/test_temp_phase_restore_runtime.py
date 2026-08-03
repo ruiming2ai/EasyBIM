@@ -281,6 +281,110 @@ class TempPhaseRestoreRuntimeTests(unittest.TestCase):
         )
         self.assertIn("path|c:\\models\\sample.rvt", view_state["armed_documents"])
 
+    def test_window_restore_choice_runs_the_active_view_restore(self):
+        """Choosing Restore in the window must not apply a phase."""
+        with mock.patch.object(
+            self.view_module,
+            "_show_phase_picker",
+            return_value=(self.view_module.ACTION_RESTORE_VIEW, None),
+        ), mock.patch.object(
+            self.view_module, "run_restore_active_view", return_value=True
+        ) as restore_view, mock.patch.object(
+            self.view_module, "_apply_selected_phase_transaction"
+        ) as apply_phase, mock.patch.object(
+            self.view_module, "_phase_from_session_or_view", return_value=3
+        ):
+            self.view_module.run_pushbutton()
+
+        restore_view.assert_called_once()
+        apply_phase.assert_not_called()
+
+    def test_window_restore_all_choice_runs_the_document_restore(self):
+        with mock.patch.object(
+            self.view_module,
+            "_show_phase_picker",
+            return_value=(self.view_module.ACTION_RESTORE_ALL, None),
+        ), mock.patch.object(
+            self.view_module, "run_restore_all_views", return_value=True
+        ) as restore_all, mock.patch.object(
+            self.view_module, "_apply_selected_phase_transaction"
+        ) as apply_phase, mock.patch.object(
+            self.view_module, "_phase_from_session_or_view", return_value=3
+        ):
+            self.view_module.run_pushbutton()
+
+        restore_all.assert_called_once()
+        apply_phase.assert_not_called()
+
+    def test_window_apply_choice_still_applies_the_selected_phase(self):
+        with mock.patch.object(
+            self.view_module,
+            "_show_phase_picker",
+            return_value=(self.view_module.ACTION_APPLY, 7),
+        ), mock.patch.object(
+            self.view_module, "_apply_selected_phase_transaction", return_value=True
+        ) as apply_phase, mock.patch.object(
+            self.view_module, "_phase_from_session_or_view", return_value=3
+        ), mock.patch.object(
+            self.view_module, "_get_state", return_value={"view_sessions": {}, "last_seen_tvp": {}, "armed_documents": {}}
+        ), mock.patch.object(
+            self.view_module, "_save_state"
+        ), mock.patch.object(
+            self.view_module, "_arm_document"
+        ), mock.patch.object(
+            self.view_module, "_is_tvp_active", return_value=True
+        ):
+            self.view_module.run_pushbutton()
+
+        self.assertEqual(7, apply_phase.call_args[1]["selected_phase_id"])
+
+    def test_window_cancel_does_nothing(self):
+        with mock.patch.object(
+            self.view_module, "_show_phase_picker", return_value=(None, None)
+        ), mock.patch.object(
+            self.view_module, "_apply_selected_phase_transaction"
+        ) as apply_phase, mock.patch.object(
+            self.view_module, "run_restore_active_view"
+        ) as restore_view, mock.patch.object(
+            self.view_module, "run_restore_all_views"
+        ) as restore_all, mock.patch.object(
+            self.view_module, "_phase_from_session_or_view", return_value=3
+        ):
+            self.view_module.run_pushbutton()
+
+        apply_phase.assert_not_called()
+        restore_view.assert_not_called()
+        restore_all.assert_not_called()
+
+    def test_view_without_a_phase_still_opens_the_window_for_restore(self):
+        """Apply is disabled, but the restore options stay reachable."""
+        captured = {}
+
+        def _fake_picker(doc, view, current_phase_id, allow_apply=True):
+            captured["allow_apply"] = allow_apply
+            return (self.view_module.ACTION_RESTORE_ALL, None)
+
+        with mock.patch.object(
+            self.view_module, "_show_phase_picker", side_effect=_fake_picker
+        ), mock.patch.object(
+            self.view_module, "run_restore_all_views", return_value=True
+        ) as restore_all, mock.patch.object(
+            self.view_module, "_phase_from_session_or_view", return_value=None
+        ):
+            self.view_module.run_pushbutton()
+
+        self.assertFalse(captured["allow_apply"])
+        restore_all.assert_called_once()
+        self.assertEqual([], self.alerts)
+
+    def test_selected_phase_index_tolerates_a_missing_current_phase(self):
+        phases = [{"id": 5, "name": "New"}, {"id": 6, "name": "Existing"}]
+
+        self.assertEqual(1, self.view_module._selected_phase_index(phases, 6))
+        self.assertEqual(0, self.view_module._selected_phase_index(phases, None))
+        self.assertEqual(0, self.view_module._selected_phase_index(phases, 99))
+        self.assertEqual(-1, self.view_module._selected_phase_index([], 6))
+
     def test_restore_requires_a_project_document(self):
         self.view_module._get_uiapp = lambda uiapp=None: FakeUiapp(None, None)
 
