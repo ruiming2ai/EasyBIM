@@ -1,0 +1,96 @@
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinWidth="260">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel>
+            <TextBlock x:Name="HeaderText"
+                       Text="Clash Detection Mode"
+                       FontSize="16"
+                       FontWeight="SemiBold" />
+            <TextBlock x:Name="ScopeText"
+                       Foreground="DimGray"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Margin="0,2,0,6" />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1">
+            <Grid>
+                <ListBox x:Name="RowsListView"
+                         BorderThickness="0"
+                         HorizontalContentAlignment="Stretch"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="Gainsboro"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="6,7,6,7">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding element_a_title}"
+                                                   FontWeight="SemiBold"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding element_a_detail}"
+                                                   Foreground="DimGray"
+                                                   FontSize="11" />
+                                        <TextBlock Text="clashes with"
+                                                   Foreground="#B05000"
+                                                   FontSize="11"
+                                                   Margin="0,4,0,2" />
+                                        <TextBlock Text="{Binding element_b_title}"
+                                                   FontWeight="SemiBold"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding element_b_detail}"
+                                                   Foreground="DimGray"
+                                                   FontSize="11" />
+                                    </StackPanel>
+
+                                    <Button Grid.Column="1"
+                                            Content="Show"
+                                            Width="64"
+                                            Height="26"
+                                            Margin="8,0,0,0"
+                                            VerticalAlignment="Top"
+                                            Click="show_click" />
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <TextBlock x:Name="EmptyText"
+                           Text="No new clashes yet. Keep modeling - only clashes created from now on are reported."
+                           Foreground="DimGray"
+                           TextWrapping="Wrap"
+                           Margin="10"
+                           VerticalAlignment="Top" />
+            </Grid>
+        </Border>
+
+        <TextBlock x:Name="StatusText"
+                   Grid.Row="2"
+                   Margin="0,6,0,6"
+                   TextWrapping="Wrap"
+                   Foreground="DimGray" />
+
+        <Button x:Name="StopButton"
+                Grid.Row="3"
+                Content="Stop Detection"
+                Height="30"
+                Click="stop_click" />
+    </Grid>
+</UserControl>

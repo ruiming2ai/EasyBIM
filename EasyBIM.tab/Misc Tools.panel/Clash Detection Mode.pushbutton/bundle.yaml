@@ -1,0 +1,9 @@
+title: "Clash Detection\nMode"
+tooltip: >-
+  Watch for interferences created while you keep modelling. Pick the two
+  category sets once, then only clashes made from that moment on are
+  reported - existing clashes are never listed. Silent Mode keeps a live
+  panel on the right instead of popping up.
+author: Ruiming Liu
+min_revit_version: 2023
+max_revit_version: 2027

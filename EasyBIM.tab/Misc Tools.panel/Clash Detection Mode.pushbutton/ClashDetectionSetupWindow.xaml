@@ -1,0 +1,199 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Clash Detection Mode"
+        Width="780"
+        Height="660"
+        MinWidth="640"
+        MinHeight="540"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="14" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.ColumnSpan="3"
+                    Margin="0,0,0,10">
+            <TextBlock Text="Clash Detection Mode"
+                       FontSize="22"
+                       FontWeight="SemiBold" />
+            <TextBlock Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Margin="0,2,0,0"
+                       Text="Only clashes created after the mode starts are reported. Shift-click or drag across rows to select several categories, then tick one checkbox to set them all." />
+        </StackPanel>
+
+        <TextBlock Grid.Row="1"
+                   Text="Categories from" />
+        <TextBlock Grid.Row="1"
+                   Grid.Column="2"
+                   Text="Categories from" />
+
+        <ComboBox x:Name="LeftModelCombo"
+                  Grid.Row="2"
+                  Margin="0,4,0,0"
+                  DisplayMemberPath="display_name"
+                  SelectionChanged="left_model_changed" />
+        <ComboBox x:Name="RightModelCombo"
+                  Grid.Row="2"
+                  Grid.Column="2"
+                  Margin="0,4,0,0"
+                  DisplayMemberPath="display_name"
+                  SelectionChanged="right_model_changed" />
+
+        <Border Grid.Row="3"
+                BorderBrush="#B8B8B8"
+                BorderThickness="1"
+                Margin="0,8,0,0">
+            <ListBox x:Name="LeftCategoryList"
+                     BorderThickness="0"
+                     SelectionMode="Extended"
+                     HorizontalContentAlignment="Stretch"
+                     PreviewKeyDown="left_category_key_down">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal"
+                                    Background="Transparent">
+                            <CheckBox IsChecked="{Binding is_checked, Mode=TwoWay}"
+                                      VerticalAlignment="Center"
+                                      Margin="2,0,8,0"
+                                      Click="left_category_check_click" />
+                            <TextBlock Text="{Binding name}"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+
+        <Border Grid.Row="3"
+                Grid.Column="2"
+                BorderBrush="#B8B8B8"
+                BorderThickness="1"
+                Margin="0,8,0,0">
+            <ListBox x:Name="RightCategoryList"
+                     BorderThickness="0"
+                     SelectionMode="Extended"
+                     HorizontalContentAlignment="Stretch"
+                     PreviewKeyDown="right_category_key_down">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal"
+                                    Background="Transparent">
+                            <CheckBox IsChecked="{Binding is_checked, Mode=TwoWay}"
+                                      VerticalAlignment="Center"
+                                      Margin="2,0,8,0"
+                                      Click="right_category_check_click" />
+                            <TextBlock Text="{Binding name}"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+
+        <StackPanel Grid.Row="4"
+                    Margin="0,8,0,0">
+            <TextBlock Text="Selection" />
+            <StackPanel Orientation="Horizontal"
+                        Margin="0,4,0,0">
+                <Button Content="All"
+                        Width="82"
+                        Height="28"
+                        Margin="0,0,6,0"
+                        Click="left_all_click" />
+                <Button Content="None"
+                        Width="82"
+                        Height="28"
+                        Margin="0,0,6,0"
+                        Click="left_none_click" />
+                <Button Content="Invert"
+                        Width="82"
+                        Height="28"
+                        Click="left_invert_click" />
+            </StackPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Row="4"
+                    Grid.Column="2"
+                    Margin="0,8,0,0">
+            <TextBlock Text="Selection" />
+            <StackPanel Orientation="Horizontal"
+                        Margin="0,4,0,0">
+                <Button Content="All"
+                        Width="82"
+                        Height="28"
+                        Margin="0,0,6,0"
+                        Click="right_all_click" />
+                <Button Content="None"
+                        Width="82"
+                        Height="28"
+                        Margin="0,0,6,0"
+                        Click="right_none_click" />
+                <Button Content="Invert"
+                        Width="82"
+                        Height="28"
+                        Click="right_invert_click" />
+            </StackPanel>
+        </StackPanel>
+
+        <Border Grid.Row="5"
+                Grid.ColumnSpan="3"
+                BorderBrush="#E3E3E3"
+                BorderThickness="1"
+                Background="#FAFAFA"
+                Padding="10"
+                Margin="0,12,0,0">
+            <StackPanel>
+                <CheckBox x:Name="SilentModeCheck"
+                          Content="Silent Mode and Update Clash on Dynamic Panel"
+                          IsChecked="True" />
+                <TextBlock Foreground="DimGray"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="20,4,0,0"
+                           Text="On: no pop-ups - a panel docks on the right and updates live. Off: a small window appears when a clash is created and does not block modelling." />
+            </StackPanel>
+        </Border>
+
+        <DockPanel Grid.Row="6"
+                   Grid.ColumnSpan="3"
+                   LastChildFill="False"
+                   Margin="0,12,0,0">
+            <TextBlock x:Name="StatusText"
+                       DockPanel.Dock="Left"
+                       VerticalAlignment="Center"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       MaxWidth="380" />
+            <Button x:Name="CancelButton"
+                    Content="Cancel"
+                    Width="110"
+                    Height="34"
+                    DockPanel.Dock="Right"
+                    Margin="8,0,0,0"
+                    IsCancel="True"
+                    Click="cancel_click" />
+            <Button x:Name="StartButton"
+                    Content="Start Ongoing Detection Mode"
+                    Width="230"
+                    Height="34"
+                    DockPanel.Dock="Right"
+                    IsDefault="True"
+                    IsEnabled="False"
+                    Click="start_click" />
+        </DockPanel>
+    </Grid>
+</Window>
