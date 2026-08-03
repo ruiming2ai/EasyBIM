@@ -23,6 +23,18 @@ except Exception:
     pass
 
 try:
+    from easybim import clash_detection_panel
+
+    # Revit only accepts RegisterDockablePane during application init, so the
+    # pane must be registered every session even when the mode is never used.
+    # Registration alone costs nothing: the pane stays hidden and holds no
+    # state until Clash Detection Mode opens it.
+    clash_detection_panel.register()
+except Exception:
+    pass
+
+
+try:
     from easybim import temp_phase_close
     temp_phase_close.install_completion_handlers()
 except Exception as ex:
