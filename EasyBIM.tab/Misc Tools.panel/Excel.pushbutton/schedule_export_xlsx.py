@@ -427,10 +427,14 @@ LEGEND_HEADER_ROWS = (
 )
 
 LEGEND_RULES = (
-    "Clearing a cell does NOT clear the value in Revit. A blank cell means "
-    "\"leave this one unchanged\".",
+    "Clearing a text cell CLEARS that value in Revit when you import. "
+    "Number, Yes/No and reference columns have no empty state, so a blank "
+    "cell there still means \"leave this one unchanged\".",
+    "Blanking one row of a type parameter while another row of the same "
+    "type still holds a value is a conflict, and stops the import.",
     "Never edit, sort or delete column A (ElementId) - it is how each row "
-    "finds its element. Edited ids turn red.",
+    "finds its element. Edited ids turn red. Hiding it is fine; the import "
+    "reads hidden columns and rows too.",
     "Hidden columns and sheets whose names start with an underscore are "
     "internal bookkeeping. Leave them alone.",
     "To load your edits back: in Revit open the Excel tool, tick the same "

@@ -97,10 +97,18 @@ def _run_export(doc, selected_options):
 
 
 def _get_header_row(sheet_rows):
+    """Return (excel_row_number, values) for the sheet's header row.
+
+    Normally row 1, but an editor that drops a fully empty first row makes
+    the header land lower; the row number is returned so the data parser
+    skips exactly that row rather than assuming row 1.
+    """
     for excel_row, values in sheet_rows:
         if excel_row == 1:
-            return values
-    return sheet_rows[0][1] if sheet_rows else []
+            return 1, values
+    if sheet_rows:
+        return sheet_rows[0][0], sheet_rows[0][1]
+    return 1, []
 
 
 def _run_import(doc, option):
@@ -135,10 +143,10 @@ def _run_import(doc, option):
         metadata_sheet.rows if metadata_sheet is not None else []
     )
 
+    header_row_number, header_values = _get_header_row(export_sheet.rows)
     try:
-        columns, ignored_headers = import_excel_state.classify_columns(
-            _get_header_row(export_sheet.rows), metadata
-        )
+        id_col_index, columns, ignored_headers = \
+            import_excel_state.classify_columns(header_values, metadata)
     except ValueError as header_error:
         forms.alert(str(header_error), title=__title__)
         return
@@ -149,7 +157,8 @@ def _run_import(doc, option):
         return
 
     records, bad_id_rows = import_excel_state.parse_export_rows(
-        export_sheet.rows, columns
+        export_sheet.rows, columns,
+        id_col_index=id_col_index, header_row=header_row_number,
     )
     if not records:
         forms.alert(
@@ -192,6 +201,8 @@ def _run_import(doc, option):
         len(plan.type_writes),
         plan.type_write_row_count(),
         plan.skipped_lines(),
+        instance_clear_count=plan.instance_clear_count(),
+        type_clear_count=plan.type_clear_count(),
     )
 
     if not plan.instance_writes and not plan.type_writes:
@@ -215,6 +226,7 @@ def _run_import(doc, option):
         result.failed_lines,
         plan.skipped_lines(),
         file_path,
+        cleared_count=result.cleared_count,
     ))
 
 
