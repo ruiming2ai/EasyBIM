@@ -48,8 +48,24 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertNotIn("temp_phase_save", startup)
         self.assertIn("install_completion_handlers", startup)
 
-        app_idling = (ROOT / "hooks" / "app-idling.py").read_text(encoding="utf-8")
-        self.assertNotIn("temp_phase_save", app_idling)
+        # The app-idling hook is gone: pyRevit re-reads and recompiles a hook
+        # script on every Idling event, so all of its work moved to the
+        # one-time .NET delegate in easybim.idling.
+        self.assertFalse((ROOT / "hooks" / "app-idling.py").exists())
+
+        idling_runtime = (ROOT / "lib" / "easybim" / "idling.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("temp_phase_save", idling_runtime)
+        for consumer in (
+            "has_pending_startup_jobs",
+            "process_startup_jobs",
+            "has_pending_startup_auto_update",
+            "run_pending_startup_auto_update",
+            "handle_app_idling",
+        ):
+            self.assertIn(consumer, idling_runtime)
+
         doc_closed = (ROOT / "hooks" / "doc-closed.py").read_text(encoding="utf-8")
         self.assertNotIn("temp_phase_save", doc_closed)
 

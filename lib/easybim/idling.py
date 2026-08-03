@@ -49,6 +49,11 @@ try:
 except Exception:
     messages = None
 
+try:
+    from easybim import auto_update
+except Exception:
+    auto_update = None
+
 
 #: Mirrors the live delegate and its event source across a pyRevit reload.
 HANDLER_ENVVAR = "EASYBIM_IDLING_HANDLER"
@@ -184,9 +189,30 @@ def _run_startup_jobs(sender):
         messages.process_startup_jobs(sender)
 
 
+def _run_auto_update(sender):
+    """Run the deferred startup auto-update, detached from Idling first.
+
+    The update can end in ``sessionmgr.reload_pyrevit()``, which disposes the
+    script engine that owns this delegate.  Revit would keep the delegate
+    subscribed and invoke a dead object on every later tick, so the
+    subscription is dropped before the update runs and restored afterwards if
+    this engine is still alive.  ``startup.py`` re-installs on the way back up
+    after a real reload.  The update is one-shot per session (envvar flag plus
+    a process mutex), so a tick lost to the detach costs nothing.
+    """
+    if auto_update is None or not auto_update.has_pending_startup_auto_update():
+        return
+    uninstall()
+    try:
+        auto_update.run_pending_startup_auto_update()
+    finally:
+        install(sender)
+
+
 def _run_consumers(sender):
     _guarded("StartupJobs", _run_startup_jobs, sender)
     _guarded("TempPhaseCloseRecovery", _run_temp_phase_close, sender)
+    _guarded("StartupAutoUpdate", _run_auto_update, sender)
 
 
 def _on_idling(sender, args):

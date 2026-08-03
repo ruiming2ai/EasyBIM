@@ -45,7 +45,8 @@ only in the open session. Choose one of the following actions:
 
 Save or synchronization cancellation, failure, unavailable commands, Revit
 shutdown, and unsupported/non-cancellable close contexts leave the restored
-document open. The Python `doc-closing`, `app-idling`, and `doc-closed` hooks
+document open. The Python `doc-closing` and `doc-closed` hooks, together with a
+single `Idling` delegate installed at startup (`lib/easybim/idling.py`),
 coordinate the per-document trigger/state and prevent duplicate close reposts.
 Using Temp Phase in one file does not arm close recovery for other open files.
 
