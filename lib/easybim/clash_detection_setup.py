@@ -79,8 +79,6 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self.RightModelCombo.ItemsSource = list(self.model_options)
 
         if self.is_editing:
-            self.Title = "Clash Detection Mode - Edit Categories"
-            self.StartButton.Content = APPLY_LABEL
             self._preselect_side("left", session.side_a)
             self._preselect_side("right", session.side_b)
         else:
@@ -90,7 +88,49 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self._is_ready = True
         self._load_side("left")
         self._load_side("right")
+        self._refresh_session_panel()
         self._update_start_enabled()
+
+    # -- running session ---------------------------------------------------
+
+    def _refresh_session_panel(self):
+        """Show the live controls whenever a session is running.
+
+        This is the reliable way back to a panel that has been closed, and
+        the only Stop that survives a pyRevit engine reload, so it appears
+        even when this engine no longer holds the session itself.
+        """
+        from easybim import clash_detection_engine
+
+        from System.Windows import Visibility
+
+        running = clash_detection_engine.is_active()
+        self.SessionPanel.Visibility = (
+            Visibility.Visible if running else Visibility.Collapsed
+        )
+        if not running:
+            return
+
+        paused = clash_detection_engine.is_paused()
+        session = clash_detection_engine.get_session()
+        self.SessionStateText.Text = "Paused" if paused else "Running"
+        if session is None:
+            self.SessionStateText.Text = "Running (details lost on reload)"
+            self.SessionDetailText.Text = (
+                "Detection is still attached to Revit but this session's list "
+                "was lost when pyRevit reloaded. Stop Detection to clear it."
+            )
+            self.SessionPauseButton.IsEnabled = False
+            self.SessionResumeButton.IsEnabled = False
+            self.OpenPanelButton.IsEnabled = False
+        else:
+            summary = session.summary()
+            self.SessionDetailText.Text = "{0}  |  {1} live clash(es), {2} resolved".format(
+                session.scope_text(), summary["active"], summary["resolved"]
+            )
+            self.SessionPauseButton.IsEnabled = not paused
+            self.SessionResumeButton.IsEnabled = paused
+            self.OpenPanelButton.IsEnabled = True
 
     def _preselect_side(self, side, side_selection):
         """Reopen on the model and categories the session is already using."""
@@ -149,10 +189,8 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self._set_rows(side, rows)
         self._list_for(side).ItemsSource = rows
         if not rows:
-            self.StatusText.Text = (
-                "{0} has no placed model elements to check.".format(
-                    option.display_name if option else "That model"
-                )
+            self.StatusText.Text = "{0} has no placed model elements to check.".format(
+                option.display_name if option else "That model"
             )
 
     def _remember(self, side):
@@ -237,12 +275,13 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         can_start = state.can_start(left_ids, right_ids)
         self.StartButton.IsEnabled = can_start
         self.StartButton.Content = APPLY_LABEL if self.is_editing else START_LABEL
-        if can_start:
-            self.StatusText.Text = "{0} category(ies) vs {1} category(ies).".format(
+        self.StatusText.Text = (
+            "{0} category(ies) vs {1} category(ies).".format(
                 len(left_ids), len(right_ids)
             )
-        elif self._left_rows or self._right_rows:
-            self.StatusText.Text = "Tick at least one category on each side."
+            if can_start
+            else ""
+        )
 
     # -- XAML handlers ----------------------------------------------------
 
@@ -307,7 +346,6 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         left_ids = state.checked_category_ids(self._left_rows)
         right_ids = state.checked_category_ids(self._right_rows)
         if not state.can_start(left_ids, right_ids):
-            self.StatusText.Text = "Tick at least one category on each side."
             return
 
         left_option = self.LeftModelCombo.SelectedItem
@@ -336,16 +374,56 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self.result = None
         self.Close()
 
+    def open_panel_click(self, sender, args):
+        del sender, args
+        try:
+            from easybim import clash_detection_engine
+            from easybim import clash_detection_panel
+
+            clash_detection_panel.open_panel(clash_detection_engine.get_session())
+        except Exception as ex:
+            LOGGER.debug("[Clash Detection] Open panel failed: %s", ex)
+
+    def session_pause_click(self, sender, args):
+        del sender, args
+        from easybim import clash_detection_engine
+
+        clash_detection_engine.pause()
+        self._refresh_session_panel()
+
+    def session_resume_click(self, sender, args):
+        del sender, args
+        from easybim import clash_detection_engine
+
+        clash_detection_engine.resume()
+        self._refresh_session_panel()
+
+    def session_stop_click(self, sender, args):
+        del sender, args
+        from easybim import clash_detection_engine
+
+        clash_detection_engine.stop(reason="main window Stop Detection")
+        self.is_editing = False
+        self.session = None
+        self._refresh_session_panel()
+        self._update_start_enabled()
+
 
 def show_setup_window(doc, uiapp=None, session=None):
-    """Run the setup dialog.
+    """Run the main window.
 
-    With ``session`` given this is *Edit Categories*: the new selection is
-    applied to the running session, which keeps the clashes that are still in
-    scope and still clashing rather than starting the list over.  Without it,
-    this arms a fresh session.  Returns True when something was applied.
+    This is the tool's one window, opened by the ribbon button whether or not
+    a session is running: when one is, it carries the live controls (Open
+    Panel, Pause, Resume, Stop) so a closed panel is always recoverable.
+
+    With ``session`` given the category lists start on the running selection
+    and applying them keeps the clashes that are still in scope and still
+    clashing, rather than starting the list over.
     """
     from easybim import clash_detection_engine
+
+    if session is None and clash_detection_engine.has_live_session():
+        session = clash_detection_engine.get_session()
 
     window = ClashDetectionSetupWindow(doc, session=session)
     if not window.model_options:

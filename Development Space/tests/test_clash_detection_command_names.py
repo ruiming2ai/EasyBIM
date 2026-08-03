@@ -16,12 +16,10 @@ SETUP_XAML = UI_DIR / "clash_detection_setup.xaml"
 PANEL_XAML = UI_DIR / "clash_detection_panel.xaml"
 PANEL_WINDOW_XAML = UI_DIR / "clash_detection_panel_window.xaml"
 ALERT_XAML = UI_DIR / "clash_detection_alert.xaml"
-STATUS_XAML = UI_DIR / "clash_detection_status.xaml"
 
 SETUP_MODULE = LIB_DIR / "clash_detection_setup.py"
 PANEL_MODULE = LIB_DIR / "clash_detection_panel.py"
 ALERT_MODULE = LIB_DIR / "clash_detection_alert.py"
-STATUS_MODULE = LIB_DIR / "clash_detection_status.py"
 RIBBON_MODULE = LIB_DIR / "clash_detection_ribbon.py"
 
 CLASH_MODULES = [
@@ -30,7 +28,6 @@ CLASH_MODULES = [
     PANEL_MODULE,
     ALERT_MODULE,
     SETUP_MODULE,
-    STATUS_MODULE,
     RIBBON_MODULE,
     LIB_DIR / "clash_detection_revit.py",
     LIB_DIR / "wpf_notify.py",
@@ -256,7 +253,8 @@ class PanelTests(unittest.TestCase):
 
     def test_row_bindings_match_the_row_class(self):
         expected = {
-            "is_checked",
+            "is_a_checked",
+            "is_b_checked",
             "element_a_title",
             "element_a_detail",
             "element_b_title",
@@ -275,7 +273,10 @@ class PanelTests(unittest.TestCase):
             self.assertIn('x:Name="ShowButton"', source, path.name)
             self.assertIn('x:Name="SelectAllButton"', source, path.name)
             self.assertIn('x:Name="SelectNoneButton"', source, path.name)
-            self.assertIn("{Binding is_checked, Mode=TwoWay}", source, path.name)
+            # One checkbox per element, not per pair: a clash names two
+            # elements and you often want only one of them.
+            self.assertIn("{Binding is_a_checked, Mode=TwoWay}", source, path.name)
+            self.assertIn("{Binding is_b_checked, Mode=TwoWay}", source, path.name)
             # The row template must carry no button of its own any more: Show
             # lives once, in the footer, and acts on every ticked row.
             self.assertFalse(
@@ -283,20 +284,20 @@ class PanelTests(unittest.TestCase):
             )
 
     def test_pause_and_resume_on_every_surface(self):
-        for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML, STATUS_XAML):
+        for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML):
             source = path.read_text(encoding="utf-8")
             self.assertIn('x:Name="PauseButton"', source, path.name)
             self.assertIn('x:Name="ResumeButton"', source, path.name)
 
     def test_resume_ships_disabled(self):
         # Resume must not look clickable until the mode is actually paused.
-        for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML, STATUS_XAML):
+        for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML):
             source = path.read_text(encoding="utf-8")
             resume_block = source.split('x:Name="ResumeButton"')[1].split("/>")[0]
             self.assertIn('IsEnabled="False"', resume_block, path.name)
 
     def test_panel_offers_edit_categories(self):
-        for path in (PANEL_XAML, PANEL_WINDOW_XAML, STATUS_XAML):
+        for path in (PANEL_XAML, PANEL_WINDOW_XAML):
             self.assertIn(
                 'x:Name="EditCategoriesButton"',
                 path.read_text(encoding="utf-8"),
@@ -304,35 +305,50 @@ class PanelTests(unittest.TestCase):
             )
 
 
-class StatusWindowTests(unittest.TestCase):
-    def test_xaml_parses_and_names_exist(self):
-        ET.parse(str(STATUS_XAML))
+class MainWindowSessionTests(unittest.TestCase):
+    """The main window is the one place that always has a way out.
+
+    A closed panel used to be unrecoverable, so these controls have to be on
+    the window the ribbon button opens - and it must open it unconditionally.
+    """
+
+    def test_ribbon_always_opens_the_main_window(self):
+        source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
+        self.assertIn("clash_detection_setup.show_setup_window", source)
+        self.assertNotIn("clash_detection_status", source)
+
+    def test_status_window_is_gone(self):
+        self.assertFalse((LIB_DIR / "clash_detection_status.py").exists())
+        self.assertFalse((UI_DIR / "clash_detection_status.xaml").exists())
+
+    def test_session_controls_exist(self):
         required = {
-            "StateText",
-            "ElapsedText",
-            "ScopeText",
-            "CategoriesText",
-            "ActiveCountText",
-            "ResolvedCountText",
-            "QueuedCountText",
-            "NotesText",
-            "ShowPanelButton",
-            "PauseButton",
-            "ResumeButton",
-            "EditCategoriesButton",
-            "StopButton",
-            "CloseButton",
+            "SessionPanel",
+            "SessionStateText",
+            "SessionDetailText",
+            "OpenPanelButton",
+            "SessionPauseButton",
+            "SessionResumeButton",
+            "SessionStopButton",
         }
-        missing = required - _xaml_names(STATUS_XAML)
+        missing = required - _xaml_names(SETUP_XAML)
         self.assertFalse(missing, "missing x:Name(s): %s" % missing)
 
-    def test_handlers_exist_in_status_module(self):
-        missing = _xaml_handlers(STATUS_XAML) - _module_methods(STATUS_MODULE)
-        self.assertFalse(missing, "missing handler(s): %s" % missing)
+    def test_session_controls_start_hidden_and_resume_disabled(self):
+        source = SETUP_XAML.read_text(encoding="utf-8")
+        panel_block = source.split('x:Name="SessionPanel"')[1].split(">")[0]
+        self.assertIn('Visibility="Collapsed"', panel_block)
+        resume_block = source.split('x:Name="SessionResumeButton"')[1].split("/>")[0]
+        self.assertIn('IsEnabled="False"', resume_block)
 
-    def test_button_opens_status_when_already_running(self):
-        source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
-        self.assertIn("clash_detection_status.show_status_window()", source)
+    def test_description_and_removed_hint(self):
+        source = SETUP_XAML.read_text(encoding="utf-8")
+        self.assertIn(
+            'Text="Watch for clashes created while you keep modeling."', source
+        )
+        module = SETUP_MODULE.read_text(encoding="utf-8")
+        self.assertNotIn("Tick at least one category", module)
+        self.assertNotIn("Tick at least one category", source)
 
 
 class RibbonBadgeTests(unittest.TestCase):
