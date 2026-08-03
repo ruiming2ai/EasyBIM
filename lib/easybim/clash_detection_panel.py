@@ -69,11 +69,11 @@ except Exception:
 
 
 class ClashRow(_RowBase):
-    """One line in the panel.
+    """One clash in the panel, with a checkbox per element.
 
-    ``is_checked`` is the only mutable field: a clash involves at least two
-    elements, so rows are ticked and shown together rather than one row at a
-    time.
+    Each side is ticked independently: a clash names two elements and you
+    often only want to look at one of them, so Show works on the elements
+    that are ticked rather than on whole pairs.
     """
 
     def __init__(self, record):
@@ -81,28 +81,46 @@ class ClashRow(_RowBase):
             _RowBase.__init__(self)
         self.pair_key = record.key
         self.sequence = record.sequence
-        self.is_checked = False
+        self.is_a_checked = False
+        self.is_b_checked = False
+        self.element_a_key = record.element_a.key
+        self.element_b_key = record.element_b.key
         self.element_a_title = record.element_a.display_label
         self.element_a_detail = record.element_a.detail_label
         self.element_b_title = record.element_b.display_label
         self.element_b_detail = record.element_b.detail_label
 
-
-def set_row_checked(row, is_checked):
-    """Tick a row and tell WPF, so All / None move the checkboxes."""
-    if bool(row.is_checked) == bool(is_checked):
-        return False
-    row.is_checked = bool(is_checked)
-    if _NOTIFY_SUPPORTED:
-        try:
-            row.raise_property_changed("is_checked")
-        except Exception:
-            pass
-    return True
+    @property
+    def element_keys(self):
+        return [self.element_a_key, self.element_b_key]
 
 
-def checked_pair_keys(rows):
-    return [row.pair_key for row in rows or [] if row.is_checked]
+def set_row_checked(row, is_checked, side=None):
+    """Tick one or both sides of a row and tell WPF, so All / None move them."""
+    changed = False
+    fields = ("is_a_checked", "is_b_checked") if side is None else (side,)
+    for field in fields:
+        if bool(getattr(row, field)) == bool(is_checked):
+            continue
+        setattr(row, field, bool(is_checked))
+        changed = True
+        if _NOTIFY_SUPPORTED:
+            try:
+                row.raise_property_changed(field)
+            except Exception:
+                pass
+    return changed
+
+
+def checked_element_keys(rows):
+    """Element keys for every ticked side, in the order they are listed."""
+    keys = []
+    for row in rows or []:
+        if row.is_a_checked and row.element_a_key:
+            keys.append(row.element_a_key)
+        if row.is_b_checked and row.element_b_key:
+            keys.append(row.element_b_key)
+    return keys
 
 
 def _observable_collection():
@@ -185,21 +203,22 @@ def _rows_list():
 
 
 def _on_show_checked():
-    """Show every ticked clash at once - one selection, one zoom."""
-    keys = checked_pair_keys(_rows_list())
+    """Show every ticked element at once - one selection, one zoom."""
+    keys = checked_element_keys(_rows_list())
     if not keys:
-        _set_status_hint("Tick the clashes you want to see, then press Show.")
+        _set_status_hint("Tick the elements you want to see, then press Show.")
         return
     _engine().request_show(keys)
 
 
 def _on_show_row(sender):
-    row = getattr(sender, "DataContext", None) or getattr(
-        sender, "SelectedItem", None
+    """Double-click shows both elements of that clash."""
+    row = getattr(sender, "SelectedItem", None) or getattr(
+        sender, "DataContext", None
     )
-    pair_key = getattr(row, "pair_key", None)
-    if pair_key:
-        _engine().request_show(pair_key)
+    keys = [key for key in getattr(row, "element_keys", []) or [] if key]
+    if keys:
+        _engine().request_show(keys)
 
 
 def _on_select_all(is_checked):
@@ -253,7 +272,7 @@ def _update_buttons():
     except Exception:
         pass
     try:
-        view.ShowButton.IsEnabled = bool(checked_pair_keys(_rows_list()))
+        view.ShowButton.IsEnabled = bool(checked_element_keys(_rows_list()))
     except Exception:
         pass
 

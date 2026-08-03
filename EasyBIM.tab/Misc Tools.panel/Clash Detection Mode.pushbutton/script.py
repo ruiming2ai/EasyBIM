@@ -53,17 +53,10 @@ def main():
             exitscript=True,
         )
 
-    from easybim import clash_detection_engine
-
     try:
-        if clash_detection_engine.is_active():
-            # Clicking the button while the mode runs is how you find out what
-            # it is doing - the panel may be closed and the alert dismissed.
-            from easybim import clash_detection_status
-
-            clash_detection_status.show_status_window()
-            return
-
+        # One window, always.  When a session is running it carries the live
+        # controls, which is what makes a closed panel recoverable and gives
+        # Stop Detection a home that cannot disappear.
         from easybim import clash_detection_setup
 
         clash_detection_setup.show_setup_window(revit.doc, uiapp=_uiapp())
