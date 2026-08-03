@@ -74,13 +74,20 @@ spacebar toggles the selection; `All` / `None` / `Invert` act on the list.
 `Start Ongoing Detection Mode` replaces the native `OK`. `Silent Mode and
 Update Clash on Dynamic Panel` is on by default.
 
-While running, pressing the ribbon button opens the **status window**: running
-or paused, elapsed time, what is being watched, and live counts, with *Show
-Panel*, *Pause*, *Resume*, *Edit Categories*, *Stop Detection*. That, plus a
-dot on the ribbon icon - green running, amber paused - is how the mode stays
-discoverable once the panel is docked away and the alert dismissed. The dot is
-drawn over whatever image the button currently has, so it is correct in both
-Revit themes without shipping extra icons.
+The ribbon button always opens this one **main window**. When a session is
+running it carries a strip along the top: running or paused, the scope, live
+counts, and *Open Panel*, *Pause*, *Resume*, *Stop Detection*. That is
+deliberate - a closed panel used to be unrecoverable, and Stop had nowhere to
+live. A dot on the ribbon icon (green running, amber paused) keeps the state
+visible without clicking; it is drawn over whatever image the button currently
+has, so it is correct in both Revit themes without extra icons.
+
+The running flag is mirrored into a pyRevit envvar. A recycled engine loses
+this module's globals but not the .NET delegates already attached to Revit, so
+without the mirror the mode would keep detecting while every window reported it
+as off - and there would be no way left to stop it. When the flag survives but
+the session does not, the strip says so and offers Stop rather than pretending
+it can show a list.
 
 **Pause** stops watching and keeps the list; edits made while paused are never
 queued, so paused costs exactly what off costs. **Resume** re-checks the
@@ -97,8 +104,10 @@ Resume and Edit Categories are the same operation underneath,
 `_revalidate_pairs`, drained through the normal per-tick budget so re-checking
 the whole list never stalls Revit.
 
-Rows carry a checkbox and a single **Show** at the foot of the list selects and
-frames every ticked clash at once; double-clicking a row shows just that pair.
+Each clash lists two elements and **each element carries its own checkbox**, so
+a single **Show** at the foot of the list frames exactly the elements ticked -
+which may be one half of a clash, or elements drawn from several. Double-
+clicking a row shows both of its elements.
 `Stop Detection` and `Pause` / `Resume` appear on the panel, the alert window
 and the status window. Closing the monitored document stops the mode
 automatically.

@@ -47,12 +47,17 @@
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
 
-                                    <CheckBox IsChecked="{Binding is_checked, Mode=TwoWay}"
+                                    <CheckBox IsChecked="{Binding is_a_checked, Mode=TwoWay}"
                                               VerticalAlignment="Top"
                                               Margin="0,2,8,0"
+                                              ToolTip="Include this element when you press Show."
                                               Click="row_check_click" />
-
                                     <StackPanel Grid.Column="1">
                                         <TextBlock Text="{Binding element_a_title}"
                                                    FontWeight="SemiBold"
@@ -60,10 +65,23 @@
                                         <TextBlock Text="{Binding element_a_detail}"
                                                    Foreground="DimGray"
                                                    FontSize="11" />
-                                        <TextBlock Text="clashes with"
-                                                   Foreground="#B05000"
-                                                   FontSize="11"
-                                                   Margin="0,4,0,2" />
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Row="1"
+                                               Grid.Column="1"
+                                               Text="clashes with"
+                                               Foreground="#B05000"
+                                               FontSize="11"
+                                               Margin="0,4,0,2" />
+
+                                    <CheckBox Grid.Row="2"
+                                              IsChecked="{Binding is_b_checked, Mode=TwoWay}"
+                                              VerticalAlignment="Top"
+                                              Margin="0,2,8,0"
+                                              ToolTip="Include this element when you press Show."
+                                              Click="row_check_click" />
+                                    <StackPanel Grid.Row="2"
+                                                Grid.Column="1">
                                         <TextBlock Text="{Binding element_b_title}"
                                                    FontWeight="SemiBold"
                                                    TextWrapping="Wrap" />
@@ -78,7 +96,7 @@
                 </ListBox>
 
                 <TextBlock x:Name="EmptyText"
-                           Text="No new clashes yet. Keep modeling - only clashes created from now on are reported."
+                           Text="No clashes yet. Watching for clashes created while you keep modeling."
                            Foreground="DimGray"
                            TextWrapping="Wrap"
                            Margin="10"

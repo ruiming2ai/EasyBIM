@@ -599,6 +599,19 @@ class ClashSession(object):
     def get_pair(self, key):
         return self._pairs.get(key)
 
+    def element_infos(self):
+        """``element_key -> ElementInfo`` across every recorded pair.
+
+        Rows are ticked per element, not per pair, so Show resolves the keys
+        it is handed back to elements through this.
+        """
+        infos = {}
+        for record in self._pairs.values():
+            for info in (record.element_a, record.element_b):
+                if info.key:
+                    infos[info.key] = info
+        return infos
+
     def records(self):
         return sorted(self._pairs.values(), key=lambda item: item.sequence)
 

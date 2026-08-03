@@ -25,7 +25,7 @@ except Exception:
     script = None
 
 from easybim.clash_detection_panel import ClashRow
-from easybim.clash_detection_panel import checked_pair_keys
+from easybim.clash_detection_panel import checked_element_keys
 from easybim.clash_detection_panel import set_row_checked
 
 
@@ -114,16 +114,16 @@ def _window_type():
 
         def show_click(self, sender, args):
             del sender, args
-            keys = checked_pair_keys(_rows_list())
+            keys = checked_element_keys(_rows_list())
             if keys:
                 _engine().request_show(keys)
 
         def rows_double_click(self, sender, args):
             del args
             row = getattr(sender, "SelectedItem", None)
-            pair_key = getattr(row, "pair_key", None)
-            if pair_key:
-                _engine().request_show(pair_key)
+            keys = [key for key in getattr(row, "element_keys", []) or [] if key]
+            if keys:
+                _engine().request_show(keys)
 
         def row_check_click(self, sender, args):
             del sender, args
@@ -171,7 +171,7 @@ def _window_type():
             try:
                 self.PauseButton.IsEnabled = not paused
                 self.ResumeButton.IsEnabled = paused
-                self.ShowButton.IsEnabled = bool(checked_pair_keys(_rows_list()))
+                self.ShowButton.IsEnabled = bool(checked_element_keys(_rows_list()))
             except Exception:
                 pass
 
