@@ -11,6 +11,11 @@ HELPER_HEADERS = ("_EBIM_TypeId", "_EBIM_RowId", "TypeId")
 ELEMENT_ID_HEADER = "ElementId"
 SUMMARY_DISPLAY_LIMIT = 20
 
+# A blank cell is an instruction ("clear this value"), so it needs its own
+# comparison key and a readable label in conflict reports.
+BLANK_CANONICAL = "\x00blank"
+BLANK_DISPLAY = "(blank)"
+
 _TRUE_TEXTS = ("yes", "1", "true")
 _FALSE_TEXTS = ("no", "0", "false")
 
@@ -138,19 +143,34 @@ def parse_metadata_rows(sheet_rows):
     return entries
 
 
+def find_element_id_column(header_values):
+    """Index of the ElementId column, wherever it sits in the header row.
+
+    Hiding a column does not remove it from the file, so a hidden ElementId
+    column is found normally; searching by name additionally survives a
+    column being inserted before it.
+    """
+    for col_index, value in enumerate(header_values or []):
+        if _safe_text(value).strip() == ELEMENT_ID_HEADER:
+            return col_index
+    return None
+
+
 def classify_columns(header_values, metadata):
-    """Return ([ColumnSpec], [ignored_headers]) from the Export header row."""
+    """Return (id_col_index, [ColumnSpec], [ignored_headers])."""
     header_values = list(header_values or [])
-    first = _safe_text(header_values[0] if header_values else "").strip()
-    if first != ELEMENT_ID_HEADER:
+    id_col_index = find_element_id_column(header_values)
+    if id_col_index is None:
         raise ValueError(
-            "First column must be 'ElementId'. This file does not look "
+            "No 'ElementId' column was found. This file does not look "
             "like an EasyBIM/pyRevit parameter export."
         )
 
     columns = []
     ignored = []
-    for col_index in range(1, len(header_values)):
+    for col_index in range(0, len(header_values)):
+        if col_index == id_col_index:
+            continue
         header = _safe_text(header_values[col_index]).strip()
         if not header:
             continue
@@ -164,7 +184,7 @@ def classify_columns(header_values, metadata):
         columns.append(ColumnSpec(
             col_index, header, param_name, (metadata or {}).get(param_name)
         ))
-    return columns, ignored
+    return id_col_index, columns, ignored
 
 
 def split_records_by_scope(records, member_id_values):
@@ -184,16 +204,22 @@ def split_records_by_scope(records, member_id_values):
     return in_scope, out_rows
 
 
-def parse_export_rows(sheet_rows, columns):
+def parse_export_rows(sheet_rows, columns, id_col_index=0, header_row=1):
     """Parse Export data rows -> ([RowRecord], [bad_id_excel_rows])."""
     records = []
     bad_rows = []
     for excel_row, values in sheet_rows or []:
-        if excel_row == 1:
+        if excel_row == header_row:
             continue
         values = list(values or [])
-        id_text = _safe_text(values[0] if values else "").strip()
-        has_data = any(_safe_text(value).strip() for value in values[1:])
+        id_text = _safe_text(
+            values[id_col_index] if id_col_index < len(values) else ""
+        ).strip()
+        has_data = any(
+            _safe_text(value).strip()
+            for index, value in enumerate(values)
+            if index != id_col_index
+        )
         if not id_text:
             if has_data:
                 bad_rows.append(excel_row)
@@ -221,11 +247,13 @@ def detect_type_conflicts(records, type_param_names, type_key_by_row,
     """Detect divergent type-parameter values within each element type.
 
     type_key_by_row maps excel_row -> type key (from the MODEL, not the
-    workbook). Blank and sentinel cells and typeless rows are excluded, so
-    one value plus blanks is not a conflict.
+    workbook). Sentinel cells and typeless rows are excluded. Blanks are
+    NOT excluded: a blank cell means "clear this value", so one row asking
+    to clear while another supplies a value is a real conflict.
 
     Returns (conflicts, agreed) where agreed maps
-    (type_key, param_name) -> (value_text, [excel_rows]).
+    (type_key, param_name) -> (value_text, [excel_rows]); an agreed value
+    of "" means the type parameter should be cleared.
     """
     raw_groups = {}
     for record in records or []:
@@ -234,8 +262,10 @@ def detect_type_conflicts(records, type_param_names, type_key_by_row,
             continue
         for param_name in type_param_names or []:
             text = _safe_text(record.values.get(param_name, "")).strip()
-            if not text or is_sentinel(text):
+            if is_sentinel(text):
                 continue
+            # Blank now means "clear this value", so it is an instruction
+            # like any other and has to be able to conflict with one.
             raw_groups.setdefault((type_key, param_name), []).append(
                 (text, record.excel_row)
             )
@@ -243,16 +273,20 @@ def detect_type_conflicts(records, type_param_names, type_key_by_row,
     conflicts = []
     agreed = {}
     for (type_key, param_name), pairs in raw_groups.items():
-        numeric = all(parse_number(text) is not None for text, _ in pairs)
+        filled = [text for text, _ in pairs if text]
+        numeric = bool(filled) and all(
+            parse_number(text) is not None for text in filled
+        )
         buckets = {}
         for text, excel_row in pairs:
-            canon = canonical_value(text, numeric)
+            canon = canonical_value(text, numeric) if text else BLANK_CANONICAL
             bucket = buckets.setdefault(canon, [text, []])
             bucket[1].append(excel_row)
 
         if len(buckets) > 1:
             values = sorted(
-                (bucket[0], sorted(bucket[1])) for bucket in buckets.values()
+                (bucket[0] or BLANK_DISPLAY, sorted(bucket[1]))
+                for bucket in buckets.values()
             )
             conflicts.append(TypeConflict(
                 type_key,
@@ -297,16 +331,27 @@ def _capped(lines, limit=SUMMARY_DISPLAY_LIMIT):
     return shown
 
 
+def _clearing_suffix(clear_count):
+    clear_count = int(clear_count or 0)
+    if not clear_count:
+        return ""
+    return " - {} clearing a value".format(clear_count)
+
+
 def build_preview_lines(matched_rows, total_rows, instance_write_count,
                         type_write_count, type_write_row_count,
-                        skipped_lines):
+                        skipped_lines, instance_clear_count=0,
+                        type_clear_count=0):
     lines = [
         "Rows matched to elements: {} of {}".format(
             int(matched_rows), int(total_rows)
         ),
-        "Instance cells to write: {}".format(int(instance_write_count)),
-        "Type parameters to write: {} (covering {} row(s))".format(
-            int(type_write_count), int(type_write_row_count)
+        "Instance cells to write: {}{}".format(
+            int(instance_write_count), _clearing_suffix(instance_clear_count)
+        ),
+        "Type parameters to write: {} (covering {} row(s)){}".format(
+            int(type_write_count), int(type_write_row_count),
+            _clearing_suffix(type_clear_count)
         ),
     ]
     if skipped_lines:
@@ -317,7 +362,7 @@ def build_preview_lines(matched_rows, total_rows, instance_write_count,
 
 
 def build_import_summary_text(written_instance, written_type, failed_lines,
-                              skipped_lines, file_path):
+                              skipped_lines, file_path, cleared_count=0):
     lines = [
         "Imported from:",
         _safe_text(file_path),
@@ -325,6 +370,8 @@ def build_import_summary_text(written_instance, written_type, failed_lines,
         "Instance cells written: {}".format(int(written_instance)),
         "Type parameters written: {}".format(int(written_type)),
     ]
+    if int(cleared_count or 0):
+        lines.append("Values cleared: {}".format(int(cleared_count)))
     if skipped_lines:
         lines.append("")
         lines.append("Skipped:")
