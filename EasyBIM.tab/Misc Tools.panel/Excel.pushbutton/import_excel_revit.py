@@ -122,10 +122,12 @@ class ImportPlan(object):
         self.out_of_scope_rows = list(out_of_scope_rows or [])
         self.scope_name = safe_text(scope_name)
         self.blocked_columns = []
-        self.unclearable = []        # (param_name, reason)
+        self.unclearable = []        # (param_name, reason, excel_row)
 
     def unclearable_lines(self):
-        return _aggregate_param_reasons(self.unclearable)
+        return state.build_unclearable_lines(
+            _group_param_rows(self.unclearable)
+        )
 
     def type_write_row_count(self):
         return sum(len(write.source_rows) for write in self.type_writes)
@@ -190,20 +192,21 @@ class ImportResult(object):
         self.clear_failure_lines = list(clear_failure_lines or [])
 
 
-def _aggregate_param_reasons(failures):
-    """Group by parameter so a whole column reads as one line."""
-    counts = {}
+def _group_param_rows(entries):
+    """[(name, reason, row_or_rows)] -> [(name, reason, [rows])], in order."""
+    rows_by_key = {}
     order = []
-    for param_name, reason in failures or []:
+    for param_name, reason, rows in entries or []:
         key = (safe_text(param_name), safe_text(reason))
-        if key not in counts:
-            counts[key] = 0
+        if key not in rows_by_key:
+            rows_by_key[key] = []
             order.append(key)
-        counts[key] += 1
+        if isinstance(rows, (list, tuple, set)):
+            rows_by_key[key].extend(list(rows))
+        elif rows is not None:
+            rows_by_key[key].append(rows)
     return [
-        "'{}' - {} value(s) left unchanged: {}".format(
-            param_name, counts[(param_name, reason)], reason
-        )
+        (param_name, reason, rows_by_key[(param_name, reason)])
         for param_name, reason in order
     ]
 
@@ -595,7 +598,7 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
         if kind == CLEAR_NO:
             # Known before any transaction: listed in the preview so the
             # user sees it before deciding to import, not afterwards.
-            plan.unclearable.append((spec.param_name, reason))
+            plan.unclearable.append((spec.param_name, reason, excel_row))
             return
         on_valid(param, None, True)
         return
@@ -743,7 +746,8 @@ def apply_import_plan(doc, plan):
                     ok, clear_error = clear_param(write.param)
                     if not ok:
                         clear_failures.append(
-                            (write.spec.param_name, clear_error)
+                            (write.spec.param_name, clear_error,
+                             write.excel_row)
                         )
                         continue
                     cleared_count += 1
@@ -762,7 +766,8 @@ def apply_import_plan(doc, plan):
                     ok, clear_error = clear_param(write.param)
                     if not ok:
                         clear_failures.append(
-                            (write.spec.param_name, clear_error)
+                            (write.spec.param_name, clear_error,
+                             write.source_rows)
                         )
                         continue
                     cleared_count += 1
@@ -798,6 +803,6 @@ def apply_import_plan(doc, plan):
 
     return ImportResult(written_instance, written_type, failed_lines, plan,
                         cleared_count=cleared_count,
-                        clear_failure_lines=_aggregate_param_reasons(
-                            clear_failures
+                        clear_failure_lines=state.build_unclearable_lines(
+                            _group_param_rows(clear_failures)
                         ))
