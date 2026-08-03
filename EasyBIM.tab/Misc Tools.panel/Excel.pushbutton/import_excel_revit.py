@@ -79,23 +79,26 @@ def _is_type_changing_param(param):
 
 
 class InstanceWrite(object):
-    def __init__(self, element, param, spec, new_value, excel_row):
+    def __init__(self, element, param, spec, new_value, excel_row,
+                 is_clear=False):
         self.element = element
         self.param = param
         self.spec = spec
         self.new_value = new_value
         self.excel_row = excel_row
+        self.is_clear = bool(is_clear)
 
 
 class TypeWrite(object):
     def __init__(self, type_element, type_name, param, spec, new_value,
-                 source_rows):
+                 source_rows, is_clear=False):
         self.type_element = type_element
         self.type_name = safe_text(type_name)
         self.param = param
         self.spec = spec
         self.new_value = new_value
         self.source_rows = list(source_rows or [])
+        self.is_clear = bool(is_clear)
 
 
 class ImportPlan(object):
@@ -123,6 +126,12 @@ class ImportPlan(object):
 
     def type_write_row_count(self):
         return sum(len(write.source_rows) for write in self.type_writes)
+
+    def instance_clear_count(self):
+        return len([w for w in self.instance_writes if w.is_clear])
+
+    def type_clear_count(self):
+        return len([w for w in self.type_writes if w.is_clear])
 
     def skipped_lines(self):
         lines = []
@@ -163,18 +172,23 @@ class ImportPlan(object):
                 self.sentinel_count
             ))
         if self.blank_count:
-            lines.append("{} blank cell(s) ignored".format(self.blank_count))
+            lines.append(
+                "{} blank cell(s) ignored - only text values can be cleared "
+                "from Excel".format(self.blank_count)
+            )
         for header in self.ignored_headers:
             lines.append("Column '{}' ignored (internal)".format(header))
         return lines
 
 
 class ImportResult(object):
-    def __init__(self, written_instance, written_type, failed_lines, plan):
+    def __init__(self, written_instance, written_type, failed_lines, plan,
+                 cleared_count=0):
         self.written_instance = int(written_instance)
         self.written_type = int(written_type)
         self.failed_lines = list(failed_lines or [])
         self.plan = plan
+        self.cleared_count = int(cleared_count)
 
 
 def collect_scope_element_ids(doc, schedule):
@@ -451,6 +465,17 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
     if param.IsReadOnly:
         plan.read_only.append((excel_row, spec.param_name))
         return
+
+    # A blank cell means "clear this value". Only text parameters have a
+    # meaningful empty state - a number or Yes/No has no "no value", and
+    # writing 0/No would be a change the user never asked for. Blanks in
+    # those columns keep the old "leave unchanged" behaviour, counted in
+    # aggregate so a mostly-empty column cannot flood the report.
+    is_clear = not text
+    if is_clear and param.StorageType != DB.StorageType.String:
+        plan.blank_count += 1
+        return
+
     if param.StorageType == DB.StorageType.ElementId \
             and elementid_text_unchanged(param, text):
         plan.unchanged_count += 1
@@ -462,7 +487,7 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
     if _values_equal(param, converted):
         plan.unchanged_count += 1
         return
-    on_valid(param, converted)
+    on_valid(param, converted, is_clear)
 
 
 def build_import_plan(doc, records, columns, bad_id_rows=None,
@@ -534,16 +559,15 @@ def build_import_plan(doc, records, columns, bad_id_rows=None,
             continue
         for spec in instance_specs:
             text = safe_text(record.values.get(spec.param_name, "")).strip()
-            if not text:
-                plan.blank_count += 1
-                continue
             if state.is_sentinel(text):
                 plan.sentinel_count += 1
                 continue
-            def _append_instance(param, value, _element=element, _spec=spec,
-                                 _excel_row=record.excel_row):
+
+            def _append_instance(param, value, is_clear, _element=element,
+                                 _spec=spec, _excel_row=record.excel_row):
                 plan.instance_writes.append(
-                    InstanceWrite(_element, param, _spec, value, _excel_row)
+                    InstanceWrite(_element, param, _spec, value, _excel_row,
+                                  is_clear=is_clear)
                 )
 
             _queue_write(
@@ -562,12 +586,12 @@ def build_import_plan(doc, records, columns, bad_id_rows=None,
             continue
         type_name = type_name_by_key.get(type_key, "")
 
-        def _append_type(param, value, _type_element=type_element,
+        def _append_type(param, value, is_clear, _type_element=type_element,
                          _type_name=type_name, _spec=spec,
                          _rows=source_rows):
             plan.type_writes.append(
                 TypeWrite(_type_element, _type_name, param, _spec, value,
-                          _rows)
+                          _rows, is_clear=is_clear)
             )
 
         _queue_write(
@@ -582,6 +606,7 @@ def apply_import_plan(doc, plan):
     """Write pass: one transaction, per-write try/except."""
     written_instance = 0
     written_type = 0
+    cleared_count = 0
     failed_lines = []
 
     transaction = DB.Transaction(doc, "Import Schedules from Excel")
@@ -591,6 +616,8 @@ def apply_import_plan(doc, plan):
             try:
                 write.param.Set(write.new_value)
                 written_instance += 1
+                if write.is_clear:
+                    cleared_count += 1
             except Exception as set_error:
                 failed_lines.append("Row {} - '{}': {}".format(
                     write.excel_row,
@@ -601,6 +628,8 @@ def apply_import_plan(doc, plan):
             try:
                 write.param.Set(write.new_value)
                 written_type += 1
+                if write.is_clear:
+                    cleared_count += 1
             except Exception as set_error:
                 failed_lines.append("Type '{}' - '{}': {}".format(
                     write.type_name,
@@ -625,5 +654,7 @@ def apply_import_plan(doc, plan):
         ).format(status))
         written_instance = 0
         written_type = 0
+        cleared_count = 0
 
-    return ImportResult(written_instance, written_type, failed_lines, plan)
+    return ImportResult(written_instance, written_type, failed_lines, plan,
+                        cleared_count=cleared_count)

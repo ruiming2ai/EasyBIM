@@ -74,10 +74,12 @@ def _write_test_workbook(path):
             "</sst>"
         ),
         # Export sheet: header row, one full row, one sparse row (gap in B),
-        # one row with inline string and boolean.
+        # one row with inline string and boolean. Column A is HIDDEN and one
+        # data row is hidden, to prove neither is skipped on import.
         "xl/worksheets/sheet1.xml": (
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<cols><col min="1" max="1" width="9" hidden="1"/></cols>'
             "<sheetData>"
             '<row r="1">'
             '<c r="A1" t="s"><v>0</v></c>'
@@ -89,7 +91,7 @@ def _write_test_workbook(path):
             '<c r="B2" t="inlineStr"><is><t>TM-01</t></is></c>'
             '<c r="C2"><v>2.5</v></c>'
             "</row>"
-            '<row r="4">'
+            '<row r="4" hidden="1">'
             '<c r="A4"><v>1002</v></c>'
             '<c r="C4" t="b"><v>1</v></c>'
             "</row>"
@@ -158,6 +160,16 @@ class ExcelWorkbookTests(unittest.TestCase):
         )
         self.assertEqual(rows[1], (2, ["1001", "TM-01", "2.5"]))
         self.assertEqual(rows[2], (4, ["1002", "", "TRUE"]))
+
+    def test_hidden_columns_and_rows_are_still_read(self):
+        # The fixture hides column A (the ElementId column) and row 4.
+        # Visibility is a display setting; the import must still see them.
+        sheets = self.module.read_workbook_sheets(self.workbook_path, ["Export"])
+        rows = sheets["Export"].rows
+
+        self.assertEqual([row[0] for row in rows], [1, 2, 4])
+        self.assertEqual(rows[1][1][0], "1001")
+        self.assertEqual(rows[2][1][0], "1002")
 
     def test_xlsm_extension_is_accepted(self):
         xlsm_path = os.path.join(self.tempdir, "export.xlsm")
