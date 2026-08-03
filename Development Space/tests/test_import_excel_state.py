@@ -399,19 +399,55 @@ class ImportExcelStateTests(unittest.TestCase):
         self.assertIn("...and 3 more.", summary)
         self.assertIn("C:/f.xlsx", summary)
 
+    def test_format_row_list_names_every_row_and_collapses_runs(self):
+        module = _load_state_module()
+
+        self.assertEqual(module.format_row_list([7]), "row 7")
+        self.assertEqual(module.format_row_list([4, 9]), "rows 4, 9")
+        # Consecutive runs collapse; a pair stays spelled out.
+        self.assertEqual(
+            module.format_row_list([2, 3, 4, 5, 9, 11, 12]),
+            "rows 2-5, 9, 11, 12",
+        )
+        # Unsorted and duplicated input still names each row once.
+        self.assertEqual(
+            module.format_row_list([12, 3, 3, 2]), "rows 2, 3, 12"
+        )
+        self.assertEqual(module.format_row_list([]), "")
+
+    def test_unclearable_lines_name_every_cell(self):
+        module = _load_state_module()
+
+        lines = module.build_unclearable_lines([
+            ("Fire Rated", "not a shared parameter", [3, 4, 5, 6, 20]),
+            ("Width", "not a shared parameter", [9]),
+        ])
+
+        self.assertEqual(lines, [
+            "'Fire Rated' - 5 cell(s) keep their value: "
+            "not a shared parameter",
+            "    rows 3-6, 20",
+            "'Width' - 1 cell(s) keep their value: not a shared parameter",
+            "    row 9",
+        ])
+
     def test_preview_warns_before_import_about_unclearable_values(self):
         module = _load_state_module()
 
+        # Every affected cell must survive into the dialog, even past the
+        # 20-line cap that applies to the ordinary skipped list.
+        many = module.build_unclearable_lines([
+            ("P{}".format(index), "reason", [index])
+            for index in range(30)
+        ])
         preview = "\n".join(module.build_preview_lines(
-            4, 4, 2, 0, 0, [],
-            unclearable_lines=[
-                "'Fire Rated' - 12 value(s) left unchanged: Revit only "
-                "empties shared parameters",
-            ],
+            4, 4, 2, 0, 0, [], unclearable_lines=many
         ))
 
         self.assertIn("CANNOT BE CLEARED", preview)
-        self.assertIn("'Fire Rated' - 12 value(s)", preview)
+        self.assertIn("'P0' - 1 cell(s)", preview)
+        self.assertIn("'P29' - 1 cell(s)", preview)
+        self.assertNotIn("...and", preview)
         self.assertNotIn(
             "CANNOT BE CLEARED",
             "\n".join(module.build_preview_lines(1, 1, 1, 0, 0, [])),
@@ -526,7 +562,7 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("param.Set(DB.ElementId.InvalidElementId)", source)
         self.assertNotIn("param.Set(0)", source)
         self.assertIn("CLEAR_REFUSED", source)
-        self.assertIn("def _aggregate_param_reasons", source)
+        self.assertIn("def _group_param_rows", source)
         # Whether a clear is even possible is decided before writing.
         self.assertIn("def clearable_kind", source)
         self.assertIn("param.IsShared", source)
