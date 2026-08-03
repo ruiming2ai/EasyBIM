@@ -155,7 +155,7 @@ class TagAlignXamlTests(unittest.TestCase):
         required = {
             "SelectOneButton", "SelectMultipleButton", "ClearReferencesButton",
             "ReferenceListPanel", "ReferenceSummaryText",
-            "ScopeExactRadio", "ScopePairedRadio",
+            "ScopeCategoryRadio", "ScopePairedRadio", "ScopeExactRadio",
             "ScaleWithViewCheck", "CopyLeaderCheck", "ChangeTagTypeCheck",
             "IncludePinnedCheck", "CollapseFlipCheck", "RotateFallbackCheck",
             "AlignButton", "AlignAndTagButton", "HintText",
@@ -170,12 +170,24 @@ class TagAlignXamlTests(unittest.TestCase):
             # A greyed control with no tooltip leaves the user guessing why.
             self.assertIn('ToolTipService.ShowOnDisabled="True"', block, marker)
 
-    def test_paired_family_scope_is_the_default(self):
+    def test_category_scope_comes_first_and_is_the_default(self):
         source = (COMMAND_DIR / "TagAlignWindow.xaml").read_text(encoding="utf-8")
-        paired = source.split('x:Name="ScopePairedRadio"')[1].split("/>")[0]
-        exact = source.split('x:Name="ScopeExactRadio"')[1].split("/>")[0]
-        self.assertIn('IsChecked="True"', paired)
-        self.assertNotIn('IsChecked="True"', exact)
+        order = [
+            source.index('x:Name="ScopeCategoryRadio"'),
+            source.index('x:Name="ScopePairedRadio"'),
+            source.index('x:Name="ScopeExactRadio"'),
+        ]
+        self.assertEqual(sorted(order), order, "scope radios are out of order")
+
+        for name, expected in (
+            ("ScopeCategoryRadio", True),
+            ("ScopePairedRadio", False),
+            ("ScopeExactRadio", False),
+        ):
+            block = source.split('x:Name="%s"' % name)[1].split("/>")[0]
+            self.assertEqual(
+                expected, 'IsChecked="True"' in block, "%s default is wrong" % name
+            )
 
     def test_batch_window_has_the_four_bar_buttons(self):
         names = _xaml_names(_xaml_root("BatchWindow.xaml"))
