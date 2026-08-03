@@ -54,6 +54,15 @@ staging, build step, or cache clearing is required. The standalone C# fallback
 add-in and its source have been removed from the repository; the Python command
 and hooks are the only Temp Phase implementation.
 
+Clash Detection Mode is the one command that runs in a persistent pyRevit
+engine, because it owns live Revit event handlers that must outlive the click
+that created them. A persistent engine keeps its loaded modules across a
+pyRevit reload, so the command drops its own modules on each launch when no
+detection session is running - that is what lets an update take effect on the
+next click instead of only after a Revit restart. Its main window shows a
+`Build <timestamp>` stamp read from the files on disk: if that does not move
+after an update, Revit is still loading the old files from somewhere else.
+
 Diagnostics are emitted only through pyRevit's standard debug logging (enable
 pyRevit debug mode to see markers such as `DocClosingCancelSucceeded` or
 `TempPhaseRestoreCommitted`). The legacy per-event file log at

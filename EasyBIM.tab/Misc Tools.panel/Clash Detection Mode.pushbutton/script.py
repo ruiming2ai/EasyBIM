@@ -32,6 +32,42 @@ TITLE = "Clash Detection Mode"
 logger = script.get_logger()
 
 
+CLASH_MODULE_PREFIX = "easybim.clash_detection"
+ACTIVE_ENVVAR = "EASYBIM_CLASH_DETECTION_ACTIVE"
+
+
+def _drop_stale_modules():
+    """Let an extension update take effect without restarting Revit.
+
+    ``__persistentengine__`` keeps this engine's ``sys.modules`` alive across
+    a pyRevit reload - that is what stops the live Revit event delegates from
+    dying with the engine.  The cost is that updated ``easybim.clash_detection*``
+    modules would never be re-imported, so pulling a new version and reloading
+    pyRevit (the flow the README documents) would keep running the old code.
+
+    Dropping them here is only safe while nothing is live, so the active flag
+    is read straight from the pyRevit envvar store: importing the engine
+    module to ask it would be importing the very code we may need to replace.
+    """
+    try:
+        if script.get_envvar(ACTIVE_ENVVAR):
+            return False
+    except Exception:
+        return False
+
+    dropped = []
+    for name in list(sys.modules):
+        if name.startswith(CLASH_MODULE_PREFIX) or name == "easybim.wpf_notify":
+            try:
+                del sys.modules[name]
+                dropped.append(name)
+            except Exception:
+                pass
+    if dropped:
+        logger.debug("Reloaded %s clash module(s) after an update.", len(dropped))
+    return bool(dropped)
+
+
 def _uiapp():
     if HOST_APP is not None:
         try:
@@ -52,6 +88,8 @@ def main():
             title=TITLE,
             exitscript=True,
         )
+
+    _drop_stale_modules()
 
     try:
         # One window, always.  When a session is running it carries the live
