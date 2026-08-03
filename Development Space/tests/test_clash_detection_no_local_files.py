@@ -186,6 +186,28 @@ class LifecycleTests(unittest.TestCase):
         bundle = _source(COMMAND_DIR / "bundle.yaml")
         self.assertIn("Build 2026-", bundle)
 
+    def test_view_status_never_greys_out_while_running(self):
+        # Reopening the pane goes through Revit's dockable pane and never
+        # needed the session, so disabling it in the degraded case locked the
+        # user out of the panel exactly when they needed it back.
+        source = _source(LIB_DIR / "clash_detection_setup.py")
+        body = source.split("def _refresh_session_panel(")[1].split("\n    def ")[0]
+        lost_branch = body.split("if session is None:")[1]
+        self.assertNotIn("self.OpenPanelButton.IsEnabled = False", lost_branch)
+        self.assertIn("self.OpenPanelButton.IsEnabled = True", body)
+
+    def test_reopening_does_not_wipe_the_list(self):
+        panel = _source(LIB_DIR / "clash_detection_panel.py")
+        body = panel.split("def open_panel(session):")[1].split("\ndef ")[0]
+        self.assertIn("if session is not None:", body)
+
+    def test_session_survives_a_module_reload(self):
+        engine = _source(LIB_DIR / "clash_detection_engine.py")
+        self.assertIn("RUNTIME_ENVVAR", engine)
+        self.assertIn("def _adopt_runtime", engine)
+        getter = engine.split("def get_session():")[1].split("\ndef ")[0]
+        self.assertIn("_adopt_runtime()", getter)
+
     def test_build_stamp_is_read_from_disk(self):
         # A hand-bumped constant can claim a version that is not running.
         source = _source(LIB_DIR / "clash_detection_setup.py")

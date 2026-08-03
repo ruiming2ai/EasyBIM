@@ -6,7 +6,7 @@ tooltip: >-
   right instead of popping up.
 
 
-  Build 2026-08-03d - pyRevit reads this tooltip straight from bundle.yaml
+  Build 2026-08-03e - pyRevit reads this tooltip straight from bundle.yaml
   on every reload, never through the Python module cache. If this build tag
   does not match the version you pulled, Revit is loading the extension from
   a different folder than the one you updated.

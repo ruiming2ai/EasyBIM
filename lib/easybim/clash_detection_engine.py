@@ -55,6 +55,11 @@ HANDLER_ENVVAR = "EASYBIM_CLASH_DETECTION_HANDLERS"
 #: this the mode would still be detecting while every UI reported it as off -
 #: and there would be no way left to stop it.
 ACTIVE_ENVVAR = "EASYBIM_CLASH_DETECTION_ACTIVE"
+#: The running session itself, mirrored for the same reason as the flag: the
+#: envvar store lives in the AppDomain, so a module that gets re-imported can
+#: re-attach to the session that is still being detected against instead of
+#: reporting it as lost.
+RUNTIME_ENVVAR = "EASYBIM_CLASH_DETECTION_RUNTIME"
 
 #: Bounding-box padding for the quick filter, in feet (~3 mm).  Only widens
 #: the candidate set; the exact filter still decides.
@@ -1244,6 +1249,50 @@ def _unsubscribe():
 # -- public API -----------------------------------------------------------
 
 
+def _publish_runtime():
+    """Mirror the live session so a re-imported module can re-attach to it."""
+    if not _ACTIVE or _SESSION is None:
+        _set_envvar(RUNTIME_ENVVAR, None)
+        return
+    _set_envvar(
+        RUNTIME_ENVVAR,
+        {
+            "session": _SESSION,
+            "doc": _DOC,
+            "uiapp": _UIAPP,
+            "contexts": _CONTEXTS,
+            "paused": _PAUSED,
+        },
+    )
+
+
+def _adopt_runtime():
+    """Re-attach to a session started before this module was re-imported.
+
+    The delegates attached to Revit still belong to the previous module
+    object and keep doing the detecting; this only lets the fresh module
+    report on - and stop - the same session instead of calling it lost.
+    """
+    global _ACTIVE, _PAUSED, _SESSION, _DOC, _UIAPP, _CONTEXTS
+
+    if _SESSION is not None:
+        return False
+    if not _get_envvar(ACTIVE_ENVVAR, False):
+        return False
+    stored = _get_envvar(RUNTIME_ENVVAR, None)
+    if not isinstance(stored, dict) or stored.get("session") is None:
+        return False
+
+    _SESSION = stored.get("session")
+    _DOC = stored.get("doc")
+    _UIAPP = stored.get("uiapp")
+    _CONTEXTS = stored.get("contexts") or {}
+    _PAUSED = bool(stored.get("paused"))
+    _ACTIVE = True
+    _log("Re-attached to a session started before this module was reloaded.")
+    return True
+
+
 def is_active():
     """Is detection running - including after this engine lost its globals?"""
     if _ACTIVE:
@@ -1252,25 +1301,26 @@ def is_active():
 
 
 def has_live_session():
-    """True when this engine still holds the session it is reporting on.
-
-    ``is_active()`` can be True while this is False: the handlers survived a
-    pyRevit reload but the recorded clashes did not.  Callers should then
-    offer Stop rather than pretending they can show a list.
-    """
-    return bool(_ACTIVE and _SESSION is not None)
+    """True when the running session is reachable from this module."""
+    if not is_active():
+        return False
+    _adopt_runtime()
+    return _SESSION is not None
 
 
 def get_session():
+    _adopt_runtime()
     return _SESSION
 
 
 def get_document():
+    _adopt_runtime()
     return _DOC
 
 
 def is_paused():
-    return bool(_ACTIVE and _PAUSED)
+    _adopt_runtime()
+    return bool(is_active() and _PAUSED)
 
 
 def _update_badge():
@@ -1294,6 +1344,7 @@ def pause():
     _PAUSED = True
     _SESSION.paused = True
     _SESSION.drop_pending()
+    _publish_runtime()
     _update_badge()
     _refresh_panel()
     _log("Paused.")
@@ -1314,6 +1365,7 @@ def resume():
     _SESSION.paused = False
     _SESSION.drop_pending()
     _SESSION.enqueue_revalidation(now=time.time())
+    _publish_runtime()
     _update_badge()
     _refresh_panel()
     _log("Resumed; re-checking {0} pair(s).".format(_SESSION.revalidation_size))
@@ -1341,6 +1393,7 @@ def set_categories(side_a, side_b, link_instances_by_ref=None):
     _TYPE_LABEL_CACHE.clear()
     _SESSION.drop_pending()
     _SESSION.enqueue_revalidation(now=time.time())
+    _publish_runtime()
     _refresh_panel()
     _log("Categories updated; re-checking {0} pair(s).".format(_SESSION.revalidation_size))
     return True, "Categories updated."
@@ -1387,6 +1440,7 @@ def start(uiapp, doc, side_a, side_b, silent_mode=True, link_instances_by_ref=No
         clash_detection_panel.open_panel(session)
     except Exception as ex:
         _log("Panel open failed: {0}".format(ex))
+    _publish_runtime()
     _update_badge()
     _log("Started.")
     return True, "Clash Detection Mode is on."
@@ -1405,6 +1459,7 @@ def stop(reason=None):
     _ACTIVE = False
     _PAUSED = False
     _set_envvar(ACTIVE_ENVVAR, False)
+    _set_envvar(RUNTIME_ENVVAR, None)
     _unsubscribe()
     _update_badge()
 
