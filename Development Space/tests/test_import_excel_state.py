@@ -267,8 +267,39 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("def apply_import_plan", source)
         self.assertIn("def collect_scope_element_ids", source)
         self.assertIn("detect_type_conflicts", source)
-        self.assertIn("found_id = None", source)
         self.assertIn("out_of_scope_rows", source)
+
+    def test_import_never_rewrites_family_or_type_parameters(self):
+        self.assertTrue(REVIT_MODULE_PATH.exists(), "import_excel_revit.py is missing")
+        source = REVIT_MODULE_PATH.read_text()
+
+        # Writing these by name retypes elements and can raise Revit errors
+        # that abort the whole import transaction.
+        self.assertIn("ELEM_FAMILY_AND_TYPE_PARAM", source)
+        self.assertIn("ELEM_TYPE_PARAM", source)
+        self.assertIn("ELEM_FAMILY_PARAM", source)
+        self.assertIn("def _is_type_changing_param", source)
+        self.assertIn("blocked_columns", source)
+
+    def test_elementid_cells_compare_as_display_text_before_resolving(self):
+        self.assertTrue(REVIT_MODULE_PATH.exists(), "import_excel_revit.py is missing")
+        source = REVIT_MODULE_PATH.read_text()
+
+        # An untouched ElementId cell must never be resolved by name (and so
+        # never retargeted at a different same-named element).
+        self.assertIn("def elementid_text_unchanged", source)
+        self.assertIn("elementid_text_unchanged(param, text)", source)
+        # Name resolution must not silently pick the first of several matches.
+        self.assertIn("is ambiguous", source)
+        self.assertIn("WhereElementIsElementType", source)
+        self.assertIn("WhereElementIsNotElementType", source)
+
+    def test_write_pass_reports_uncommitted_transactions(self):
+        self.assertTrue(REVIT_MODULE_PATH.exists(), "import_excel_revit.py is missing")
+        source = REVIT_MODULE_PATH.read_text()
+
+        self.assertIn("TransactionStatus.Committed", source)
+        self.assertIn("Nothing was written.", source)
 
     def test_bundle_modules_stay_ironpython_compatible(self):
         module_paths = [
