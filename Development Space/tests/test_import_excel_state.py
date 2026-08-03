@@ -399,6 +399,25 @@ class ImportExcelStateTests(unittest.TestCase):
         self.assertIn("...and 3 more.", summary)
         self.assertIn("C:/f.xlsx", summary)
 
+    def test_summary_calls_out_values_that_could_not_be_cleared(self):
+        module = _load_state_module()
+
+        summary = module.build_import_summary_text(
+            3, 0, [], [], "C:/f.xlsx", cleared_count=3,
+            clear_failure_lines=[
+                "'Fire Rated' - 12 value(s) left unchanged: Revit does not "
+                "allow this parameter to be empty",
+            ],
+        )
+
+        self.assertIn("COULD NOT BE CLEARED", summary)
+        self.assertIn("'Fire Rated' - 12 value(s) left unchanged", summary)
+        # Silent when everything cleared cleanly.
+        self.assertNotIn(
+            "COULD NOT BE CLEARED",
+            module.build_import_summary_text(1, 0, [], [], "f"),
+        )
+
     def test_preview_and_summary_report_cleared_values(self):
         module = _load_state_module()
 
@@ -484,10 +503,12 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("def clear_param", source)
         self.assertIn("ClearValue", source)
         self.assertIn("def _already_clear", source)
-        # ClearValue is refused for many built-in parameters, so each
-        # storage type needs the fallback Revit does accept.
-        self.assertIn("is_yesno_parameter(param.Definition)", source)
+        # Emptiness only: "" is empty text and InvalidElementId is None,
+        # but a value is never swapped for a DIFFERENT value.
         self.assertIn("param.Set(DB.ElementId.InvalidElementId)", source)
+        self.assertNotIn("param.Set(0)", source)
+        self.assertIn("CLEAR_REFUSED", source)
+        self.assertIn("def _aggregate_clear_failures", source)
         # HasValue alone must not decide that a clear is a no-op.
         self.assertIn("param.AsValueString()", source)
         self.assertIn("def instance_clear_count", source)

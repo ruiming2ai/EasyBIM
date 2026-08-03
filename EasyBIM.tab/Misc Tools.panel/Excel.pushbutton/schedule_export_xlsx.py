@@ -427,11 +427,12 @@ LEGEND_HEADER_ROWS = (
 )
 
 LEGEND_RULES = (
-    "Clearing a cell CLEARS that value in Revit when you import. Where "
-    "Revit refuses to leave a parameter unset, the nearest empty state is "
-    "used instead: a Yes/No turns to No and a reference turns to None. "
-    "Plain numbers are never zeroed - 0 is a real measurement, so those "
-    "are listed in the import report rather than guessed at.",
+    "Clearing a cell CLEARS that value in Revit when you import - it is "
+    "restored to having no value, the state it had before anyone filled "
+    "it in. Your value is never swapped for a different one: a Yes/No is "
+    "never turned into No and a dimension is never set to 0. If Revit "
+    "refuses to empty a parameter, it is left exactly as it was and "
+    "listed in the import report so you can clear it in Revit.",
     "Blanking one row of a type parameter while another row of the same "
     "type still holds a value is a conflict, and stops the import.",
     "Never edit, sort or delete column A (ElementId) - it is how each row "
