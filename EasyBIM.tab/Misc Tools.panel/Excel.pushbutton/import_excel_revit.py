@@ -118,7 +118,6 @@ class ImportPlan(object):
         self.unresolved_columns = []
         self.unchanged_count = 0
         self.sentinel_count = 0
-        self.blank_count = 0
         self.ignored_headers = list(ignored_headers or [])
         self.out_of_scope_rows = list(out_of_scope_rows or [])
         self.scope_name = safe_text(scope_name)
@@ -171,11 +170,6 @@ class ImportPlan(object):
             lines.append("{} placeholder cell(s) ignored".format(
                 self.sentinel_count
             ))
-        if self.blank_count:
-            lines.append(
-                "{} blank cell(s) ignored - only text values can be cleared "
-                "from Excel".format(self.blank_count)
-            )
         for header in self.ignored_headers:
             lines.append("Column '{}' ignored (internal)".format(header))
         return lines
@@ -431,6 +425,47 @@ def _convert_value(doc, param, spec, text):
         return None, exception_text(convert_error)
 
 
+def _already_clear(param):
+    """True when the parameter already holds no value."""
+    try:
+        if param.StorageType == DB.StorageType.String:
+            # A text parameter can report HasValue while holding "".
+            return not safe_text(param.AsString()).strip()
+        if param.StorageType == DB.StorageType.ElementId:
+            current = param.AsElementId()
+            if current is None or current == DB.ElementId.InvalidElementId:
+                return True
+        return not param.HasValue
+    except Exception:
+        return False
+
+
+def clear_param(param):
+    """Unset a parameter. Returns (ok, error_text).
+
+    Parameter.ClearValue (Revit 2022+) unsets any storage type but throws
+    for parameters Revit requires a value for. Text falls back to writing
+    an empty string, which is what a cleared text parameter looks like.
+    """
+    clear_error = None
+    try:
+        if hasattr(param, "ClearValue"):
+            if param.ClearValue():
+                return True, None
+            clear_error = "Revit declined to clear this parameter"
+    except Exception as error:
+        clear_error = exception_text(error)
+
+    try:
+        if param.StorageType == DB.StorageType.String:
+            param.Set("")
+            return True, None
+    except Exception as set_error:
+        clear_error = clear_error or exception_text(set_error)
+
+    return False, clear_error or "this parameter cannot be cleared"
+
+
 def _values_equal(param, new_value):
     try:
         storage = param.StorageType
@@ -466,14 +501,15 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
         plan.read_only.append((excel_row, spec.param_name))
         return
 
-    # A blank cell means "clear this value". Only text parameters have a
-    # meaningful empty state - a number or Yes/No has no "no value", and
-    # writing 0/No would be a change the user never asked for. Blanks in
-    # those columns keep the old "leave unchanged" behaviour, counted in
-    # aggregate so a mostly-empty column cannot flood the report.
-    is_clear = not text
-    if is_clear and param.StorageType != DB.StorageType.String:
-        plan.blank_count += 1
+    # A blank cell means "clear this value". Revit's Parameter.ClearValue
+    # unsets any storage type, so this is not limited to text; whether a
+    # given parameter actually allows it is only known once the transaction
+    # is open, so failures are reported from the write pass.
+    if not text:
+        if _already_clear(param):
+            plan.unchanged_count += 1
+            return
+        on_valid(param, None, True)
         return
 
     if param.StorageType == DB.StorageType.ElementId \
@@ -487,7 +523,7 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
     if _values_equal(param, converted):
         plan.unchanged_count += 1
         return
-    on_valid(param, converted, is_clear)
+    on_valid(param, converted, False)
 
 
 def build_import_plan(doc, records, columns, bad_id_rows=None,
@@ -614,10 +650,18 @@ def apply_import_plan(doc, plan):
     try:
         for write in plan.instance_writes:
             try:
-                write.param.Set(write.new_value)
-                written_instance += 1
                 if write.is_clear:
+                    ok, clear_error = clear_param(write.param)
+                    if not ok:
+                        failed_lines.append("Row {} - '{}': {}".format(
+                            write.excel_row, write.spec.param_name,
+                            clear_error,
+                        ))
+                        continue
                     cleared_count += 1
+                else:
+                    write.param.Set(write.new_value)
+                written_instance += 1
             except Exception as set_error:
                 failed_lines.append("Row {} - '{}': {}".format(
                     write.excel_row,
@@ -626,10 +670,18 @@ def apply_import_plan(doc, plan):
                 ))
         for write in plan.type_writes:
             try:
-                write.param.Set(write.new_value)
-                written_type += 1
                 if write.is_clear:
+                    ok, clear_error = clear_param(write.param)
+                    if not ok:
+                        failed_lines.append("Type '{}' - '{}': {}".format(
+                            write.type_name, write.spec.param_name,
+                            clear_error,
+                        ))
+                        continue
                     cleared_count += 1
+                else:
+                    write.param.Set(write.new_value)
+                written_type += 1
             except Exception as set_error:
                 failed_lines.append("Type '{}' - '{}': {}".format(
                     write.type_name,
