@@ -14,9 +14,11 @@ BUTTON_ROOT = (
 
 class TempPhaseConversionTests(unittest.TestCase):
     def test_pyrevit_hooks_are_single_python_dispatchers(self):
+        # app-idling is deliberately absent: Revit raises Idling continuously
+        # and pyRevit recompiles a hook script on every dispatch, so close
+        # recovery runs from the one-time .NET delegate in easybim.idling.
         expected = {
             "doc-closing.py": "handle_doc_closing",
-            "app-idling.py": "handle_app_idling",
             "doc-closed.py": "handle_doc_closed",
         }
         for filename, handler in expected.items():
@@ -24,6 +26,15 @@ class TempPhaseConversionTests(unittest.TestCase):
             self.assertIn("from pyrevit import EXEC_PARAMS", text)
             self.assertIn("from easybim import temp_phase_close", text)
             self.assertIn(handler, text)
+
+        startup_text = (ROOT / "startup.py").read_text(encoding="utf-8")
+        self.assertIn("from easybim import idling", startup_text)
+        self.assertIn("idling.install()", startup_text)
+
+        idling_runtime = (ROOT / "lib" / "easybim" / "idling.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("handle_app_idling", idling_runtime)
 
         for filename in ("doc-closing.cs", "app-idling.cs", "doc-closed.cs"):
             self.assertFalse((ROOT / "hooks" / filename).exists(), filename)
@@ -37,8 +48,24 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertNotIn("temp_phase_save", startup)
         self.assertIn("install_completion_handlers", startup)
 
-        app_idling = (ROOT / "hooks" / "app-idling.py").read_text(encoding="utf-8")
-        self.assertNotIn("temp_phase_save", app_idling)
+        # The app-idling hook is gone: pyRevit re-reads and recompiles a hook
+        # script on every Idling event, so all of its work moved to the
+        # one-time .NET delegate in easybim.idling.
+        self.assertFalse((ROOT / "hooks" / "app-idling.py").exists())
+
+        idling_runtime = (ROOT / "lib" / "easybim" / "idling.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("temp_phase_save", idling_runtime)
+        for consumer in (
+            "has_pending_startup_jobs",
+            "process_startup_jobs",
+            "has_pending_startup_auto_update",
+            "run_pending_startup_auto_update",
+            "handle_app_idling",
+        ):
+            self.assertIn(consumer, idling_runtime)
+
         doc_closed = (ROOT / "hooks" / "doc-closed.py").read_text(encoding="utf-8")
         self.assertNotIn("temp_phase_save", doc_closed)
 

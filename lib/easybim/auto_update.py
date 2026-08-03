@@ -330,7 +330,12 @@ def _show_message(message, warn=False):
     except Exception:
         pass
 
-    print("[{}] {}".format(TITLE, message))
+    # Last resort. Running from the Idling delegate there may be no script
+    # output stream behind sys.stdout, so even this must not raise.
+    try:
+        print("[{}] {}".format(TITLE, message))
+    except Exception:
+        pass
 
 
 def _safe_text(value):
