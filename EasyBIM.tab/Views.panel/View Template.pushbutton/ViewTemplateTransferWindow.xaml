@@ -1,0 +1,227 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Transfer View Template Settings"
+        Height="720"
+        Width="920"
+        MinHeight="600"
+        MinWidth="760"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Window.Resources>
+        <Style x:Key="ExpandedTreeItemStyle" TargetType="TreeViewItem">
+            <Setter Property="IsExpanded" Value="True"/>
+        </Style>
+
+        <DataTemplate x:Key="TargetItemTemplate">
+            <CheckBox Content="{Binding name}"
+                      IsChecked="{Binding is_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                      Margin="0,2,0,2"
+                      ToolTipService.ShowOnDisabled="True">
+                <CheckBox.Style>
+                    <Style TargetType="CheckBox">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding lock_state}" Value="locked">
+                                <Setter Property="IsEnabled" Value="False"/>
+                                <Setter Property="Foreground" Value="#9B9B9B"/>
+                                <Setter Property="ToolTip" Value="{Binding tooltip_text}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding lock_state}" Value="incompatible">
+                                <Setter Property="IsEnabled" Value="False"/>
+                                <Setter Property="Foreground" Value="#9B9B9B"/>
+                                <Setter Property="ToolTip" Value="{Binding tooltip_text}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </CheckBox.Style>
+            </CheckBox>
+        </DataTemplate>
+
+        <HierarchicalDataTemplate x:Key="TargetGroupTemplate"
+                                  ItemsSource="{Binding templates}"
+                                  ItemTemplate="{StaticResource TargetItemTemplate}">
+            <DockPanel Margin="0,2,0,2">
+                <TextBlock Text="{Binding display_name}"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"/>
+            </DockPanel>
+        </HierarchicalDataTemplate>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Transfer View Template Settings"
+                       FontSize="26"
+                       FontWeight="SemiBold"/>
+            <TextBlock Text="Copy settings from a source view or view template into the checked targets. Transferring to a view copies the settings without assigning a template."
+                       Margin="0,6,0,0"
+                       FontSize="12"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="12"
+                Margin="0,0,0,12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="8"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="12"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <RadioButton x:Name="source_view_rb"
+                             Grid.Row="0"
+                             Grid.Column="0"
+                             GroupName="SourceMode"
+                             Content="Transfer from View"
+                             VerticalAlignment="Center"
+                             Checked="source_mode_changed"/>
+                <ComboBox x:Name="source_view_cb"
+                          Grid.Row="0"
+                          Grid.Column="2"
+                          Height="28"
+                          DisplayMemberPath="display"
+                          SelectionChanged="source_view_changed"/>
+
+                <RadioButton x:Name="source_template_rb"
+                             Grid.Row="2"
+                             Grid.Column="0"
+                             GroupName="SourceMode"
+                             Content="Transfer from View Template"
+                             VerticalAlignment="Center"
+                             Checked="source_mode_changed"/>
+                <ComboBox x:Name="source_template_cb"
+                          Grid.Row="2"
+                          Grid.Column="2"
+                          Height="28"
+                          DisplayMemberPath="name"
+                          SelectionChanged="source_template_changed"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0"
+                            Orientation="Horizontal"
+                            Margin="0,0,0,10">
+                    <RadioButton x:Name="target_views_rb"
+                                 GroupName="TargetMode"
+                                 Content="Transfer to Views"
+                                 VerticalAlignment="Center"
+                                 Margin="0,0,18,0"
+                                 Checked="target_mode_changed"/>
+                    <RadioButton x:Name="target_templates_rb"
+                                 GroupName="TargetMode"
+                                 Content="Transfer to View Templates"
+                                 VerticalAlignment="Center"
+                                 Checked="target_mode_changed"/>
+                </StackPanel>
+
+                <Grid Grid.Row="1" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="View Type Filter:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
+                    <ComboBox x:Name="view_type_filter_cb"
+                              Grid.Column="1"
+                              Height="28"
+                              SelectionChanged="view_type_filter_changed"/>
+                    <Button Grid.Column="2"
+                            Content="Check All"
+                            Width="92"
+                            Height="28"
+                            Margin="10,0,8,0"
+                            Click="check_all_targets_click"/>
+                    <Button Grid.Column="3"
+                            Content="Clear"
+                            Width="74"
+                            Height="28"
+                            Click="clear_targets_click"/>
+                </Grid>
+
+                <TreeView x:Name="target_tv"
+                          Grid.Row="2"
+                          BorderBrush="#B9B9B9"
+                          BorderThickness="1"
+                          ItemTemplate="{StaticResource TargetGroupTemplate}"
+                          ItemContainerStyle="{StaticResource ExpandedTreeItemStyle}"/>
+
+                <TextBlock x:Name="target_count_tb"
+                           Grid.Row="3"
+                           Margin="0,8,0,0"
+                           Foreground="DimGray"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="10"
+                Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="status_tb"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Foreground="DimGray"
+                           TextWrapping="Wrap"/>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="selective_btn"
+                            Content="Selective Transfer"
+                            Width="140"
+                            Height="36"
+                            Margin="0,0,16,0"
+                            Click="selective_transfer_click"/>
+                    <Button x:Name="transfer_all_btn"
+                            Content="Transfer All"
+                            Width="120"
+                            Height="36"
+                            Margin="0,0,8,0"
+                            IsDefault="True"
+                            Click="transfer_all_click"/>
+                    <Button Content="Cancel"
+                            Width="120"
+                            Height="36"
+                            IsCancel="True"
+                            Click="cancel_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

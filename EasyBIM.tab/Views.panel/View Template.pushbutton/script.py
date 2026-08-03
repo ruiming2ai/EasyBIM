@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Batch transfer selected settings between view templates."""
+"""Transfer view or view template settings to views and view templates."""
 
 import os
 import sys
@@ -13,26 +13,26 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
-from view_template_transfer_ui import BatchTransferViewTemplateSettingsWindow
-
 
 logger = script.get_logger()
-XAML_FILE = "BatchTransferViewTemplateSettings.xaml"
-TITLE = "Batch Transfer View Template Settings"
+TITLE = "View Template"
 
 
 def main():
-    doc = revit.doc
-    if doc is None:
-        forms.alert("Open a Revit project before running this command.", title=TITLE)
-        return
+    forms.check_modeldoc(exitscript=True)
+    if getattr(revit.doc, "IsFamilyDocument", False):
+        forms.alert(
+            "View Template requires an open project document.",
+            title=TITLE,
+            exitscript=True,
+        )
+
+    import view_template_transfer_ui
 
     try:
-        window = BatchTransferViewTemplateSettingsWindow(XAML_FILE, doc)
-        if getattr(window, "is_ready", False):
-            window.ShowDialog()
+        view_template_transfer_ui.show_window(revit.doc)
     except Exception as ex:
-        logger.exception("Batch Transfer View Template Settings failed.")
+        logger.exception("View Template transfer failed.")
         forms.alert(str(ex), title=TITLE)
 
 
