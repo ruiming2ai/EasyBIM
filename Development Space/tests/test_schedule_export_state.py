@@ -293,16 +293,83 @@ class ScheduleExportBundleTests(unittest.TestCase):
         self.assertIn("COUNTIFS", source)
         self.assertIn("add_vba_project", source)
         self.assertIn("write_string", source)
+        # The autofilter must span every trailing helper column, otherwise a
+        # sort reorders the data while the helper columns stay put.
         self.assertIn(
-            "autofilter(0, 0, len(src_elements), type_col)", source
+            "autofilter(0, 0, len(src_elements), rowid_col)", source
         )
         self.assertNotIn(
             "autofilter(0, 0, len(src_elements), len(valid_params))", source
         )
-        self.assertIn('"#F2F2F2"', source)
-        self.assertIn('"#FFF2CC"', source)
-        self.assertIn('"#FFC7CE"', source)
-        self.assertIn("unlocked_type if param.istype else unlocked", source)
+        self.assertIn("COLOR_LOCKED = \"#F2F2F2\"", source)
+        self.assertIn("COLOR_TYPE = \"#FFF2CC\"", source)
+        self.assertIn("COLOR_CONFLICT = \"#FFC7CE\"", source)
+        self.assertIn("COLOR_WARNING = ", source)
+        # Type-parameter cells stay yellow; conditional rules paint over it.
+        self.assertIn("bool(param_def.istype)", source)
+        self.assertIn("cell_format = _editable_format(param)", source)
+
+    def test_export_writes_a_legend_sheet_second(self):
+        self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
+        source = XLSX_MODULE_PATH.read_text()
+
+        self.assertIn('add_worksheet("Legend")', source)
+        self.assertIn("def _write_legend_sheet", source)
+        self.assertIn("LEGEND_CELL_ROWS", source)
+        self.assertIn("LEGEND_HEADER_ROWS", source)
+        self.assertIn("LEGEND_RULES", source)
+        # Legend must come before the hidden bookkeeping sheet.
+        self.assertLess(
+            source.index('add_worksheet("Legend")'),
+            source.index('add_worksheet("_metadata")'),
+        )
+
+    def test_export_flags_values_that_will_not_import(self):
+        self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
+        source = XLSX_MODULE_PATH.read_text()
+
+        self.assertIn("def _add_validation_formatting", source)
+        self.assertIn("ISNUMBER", source)
+        self.assertIn("COUNTIF(", source)
+        # Text columns get a Text number format so Excel stops eating values.
+        self.assertIn('"num_format": "@"', source)
+        # Placeholder cells must never be flagged.
+        self.assertIn('<does not exist>', source)
+
+    def test_export_tracks_edited_element_ids(self):
+        self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
+        source = XLSX_MODULE_PATH.read_text()
+
+        self.assertIn("_EBIM_RowId", source)
+        self.assertIn("def _add_edited_id_formatting", source)
+        self.assertIn("autofilter(0, 0, len(src_elements), rowid_col)", source)
+
+    def test_family_and_type_columns_are_reference_only(self):
+        self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
+        source = XLSX_MODULE_PATH.read_text()
+
+        self.assertIn("def _is_reference_only_param", source)
+        self.assertIn("ELEM_FAMILY_AND_TYPE_PARAM", source)
+        self.assertIn("COLOR_HEADER_REFERENCE", source)
+
+    def test_helper_columns_are_ignored_by_the_importer(self):
+        import_state_path = COMMAND_DIR / "import_excel_state.py"
+        self.assertTrue(import_state_path.exists(), "import_excel_state.py is missing")
+        source = import_state_path.read_text()
+
+        self.assertIn('"_EBIM_TypeId"', source)
+        self.assertIn('"_EBIM_RowId"', source)
+
+    def test_vba_macro_tracks_the_trailing_helper_columns(self):
+        vba_path = COMMAND_DIR / "vba" / "ThisWorkbook_TypeSync.vba.txt"
+        self.assertTrue(vba_path.exists(), "type sync macro source is missing")
+        source = vba_path.read_text()
+
+        # _EBIM_RowId is now the last column; the type key sits one left.
+        self.assertIn('<> "_EBIM_RowId" Then Exit Sub', source)
+        self.assertIn('<> "_EBIM_TypeId" Then Exit Sub', source)
+        self.assertIn("typeCol = lastCol - 1", source)
+        self.assertNotIn("Sh.Cells(r, lastCol).Value) = typeKey", source)
 
     def test_bundle_modules_stay_ironpython_compatible(self):
         module_paths = [
