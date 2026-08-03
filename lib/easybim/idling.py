@@ -44,6 +44,11 @@ try:
 except Exception:
     temp_phase_close = None
 
+try:
+    from easybim import messages
+except Exception:
+    messages = None
+
 
 #: Mirrors the live delegate and its event source across a pyRevit reload.
 HANDLER_ENVVAR = "EASYBIM_IDLING_HANDLER"
@@ -169,7 +174,18 @@ def _run_temp_phase_close(sender):
     temp_phase_close.handle_app_idling(uiapp=sender, event_args=None)
 
 
+def _run_startup_jobs(sender):
+    if messages is None:
+        return
+    if messages.has_pending_startup_jobs():
+        # Pass the sender explicitly; the hook used to call this with no
+        # argument and lean on the ``__revit__`` builtin, which pyRevit does
+        # not inject into library modules.
+        messages.process_startup_jobs(sender)
+
+
 def _run_consumers(sender):
+    _guarded("StartupJobs", _run_startup_jobs, sender)
     _guarded("TempPhaseCloseRecovery", _run_temp_phase_close, sender)
 
 

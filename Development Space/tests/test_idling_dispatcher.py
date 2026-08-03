@@ -202,8 +202,67 @@ class IdlingDispatcherTests(unittest.TestCase):
 
     def test_missing_temp_phase_module_is_tolerated(self):
         self.idling.temp_phase_close = None
+        self.idling.messages = None
         self.idling._on_idling("sender", None)
         self.assertEqual([], self.logs)
+
+    # -- consumers --------------------------------------------------------
+
+    def test_startup_jobs_consumer_receives_the_sender(self):
+        calls = []
+
+        class FakeMessages(object):
+            @staticmethod
+            def has_pending_startup_jobs():
+                return True
+
+            @staticmethod
+            def process_startup_jobs(uiapp=None):
+                calls.append(uiapp)
+
+        self.idling.messages = FakeMessages
+        self.idling.temp_phase_close = None
+        self.idling._on_idling("real-uiapp", None)
+
+        self.assertEqual(["real-uiapp"], calls)
+
+    def test_startup_jobs_are_not_processed_when_nothing_is_pending(self):
+        calls = []
+
+        class FakeMessages(object):
+            @staticmethod
+            def has_pending_startup_jobs():
+                return False
+
+            @staticmethod
+            def process_startup_jobs(uiapp=None):
+                calls.append(uiapp)
+
+        self.idling.messages = FakeMessages
+        self.idling.temp_phase_close = None
+        self.idling._on_idling("sender", None)
+
+        self.assertEqual([], calls)
+
+    def test_a_failing_startup_job_pass_still_runs_close_recovery(self):
+        ran = []
+
+        class ExplodingMessages(object):
+            @staticmethod
+            def has_pending_startup_jobs():
+                raise RuntimeError("startup jobs exploded")
+
+        class FakeTempPhaseClose(object):
+            @staticmethod
+            def handle_app_idling(uiapp=None, event_args=None):
+                ran.append(uiapp)
+
+        self.idling.messages = ExplodingMessages
+        self.idling.temp_phase_close = FakeTempPhaseClose
+        self.idling._on_idling("sender", None)
+
+        self.assertEqual(["sender"], ran)
+        self.assertTrue(any("StartupJobs failed" in item for item in self.logs))
 
 
 if __name__ == "__main__":

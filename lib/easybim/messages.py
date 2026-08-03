@@ -157,7 +157,7 @@ def _should_show_for_doc(doc):
 
 
 def _enqueue_startup_actions(doc, open_worksets_after, run_coord_report_after):
-    """Queue post-dialog actions to be processed by hooks/app-idling.py."""
+    """Queue post-dialog actions for the Idling delegate in easybim.idling."""
     if not (open_worksets_after or run_coord_report_after):
         return
 
@@ -196,7 +196,7 @@ def _run_startup_actions_now(doc, open_worksets_after, run_coord_report_after):
 
 
 def process_startup_jobs(uiapp=None):
-    """Process queued startup jobs. Called from hooks/app-idling.py."""
+    """Process queued startup jobs. Called from the easybim.idling delegate."""
     uiapp = uiapp or _get_uiapp()
     if not uiapp:
         return
@@ -248,7 +248,7 @@ def process_startup_jobs(uiapp=None):
 
 
 def has_pending_startup_jobs():
-    """Return True when app-idling has deferred file-open work to process."""
+    """Return True when there is deferred file-open work for the Idling pass."""
     trigger_state = _load_file_open_trigger_state()
     if trigger_state.get("pending", False):
         return True
@@ -299,22 +299,29 @@ def _process_startup_job(uiapp, job, now):
             job["stage"] = "run_report"
             return False
 
+        # Advance the stage BEFORE the modal.  The job dicts handed back by
+        # _load_startup_state are the same live objects, so a re-entrant Idling
+        # pass behind the dialog would otherwise still read
+        # "show_workset_picker" and stack a second picker.
+        job["stage"] = "run_report"
         try:
             _show_workset_picker_for_doc(candidate_doc)
         except Exception as ex:
             logger = _get_logger()
             if logger:
                 logger.warning("Queued workset picker failed: %s", ex)
-        job["stage"] = "run_report"
         return False
 
     if stage == "run_report":
+        # Marked done before the modal report for the same reason.  A second
+        # pass would also report a bogus detection error, because the first one
+        # consumes the recorded warnings.
+        job["stage"] = "done"
         if job.get("run_coord_report_after", False):
             report_doc = target_doc
             if not _is_doc_valid(report_doc) and not has_identity:
                 report_doc = active_doc
             _print_coordination_review_report(report_doc)
-        job["stage"] = "done"
         return True
 
     return True
@@ -428,9 +435,13 @@ def _process_file_open_trigger_pending(uiapp=None):
     if not _is_doc_eligible_for_file_open(active_doc):
         return
 
+    # Consume the trigger BEFORE showing the modal.  Revit can raise Idling
+    # again behind a dialog, and a re-entrant pass that still saw `pending`
+    # would stack a second start-message alert - recursively.  The trigger also
+    # has a max-age expiry, so consuming it on a failed attempt is safe.
+    _clear_file_open_trigger_pending()
     try:
         run_start_message_workflow(doc=active_doc, force=False)
-        _clear_file_open_trigger_pending()
     except Exception as ex:
         logger = _get_logger()
         if logger:
@@ -862,7 +873,13 @@ def _print_coordination_review_report(doc):
             except Exception:
                 pass
 
-        _render_report_text(report)
+        # The text fallback is a block of bare prints.  Running from the Idling
+        # delegate there may be no script output stream behind sys.stdout, so a
+        # failure here must not escape into the caller.
+        try:
+            _render_report_text(report)
+        except Exception:
+            pass
     finally:
         _disable_passive_coordination_review_detector()
 
