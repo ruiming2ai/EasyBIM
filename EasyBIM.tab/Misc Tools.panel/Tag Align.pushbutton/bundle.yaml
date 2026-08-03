@@ -1,0 +1,12 @@
+title: "Tag\nAlign"
+tooltip: >-
+  Copy one tag's placement onto other elements. Pick a reference tag, then
+  align existing tags - or tag and align in one pass - by clicking elements
+  one at a time or by cross-selecting a batch.
+
+
+  The offset is measured from the element, not from the sheet, so it survives
+  rotation and a change of view scale. Reference tags must all share one tag
+  family type and one element category; anything that would place two tags in
+  the same spot is reported as a conflict before a single tag moves.
+author: Ruiming Liu

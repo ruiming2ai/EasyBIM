@@ -1,0 +1,93 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Align &amp; Tag"
+        Width="600"
+        Height="360"
+        MinWidth="540"
+        MinHeight="330"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Align existing tags as well?"
+                       FontSize="18"
+                       FontWeight="SemiBold"
+                       TextWrapping="Wrap" />
+            <TextBlock Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Margin="0,6,0,0"
+                       Text="Align &amp; Tag always creates a tag on an element that has none. This choice decides what happens to the elements that are already tagged." />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="12"
+                VerticalAlignment="Top">
+            <StackPanel>
+                <RadioButton x:Name="AlignExistingRadio"
+                             GroupName="TagAlignExisting"
+                             IsChecked="True"
+                             Margin="0,2,0,2">
+                    <StackPanel>
+                        <TextBlock Text="Yes - tag what is untagged and align what is already tagged"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Foreground="DimGray"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0"
+                                   Text="One pass leaves every element you touch matching the reference." />
+                    </StackPanel>
+                </RadioButton>
+
+                <RadioButton x:Name="TagOnlyRadio"
+                             GroupName="TagAlignExisting"
+                             Margin="0,12,0,2">
+                    <StackPanel>
+                        <TextBlock Text="No - only create the missing tags"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Foreground="DimGray"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0"
+                                   Text="Existing tags are left exactly where they are and reported as already tagged." />
+                    </StackPanel>
+                </RadioButton>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,10,0,0">
+            <Button x:Name="BackButton"
+                    Content="Back"
+                    Width="100"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    Click="back_click" />
+            <Button x:Name="OkButton"
+                    Content="Next"
+                    Width="100"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    IsDefault="True"
+                    Click="ok_click" />
+            <Button x:Name="CancelButton"
+                    Content="Cancel"
+                    Width="100"
+                    Height="34"
+                    IsCancel="True"
+                    Click="cancel_click" />
+        </StackPanel>
+    </Grid>
+</Window>

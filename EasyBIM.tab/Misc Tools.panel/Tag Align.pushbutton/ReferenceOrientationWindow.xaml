@@ -1,0 +1,98 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Reference Orientation"
+        Width="620"
+        Height="430"
+        MinWidth="560"
+        MinHeight="400"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Can this tag be aligned to any orientation?"
+                       FontSize="18"
+                       FontWeight="SemiBold"
+                       TextWrapping="Wrap" />
+            <TextBlock x:Name="ReferenceText"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Margin="0,6,0,0" />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="12">
+            <StackPanel>
+                <RadioButton x:Name="AnyOrientationRadio"
+                             GroupName="TagAlignOrientation"
+                             IsChecked="True"
+                             Margin="0,2,0,2">
+                    <StackPanel>
+                        <TextBlock Text="Yes - the offset rotates with the element"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Foreground="DimGray"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0"
+                                   Text="A tag two feet above a horizontal pipe sits two feet off the side of a vertical pipe - always the same distance perpendicular to the run. Best for pipes, ducts, walls and beams." />
+                    </StackPanel>
+                </RadioButton>
+
+                <RadioButton x:Name="SameOrientationRadio"
+                             GroupName="TagAlignOrientation"
+                             Margin="0,12,0,2">
+                    <StackPanel>
+                        <TextBlock Text="No - only elements at this same orientation"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Foreground="DimGray"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0"
+                                   Text="The tag keeps the exact screen offset it has now. Elements at any other orientation are skipped and named in the report, so you can come back with a second reference for them." />
+                    </StackPanel>
+                </RadioButton>
+            </StackPanel>
+        </Border>
+
+        <TextBlock x:Name="NoteText"
+                   Grid.Row="2"
+                   Margin="0,10,0,0"
+                   Foreground="DimGray"
+                   TextWrapping="Wrap"
+                   VerticalAlignment="Top" />
+
+        <StackPanel Grid.Row="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,10,0,0">
+            <Button x:Name="BackButton"
+                    Content="Back"
+                    Width="100"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    Click="back_click" />
+            <Button x:Name="OkButton"
+                    Content="OK"
+                    Width="100"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    IsDefault="True"
+                    Click="ok_click" />
+            <Button x:Name="CancelButton"
+                    Content="Cancel"
+                    Width="100"
+                    Height="34"
+                    IsCancel="True"
+                    Click="cancel_click" />
+        </StackPanel>
+    </Grid>
+</Window>
