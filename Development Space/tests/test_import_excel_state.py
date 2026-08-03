@@ -93,11 +93,12 @@ class ImportExcelStateTests(unittest.TestCase):
         module = _load_state_module()
         metadata = {"Width": module.MetaEntry(is_type=True)}
 
-        columns, ignored = module.classify_columns(
+        id_col, columns, ignored = module.classify_columns(
             ["ElementId", "Width [mm]", "Comments", "_EBIM_TypeId"],
             metadata,
         )
 
+        self.assertEqual(id_col, 0)
         self.assertEqual(
             [(spec.col_index, spec.param_name) for spec in columns],
             [(1, "Width"), (2, "Comments")],
@@ -108,6 +109,42 @@ class ImportExcelStateTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             module.classify_columns(["Id", "Width"], {})
+
+    def test_element_id_column_is_found_wherever_it_sits(self):
+        module = _load_state_module()
+
+        # Hiding a column keeps it in the file, but a user can also insert a
+        # column before it; either way the id column must still be found.
+        self.assertEqual(
+            module.find_element_id_column(["Notes", "ElementId", "Width"]), 1
+        )
+        self.assertIsNone(module.find_element_id_column(["Notes", "Width"]))
+
+        id_col, columns, _ = module.classify_columns(
+            ["Notes", "ElementId", "Width"], {}
+        )
+
+        self.assertEqual(id_col, 1)
+        self.assertEqual(
+            [(spec.col_index, spec.param_name) for spec in columns],
+            [(0, "Notes"), (2, "Width")],
+        )
+
+    def test_parse_export_rows_honours_a_moved_id_column(self):
+        module = _load_state_module()
+        columns = [module.ColumnSpec(0, "Notes", "Notes")]
+        rows = [
+            (1, ["Notes", "ElementId"]),
+            (2, ["hello", "1001"]),
+        ]
+
+        records, bad_rows = module.parse_export_rows(
+            rows, columns, id_col_index=1
+        )
+
+        self.assertEqual(bad_rows, [])
+        self.assertEqual(records[0].element_id_value, 1001)
+        self.assertEqual(records[0].values, {"Notes": "hello"})
 
     def test_parse_export_rows_matches_columns_and_flags_bad_ids(self):
         module = _load_state_module()
@@ -158,15 +195,14 @@ class ImportExcelStateTests(unittest.TestCase):
         )
         self.assertEqual(agreed, {(200, "Width"): ("9.9", [5])})
 
-    def test_detect_type_conflicts_ignores_blank_sentinel_and_typeless(self):
+    def test_detect_type_conflicts_ignores_sentinel_and_typeless(self):
         module = _load_state_module()
         records = [
             module.RowRecord(2, 1, {"Width": "5"}),
-            module.RowRecord(3, 2, {"Width": ""}),
-            module.RowRecord(4, 3, {"Width": "<does not exist>"}),
-            module.RowRecord(5, 4, {"Width": "7"}),
+            module.RowRecord(3, 2, {"Width": "<does not exist>"}),
+            module.RowRecord(4, 3, {"Width": "7"}),
         ]
-        type_key_by_row = {2: 100, 3: 100, 4: 100}
+        type_key_by_row = {2: 100, 3: 100}
 
         conflicts, agreed = module.detect_type_conflicts(
             records, ["Width"], type_key_by_row, {100: "T"}
@@ -174,6 +210,53 @@ class ImportExcelStateTests(unittest.TestCase):
 
         self.assertEqual(conflicts, [])
         self.assertEqual(agreed, {(100, "Width"): ("5", [2])})
+
+    def test_blank_now_conflicts_with_a_value_on_the_same_type(self):
+        module = _load_state_module()
+        records = [
+            module.RowRecord(2, 1, {"Width": "5"}),
+            module.RowRecord(3, 2, {"Width": ""}),
+        ]
+
+        conflicts, agreed = module.detect_type_conflicts(
+            records, ["Width"], {2: 100, 3: 100}, {100: "Door 900"}
+        )
+
+        # One row says "set 5", the other says "clear it" - ambiguous.
+        self.assertEqual(agreed, {})
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(
+            conflicts[0].values,
+            [("(blank)", [3]), ("5", [2])],
+        )
+
+    def test_all_blank_type_group_agrees_on_clearing(self):
+        module = _load_state_module()
+        records = [
+            module.RowRecord(2, 1, {"Width": ""}),
+            module.RowRecord(3, 2, {"Width": ""}),
+        ]
+
+        conflicts, agreed = module.detect_type_conflicts(
+            records, ["Width"], {2: 100, 3: 100}, {100: "T"}
+        )
+
+        self.assertEqual(conflicts, [])
+        self.assertEqual(agreed, {(100, "Width"): ("", [2, 3])})
+
+    def test_blank_does_not_break_numeric_canonicalisation(self):
+        module = _load_state_module()
+        records = [
+            module.RowRecord(2, 1, {"Width": "2.5"}),
+            module.RowRecord(3, 2, {"Width": "2.50"}),
+        ]
+
+        conflicts, agreed = module.detect_type_conflicts(
+            records, ["Width"], {2: 100, 3: 100}, {100: "T"}
+        )
+
+        self.assertEqual(conflicts, [])
+        self.assertEqual(agreed, {(100, "Width"): ("2.5", [2, 3])})
 
     def test_detect_type_conflicts_multiple_params_same_type(self):
         module = _load_state_module()
@@ -245,6 +328,33 @@ class ImportExcelStateTests(unittest.TestCase):
         self.assertIn("...and 3 more.", summary)
         self.assertIn("C:/f.xlsx", summary)
 
+    def test_preview_and_summary_report_cleared_values(self):
+        module = _load_state_module()
+
+        preview = "\n".join(module.build_preview_lines(
+            4, 4, 5, 1, 2, [], instance_clear_count=3, type_clear_count=1
+        ))
+        summary = module.build_import_summary_text(
+            5, 1, [], [], "C:/f.xlsx", cleared_count=4
+        )
+
+        self.assertIn("Instance cells to write: 5 - 3 clearing a value", preview)
+        self.assertIn(
+            "Type parameters to write: 1 (covering 2 row(s)) - 1 clearing a "
+            "value",
+            preview,
+        )
+        self.assertIn("Values cleared: 4", summary)
+        # Nothing extra when there is nothing to clear.
+        self.assertNotIn(
+            "clearing a value",
+            "\n".join(module.build_preview_lines(1, 1, 1, 0, 0, [])),
+        )
+        self.assertNotIn(
+            "Values cleared",
+            module.build_import_summary_text(1, 0, [], [], "f"),
+        )
+
 
 class ImportExcelBundleTests(unittest.TestCase):
     def test_xaml_windows_expose_required_buttons(self):
@@ -293,6 +403,22 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("is ambiguous", source)
         self.assertIn("WhereElementIsElementType", source)
         self.assertIn("WhereElementIsNotElementType", source)
+
+    def test_blank_text_cells_clear_values_but_numbers_stay_untouched(self):
+        self.assertTrue(REVIT_MODULE_PATH.exists(), "import_excel_revit.py is missing")
+        source = REVIT_MODULE_PATH.read_text()
+
+        self.assertIn("is_clear = not text", source)
+        # Only text has a meaningful empty state; a blank number must never
+        # be written as 0.
+        self.assertIn(
+            "if is_clear and param.StorageType != DB.StorageType.String",
+            source,
+        )
+        self.assertIn("plan.blank_count += 1", source)
+        self.assertIn("def instance_clear_count", source)
+        self.assertIn("def type_clear_count", source)
+        self.assertIn("cleared_count", source)
 
     def test_write_pass_reports_uncommitted_transactions(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "import_excel_revit.py is missing")
