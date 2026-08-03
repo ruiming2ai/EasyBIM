@@ -435,6 +435,15 @@ def _already_clear(param):
             current = param.AsElementId()
             if current is None or current == DB.ElementId.InvalidElementId:
                 return True
+        # HasValue is not trustworthy on its own here: a Yes/No parameter
+        # showing "No" can still report HasValue False, which would make a
+        # clear look like a no-op and silently do nothing. If the parameter
+        # renders as anything at all, there is something to clear.
+        try:
+            if safe_text(param.AsValueString()).strip():
+                return False
+        except Exception:
+            pass
         return not param.HasValue
     except Exception:
         return False
@@ -443,9 +452,17 @@ def _already_clear(param):
 def clear_param(param):
     """Unset a parameter. Returns (ok, error_text).
 
-    Parameter.ClearValue (Revit 2022+) unsets any storage type but throws
-    for parameters Revit requires a value for. Text falls back to writing
-    an empty string, which is what a cleared text parameter looks like.
+    Parameter.ClearValue (Revit 2022+) is the real "no value" operation,
+    but Revit restricts it and declines for many built-in and family
+    parameters. Each storage type therefore has a fallback that expresses
+    emptiness the way Revit models it:
+
+      text       -> "" (what a cleared text parameter holds)
+      Yes/No     -> No, the only "off" state a checkbox has
+      reference  -> InvalidElementId, Revit's "None"
+
+    Plain numbers get no fallback on purpose: 0 is a real measurement, not
+    an absence, so inventing it would be worse than reporting the failure.
     """
     clear_error = None
     try:
@@ -457,8 +474,16 @@ def clear_param(param):
         clear_error = exception_text(error)
 
     try:
-        if param.StorageType == DB.StorageType.String:
+        storage = param.StorageType
+        if storage == DB.StorageType.String:
             param.Set("")
+            return True, None
+        if storage == DB.StorageType.Integer \
+                and is_yesno_parameter(param.Definition):
+            param.Set(0)
+            return True, None
+        if storage == DB.StorageType.ElementId:
+            param.Set(DB.ElementId.InvalidElementId)
             return True, None
     except Exception as set_error:
         clear_error = clear_error or exception_text(set_error)

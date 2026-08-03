@@ -484,7 +484,12 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("def clear_param", source)
         self.assertIn("ClearValue", source)
         self.assertIn("def _already_clear", source)
-        self.assertNotIn("param.Set(0)", source)
+        # ClearValue is refused for many built-in parameters, so each
+        # storage type needs the fallback Revit does accept.
+        self.assertIn("is_yesno_parameter(param.Definition)", source)
+        self.assertIn("param.Set(DB.ElementId.InvalidElementId)", source)
+        # HasValue alone must not decide that a clear is a no-op.
+        self.assertIn("param.AsValueString()", source)
         self.assertIn("def instance_clear_count", source)
         self.assertIn("def type_clear_count", source)
         self.assertIn("cleared_count", source)
