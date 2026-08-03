@@ -30,7 +30,10 @@ from __future__ import print_function
 # left running all day must not grow without bound.
 
 #: Elements waiting to be geometry-checked.  Oldest are dropped past this.
-MAX_QUEUE = 5000
+#: Sized so a large paste is checked end to end rather than half-dropped: a
+#: work item is a small tuple, and at MAX_ELEMENTS_PER_TICK a full queue still
+#: drains in seconds.
+MAX_QUEUE = 20000
 #: Recorded live clash pairs.  Recording stops (with a note) past this.
 MAX_PAIRS = 2000
 #: Quiet period after the last document change before a pass may run.  This
@@ -134,6 +137,7 @@ class ElementInfo(object):
         category_name="",
         family_name="",
         type_name="",
+        category_id=None,
     ):
         self.model_ref = model_ref or HOST_MODEL_REF
         self.model_label = model_label or ""
@@ -141,6 +145,9 @@ class ElementInfo(object):
         self.category_name = category_name or ""
         self.family_name = family_name or ""
         self.type_name = type_name or ""
+        #: Kept so "is this still in scope?" can be answered after the user
+        #: edits the category selection, without re-reading the element.
+        self.category_id = safe_int(category_id)
 
     @property
     def key(self):
@@ -338,12 +345,17 @@ class ClashSession(object):
         self.side_a = side_a or SideSelection()
         self.side_b = side_b or SideSelection()
         self.silent_mode = bool(silent_mode)
+        self.paused = False
+        self.started_at = 0.0
 
         self._pending = []
         self._pending_set = set()
         self._deleted = []
+        self._revalidate = []
+        self._revalidate_set = set()
         self._pairs = {}
         self._new_pairs = []
+        self._pass_recorded = set()
         self._sequence = 0
 
         self.last_change_at = 0.0
@@ -368,6 +380,22 @@ class ClashSession(object):
     def watches(self, model_ref, category_id):
         """Cheap pre-filter: skip a changed element before any geometry."""
         return bool(self.target_sides_for(model_ref, category_id))
+
+    def _covers(self, side, info):
+        return side.owns(info.model_ref) and side.watches(info.category_id)
+
+    def is_pair_in_scope(self, record):
+        """Is this recorded pair still covered by the current selection?
+
+        Used after the user edits categories: a pair survives only if its two
+        elements still sit on opposite sides of the check.
+        """
+        first, second = record.element_a, record.element_b
+        return (
+            self._covers(self.side_a, first) and self._covers(self.side_b, second)
+        ) or (
+            self._covers(self.side_b, first) and self._covers(self.side_a, second)
+        )
 
     def target_sides_for(self, model_ref, category_id):
         """Which side(s) this element must be checked *against*.
@@ -475,12 +503,51 @@ class ClashSession(object):
         self.scanned_count += 1
         return item
 
+    def drop_pending(self):
+        """Forget queued changes.  Used on Resume - those edits happened while
+        the mode was not watching, so they are deliberately not checked."""
+        dropped = len(self._pending)
+        del self._pending[:]
+        self._pending_set.clear()
+        del self._deleted[:]
+        return dropped
+
+    # -- re-validation ----------------------------------------------------
+
+    @property
+    def revalidation_size(self):
+        return len(self._revalidate)
+
+    def enqueue_revalidation(self, keys=None, now=None):
+        """Queue recorded pairs to be re-tested.
+
+        Resume and Edit Categories both need the same thing: find out which of
+        the listed clashes are still real.  Passing ``None`` queues every
+        recorded pair.
+        """
+        if keys is None:
+            keys = list(self._pairs.keys())
+        for key in keys:
+            if key and key in self._pairs and key not in self._revalidate_set:
+                self._revalidate.append(key)
+                self._revalidate_set.add(key)
+        if now is not None:
+            self.last_change_at = now
+        return len(self._revalidate)
+
+    def take_revalidation(self):
+        if not self._revalidate:
+            return None
+        key = self._revalidate.pop(0)
+        self._revalidate_set.discard(key)
+        return key
+
     def has_work(self):
-        return bool(self._pending) or bool(self._deleted)
+        return bool(self._pending) or bool(self._deleted) or bool(self._revalidate)
 
     def should_run(self, now):
         """Debounce gate: wait for the edit burst to settle before checking."""
-        if not self.has_work():
+        if self.paused or not self.has_work():
             return False
         return (now - self.last_change_at) >= DEBOUNCE_SEC
 
@@ -495,6 +562,20 @@ class ClashSession(object):
 
     def has_pair(self, key):
         return key in self._pairs
+
+    def begin_pass(self):
+        """Start a work pass.  Clears the just-recorded guard below."""
+        self._pass_recorded = set()
+
+    def was_recorded_this_pass(self, key):
+        """Guard against a pass deleting a clash it only just found.
+
+        One edit routinely touches several elements (a multi-select move, a
+        paste, joined or connected geometry).  Element 1 records the clash;
+        element 2's query must never be allowed to erase it in the same pass,
+        which is exactly how moves and copies went missing.
+        """
+        return key in self._pass_recorded
 
     def record_clash(self, key, element_a, element_b):
         """Register a clash.  Returns the record when it is new, else None.
@@ -512,7 +593,11 @@ class ClashSession(object):
         record = ClashRecord(key, element_a, element_b, sequence=self._sequence)
         self._pairs[key] = record
         self._new_pairs.append(record)
+        self._pass_recorded.add(key)
         return record
+
+    def get_pair(self, key):
+        return self._pairs.get(key)
 
     def records(self):
         return sorted(self._pairs.values(), key=lambda item: item.sequence)
@@ -554,6 +639,13 @@ class ClashSession(object):
             self._new_pairs.remove(record)
         except ValueError:
             pass
+        if key in self._revalidate_set:
+            self._revalidate_set.discard(key)
+            try:
+                self._revalidate.remove(key)
+            except ValueError:
+                pass
+        self._pass_recorded.discard(key)
         if count_resolved:
             self.resolved_count += 1
         return record
@@ -598,15 +690,27 @@ class ClashSession(object):
             "active": self.pair_count,
             "resolved": self.resolved_count,
             "queued": self.queue_size,
+            "rechecking": self.revalidation_size,
+            "paused": bool(self.paused),
             "notes": self.status_notes(),
         }
+
+    def scope_text(self):
+        return "{0}  vs  {1}".format(
+            self.side_a.model_label or "Current Project",
+            self.side_b.model_label or "Current Project",
+        )
 
     def status_text(self):
         text = "{0} live clash(es)".format(self.pair_count)
         if self.resolved_count:
             text = "{0}  |  {1} resolved".format(text, self.resolved_count)
-        if self.queue_size:
+        if self.revalidation_size:
+            text = "{0}  |  re-checking {1}...".format(text, self.revalidation_size)
+        elif self.queue_size:
             text = "{0}  |  checking {1}...".format(text, self.queue_size)
+        if self.paused:
+            text = "Paused - not watching for new changes.\n{0}".format(text)
         notes = self.status_notes()
         if notes:
             text = "{0}\n{1}".format(text, "\n".join(notes))
@@ -616,10 +720,15 @@ class ClashSession(object):
         """Wipe every byte this session held.  Called by Stop Detection."""
         del self._pending[:]
         del self._deleted[:]
+        del self._revalidate[:]
         del self._new_pairs[:]
         self._pending_set.clear()
+        self._revalidate_set.clear()
+        self._pass_recorded = set()
         self._pairs.clear()
         self._sequence = 0
+        self.paused = False
+        self.started_at = 0.0
         self.last_change_at = 0.0
         self.dropped_change_count = 0
         self.resolved_count = 0

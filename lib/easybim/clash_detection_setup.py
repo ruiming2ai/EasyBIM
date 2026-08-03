@@ -5,22 +5,32 @@ Laid out like Revit's native Interference Check - two `Categories from`
 dropdowns over two category lists - with the one thing the native dialog
 lacks: the lists use ``SelectionMode="Extended"``, so a shift-click range or
 a press-and-drag across rows can be ticked with a single checkbox click.
+
+The same window doubles as **Edit Categories** for a session that is already
+running, which is why it lives in ``lib`` rather than in the pushbutton
+folder: the dockable panel needs to open it, and the panel cannot import
+upward out of ``lib``.
 """
 # pylint: disable=import-error,invalid-name,broad-except
 
 from __future__ import print_function
 
+import os
+
 from pyrevit import forms
 from pyrevit import script
 
+from easybim import clash_detection_revit
 from easybim import clash_detection_state as state
-
-import clash_detection_revit
 
 
 LOGGER = script.get_logger()
 TITLE = "Clash Detection Mode"
-XAML_FILE = "ClashDetectionSetupWindow.xaml"
+XAML_FILE = os.path.join(
+    os.path.dirname(__file__), "ui", "clash_detection_setup.xaml"
+)
+START_LABEL = "Start Ongoing Detection Mode"
+APPLY_LABEL = "Apply Category Changes"
 
 try:
     from easybim.wpf_notify import NotifyingObject as _RowBase
@@ -52,9 +62,11 @@ def _notify(row):
 
 
 class ClashDetectionSetupWindow(forms.WPFWindow):
-    def __init__(self, doc):
+    def __init__(self, doc, session=None):
         forms.WPFWindow.__init__(self, XAML_FILE)
         self.doc = doc
+        self.session = session
+        self.is_editing = session is not None
         self.result = None
         self._is_ready = False
         self._category_cache = {}
@@ -65,13 +77,34 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self.model_options = clash_detection_revit.collect_model_options(doc)
         self.LeftModelCombo.ItemsSource = self.model_options
         self.RightModelCombo.ItemsSource = list(self.model_options)
-        self.LeftModelCombo.SelectedIndex = 0
-        self.RightModelCombo.SelectedIndex = 0
+
+        if self.is_editing:
+            self.Title = "Clash Detection Mode - Edit Categories"
+            self.StartButton.Content = APPLY_LABEL
+            self._preselect_side("left", session.side_a)
+            self._preselect_side("right", session.side_b)
+        else:
+            self.LeftModelCombo.SelectedIndex = 0
+            self.RightModelCombo.SelectedIndex = 0
 
         self._is_ready = True
         self._load_side("left")
         self._load_side("right")
         self._update_start_enabled()
+
+    def _preselect_side(self, side, side_selection):
+        """Reopen on the model and categories the session is already using."""
+        combo = self._combo_for(side)
+        index = 0
+        for position, option in enumerate(self.model_options):
+            if option.model_ref == side_selection.model_ref:
+                index = position
+                break
+        combo.SelectedIndex = index
+        self._checked_by_model[
+            "{0}::{1}".format(side, self.model_options[index].model_key)
+        ] = set(side_selection.category_ids)
+        self.SilentModeCheck.IsChecked = bool(self.session.silent_mode)
 
     # -- side plumbing ----------------------------------------------------
 
@@ -203,6 +236,7 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         right_ids = state.checked_category_ids(self._right_rows)
         can_start = state.can_start(left_ids, right_ids)
         self.StartButton.IsEnabled = can_start
+        self.StartButton.Content = APPLY_LABEL if self.is_editing else START_LABEL
         if can_start:
             self.StatusText.Text = "{0} category(ies) vs {1} category(ies).".format(
                 len(left_ids), len(right_ids)
@@ -303,9 +337,17 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         self.Close()
 
 
-def show_setup_window(doc, uiapp=None):
-    """Run the setup dialog and arm the engine.  Returns True when started."""
-    window = ClashDetectionSetupWindow(doc)
+def show_setup_window(doc, uiapp=None, session=None):
+    """Run the setup dialog.
+
+    With ``session`` given this is *Edit Categories*: the new selection is
+    applied to the running session, which keeps the clashes that are still in
+    scope and still clashing rather than starting the list over.  Without it,
+    this arms a fresh session.  Returns True when something was applied.
+    """
+    from easybim import clash_detection_engine
+
+    window = ClashDetectionSetupWindow(doc, session=session)
     if not window.model_options:
         forms.alert("No model to check.", title=TITLE)
         return False
@@ -314,8 +356,17 @@ def show_setup_window(doc, uiapp=None):
         return False
 
     side_a, side_b, silent_mode = window.result
+    links = clash_detection_revit.link_instances_by_ref(window.model_options)
 
-    from easybim import clash_detection_engine
+    if session is not None and clash_detection_engine.is_active():
+        applied, message = clash_detection_engine.set_categories(
+            side_a, side_b, link_instances_by_ref=links
+        )
+        if not applied:
+            forms.alert(message, title=TITLE)
+            return False
+        clash_detection_engine.set_silent_mode(silent_mode)
+        return True
 
     started, message = clash_detection_engine.start(
         uiapp,
@@ -323,11 +374,20 @@ def show_setup_window(doc, uiapp=None):
         side_a,
         side_b,
         silent_mode=silent_mode,
-        link_instances_by_ref=clash_detection_revit.link_instances_by_ref(
-            window.model_options
-        ),
+        link_instances_by_ref=links,
     )
     if not started:
         forms.alert(message, title=TITLE)
         return False
     return True
+
+
+def request_edit_categories():
+    """Open Edit Categories for the running session (used by the panel)."""
+    from easybim import clash_detection_engine
+
+    session = clash_detection_engine.get_session()
+    doc = clash_detection_engine.get_document()
+    if session is None or doc is None:
+        return False
+    return show_setup_window(doc, session=session)

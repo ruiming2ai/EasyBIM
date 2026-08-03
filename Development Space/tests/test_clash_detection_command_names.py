@@ -12,10 +12,29 @@ COMMAND_DIR = (
 LIB_DIR = REPO_ROOT / "lib" / "easybim"
 UI_DIR = LIB_DIR / "ui"
 
-SETUP_XAML = COMMAND_DIR / "ClashDetectionSetupWindow.xaml"
+SETUP_XAML = UI_DIR / "clash_detection_setup.xaml"
 PANEL_XAML = UI_DIR / "clash_detection_panel.xaml"
 PANEL_WINDOW_XAML = UI_DIR / "clash_detection_panel_window.xaml"
 ALERT_XAML = UI_DIR / "clash_detection_alert.xaml"
+STATUS_XAML = UI_DIR / "clash_detection_status.xaml"
+
+SETUP_MODULE = LIB_DIR / "clash_detection_setup.py"
+PANEL_MODULE = LIB_DIR / "clash_detection_panel.py"
+ALERT_MODULE = LIB_DIR / "clash_detection_alert.py"
+STATUS_MODULE = LIB_DIR / "clash_detection_status.py"
+RIBBON_MODULE = LIB_DIR / "clash_detection_ribbon.py"
+
+CLASH_MODULES = [
+    LIB_DIR / "clash_detection_state.py",
+    LIB_DIR / "clash_detection_engine.py",
+    PANEL_MODULE,
+    ALERT_MODULE,
+    SETUP_MODULE,
+    STATUS_MODULE,
+    RIBBON_MODULE,
+    LIB_DIR / "clash_detection_revit.py",
+    LIB_DIR / "wpf_notify.py",
+]
 
 X_NAME = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
 HANDLER_ATTRS = (
@@ -51,6 +70,17 @@ def _xaml_handlers(path):
 def _xaml_bindings(path):
     source = path.read_text(encoding="utf-8")
     return set(re.findall(r"\{Binding ([A-Za-z_][A-Za-z0-9_]*)", source))
+
+
+WPF_NS = "{http://schemas.microsoft.com/winfx/2006/xaml/presentation}"
+
+
+def _template_buttons(path):
+    """Buttons living inside a DataTemplate, i.e. repeated per row."""
+    buttons = []
+    for template in ET.parse(str(path)).getroot().iter(WPF_NS + "DataTemplate"):
+        buttons.extend(list(template.iter(WPF_NS + "Button")))
+    return buttons
 
 
 def _module_methods(path):
@@ -92,14 +122,7 @@ class BundleTests(unittest.TestCase):
         self.assertIn("__persistentengine__ = True", source)
 
     def test_scripts_stay_ironpython27_safe(self):
-        paths = sorted(COMMAND_DIR.glob("*.py")) + [
-            LIB_DIR / "clash_detection_state.py",
-            LIB_DIR / "clash_detection_engine.py",
-            LIB_DIR / "clash_detection_panel.py",
-            LIB_DIR / "clash_detection_alert.py",
-            LIB_DIR / "wpf_notify.py",
-        ]
-        for path in paths:
+        for path in sorted(COMMAND_DIR.glob("*.py")) + CLASH_MODULES:
             source = path.read_text(encoding="utf-8")
             self.assertFalse(
                 re.search(r"(?<![A-Za-z0-9_])[fF]['\"]", source),
@@ -126,11 +149,24 @@ class SetupWindowTests(unittest.TestCase):
         missing = required - _xaml_names(SETUP_XAML)
         self.assertFalse(missing, "missing x:Name(s): %s" % missing)
 
-    def test_handlers_exist_in_ui_module(self):
-        missing = _xaml_handlers(SETUP_XAML) - _module_methods(
-            COMMAND_DIR / "clash_detection_ui.py"
-        )
+    def test_handlers_exist_in_setup_module(self):
+        missing = _xaml_handlers(SETUP_XAML) - _module_methods(SETUP_MODULE)
         self.assertFalse(missing, "missing handler(s): %s" % missing)
+
+    def test_setup_lives_in_lib_so_the_panel_can_open_it(self):
+        # The dockable panel offers Edit Categories, and it cannot import
+        # upward out of lib/ into the pushbutton folder.
+        self.assertTrue(SETUP_MODULE.exists())
+        self.assertTrue(SETUP_XAML.exists())
+        self.assertFalse((COMMAND_DIR / "clash_detection_ui.py").exists())
+        self.assertFalse((COMMAND_DIR / "ClashDetectionSetupWindow.xaml").exists())
+        panel_source = PANEL_MODULE.read_text(encoding="utf-8")
+        self.assertIn("clash_detection_setup", panel_source)
+
+    def test_apply_label_used_when_editing_a_live_session(self):
+        source = SETUP_MODULE.read_text(encoding="utf-8")
+        self.assertIn('APPLY_LABEL = "Apply Category Changes"', source)
+        self.assertIn("def request_edit_categories", source)
 
     def test_both_lists_allow_multi_select(self):
         # Shift-click ranges and press-and-drag selection are the whole
@@ -152,7 +188,7 @@ class SetupWindowTests(unittest.TestCase):
     def test_category_rows_bind_to_row_attributes(self):
         bindings = _xaml_bindings(SETUP_XAML)
         self.assertEqual(bindings, {"is_checked", "name"})
-        attrs = _assigned_attrs(COMMAND_DIR / "clash_detection_ui.py")
+        attrs = _assigned_attrs(SETUP_MODULE)
         self.assertTrue(bindings.issubset(attrs), bindings - attrs)
 
     def test_checkbox_and_label_are_separate_hit_targets(self):
@@ -220,6 +256,7 @@ class PanelTests(unittest.TestCase):
 
     def test_row_bindings_match_the_row_class(self):
         expected = {
+            "is_checked",
             "element_a_title",
             "element_a_detail",
             "element_b_title",
@@ -227,14 +264,96 @@ class PanelTests(unittest.TestCase):
         }
         for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML):
             self.assertEqual(_xaml_bindings(path), expected, path.name)
-        attrs = _assigned_attrs(LIB_DIR / "clash_detection_panel.py")
+        attrs = _assigned_attrs(PANEL_MODULE)
         self.assertTrue(expected.issubset(attrs), expected - attrs)
 
-    def test_every_row_carries_a_show_button(self):
+    def test_rows_are_ticked_and_shown_together(self):
+        # A clash has two elements and users review several at a time, so the
+        # per-row Show button gave way to checkboxes plus one Show.
         for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML):
-            self.assertIn(
-                'Content="Show"', path.read_text(encoding="utf-8"), path.name
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('x:Name="ShowButton"', source, path.name)
+            self.assertIn('x:Name="SelectAllButton"', source, path.name)
+            self.assertIn('x:Name="SelectNoneButton"', source, path.name)
+            self.assertIn("{Binding is_checked, Mode=TwoWay}", source, path.name)
+            # The row template must carry no button of its own any more: Show
+            # lives once, in the footer, and acts on every ticked row.
+            self.assertFalse(
+                _template_buttons(path), "%s still has a per-row button" % path.name
             )
+
+    def test_pause_and_resume_on_every_surface(self):
+        for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML, STATUS_XAML):
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('x:Name="PauseButton"', source, path.name)
+            self.assertIn('x:Name="ResumeButton"', source, path.name)
+
+    def test_resume_ships_disabled(self):
+        # Resume must not look clickable until the mode is actually paused.
+        for path in (PANEL_XAML, PANEL_WINDOW_XAML, ALERT_XAML, STATUS_XAML):
+            source = path.read_text(encoding="utf-8")
+            resume_block = source.split('x:Name="ResumeButton"')[1].split("/>")[0]
+            self.assertIn('IsEnabled="False"', resume_block, path.name)
+
+    def test_panel_offers_edit_categories(self):
+        for path in (PANEL_XAML, PANEL_WINDOW_XAML, STATUS_XAML):
+            self.assertIn(
+                'x:Name="EditCategoriesButton"',
+                path.read_text(encoding="utf-8"),
+                path.name,
+            )
+
+
+class StatusWindowTests(unittest.TestCase):
+    def test_xaml_parses_and_names_exist(self):
+        ET.parse(str(STATUS_XAML))
+        required = {
+            "StateText",
+            "ElapsedText",
+            "ScopeText",
+            "CategoriesText",
+            "ActiveCountText",
+            "ResolvedCountText",
+            "QueuedCountText",
+            "NotesText",
+            "ShowPanelButton",
+            "PauseButton",
+            "ResumeButton",
+            "EditCategoriesButton",
+            "StopButton",
+            "CloseButton",
+        }
+        missing = required - _xaml_names(STATUS_XAML)
+        self.assertFalse(missing, "missing x:Name(s): %s" % missing)
+
+    def test_handlers_exist_in_status_module(self):
+        missing = _xaml_handlers(STATUS_XAML) - _module_methods(STATUS_MODULE)
+        self.assertFalse(missing, "missing handler(s): %s" % missing)
+
+    def test_button_opens_status_when_already_running(self):
+        source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
+        self.assertIn("clash_detection_status.show_status_window()", source)
+
+
+class RibbonBadgeTests(unittest.TestCase):
+    def test_aliases_match_the_bundle_title(self):
+        # Same coupling test_view_template_ribbon.py guards: renaming the
+        # button without updating the aliases silently loses the badge.
+        bundle = (COMMAND_DIR / "bundle.yaml").read_text(encoding="utf-8")
+        title = bundle.split("title:", 1)[1].splitlines()[0].strip().strip('"')
+        collapsed = " ".join(title.replace("\\n", " ").split()).lower()
+        source = RIBBON_MODULE.read_text(encoding="utf-8")
+        aliases = re.findall(r'"([^"]*Clash[^"]*)"', source)
+        normalised = set(
+            " ".join(alias.replace("\\n", " ").split()).lower() for alias in aliases
+        )
+        self.assertIn(collapsed, normalised)
+
+    def test_states_cover_running_and_paused(self):
+        source = RIBBON_MODULE.read_text(encoding="utf-8")
+        self.assertIn('STATE_ON = "on"', source)
+        self.assertIn('STATE_PAUSED = "paused"', source)
+        self.assertIn("def set_state", source)
 
 
 if __name__ == "__main__":

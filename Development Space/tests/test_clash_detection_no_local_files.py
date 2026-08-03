@@ -28,10 +28,12 @@ CLASH_MODULES = [
     LIB_DIR / "clash_detection_engine.py",
     LIB_DIR / "clash_detection_panel.py",
     LIB_DIR / "clash_detection_alert.py",
+    LIB_DIR / "clash_detection_setup.py",
+    LIB_DIR / "clash_detection_status.py",
+    LIB_DIR / "clash_detection_ribbon.py",
+    LIB_DIR / "clash_detection_revit.py",
     LIB_DIR / "wpf_notify.py",
     COMMAND_DIR / "script.py",
-    COMMAND_DIR / "clash_detection_ui.py",
-    COMMAND_DIR / "clash_detection_revit.py",
 ]
 
 FORBIDDEN_PATTERNS = (
@@ -136,6 +138,39 @@ class LifecycleTests(unittest.TestCase):
             "_run_pass",
         ):
             self.assertNotIn(forbidden, body, forbidden)
+
+    def test_pause_costs_nothing(self):
+        # Paused must be as cheap as off: the change handler bails before it
+        # touches the queue at all.
+        engine = _source(LIB_DIR / "clash_detection_engine.py")
+        body = engine.split("def _on_document_changed(sender, args):")[1].split(
+            "\ndef "
+        )[0]
+        first_statement = [
+            line.strip() for line in body.splitlines() if line.strip()
+        ][1]
+        self.assertIn("_PAUSED", first_statement)
+
+    def test_ribbon_badge_restores_on_stop(self):
+        engine = _source(LIB_DIR / "clash_detection_engine.py")
+        stop_body = engine.split("def stop(reason=None):")[1].split("\ndef ")[0]
+        self.assertIn("_update_badge()", stop_body)
+        ribbon = _source(LIB_DIR / "clash_detection_ribbon.py")
+        self.assertIn("def _restore", ribbon)
+        self.assertIn("_ORIGINAL_IMAGES", ribbon)
+
+    def test_resolution_never_runs_on_an_incomplete_query(self):
+        # The bug that lost moved and copied clashes: an empty result from a
+        # failed query was read as "the user resolved everything".
+        engine = _source(LIB_DIR / "clash_detection_engine.py")
+        body = engine.split("def _process_work_item(")[1].split("\ndef ")[0]
+        self.assertIn("if all_completed:", body)
+        self.assertIn("was_recorded_this_pass", body)
+
+    def test_containers_are_expanded(self):
+        engine = _source(LIB_DIR / "clash_detection_engine.py")
+        self.assertIn("_container_member_ids", engine)
+        self.assertIn("GetMemberIds", engine)
 
     def test_idling_handler_short_circuits_first(self):
         engine = _source(LIB_DIR / "clash_detection_engine.py")
