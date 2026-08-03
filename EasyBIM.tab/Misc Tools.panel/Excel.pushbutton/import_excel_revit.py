@@ -122,6 +122,10 @@ class ImportPlan(object):
         self.out_of_scope_rows = list(out_of_scope_rows or [])
         self.scope_name = safe_text(scope_name)
         self.blocked_columns = []
+        self.unclearable = []        # (param_name, reason)
+
+    def unclearable_lines(self):
+        return _aggregate_param_reasons(self.unclearable)
 
     def type_write_row_count(self):
         return sum(len(write.source_rows) for write in self.type_writes)
@@ -186,8 +190,8 @@ class ImportResult(object):
         self.clear_failure_lines = list(clear_failure_lines or [])
 
 
-def _aggregate_clear_failures(failures):
-    """Group refused clears by parameter so one column is one line."""
+def _aggregate_param_reasons(failures):
+    """Group by parameter so a whole column reads as one line."""
     counts = {}
     order = []
     for param_name, reason in failures or []:
@@ -470,6 +474,41 @@ def _already_clear(param):
 
 CLEAR_REFUSED = "Revit does not allow this parameter to be empty"
 
+# Parameter.ClearValue is documented to "only succeed for Shared
+# parameters that have their HideWhenNoValue property set to true", and to
+# throw when the parameter is read-only, not shared, or shared with
+# HideWhenNoValue false. HideWhenNoValue lives on ExternalDefinition (the
+# shared parameter file) and is not reachable from a Parameter in a
+# project, so shared parameters can only be tried - but "not shared" is
+# knowable up front, which covers every built-in and project parameter.
+CLEAR_OK = "ok"      # has a real empty state we can always write
+CLEAR_TRY = "try"    # only ClearValue can do it, and it may be refused
+CLEAR_NO = "no"      # Revit cannot express "no value" for this parameter
+
+CLEAR_NOT_SHARED = (
+    "Revit only empties shared parameters created with 'Hide when no "
+    "value'; this is a built-in or project parameter"
+)
+
+
+def clearable_kind(param):
+    """How (or whether) this parameter can be given no value."""
+    try:
+        storage = param.StorageType
+    except Exception:
+        return CLEAR_TRY, None
+    # "" is genuinely empty text and InvalidElementId is genuinely None,
+    # so these never depend on ClearValue.
+    if storage == DB.StorageType.String \
+            or storage == DB.StorageType.ElementId:
+        return CLEAR_OK, None
+    try:
+        if not param.IsShared:
+            return CLEAR_NO, CLEAR_NOT_SHARED
+    except Exception:
+        pass
+    return CLEAR_TRY, None
+
 
 def clear_param(param):
     """Restore a parameter to having no value. Returns (ok, error_text).
@@ -551,6 +590,12 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
     if not text:
         if _already_clear(param):
             plan.unchanged_count += 1
+            return
+        kind, reason = clearable_kind(param)
+        if kind == CLEAR_NO:
+            # Known before any transaction: listed in the preview so the
+            # user sees it before deciding to import, not afterwards.
+            plan.unclearable.append((spec.param_name, reason))
             return
         on_valid(param, None, True)
         return
@@ -753,6 +798,6 @@ def apply_import_plan(doc, plan):
 
     return ImportResult(written_instance, written_type, failed_lines, plan,
                         cleared_count=cleared_count,
-                        clear_failure_lines=_aggregate_clear_failures(
+                        clear_failure_lines=_aggregate_param_reasons(
                             clear_failures
                         ))
