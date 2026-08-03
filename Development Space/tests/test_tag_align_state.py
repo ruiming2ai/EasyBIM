@@ -207,6 +207,50 @@ class ValidationTests(unittest.TestCase):
         self.assertFalse(exact.is_blocked)
         self.assertEqual(2, len(exact.accepted))
 
+    def test_category_scope_makes_two_families_collide(self):
+        rules = [
+            make_rule(host_family_name="Single-Flush", host_type_id="type-900"),
+            make_rule(
+                host_family_name="Double-Flush",
+                host_type_id="type-1800",
+                offset_view=(0.0, 5.0),
+                offset_local=(0.0, 5.0),
+            ),
+        ]
+
+        category = state.validate_references(rules, scope=state.SCOPE_SAME_CATEGORY)
+        self.assertTrue(category.is_blocked)
+        self.assertEqual(state.SCOPE_AMBIGUITY, category.conflicts[0].code)
+        # Naming one family would read as if the other belonged to it.
+        self.assertIn("any family", category.conflicts[0].key_label)
+
+        paired = state.validate_references(rules, scope=state.SCOPE_PAIRED_FAMILY)
+        self.assertFalse(paired.is_blocked)
+        self.assertEqual(2, len(paired.accepted))
+
+    def test_category_scope_still_allows_one_reference_per_orientation(self):
+        rules = [
+            make_rule(host_family_name="Single-Flush", angle_deg=0.0),
+            make_rule(
+                host_family_name="Double-Flush",
+                angle_deg=90.0,
+                offset_view=(3.0, 0.0),
+                offset_local=(0.0, 2.0),
+            ),
+        ]
+        result = state.validate_references(rules, scope=state.SCOPE_SAME_CATEGORY)
+        self.assertFalse(result.is_blocked)
+        self.assertEqual(2, len(result.accepted))
+
+    def test_narrower_scope_steps_down_one_level_at_a_time(self):
+        self.assertEqual(
+            state.SCOPE_PAIRED_FAMILY, state.narrower_scope(state.SCOPE_SAME_CATEGORY)
+        )
+        self.assertEqual(
+            state.SCOPE_EXACT_TYPE, state.narrower_scope(state.SCOPE_PAIRED_FAMILY)
+        )
+        self.assertIsNone(state.narrower_scope(state.SCOPE_EXACT_TYPE))
+
     def test_view_scale_option_decides_whether_two_references_agree(self):
         rules = [
             make_rule(view_scale=100, offset_view=(0.0, 2.0)),
@@ -286,6 +330,55 @@ class ResolutionTests(unittest.TestCase):
             scope=state.SCOPE_PAIRED_FAMILY,
         )
         self.assertEqual(state.SKIP_NO_RULE_FOR_FAMILY, match.skip_reason)
+
+    def test_category_scope_covers_another_family(self):
+        match = state.resolve_reference_for_target(
+            [make_rule()],
+            make_target(family_name="Double-Flush", type_id="type-x"),
+            scope=state.SCOPE_SAME_CATEGORY,
+        )
+        self.assertTrue(match.matched)
+
+    def test_category_scope_never_crosses_the_category(self):
+        match = state.resolve_reference_for_target(
+            [make_rule()],
+            make_target(category_id="cat-windows", family_name="Fixed", type_id="w-1"),
+            scope=state.SCOPE_SAME_CATEGORY,
+        )
+        self.assertEqual(state.SKIP_CATEGORY_MISMATCH, match.skip_reason)
+
+    def test_the_closest_reference_wins_under_the_widest_scope(self):
+        """Widening the scope must only add fallbacks, never steal a target."""
+        sibling_family = make_rule(
+            host_family_name="Double-Flush", host_type_id="type-1800",
+            offset_view=(9.0, 9.0),
+        )
+        same_family = make_rule(host_type_id="type-1200", offset_view=(5.0, 5.0))
+        own_type = make_rule(host_type_id="type-900", offset_view=(1.0, 1.0))
+        rules = [sibling_family, same_family, own_type]
+
+        self.assertIs(
+            own_type,
+            state.resolve_reference_for_target(
+                rules, make_target(type_id="type-900"),
+                scope=state.SCOPE_SAME_CATEGORY,
+            ).rule,
+        )
+        self.assertIs(
+            same_family,
+            state.resolve_reference_for_target(
+                rules, make_target(type_id="type-1200"),
+                scope=state.SCOPE_SAME_CATEGORY,
+            ).rule,
+        )
+        self.assertIs(
+            sibling_family,
+            state.resolve_reference_for_target(
+                rules,
+                make_target(family_name="Sliding", type_id="type-slide"),
+                scope=state.SCOPE_SAME_CATEGORY,
+            ).rule,
+        )
 
     def test_exact_type_wins_over_a_family_sibling(self):
         exact = make_rule(host_type_id="type-1200", offset_view=(0.0, 9.0))
@@ -509,7 +602,9 @@ class FilterTreeTests(unittest.TestCase):
 class SessionTests(unittest.TestCase):
     def test_defaults_match_the_agreed_behaviour(self):
         session = state.TagAlignSession()
-        self.assertEqual(state.SCOPE_PAIRED_FAMILY, session.scope)
+        self.assertEqual(state.SCOPE_SAME_CATEGORY, session.scope)
+        self.assertEqual(state.SCOPE_SAME_CATEGORY, state.DEFAULT_SCOPE)
+        self.assertEqual(state.SCOPE_SAME_CATEGORY, state.SCOPE_ORDER[0])
         self.assertTrue(session.scale_with_view)
         self.assertTrue(session.copy_leader)
         self.assertTrue(session.collapse_flip)
