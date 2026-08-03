@@ -4,12 +4,15 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMP_PHASE_ROOT = ROOT / "src" / "TempPhase"
-BUTTON_ROOT = (
+PULLDOWN_ROOT = (
     ROOT
     / "EasyBIM.tab"
     / "Misc Tools.panel"
-    / "Temp Phase.pushbutton"
+    / "Temp Phase & View.pulldown"
 )
+BUTTON_ROOT = PULLDOWN_ROOT / "Temp Phase.pushbutton"
+RESTORE_ROOT = PULLDOWN_ROOT / "Restore.pushbutton"
+RESTORE_ALL_ROOT = PULLDOWN_ROOT / "Restore All Views.pushbutton"
 
 
 class TempPhaseConversionTests(unittest.TestCase):
@@ -45,9 +48,37 @@ class TempPhaseConversionTests(unittest.TestCase):
     def test_command_bundle_has_no_controller_preload(self):
         metadata = (BUTTON_ROOT / "bundle.yaml").read_text(encoding="utf-8")
         self.assertIn("min_revit_version: 2015", metadata)
-        self.assertIn("max_revit_version: 2026", metadata)
+        self.assertIn("max_revit_version: 2027", metadata)
         self.assertNotIn("modules:", metadata)
         self.assertNotIn("TempPhaseController.dll", metadata)
+
+    def test_pulldown_groups_temp_phase_with_both_restore_commands(self):
+        pulldown_metadata = (PULLDOWN_ROOT / "bundle.yaml").read_text(encoding="utf-8")
+        self.assertIn("Temp Phase", pulldown_metadata)
+        self.assertIn("min_revit_version: 2015", pulldown_metadata)
+        self.assertIn("max_revit_version: 2027", pulldown_metadata)
+
+        expected = {
+            RESTORE_ROOT: ("title: Restore", "run_restore_active_view"),
+            RESTORE_ALL_ROOT: ("title: Restore All Views", "run_restore_all_views"),
+        }
+        for button_root, (title, entry_point) in expected.items():
+            metadata = (button_root / "bundle.yaml").read_text(encoding="utf-8")
+            self.assertIn(title, metadata)
+            self.assertIn("min_revit_version: 2015", metadata)
+            self.assertIn("max_revit_version: 2027", metadata)
+
+            script = (button_root / "script.py").read_text(encoding="utf-8")
+            self.assertIn("from easybim import temp_phase_view", script)
+            self.assertIn("log_command_context", script)
+            self.assertIn(entry_point, script)
+
+            self.assertTrue((button_root / "icon.png").exists())
+            self.assertTrue((button_root / "icon.dark.png").exists())
+
+        # The pulldown itself needs artwork or the ribbon slot renders blank.
+        self.assertTrue((PULLDOWN_ROOT / "icon.png").exists())
+        self.assertTrue((PULLDOWN_ROOT / "icon.dark.png").exists())
 
     def test_command_button_is_python_based_without_controller_bridge(self):
         self.assertFalse((BUTTON_ROOT / "script.cs").exists())
