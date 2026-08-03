@@ -1,5 +1,0 @@
-title: Restore
-tooltip: Restore the active view to its original phase and clear its temporary view settings. Save or synchronize afterwards to keep the restored state.
-author: Ruiming Liu
-min_revit_version: 2015
-max_revit_version: 2027

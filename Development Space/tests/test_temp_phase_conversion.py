@@ -4,15 +4,12 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMP_PHASE_ROOT = ROOT / "src" / "TempPhase"
-PULLDOWN_ROOT = (
+BUTTON_ROOT = (
     ROOT
     / "EasyBIM.tab"
     / "Misc Tools.panel"
-    / "Temp Phase & View.pulldown"
+    / "Temp Phase.pushbutton"
 )
-BUTTON_ROOT = PULLDOWN_ROOT / "Temp Phase.pushbutton"
-RESTORE_ROOT = PULLDOWN_ROOT / "Restore.pushbutton"
-RESTORE_ALL_ROOT = PULLDOWN_ROOT / "Restore All Views.pushbutton"
 
 
 class TempPhaseConversionTests(unittest.TestCase):
@@ -52,33 +49,27 @@ class TempPhaseConversionTests(unittest.TestCase):
         self.assertNotIn("modules:", metadata)
         self.assertNotIn("TempPhaseController.dll", metadata)
 
-    def test_pulldown_groups_temp_phase_with_both_restore_commands(self):
-        pulldown_metadata = (PULLDOWN_ROOT / "bundle.yaml").read_text(encoding="utf-8")
-        self.assertIn("Temp Phase", pulldown_metadata)
-        self.assertIn("min_revit_version: 2015", pulldown_metadata)
-        self.assertIn("max_revit_version: 2027", pulldown_metadata)
+    def test_single_button_window_offers_both_restore_actions(self):
+        """One ribbon button opens one window carrying every option."""
+        panel_root = BUTTON_ROOT.parent
+        self.assertEqual([], sorted(panel_root.glob("Temp Phase*.pulldown")))
+        self.assertEqual([], sorted(panel_root.glob("Restore*.pushbutton")))
 
-        expected = {
-            RESTORE_ROOT: ("title: Restore", "run_restore_active_view"),
-            RESTORE_ALL_ROOT: ("title: Restore All Views", "run_restore_all_views"),
-        }
-        for button_root, (title, entry_point) in expected.items():
-            metadata = (button_root / "bundle.yaml").read_text(encoding="utf-8")
-            self.assertIn(title, metadata)
-            self.assertIn("min_revit_version: 2015", metadata)
-            self.assertIn("max_revit_version: 2027", metadata)
+        runtime = (ROOT / "lib" / "easybim" / "temp_phase_view.py").read_text(
+            encoding="utf-8"
+        )
+        for entry_point in ("run_restore_active_view", "run_restore_all_views"):
+            self.assertIn("def " + entry_point, runtime)
+        self.assertIn("ACTION_RESTORE_VIEW", runtime)
+        self.assertIn("ACTION_RESTORE_ALL", runtime)
 
-            script = (button_root / "script.py").read_text(encoding="utf-8")
-            self.assertIn("from easybim import temp_phase_view", script)
-            self.assertIn("log_command_context", script)
-            self.assertIn(entry_point, script)
-
-            self.assertTrue((button_root / "icon.png").exists())
-            self.assertTrue((button_root / "icon.dark.png").exists())
-
-        # The pulldown itself needs artwork or the ribbon slot renders blank.
-        self.assertTrue((PULLDOWN_ROOT / "icon.png").exists())
-        self.assertTrue((PULLDOWN_ROOT / "icon.dark.png").exists())
+        picker_xaml = (ROOT / "lib" / "easybim" / "ui" / "temp_phase_picker.xaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('x:Name="restore_btn"', picker_xaml)
+        self.assertIn('x:Name="restore_all_btn"', picker_xaml)
+        self.assertIn('Content="Restore"', picker_xaml)
+        self.assertIn('Content="Restore All Views"', picker_xaml)
 
     def test_command_button_is_python_based_without_controller_bridge(self):
         self.assertFalse((BUTTON_ROOT / "script.cs").exists())

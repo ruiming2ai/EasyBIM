@@ -1,8 +1,8 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Select Temporary Phase for view"
-        Width="560"
-        MinWidth="520"
+        Title="Temp Phase &amp; View"
+        Width="620"
+        MinWidth="580"
         SizeToContent="Height"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
@@ -38,7 +38,7 @@
                                FontSize="10"
                                FontWeight="Bold"
                                Foreground="#3D78B5" />
-                    <TextBlock Text="Select Temporary Phase for view"
+                    <TextBlock Text="Set or Restore Temporary Phase"
                                Margin="0,2,0,0"
                                FontSize="20"
                                FontWeight="SemiBold"
@@ -65,28 +65,48 @@
                           VerticalContentAlignment="Center" />
             </StackPanel>
 
-            <StackPanel Grid.Row="3"
-                        Margin="0,22,0,0"
-                        Orientation="Horizontal"
-                        HorizontalAlignment="Right">
-                <Button x:Name="apply_btn"
-                        Content="Apply"
-                        Width="104"
-                        Height="34"
-                        IsDefault="True"
-                        Background="#3D78B5"
-                        Foreground="White"
-                        BorderBrush="#3D78B5" />
-                <Button x:Name="cancel_btn"
-                        Content="Cancel"
-                        Width="104"
-                        Height="34"
-                        Margin="10,0,0,0"
-                        IsCancel="True"
-                        Background="White"
-                        Foreground="#385A7D"
-                        BorderBrush="#B7C4D2" />
-            </StackPanel>
+            <Grid Grid.Row="3" Margin="0,22,0,0">
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Left">
+                    <Button x:Name="restore_btn"
+                            Content="Restore"
+                            Width="104"
+                            Height="34"
+                            ToolTip="Restore the active view to its original phase and clear its temporary view settings."
+                            Background="White"
+                            Foreground="#385A7D"
+                            BorderBrush="#B7C4D2" />
+                    <Button x:Name="restore_all_btn"
+                            Content="Restore All Views"
+                            Width="140"
+                            Height="34"
+                            Margin="8,0,0,0"
+                            ToolTip="Restore every view in this document and clear all temporary view settings."
+                            Background="White"
+                            Foreground="#385A7D"
+                            BorderBrush="#B7C4D2" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+                    <Button x:Name="apply_btn"
+                            Content="Apply"
+                            Width="104"
+                            Height="34"
+                            IsDefault="True"
+                            Background="#3D78B5"
+                            Foreground="White"
+                            BorderBrush="#3D78B5" />
+                    <Button x:Name="cancel_btn"
+                            Content="Cancel"
+                            Width="104"
+                            Height="34"
+                            Margin="10,0,0,0"
+                            IsCancel="True"
+                            Background="White"
+                            Foreground="#385A7D"
+                            BorderBrush="#B7C4D2" />
+                </StackPanel>
+            </Grid>
         </Grid>
     </Border>
 </Window>

@@ -192,7 +192,9 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
         view_runtime._save_state = lambda unused_state: None
         view_runtime._get_view_phase_id = lambda unused_view: 4
 
-        with mock.patch.object(view_runtime, "_show_phase_picker", return_value=5), mock.patch.object(
+        with mock.patch.object(
+            view_runtime, "_show_phase_picker", return_value=(view_runtime.ACTION_APPLY, 5)
+        ), mock.patch.object(
             view_runtime,
             "_apply_selected_phase_transaction",
             return_value=True,
@@ -229,11 +231,15 @@ class TempPhaseCloseRuntimeTests(unittest.TestCase):
             {"id": 4, "name": "Existing"}
         ]
 
-        with mock.patch.object(view_runtime, "_show_phase_picker", return_value=None):
+        with mock.patch.object(
+            view_runtime, "_show_phase_picker", return_value=(None, None)
+        ):
             view_runtime.run_pushbutton()
         self.assertFalse(state["armed_documents"])
 
-        with mock.patch.object(view_runtime, "_show_phase_picker", return_value=5), mock.patch.object(
+        with mock.patch.object(
+            view_runtime, "_show_phase_picker", return_value=(view_runtime.ACTION_APPLY, 5)
+        ), mock.patch.object(
             view_runtime,
             "_apply_selected_phase_transaction",
             return_value=False,

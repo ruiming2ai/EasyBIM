@@ -3,22 +3,26 @@ PyRevit Tools created by Ruiming Liu
 
 ## Temp Phase & View (Revit 2015-2027)
 
-Temp Phase & View is a Python-only pyRevit workflow, grouped as one ribbon
-pulldown with three commands:
+Temp Phase & View is a Python-only pyRevit workflow driven by one ribbon
+button. Clicking it opens a window that carries every option:
 
-- **Temp Phase** — apply the selected phase to the active view and record its
-  original state in the EasyBIM session.
+- **Apply** — apply the phase selected in the list to the active view and
+  record its original state in the EasyBIM session.
 - **Restore** — undo the temporary phase and view settings for the active view
   immediately, without waiting for the file to close.
 - **Restore All Views** — do the same for every view in the document, covering
   both tracked views and any other view left with Temporary View Properties
   enabled.
+- **Cancel** — close the window without changing anything.
 
-Both restore commands run the same transaction close recovery uses, so the
+Both restore options run the same transaction close recovery uses, so the
 results are identical; they only change *when* the cleanup happens. Once a
 document has nothing left to restore, its close-recovery arming is dropped so
 later closes skip the view scan entirely. As with close recovery, the restored
 state is only in the open session until the model is saved or synchronized.
+
+The window still opens on a view that cannot take a temporary phase — the
+phase list and Apply are disabled, so the restore options stay reachable.
 
 When a file close is requested, EasyBIM cancels the close, restores tracked
 phases, and clears every tracked or discoverable Temporary View Property in one
