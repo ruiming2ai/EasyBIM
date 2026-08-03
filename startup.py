@@ -44,6 +44,21 @@ except Exception as ex:
     except Exception:
         pass
 
+
+try:
+    from easybim import idling
+
+    # One .NET Idling delegate for all of EasyBIM's deferred work.  A pyRevit
+    # hook script would instead be read and recompiled on every Idling event,
+    # which Revit raises continuously for the whole session.
+    idling.install()
+except Exception as ex:
+    try:
+        from easybim import temp_phase_close
+        temp_phase_close.log_hook_exception("IdlingInstallStartupException", ex)
+    except Exception:
+        pass
+
 try:
     from easybim import auto_update
 
