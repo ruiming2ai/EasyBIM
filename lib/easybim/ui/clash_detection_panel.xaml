@@ -28,7 +28,8 @@
                 <ListBox x:Name="RowsListView"
                          BorderThickness="0"
                          HorizontalContentAlignment="Stretch"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         MouseDoubleClick="rows_double_click">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Border BorderBrush="Gainsboro"
@@ -36,11 +37,16 @@
                                     Padding="6,7,6,7">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
 
-                                    <StackPanel>
+                                    <CheckBox IsChecked="{Binding is_checked, Mode=TwoWay}"
+                                              VerticalAlignment="Top"
+                                              Margin="0,2,8,0"
+                                              Click="row_check_click" />
+
+                                    <StackPanel Grid.Column="1">
                                         <TextBlock Text="{Binding element_a_title}"
                                                    FontWeight="SemiBold"
                                                    TextWrapping="Wrap" />
@@ -58,14 +64,6 @@
                                                    Foreground="DimGray"
                                                    FontSize="11" />
                                     </StackPanel>
-
-                                    <Button Grid.Column="1"
-                                            Content="Show"
-                                            Width="64"
-                                            Height="26"
-                                            Margin="8,0,0,0"
-                                            VerticalAlignment="Top"
-                                            Click="show_click" />
                                 </Grid>
                             </Border>
                         </DataTemplate>
@@ -87,10 +85,66 @@
                    TextWrapping="Wrap"
                    Foreground="DimGray" />
 
-        <Button x:Name="StopButton"
-                Grid.Row="3"
-                Content="Stop Detection"
-                Height="30"
-                Click="stop_click" />
+        <Grid Grid.Row="3">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="SelectAllButton"
+                    Content="All"
+                    Height="28"
+                    Margin="0,0,4,4"
+                    Click="select_all_click" />
+            <Button x:Name="SelectNoneButton"
+                    Grid.Column="1"
+                    Content="None"
+                    Height="28"
+                    Margin="0,0,4,4"
+                    Click="select_none_click" />
+            <Button x:Name="ShowButton"
+                    Grid.Column="2"
+                    Content="Show"
+                    Height="28"
+                    Margin="0,0,0,4"
+                    ToolTip="Select and zoom to every element of the ticked clashes."
+                    Click="show_click" />
+
+            <Button x:Name="PauseButton"
+                    Grid.Row="1"
+                    Content="Pause"
+                    Height="28"
+                    Margin="0,0,4,4"
+                    Click="pause_click" />
+            <Button x:Name="ResumeButton"
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    Content="Resume"
+                    Height="28"
+                    Margin="0,0,4,4"
+                    IsEnabled="False"
+                    Click="resume_click" />
+            <Button x:Name="EditCategoriesButton"
+                    Grid.Row="1"
+                    Grid.Column="2"
+                    Content="Categories"
+                    Height="28"
+                    Margin="0,0,0,4"
+                    ToolTip="Edit the categories being watched."
+                    Click="edit_categories_click" />
+
+            <Button x:Name="StopButton"
+                    Grid.Row="2"
+                    Grid.ColumnSpan="3"
+                    Content="Stop Detection"
+                    Height="30"
+                    Click="stop_click" />
+        </Grid>
     </Grid>
 </UserControl>
