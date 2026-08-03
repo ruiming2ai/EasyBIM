@@ -404,18 +404,16 @@ class ImportExcelBundleTests(unittest.TestCase):
         self.assertIn("WhereElementIsElementType", source)
         self.assertIn("WhereElementIsNotElementType", source)
 
-    def test_blank_text_cells_clear_values_but_numbers_stay_untouched(self):
+    def test_blank_cells_clear_any_parameter_via_clearvalue(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "import_excel_revit.py is missing")
         source = REVIT_MODULE_PATH.read_text()
 
-        self.assertIn("is_clear = not text", source)
-        # Only text has a meaningful empty state; a blank number must never
-        # be written as 0.
-        self.assertIn(
-            "if is_clear and param.StorageType != DB.StorageType.String",
-            source,
-        )
-        self.assertIn("plan.blank_count += 1", source)
+        # Revit 2022+ exposes Parameter.ClearValue, so clearing is not
+        # limited to text and a blank number is never written as 0.
+        self.assertIn("def clear_param", source)
+        self.assertIn("ClearValue", source)
+        self.assertIn("def _already_clear", source)
+        self.assertNotIn("param.Set(0)", source)
         self.assertIn("def instance_clear_count", source)
         self.assertIn("def type_clear_count", source)
         self.assertIn("cleared_count", source)
