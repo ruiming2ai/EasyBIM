@@ -69,3 +69,32 @@ pyRevit debug mode to see markers such as `DocClosingCancelSucceeded` or
 `TempPhaseRestoreCommitted`). The legacy per-event file log at
 `%APPDATA%\EasyBIM\Temp Phase\logs\events.log` is no longer written; the
 folder can be deleted on machines where it exists.
+
+## Tag Align (Misc Tools)
+
+Tag Align copies one tag's placement onto other elements. Pick a reference tag,
+then either align the tags that already exist or tag and align in one pass.
+
+- **Select One Reference Tag** asks whether the tag can be aligned to any
+  orientation. Answer yes and the offset rotates with the element, so a tag two
+  feet above a horizontal pipe sits two feet off the side of a vertical one.
+  Answer no and only elements at that same orientation are touched; the rest are
+  named in the report so you know to add a second reference for them.
+- **Select Multiple Reference Tags** matches per element type and orientation -
+  one reference for horizontal walls, another for vertical, and so on.
+
+All reference tags must share one tag family type and one element category, and
+a different category is never matched. Two scopes are offered: exact family and
+type, or "different types, but only paired family" (the default). Anything that
+would put two different tags in the same place is reported as a conflict, with a
+window to pick the winner per group, before a single tag moves.
+
+Elements are picked either one at a time - each click is processed immediately
+and Esc ends the loop - or as a batch, where a small bar offers Filter, Select,
+Deselect and Process while Revit's normal window and crossing selection does the
+picking. A batch is one transaction, so one undo puts it all back.
+
+The offset is measured from the element rather than from the sheet, so it
+survives rotation, and it is stored with its source view scale, so a reference
+measured at 1:100 reproduces the same printed distance at 1:50. Room, area and
+space tags are not supported yet and are rejected when picked as a reference.

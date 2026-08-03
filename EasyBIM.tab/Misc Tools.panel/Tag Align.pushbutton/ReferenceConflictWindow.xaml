@@ -1,0 +1,84 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Reference Tag Conflicts"
+        Width="840"
+        Height="640"
+        MinWidth="700"
+        MinHeight="520"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Reference tags conflict"
+                       FontSize="20"
+                       FontWeight="SemiBold" />
+            <TextBlock x:Name="IntroText"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Margin="0,4,0,0"
+                       Text="Two or more reference tags claim the same elements at the same orientation but put the tag in different places. Pick the one that wins in each group, or drop the group entirely." />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="10">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="ConflictPanel" />
+            </ScrollViewer>
+        </Border>
+
+        <TextBlock x:Name="StatusText"
+                   Grid.Row="2"
+                   Margin="0,10,0,0"
+                   Foreground="#B06000"
+                   TextWrapping="Wrap" />
+
+        <Grid Grid.Row="3" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                <Button x:Name="SwitchScopeButton"
+                        Content="Switch to exact type match"
+                        Height="34"
+                        Padding="12,0,12,0"
+                        Margin="0,0,8,0"
+                        ToolTip="Most family-level conflicts disappear when each reference only covers its own type."
+                        Click="switch_scope_click" />
+                <Button x:Name="ReselectButton"
+                        Content="Re-select references"
+                        Height="34"
+                        Padding="12,0,12,0"
+                        Click="reselect_click" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <Button x:Name="OkButton"
+                        Content="Use these"
+                        Width="110"
+                        Height="34"
+                        Margin="0,0,8,0"
+                        IsDefault="True"
+                        Click="ok_click" />
+                <Button x:Name="CancelButton"
+                        Content="Cancel"
+                        Width="100"
+                        Height="34"
+                        IsCancel="True"
+                        Click="cancel_click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
