@@ -258,6 +258,77 @@ class ImportExcelStateTests(unittest.TestCase):
         self.assertEqual(conflicts, [])
         self.assertEqual(agreed, {(100, "Width"): ("2.5", [2, 3])})
 
+    def test_rows_are_matched_by_element_id_not_by_position(self):
+        module = _load_state_module()
+        columns = [
+            module.ColumnSpec(1, "Mark", "Mark"),
+            module.ColumnSpec(2, "Comments", "Comments"),
+        ]
+        header = (1, ["ElementId", "Mark", "Comments"])
+        in_order = [
+            header,
+            (2, ["1001", "A", "first"]),
+            (3, ["1002", "B", "second"]),
+            (4, ["1003", "C", "third"]),
+        ]
+        # Same workbook after the user sorted the sheet: the rows travel
+        # with their ids, so every id must keep its own values.
+        shuffled = [header, in_order[3], in_order[1], in_order[2]]
+
+        def by_id(rows):
+            records, bad = module.parse_export_rows(rows, columns)
+            self.assertEqual(bad, [])
+            return dict(
+                (r.element_id_value, r.values) for r in records
+            )
+
+        self.assertEqual(by_id(in_order), by_id(shuffled))
+        self.assertEqual(
+            by_id(shuffled)[1003], {"Mark": "C", "Comments": "third"}
+        )
+
+    def test_columns_are_matched_by_header_not_by_position(self):
+        module = _load_state_module()
+
+        _, columns, _ = module.classify_columns(
+            ["Comments", "_EBIM_TypeId", "ElementId", "Mark"], {}
+        )
+
+        self.assertEqual(
+            sorted((s.param_name, s.col_index) for s in columns),
+            [("Comments", 0), ("Mark", 3)],
+        )
+
+    def test_type_conflict_results_do_not_depend_on_row_order(self):
+        module = _load_state_module()
+
+        def analyse(records):
+            return module.detect_type_conflicts(
+                records, ["Width"],
+                {2: 100, 3: 100, 4: 200, 5: 200},
+                {100: "A", 200: "B"},
+            )
+
+        rows = [
+            module.RowRecord(2, 1, {"Width": "2.5"}),
+            module.RowRecord(3, 2, {"Width": "2.50"}),
+            module.RowRecord(4, 3, {"Width": "9"}),
+            module.RowRecord(5, 4, {"Width": "8"}),
+        ]
+        reversed_rows = list(reversed(rows))
+
+        conflicts_a, agreed_a = analyse(rows)
+        conflicts_b, agreed_b = analyse(reversed_rows)
+
+        # "2.5" and "2.50" agree; the literal written is the one from the
+        # lowest Excel row either way, not whichever row came first.
+        self.assertEqual(agreed_a, agreed_b)
+        self.assertEqual(agreed_a[(100, "Width")], ("2.5", [2, 3]))
+        self.assertEqual(
+            [(c.type_name, c.param_name, c.values) for c in conflicts_a],
+            [(c.type_name, c.param_name, c.values) for c in conflicts_b],
+        )
+
     def test_detect_type_conflicts_multiple_params_same_type(self):
         module = _load_state_module()
         records = [
