@@ -487,9 +487,14 @@ def handle_idling(uiapp=None, event_args=None):
             summary["untracked_tvp_count"] = _to_int(record.get("untracked_tvp_count")) or 0
         if "doc_is_workshared" not in summary:
             summary["doc_is_workshared"] = bool(record.get("doc_is_workshared"))
-        decision = _show_close_decision(summary, record)
+        # Retire the pending record BEFORE showing the modal.  Revit can keep
+        # raising Idling behind a dialog, and the state dict handed back by
+        # pyRevit is live, so a re-entrant tick would otherwise still see this
+        # token queued and open a second close-decision dialog.  Every other
+        # alert in this function already pops first.
         pending.pop(token, None)
         changed = True
+        decision = _show_close_decision(summary, record)
 
         if decision == "save_close":
             _log("TempPhaseSaveCloseSelected token={0}".format(token))
@@ -675,7 +680,13 @@ def document_closing_handler(sender, args):
 
 
 def idling_handler(sender, args):
-    return handle_idling(uiapp=sender, event_args=args)
+    # Subscribed as a raw .NET delegate, so nothing sits between this and
+    # Revit's event dispatcher; never let an exception escape.
+    try:
+        return handle_idling(uiapp=sender, event_args=args)
+    except Exception as ex:
+        log_hook_exception("AppIdlingHookException", ex)
+        return False
 
 
 def document_closed_handler(sender, args):

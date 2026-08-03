@@ -14,9 +14,11 @@ BUTTON_ROOT = (
 
 class TempPhaseConversionTests(unittest.TestCase):
     def test_pyrevit_hooks_are_single_python_dispatchers(self):
+        # app-idling is deliberately absent: Revit raises Idling continuously
+        # and pyRevit recompiles a hook script on every dispatch, so close
+        # recovery runs from the one-time .NET delegate in easybim.idling.
         expected = {
             "doc-closing.py": "handle_doc_closing",
-            "app-idling.py": "handle_app_idling",
             "doc-closed.py": "handle_doc_closed",
         }
         for filename, handler in expected.items():
@@ -24,6 +26,15 @@ class TempPhaseConversionTests(unittest.TestCase):
             self.assertIn("from pyrevit import EXEC_PARAMS", text)
             self.assertIn("from easybim import temp_phase_close", text)
             self.assertIn(handler, text)
+
+        startup_text = (ROOT / "startup.py").read_text(encoding="utf-8")
+        self.assertIn("from easybim import idling", startup_text)
+        self.assertIn("idling.install()", startup_text)
+
+        idling_runtime = (ROOT / "lib" / "easybim" / "idling.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("handle_app_idling", idling_runtime)
 
         for filename in ("doc-closing.cs", "app-idling.cs", "doc-closed.cs"):
             self.assertFalse((ROOT / "hooks" / filename).exists(), filename)
