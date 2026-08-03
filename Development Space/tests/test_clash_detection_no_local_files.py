@@ -29,7 +29,6 @@ CLASH_MODULES = [
     LIB_DIR / "clash_detection_panel.py",
     LIB_DIR / "clash_detection_alert.py",
     LIB_DIR / "clash_detection_setup.py",
-    LIB_DIR / "clash_detection_status.py",
     LIB_DIR / "clash_detection_ribbon.py",
     LIB_DIR / "clash_detection_revit.py",
     LIB_DIR / "wpf_notify.py",

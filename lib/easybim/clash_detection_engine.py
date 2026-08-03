@@ -50,6 +50,11 @@ from easybim import clash_detection_state as state
 
 
 HANDLER_ENVVAR = "EASYBIM_CLASH_DETECTION_HANDLERS"
+#: Mirrors the running flag.  A recycled pyRevit engine loses this module's
+#: globals but NOT the .NET delegates already attached to Revit, so without
+#: this the mode would still be detecting while every UI reported it as off -
+#: and there would be no way left to stop it.
+ACTIVE_ENVVAR = "EASYBIM_CLASH_DETECTION_ACTIVE"
 
 #: Bounding-box padding for the quick filter, in feet (~3 mm).  Only widens
 #: the candidate set; the exact filter still decides.
@@ -957,17 +962,18 @@ def _raise_alert(new_pairs):
 # -- show requests --------------------------------------------------------
 
 
-def request_show(pair_keys):
+def request_show(element_keys):
     """Queue a Show request; Idling runs it in a valid API context.
 
-    Accepts one key or many: a clash involves at least two elements, and
-    ticking several rows shows all of them together in a single selection.
+    Takes *element* keys, one or many.  Each side of a clash is ticked
+    independently, so Show frames exactly the elements that were selected -
+    which may be one half of a pair, or elements drawn from several pairs.
     """
-    if isinstance(pair_keys, str):
-        pair_keys = [pair_keys]
-    for pair_key in pair_keys or []:
-        if pair_key and pair_key not in _SHOW_REQUESTS:
-            _SHOW_REQUESTS.append(pair_key)
+    if isinstance(element_keys, str):
+        element_keys = [element_keys]
+    for element_key in element_keys or []:
+        if element_key and element_key not in _SHOW_REQUESTS:
+            _SHOW_REQUESTS.append(element_key)
 
 
 def _link_instance_for_ref(model_ref):
@@ -975,19 +981,14 @@ def _link_instance_for_ref(model_ref):
     return context.get("link_instance") if context else None
 
 
-def _show_records(uidoc, records):
-    """Select and frame every element of every given pair, in one go."""
+def _show_elements(uidoc, infos):
+    """Select and frame the given elements together, in one go."""
     host_doc = getattr(uidoc, "Document", None) or _DOC
     host_ids = []
     link_references = []
     zoom_points = []
 
-    infos = []
-    for record in records or []:
-        infos.append(record.element_a)
-        infos.append(record.element_b)
-
-    for info in infos:
+    for info in infos or []:
         context = _context_for_model_ref(info.model_ref)
         if context is None:
             continue
@@ -1093,14 +1094,14 @@ def _drain_show_requests(uiapp):
         return
     if not _same_doc(getattr(uidoc, "Document", None), _DOC):
         return
-    by_key = dict((record.key, record) for record in _SESSION.records())
-    records = [by_key[key] for key in requests if key in by_key]
-    if not records:
+    by_key = _SESSION.element_infos()
+    infos = [by_key[key] for key in requests if key in by_key]
+    if not infos:
         return
     try:
-        _show_records(uidoc, records)
+        _show_elements(uidoc, infos)
     except Exception as ex:
-        _log("Show failed for {0} pair(s): {1}".format(len(records), ex))
+        _log("Show failed for {0} element(s): {1}".format(len(infos), ex))
 
 
 # -- event callbacks ------------------------------------------------------
@@ -1244,7 +1245,20 @@ def _unsubscribe():
 
 
 def is_active():
-    return bool(_ACTIVE)
+    """Is detection running - including after this engine lost its globals?"""
+    if _ACTIVE:
+        return True
+    return bool(_get_envvar(ACTIVE_ENVVAR, False))
+
+
+def has_live_session():
+    """True when this engine still holds the session it is reporting on.
+
+    ``is_active()`` can be True while this is False: the handlers survived a
+    pyRevit reload but the recorded clashes did not.  Callers should then
+    offer Stop rather than pretending they can show a list.
+    """
+    return bool(_ACTIVE and _SESSION is not None)
 
 
 def get_session():
@@ -1366,6 +1380,7 @@ def start(uiapp, doc, side_a, side_b, silent_mode=True, link_instances_by_ref=No
         return False, "Revit did not expose the events this mode needs."
 
     _ACTIVE = True
+    _set_envvar(ACTIVE_ENVVAR, True)
     try:
         from easybim import clash_detection_panel
 
@@ -1378,12 +1393,18 @@ def start(uiapp, doc, side_a, side_b, silent_mode=True, link_instances_by_ref=No
 
 
 def stop(reason=None):
-    """Disarm and wipe.  Nothing was written to disk, so nothing to delete."""
+    """Disarm and wipe.  Nothing was written to disk, so nothing to delete.
+
+    Works even when this engine no longer holds the session: ``_unsubscribe``
+    detaches through the envvar mirror, so a Stop after a pyRevit reload still
+    genuinely stops detection rather than leaving orphaned handlers attached.
+    """
     global _ACTIVE, _PAUSED, _SESSION, _DOC, _UIAPP, _CONTEXTS
 
-    was_active = _ACTIVE
+    was_active = is_active()
     _ACTIVE = False
     _PAUSED = False
+    _set_envvar(ACTIVE_ENVVAR, False)
     _unsubscribe()
     _update_badge()
 
