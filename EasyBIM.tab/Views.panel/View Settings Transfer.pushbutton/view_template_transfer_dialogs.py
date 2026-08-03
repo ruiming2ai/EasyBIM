@@ -31,7 +31,7 @@ import view_template_transfer_revit as vtrevit
 import view_template_transfer_state as state
 
 
-TITLE = "View Template"
+TITLE = "View Settings Transfer"
 
 _XNS = ('xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" '
         'xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"')

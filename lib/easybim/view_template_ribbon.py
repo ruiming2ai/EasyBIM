@@ -10,8 +10,8 @@ SOURCE_ITEM_ALIASES = (
 )
 TARGET_TAB_ALIASES = ("EasyBIM",)
 TARGET_ITEM_ALIASES = (
-    "View Template",
-    "View\nTemplate",
+    "View Settings Transfer",
+    "View Settings\nTransfer",
 )
 
 
