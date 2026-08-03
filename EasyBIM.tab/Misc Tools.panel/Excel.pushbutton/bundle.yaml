@@ -14,7 +14,8 @@ tooltip: |-
   then pick a workbook created by this tool. Rows are matched by
   ElementId and limited to elements of the selected schedule. Conflicting
   type-parameter values stop the import with a full report; otherwise a
-  preview shows what will change before anything is written.
+  preview shows what will change before anything is written. Family / Type
+  columns are never imported - change an element's type in Revit.
 
   When the optional VBA sync layer is set up (see the bundle's vba
   folder), exports are .xlsm and editing any type-parameter cell updates

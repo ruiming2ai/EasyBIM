@@ -6,7 +6,6 @@ import os
 import sys
 
 from pyrevit import DB
-from pyrevit import revit
 from pyrevit import script
 
 from easybim.compat import eid_to_int
@@ -33,6 +32,50 @@ except Exception:
 LOGGER = script.get_logger()
 
 DOUBLE_TOLERANCE = 1e-9
+
+# Parameters that swap an element's family/type. Resolving these by name is
+# inherently ambiguous (countless families ship a type called "Standard"), and
+# Revit raises cannot-be-ignored errors for some categories - a single one
+# aborts the whole import transaction. Type changes belong in Revit.
+TYPE_CHANGING_BIP_NAMES = (
+    "ELEM_FAMILY_AND_TYPE_PARAM",
+    "ELEM_TYPE_PARAM",
+    "ELEM_FAMILY_PARAM",
+)
+
+_TYPE_CHANGING_BIPS = None
+
+
+def _type_changing_bips():
+    global _TYPE_CHANGING_BIPS
+    if _TYPE_CHANGING_BIPS is None:
+        found = []
+        for name in TYPE_CHANGING_BIP_NAMES:
+            bip = getattr(DB.BuiltInParameter, name, None)
+            if bip is not None:
+                found.append(bip)
+        _TYPE_CHANGING_BIPS = found
+    return _TYPE_CHANGING_BIPS
+
+
+def _is_type_changing_param(param):
+    """True for the Family / Type / Family and Type parameters."""
+    bips = _type_changing_bips()
+    try:
+        definition_bip = getattr(param.Definition, "BuiltInParameter", None)
+        if definition_bip is not None:
+            for bip in bips:
+                if definition_bip == bip:
+                    return True
+    except Exception:
+        pass
+    for bip in bips:
+        try:
+            if param.Id == DB.ElementId(bip):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 class InstanceWrite(object):
@@ -76,12 +119,18 @@ class ImportPlan(object):
         self.ignored_headers = list(ignored_headers or [])
         self.out_of_scope_rows = list(out_of_scope_rows or [])
         self.scope_name = safe_text(scope_name)
+        self.blocked_columns = []
 
     def type_write_row_count(self):
         return sum(len(write.source_rows) for write in self.type_writes)
 
     def skipped_lines(self):
         lines = []
+        for param_name in self.blocked_columns:
+            lines.append(
+                "Column '{}' skipped - family/type changes must be made in "
+                "Revit, not imported".format(param_name)
+            )
         for excel_row in self.out_of_scope_rows:
             lines.append("Row {}: element not in schedule '{}'".format(
                 excel_row, self.scope_name
@@ -247,8 +296,41 @@ def _resolve_unit_type_id(doc, param, spec):
     return None
 
 
+def _candidate_names(candidate):
+    """Names a candidate can be referred to by, including "Family: Type"."""
+    names = []
+    try:
+        name = safe_text(candidate.Name).strip()
+    except Exception:
+        return names
+    if not name:
+        return names
+    names.append(name)
+    try:
+        family_name = safe_text(candidate.FamilyName).strip()
+        if family_name:
+            names.append("{}: {}".format(family_name, name))
+    except Exception:
+        pass
+    return names
+
+
+def elementid_text_unchanged(param, text):
+    """True when an ElementId cell still holds its exported display text.
+
+    The export writes AsValueString() for these columns, so comparing display
+    text is the only way to recognise an untouched cell BEFORE resolving the
+    text back to an element. Without this, a cell the user never edited can
+    resolve to a different same-named element and be written as a "change".
+    """
+    try:
+        current = safe_text(param.AsValueString()).strip()
+    except Exception:
+        return False
+    return bool(current) and current == safe_text(text).strip()
+
+
 def _find_element_id_by_name(doc, param, text):
-    found_id = None
     try:
         current_id = param.AsElementId()
         if current_id is None or current_id == DB.ElementId.InvalidElementId:
@@ -258,16 +340,38 @@ def _find_element_id_by_name(doc, param, text):
             return None, "cannot infer category"
         category_id = current_element.Category.Id
         collector = DB.FilteredElementCollector(doc).OfCategoryId(category_id)
+        # Match like with like: a type-valued parameter must never resolve to
+        # an instance, which reports its type's name from .Name.
+        try:
+            if isinstance(current_element, DB.ElementType):
+                collector = collector.WhereElementIsElementType()
+            else:
+                collector = collector.WhereElementIsNotElementType()
+        except Exception:
+            pass
+
+        matches = []
+        matched_ids = set()
         for candidate in collector:
             try:
-                if safe_text(candidate.Name) == text:
-                    found_id = candidate.Id
-                    break
+                if text not in _candidate_names(candidate):
+                    continue
+                id_value = eid_to_int(candidate.Id)
+                if id_value in matched_ids:
+                    continue
+                matched_ids.add(id_value)
+                matches.append(candidate.Id)
             except Exception:
                 continue
-        if found_id is None:
+
+        if not matches:
             return None, "no element named '{}' in that category".format(text)
-        return found_id, None
+        if len(matches) > 1:
+            return None, (
+                "'{}' is ambiguous - {} elements share that name; "
+                "set this parameter in Revit"
+            ).format(text, len(matches))
+        return matches[0], None
     except Exception as find_error:
         return None, exception_text(find_error)
 
@@ -340,8 +444,16 @@ def _queue_write(doc, plan, owner, spec, text, excel_row, on_valid):
             (excel_row, spec.param_name, text, "parameter not found")
         )
         return
+    if _is_type_changing_param(param):
+        if spec.param_name not in plan.blocked_columns:
+            plan.blocked_columns.append(spec.param_name)
+        return
     if param.IsReadOnly:
         plan.read_only.append((excel_row, spec.param_name))
+        return
+    if param.StorageType == DB.StorageType.ElementId \
+            and elementid_text_unchanged(param, text):
+        plan.unchanged_count += 1
         return
     converted, error = _convert_value(doc, param, spec, text)
     if error is not None:
@@ -471,7 +583,10 @@ def apply_import_plan(doc, plan):
     written_instance = 0
     written_type = 0
     failed_lines = []
-    with revit.Transaction("Import Schedules from Excel", doc=doc):
+
+    transaction = DB.Transaction(doc, "Import Schedules from Excel")
+    transaction.Start()
+    try:
         for write in plan.instance_writes:
             try:
                 write.param.Set(write.new_value)
@@ -492,4 +607,23 @@ def apply_import_plan(doc, plan):
                     write.spec.param_name,
                     exception_text(set_error),
                 ))
+        status = transaction.Commit()
+    except Exception:
+        try:
+            if transaction.HasStarted():
+                transaction.RollBack()
+        except Exception:
+            LOGGER.exception("Could not roll back the import transaction.")
+        raise
+
+    # Revit can veto the commit (errors that cannot be ignored, ownership
+    # conflicts). Report that instead of counts nothing kept.
+    if status != DB.TransactionStatus.Committed:
+        failed_lines.insert(0, (
+            "Revit did not commit the changes (transaction status: {}). "
+            "Nothing was written."
+        ).format(status))
+        written_instance = 0
+        written_type = 0
+
     return ImportResult(written_instance, written_type, failed_lines, plan)
