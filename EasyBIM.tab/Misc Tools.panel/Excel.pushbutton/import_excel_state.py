@@ -280,13 +280,20 @@ def detect_type_conflicts(records, type_param_names, type_key_by_row,
         buckets = {}
         for text, excel_row in pairs:
             canon = canonical_value(text, numeric) if text else BLANK_CANONICAL
-            bucket = buckets.setdefault(canon, [text, []])
-            bucket[1].append(excel_row)
+            buckets.setdefault(canon, []).append((excel_row, text))
+
+        # Values that compare equal can still differ literally ("2.5" vs
+        # "2.50"). Represent each bucket by its lowest Excel row rather than
+        # by whichever row happened to come first in the file, so a sorted
+        # or reordered workbook imports identically.
+        def _representative(entries):
+            return sorted(entries)[0][1]
 
         if len(buckets) > 1:
             values = sorted(
-                (bucket[0] or BLANK_DISPLAY, sorted(bucket[1]))
-                for bucket in buckets.values()
+                (_representative(entries) or BLANK_DISPLAY,
+                 sorted(row for row, _ in entries))
+                for entries in buckets.values()
             )
             conflicts.append(TypeConflict(
                 type_key,
@@ -295,8 +302,11 @@ def detect_type_conflicts(records, type_param_names, type_key_by_row,
                 values,
             ))
         else:
-            bucket = list(buckets.values())[0]
-            agreed[(type_key, param_name)] = (bucket[0], sorted(bucket[1]))
+            entries = list(buckets.values())[0]
+            agreed[(type_key, param_name)] = (
+                _representative(entries),
+                sorted(row for row, _ in entries),
+            )
 
     conflicts.sort(key=lambda c: (c.type_name.lower(), c.param_name.lower()))
     return conflicts, agreed
