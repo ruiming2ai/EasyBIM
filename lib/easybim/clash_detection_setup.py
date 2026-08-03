@@ -141,15 +141,21 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
         paused = clash_detection_engine.is_paused()
         session = clash_detection_engine.get_session()
         self.SessionStateText.Text = "Paused" if paused else "Running"
+
+        # Reopening the panel goes through Revit's own dockable pane and never
+        # needed the session object, so it stays available even in the
+        # degraded case below - that is precisely when you want it back.
+        self.OpenPanelButton.IsEnabled = True
+
         if session is None:
             self.SessionStateText.Text = "Running (details lost on reload)"
             self.SessionDetailText.Text = (
                 "Detection is still attached to Revit but this session's list "
-                "was lost when pyRevit reloaded. Stop Detection to clear it."
+                "was lost when pyRevit reloaded. View Status still reopens the "
+                "panel; Stop Detection clears it."
             )
             self.SessionPauseButton.IsEnabled = False
             self.SessionResumeButton.IsEnabled = False
-            self.OpenPanelButton.IsEnabled = False
         else:
             summary = session.summary()
             self.SessionDetailText.Text = "{0}  |  {1} live clash(es), {2} resolved".format(
@@ -407,9 +413,20 @@ class ClashDetectionSetupWindow(forms.WPFWindow):
             from easybim import clash_detection_engine
             from easybim import clash_detection_panel
 
-            clash_detection_panel.open_panel(clash_detection_engine.get_session())
+            opened = clash_detection_panel.open_panel(
+                clash_detection_engine.get_session()
+            )
         except Exception as ex:
-            LOGGER.debug("[Clash Detection] Open panel failed: %s", ex)
+            LOGGER.exception("Clash Detection panel failed to open.")
+            forms.alert("Could not open the panel:\n{0}".format(ex), title=TITLE)
+            return
+        if not opened:
+            # Silently doing nothing is what made this look broken before.
+            forms.alert(
+                "Revit did not accept the panel. Stop and start the mode to "
+                "rebuild it.",
+                title=TITLE,
+            )
 
     def session_pause_click(self, sender, args):
         del sender, args

@@ -526,7 +526,11 @@ def open_panel(session):
                 _log("open_dockable_panel failed: {0}".format(ex))
     if not opened:
         opened = _open_fallback_window()
-    refresh(session)
+    if session is not None:
+        # Only repaint when there is a session to paint from.  Refreshing with
+        # None clears the list, which would wipe the panel in exactly the case
+        # where reopening it is the point.
+        refresh(session)
     return opened
 
 
