@@ -1,0 +1,5 @@
+title: Restore All Views
+tooltip: Restore every view in this document to its original phase and clear all temporary view settings. Save or synchronize afterwards to keep the restored state.
+author: Ruiming Liu
+min_revit_version: 2015
+max_revit_version: 2027

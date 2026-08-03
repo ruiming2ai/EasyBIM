@@ -143,6 +143,222 @@ def run_pushbutton(command_script_path=""):
     )
 
 
+def run_restore_active_view(command_script_path=""):
+    """Restore the active view's temporary phase and view settings now.
+
+    This is the manual counterpart to close-time recovery: the same restore
+    transaction runs immediately instead of waiting for a document close.
+    """
+    _log("PythonRestoreViewBegin scriptPath={0}".format(_safe_text(command_script_path)))
+
+    context = _resolve_restore_context(require_view=True)
+    if context is None:
+        return False
+    uiapp, doc, view = context
+
+    view_id_int = _eid_to_int(getattr(view, "Id", None))
+    if view_id_int is None:
+        _show_alert(TITLE, "Could not read active view id.")
+        _log("PythonRestoreViewMissingViewId")
+        return False
+
+    close = _get_close_module()
+    if close is None:
+        _show_alert(TITLE, "The Temp Phase restore runtime is unavailable.")
+        _log("PythonRestoreRuntimeUnavailable")
+        return False
+
+    summary = _summary_for_view(
+        close.collect_tvp_summary(uiapp=uiapp, doc=doc),
+        view_id_int,
+    )
+    if not summary.get("has_restore_work"):
+        _show_alert(
+            TITLE,
+            "The active view has no temporary phase or view settings to restore.",
+        )
+        _log("PythonRestoreViewNoWork view={0}".format(_view_display_name(view)))
+        return False
+
+    return _apply_restore(
+        close=close,
+        uiapp=uiapp,
+        doc=doc,
+        summary=summary,
+        scope="view",
+        label=_view_display_name(view),
+    )
+
+
+def run_restore_all_views(command_script_path=""):
+    """Restore every temporary phase and view setting in the active document.
+
+    Covers views tracked by the Temp Phase button plus any other view left
+    with Temporary View Properties enabled, matching close recovery.
+    """
+    _log("PythonRestoreAllBegin scriptPath={0}".format(_safe_text(command_script_path)))
+
+    context = _resolve_restore_context(require_view=False)
+    if context is None:
+        return False
+    uiapp, doc, _view = context
+
+    close = _get_close_module()
+    if close is None:
+        _show_alert(TITLE, "The Temp Phase restore runtime is unavailable.")
+        _log("PythonRestoreRuntimeUnavailable")
+        return False
+
+    summary = close.collect_tvp_summary(uiapp=uiapp, doc=doc)
+    if not summary.get("has_restore_work"):
+        _show_alert(
+            TITLE,
+            "No temporary phase or view settings were found in this document.",
+        )
+        _log("PythonRestoreAllNoWork")
+        return False
+
+    return _apply_restore(
+        close=close,
+        uiapp=uiapp,
+        doc=doc,
+        summary=summary,
+        scope="document",
+        label=_safe_text(summary.get("doc_title")),
+    )
+
+
+def _resolve_restore_context(require_view):
+    """Return ``(uiapp, doc, view)`` or ``None`` after alerting the user."""
+    uiapp = _get_uiapp()
+    if uiapp is None:
+        _show_alert(TITLE, "Revit UI context is not available.")
+        _log("PythonRestoreNoUiApp")
+        return None
+
+    uidoc = getattr(uiapp, "ActiveUIDocument", None)
+    doc = getattr(uidoc, "Document", None) if uidoc else None
+    view = getattr(uidoc, "ActiveView", None) if uidoc else None
+
+    if not _is_doc_supported(doc):
+        _show_alert(TITLE, "Open a project document to use this tool.")
+        _log("PythonRestoreNoProjectDocument")
+        return None
+
+    if require_view and not _is_view_valid(view):
+        _show_alert(TITLE, "Open a valid project view to use this tool.")
+        _log("PythonRestoreInvalidView")
+        return None
+
+    return uiapp, doc, view
+
+
+def _summary_for_view(summary, view_id_int):
+    """Narrow a document-wide restore summary down to a single view."""
+    summary = dict(summary or {})
+    view_id_int = _to_int(view_id_int)
+
+    def _matches(item):
+        return _to_int((item or {}).get("view_id")) == view_id_int
+
+    tracked = [item for item in (summary.get("tracked_restore_views") or []) if _matches(item)]
+    untracked = [item for item in (summary.get("untracked_tvp_views") or []) if _matches(item)]
+
+    summary["tracked_restore_views"] = tracked
+    summary["untracked_tvp_views"] = untracked
+    summary["tracked_restore_count"] = len(tracked)
+    summary["untracked_tvp_count"] = len(untracked)
+    summary["has_restore_work"] = bool(tracked or untracked)
+    return summary
+
+
+def _apply_restore(close, uiapp, doc, summary, scope, label=""):
+    """Run the shared restore transaction and report the outcome."""
+    result = close.restore_tvp_summary(uiapp=uiapp, doc=doc, summary=summary)
+    if not result.get("ok"):
+        message = _safe_text(result.get("message")) or (
+            "Temporary view properties could not be restored."
+        )
+        _show_alert(TITLE, message)
+        _log("PythonRestoreFailed scope={0} {1}".format(scope, message))
+        return False
+
+    _clear_document_arm_if_idle(close, doc)
+
+    restored = _to_int(result.get("restored_phase_views")) or 0
+    cleared = _to_int(result.get("disabled_untracked_tvp_views")) or 0
+    _log(
+        "PythonRestoreSuccess scope={0} phaseViews={1} untrackedViews={2}".format(
+            scope,
+            restored,
+            cleared,
+        )
+    )
+    _show_alert(TITLE, _restore_summary_message(scope, label, restored, cleared))
+    return True
+
+
+def _restore_summary_message(scope, label, restored, cleared):
+    label = _safe_text(label).strip()
+    if scope == "view":
+        headline = (
+            "Restored the temporary settings for view {0}.".format(label)
+            if label
+            else "Restored the temporary settings for the active view."
+        )
+    else:
+        headline = (
+            "Restored the temporary settings in {0}.".format(label)
+            if label
+            else "Restored the temporary settings in this document."
+        )
+
+    return "\n".join(
+        [
+            headline,
+            "",
+            "Views returned to their original phase: {0}".format(restored),
+            "Additional views with temporary settings cleared: {0}".format(cleared),
+            "",
+            "Save or synchronize the model to keep the restored state.",
+        ]
+    )
+
+
+def _clear_document_arm_if_idle(close, doc):
+    """Drop close-recovery arming once a document has nothing left to restore.
+
+    A stale arm record would make every later close of this document run a
+    full view scan looking for work that no longer exists.
+    """
+    try:
+        view_state = _get_state()
+        doc_key = _doc_key(doc)
+        doc_runtime_id = _get_doc_runtime_id(doc)
+        if close._has_tracked_sessions_for_identity(view_state, doc_key, doc_runtime_id):
+            return False
+        close._drop_doc_sessions_for_identities(view_state, [(doc_key, doc_runtime_id)])
+        _log("PythonRestoreDocumentDisarmed docKey={0}".format(doc_key))
+        return True
+    except Exception as ex:
+        _log("PythonRestoreDisarmFailed {0}".format(_exception_text(ex)))
+        return False
+
+
+def _get_close_module():
+    """Import the close runtime lazily.
+
+    ``temp_phase_close`` imports this module at import time, so a
+    module-level import here would be circular.
+    """
+    try:
+        from easybim import temp_phase_close
+
+        return temp_phase_close
+    except Exception:
+        return None
+
+
 def log_command_context(command_script_path=""):
     """Record the physical pyRevit script path that Revit executed."""
     extension_root = _find_extension_root(command_script_path) or _find_extension_root(__file__)
