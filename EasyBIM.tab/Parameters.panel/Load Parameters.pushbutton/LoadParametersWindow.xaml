@@ -1,0 +1,402 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Load Parameters"
+        Width="1300"
+        Height="880"
+        MinWidth="1080"
+        MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Load Parameters"
+                       FontSize="22"
+                       FontWeight="SemiBold" />
+            <TextBlock Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Margin="0,2,0,0"
+                       Text="Add shared parameters to families, or bind them to categories in this project. The window stays open after a load, so the same selection can be used for both." />
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="560" />
+                <ColumnDefinition Width="14" />
+                <ColumnDefinition Width="440" MinWidth="340" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Parameters -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0"
+                           Text="Parameters"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,6" />
+
+                <TextBox x:Name="ParameterSearchBox"
+                         Grid.Row="1"
+                         Height="26"
+                         Padding="6,2,6,2"
+                         VerticalContentAlignment="Center"
+                         Margin="0,0,0,6"
+                         ToolTip="Filter by parameter name, data type or source"
+                         TextChanged="parameter_search_changed" />
+
+                <DataGrid x:Name="ParametersGrid"
+                          Grid.Row="2"
+                          AutoGenerateColumns="False"
+                          SelectionMode="Extended"
+                          SelectionUnit="FullRow"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          CanUserReorderColumns="False"
+                          CanUserSortColumns="False"
+                          RowHeaderWidth="0"
+                          BorderBrush="#B8B8B8"
+                          BorderThickness="1"
+                          HorizontalGridLinesBrush="#DEDEDE"
+                          VerticalGridLinesBrush="#DEDEDE"
+                          EnableColumnVirtualization="True"
+                          EnableRowVirtualization="True"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          SelectionChanged="parameters_selection_changed" />
+
+                <DockPanel Grid.Row="3" LastChildFill="False" Margin="0,6,0,0">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                        <Button Content="All"
+                                Width="60"
+                                Height="26"
+                                Margin="0,0,6,0"
+                                Click="parameters_all_click" />
+                        <Button Content="None"
+                                Width="60"
+                                Height="26"
+                                Margin="0,0,6,0"
+                                Click="parameters_none_click" />
+                        <Button Content="Invert"
+                                Width="60"
+                                Height="26"
+                                Margin="0,0,12,0"
+                                Click="parameters_invert_click" />
+                        <Button Content="Add from Shared Parameter File..."
+                                Height="26"
+                                Padding="10,0,10,0"
+                                Click="add_from_file_click" />
+                    </StackPanel>
+                    <TextBlock x:Name="ParameterCountText"
+                               DockPanel.Dock="Right"
+                               Foreground="DimGray"
+                               VerticalAlignment="Center" />
+                </DockPanel>
+
+                <Border Grid.Row="4"
+                        BorderBrush="#E3E3E3"
+                        BorderThickness="1"
+                        Background="#FAFAFA"
+                        Padding="8"
+                        Margin="0,8,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="BulkTargetText"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,10,0"
+                                   Foreground="DimGray"
+                                   Text="Select rows to edit together" />
+                        <TextBlock Text="Group"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,6,0" />
+                        <ComboBox x:Name="BulkGroupCombo"
+                                  Width="190"
+                                  Height="24"
+                                  Margin="0,0,12,0"
+                                  DisplayMemberPath="label"
+                                  ToolTip="Set the group for every selected row"
+                                  SelectionChanged="bulk_group_changed" />
+                        <Button x:Name="BulkTypeButton"
+                                Content="Type"
+                                Width="80"
+                                Height="24"
+                                Margin="0,0,6,0"
+                                ToolTip="Make every selected row a Type parameter"
+                                Click="bulk_type_click" />
+                        <Button x:Name="BulkInstanceButton"
+                                Content="Instance"
+                                Width="80"
+                                Height="24"
+                                ToolTip="Make every selected row an Instance parameter"
+                                Click="bulk_instance_click" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- Targets -->
+            <TabControl x:Name="TargetTabs" Grid.Column="2">
+                <TabItem Header="Families">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                            <Button Content="Add All Project Families"
+                                    Height="26"
+                                    Padding="10,0,10,0"
+                                    Margin="0,0,6,0"
+                                    Click="add_project_families_click" />
+                            <Button Content="Add from Folder..."
+                                    Height="26"
+                                    Padding="10,0,10,0"
+                                    Click="add_folder_families_click" />
+                        </StackPanel>
+
+                        <TextBox x:Name="FamilySearchBox"
+                                 Grid.Row="1"
+                                 Height="26"
+                                 Padding="6,2,6,2"
+                                 VerticalContentAlignment="Center"
+                                 Margin="0,0,0,6"
+                                 ToolTip="Filter by family name, category or path"
+                                 TextChanged="family_search_changed" />
+
+                        <Border Grid.Row="2"
+                                BorderBrush="#B8B8B8"
+                                BorderThickness="1">
+                            <ListBox x:Name="FamilyList"
+                                     BorderThickness="0"
+                                     SelectionMode="Extended"
+                                     HorizontalContentAlignment="Stretch"
+                                     PreviewKeyDown="family_key_down">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal"
+                                                    Background="Transparent">
+                                            <CheckBox IsChecked="{Binding is_checked, Mode=TwoWay}"
+                                                      VerticalAlignment="Center"
+                                                      Margin="2,0,8,0"
+                                                      Click="family_check_click" />
+                                            <TextBlock Text="{Binding name}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding note}"
+                                                       VerticalAlignment="Center"
+                                                       Margin="8,0,0,0"
+                                                       Foreground="DimGray" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+
+                        <DockPanel Grid.Row="3" LastChildFill="False" Margin="0,6,0,0">
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                <Button Content="All"
+                                        Width="52"
+                                        Height="26"
+                                        Margin="0,0,6,0"
+                                        Click="families_all_click" />
+                                <Button Content="None"
+                                        Width="52"
+                                        Height="26"
+                                        Margin="0,0,6,0"
+                                        Click="families_none_click" />
+                                <Button Content="Invert"
+                                        Width="52"
+                                        Height="26"
+                                        Margin="0,0,6,0"
+                                        Click="families_invert_click" />
+                                <Button Content="Remove Checked"
+                                        Height="26"
+                                        Padding="8,0,8,0"
+                                        Click="remove_families_click" />
+                            </StackPanel>
+                            <TextBlock x:Name="FamilyCountText"
+                                       DockPanel.Dock="Right"
+                                       Foreground="DimGray"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <StackPanel Grid.Row="4" Margin="0,8,0,0">
+                            <CheckBox x:Name="OutputFolderCheck"
+                                      Content="Write folder families to a different folder"
+                                      ToolTip="Leave this off to overwrite each .rfa where it is"
+                                      Click="output_toggle_click" />
+                            <DockPanel Margin="0,6,0,0">
+                                <Button x:Name="BrowseOutputButton"
+                                        DockPanel.Dock="Right"
+                                        Content="Browse..."
+                                        Width="80"
+                                        Height="24"
+                                        Margin="6,0,0,0"
+                                        IsEnabled="False"
+                                        Click="browse_output_click" />
+                                <TextBox x:Name="OutputFolderText"
+                                         Height="24"
+                                         Padding="6,2,6,2"
+                                         VerticalContentAlignment="Center"
+                                         IsReadOnly="True"
+                                         IsEnabled="False" />
+                            </DockPanel>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Project categories">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                   Foreground="DimGray"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,6"
+                                   Text="Checking a family ticks its category here. Unticking one stays unticked." />
+
+                        <TextBox x:Name="CategorySearchBox"
+                                 Grid.Row="1"
+                                 Height="26"
+                                 Padding="6,2,6,2"
+                                 VerticalContentAlignment="Center"
+                                 Margin="0,0,0,6"
+                                 ToolTip="Filter by category name"
+                                 TextChanged="category_search_changed" />
+
+                        <Border Grid.Row="2"
+                                BorderBrush="#B8B8B8"
+                                BorderThickness="1">
+                            <ListBox x:Name="CategoryList"
+                                     BorderThickness="0"
+                                     SelectionMode="Extended"
+                                     HorizontalContentAlignment="Stretch"
+                                     PreviewKeyDown="category_key_down">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal"
+                                                    Background="Transparent">
+                                            <CheckBox IsChecked="{Binding is_checked, Mode=TwoWay}"
+                                                      VerticalAlignment="Center"
+                                                      Margin="2,0,8,0"
+                                                      Click="category_check_click" />
+                                            <TextBlock Text="{Binding name}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+
+                        <DockPanel Grid.Row="3" LastChildFill="False" Margin="0,6,0,0">
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                <Button Content="All"
+                                        Width="52"
+                                        Height="26"
+                                        Margin="0,0,6,0"
+                                        Click="categories_all_click" />
+                                <Button Content="None"
+                                        Width="52"
+                                        Height="26"
+                                        Margin="0,0,6,0"
+                                        Click="categories_none_click" />
+                                <Button Content="Invert"
+                                        Width="52"
+                                        Height="26"
+                                        Click="categories_invert_click" />
+                            </StackPanel>
+                            <TextBlock x:Name="CategoryCountText"
+                                       DockPanel.Dock="Right"
+                                       Foreground="DimGray"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+
+        <Border Grid.Row="2"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="10"
+                Margin="0,10,0,0">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="A family already carrying the parameter:"
+                           VerticalAlignment="Center"
+                           Margin="0,0,10,0" />
+                <RadioButton x:Name="ModeSkipRadio"
+                             GroupName="LoadParametersExisting"
+                             Content="Skip it"
+                             IsChecked="True"
+                             VerticalAlignment="Center"
+                             Margin="0,0,14,0"
+                             Checked="mode_changed" />
+                <RadioButton x:Name="ModeUpdateRadio"
+                             GroupName="LoadParametersExisting"
+                             Content="Update its group and Type/Instance"
+                             VerticalAlignment="Center"
+                             Checked="mode_changed" />
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="3" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="StatusText"
+                       Grid.Column="0"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       VerticalAlignment="Center"
+                       Margin="0,0,12,0" />
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="LoadFamiliesButton"
+                        Content="Load to Families"
+                        Width="150"
+                        Height="34"
+                        Margin="0,0,8,0"
+                        IsEnabled="False"
+                        ToolTipService.ShowOnDisabled="True"
+                        ToolTip="Check at least one parameter and one family."
+                        Click="load_families_click" />
+                <Button x:Name="LoadProjectButton"
+                        Content="Load to Project"
+                        Width="150"
+                        Height="34"
+                        Margin="0,0,8,0"
+                        IsEnabled="False"
+                        ToolTipService.ShowOnDisabled="True"
+                        ToolTip="Check at least one parameter and one category."
+                        Click="load_project_click" />
+                <Button x:Name="CloseButton"
+                        Content="Close"
+                        Width="100"
+                        Height="34"
+                        IsCancel="True"
+                        Click="close_click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

@@ -1,0 +1,11 @@
+title: |-
+  Load
+  Parameters
+tooltip: |-
+  Add shared parameters to families, or bind them to categories in this project.
+
+  Pick the shared parameters, set each one's group and Type/Instance once, then choose targets: families in this model, family files in a folder, or project categories. The window stays open after a load, so the same selection serves both.
+
+  Families in the model are edited and reloaded in one undo step; families in a folder are written back to their .rfa file and are not loaded into the project.
+min_revit_version: 2023
+author: Ruiming Liu
