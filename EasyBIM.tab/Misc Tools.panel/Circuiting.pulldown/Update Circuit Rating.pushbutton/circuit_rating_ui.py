@@ -177,6 +177,34 @@ class UpdateCircuitRatingWindow(forms.WPFWindow):
         self.Close()
 
 
+class ZeroRatingReportWindow(forms.WPFWindow):
+    """What is still at zero amps once the run is over."""
+
+    def __init__(self, xaml_file_name, summary_text, rows):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.SummaryText.Text = summary_text or u""
+        rows = list(rows or [])
+        if rows:
+            self.ZeroCountText.Text = \
+                u"{0} circuit(s) are at zero amp after updating:".format(
+                    len(rows))
+        else:
+            self.ZeroCountText.Text = \
+                u"No circuit is left at zero amp."
+        self.ZeroCircuitsGrid.ItemsSource = rows
+        self._is_ready = True
+
+    def close_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
+def show_zero_rating_report(summary_text, rows):
+    ZeroRatingReportWindow(
+        "ZeroRatingReportWindow.xaml", summary_text, rows).ShowDialog()
+
+
 def show_update_circuit_rating(circuits_data, source_options, target_options):
     window = UpdateCircuitRatingWindow(
         "UpdateCircuitRatingWindow.xaml",
