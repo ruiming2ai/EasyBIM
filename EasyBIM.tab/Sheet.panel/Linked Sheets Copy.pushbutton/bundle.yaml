@@ -1,0 +1,11 @@
+title: |-
+  Linked Sheets
+  Copy
+tooltip: |-
+  Reuse a Revit link's sheets: same title block, same views, in the same place.
+
+  Pick a loaded link, tick its sheets, and each one is recreated here with a matching plan view per viewport. Every new view shows that link By Linked View, and every viewport is positioned by model coordinates, so the grids land exactly where they do on the linked sheet - print one over the other and they overlay.
+
+  Levels are matched through Copy/Monitor first; anything unmonitored gets a dropdown. Only plan views are reproduced in this version; sections, elevations, 3D views, drafting views, legends and schedules are listed as skipped.
+min_revit_version: 2024
+author: Ruiming Liu

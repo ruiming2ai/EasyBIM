@@ -186,6 +186,85 @@ that ended up blank all show up here. A circuit is listed if *any* of the
 parameters you ticked reads zero or nothing. That makes the report the list of
 what is left to do — when it is empty it says so.
 
+## Linked Sheets Copy (Sheet, Revit 2024+)
+
+Linked Sheets Copy reuses a Revit link's sheets. Pick a loaded link, tick its
+sheets, and each one is recreated here: same title block in the same place on
+the page, and one new plan view per viewport, cropped and scaled exactly like
+the linked view and showing that link **By Linked View**.
+
+The point is the alignment. Every viewport is positioned by **model
+coordinates**, not by copying its position on the page, so a grid intersection
+lands on exactly the spot on the title block that it occupies on the linked
+sheet. Print the new sheet over the linked one and they overlay. That holds
+whether the link is rotated, placed by shared coordinates a long way from the
+origin, or drawn at a different scale from your view.
+
+Every placement is checked at a **second** point, out at the corner of the
+crop, and the report gives the miss in millimetres on the printed sheet. One
+matching point only proves the translation; if that second figure is not
+essentially zero, the view did not reproduce the linked scale or rotation, and
+the row says so rather than leaving you to find it on a plot.
+
+### Levels
+
+A level that is copied and monitored from the link is used automatically -
+that is a decision somebody already made, so the tool does not second-guess
+it. Anything unmonitored is guessed by name, then by elevation, and the
+**Matched by** column always says which. Pick a different level from the
+dropdown at any point; a manual choice wins.
+
+A level left **Unmapped** is not a blocker. Its views are skipped and counted,
+and the rest of the sheet is still built.
+
+### What is copied, and what is not
+
+The tool always creates the sheet, creates each plan on its mapped level,
+matches scale, crop, rotation and detail level, sets the link to By Linked
+View, and aligns the viewports. Four options are ticked to start with - the
+title block, its parameters, the viewport type and the view title position -
+and the rest are yours to turn on:
+
+| Off by default | What it does |
+|---|---|
+| Copy sheet parameters | The writable sheet parameters other than number and name |
+| Copy sheet detailing | Text, detail lines, symbols, filled regions and images sitting on the linked sheet |
+| Copy revision clouds | Off because a cloud adds its revision to the new sheet, and your revisions are not the link's |
+| Apply the host view template of the same name | |
+| Match scope box by name | A scope box cannot cross documents, so only the name is matched |
+| Copy the linked view's annotations | See the warning below |
+| Hide the other RVT links in the new views | They otherwise draw By Host View, which the linked sheet never showed |
+
+**Copying the linked view's annotations draws them twice.** With the link set
+to By Linked View, the linked view's own text, detail lines and filled regions
+already come through the link. Copying them puts a second, editable set on
+top. Turn it on only if you intend to switch that link off in the new views.
+Sheet content is the opposite case: a sheet is not part of the linked model,
+so nothing on it can arrive through the link and copying is the only way.
+
+Tags and dimensions are never copied - they reference elements that do not
+exist in your model. Legends and schedules cannot cross documents at all, and
+a copied schedule would report your model's data rather than the link's, so
+both are listed as skipped. This version reproduces **plan views only**;
+sections, elevations, 3D views and drafting views are named on their sheet and
+skipped.
+
+### Before anything is written
+
+A confirmation window shows the complete dry run - every sheet, every view,
+the level mapping, everything skipped with its reason - and separately, every
+change the run will make to *your* model, such as a title block family or a
+viewport type copied in from the link. A name that already exists here always
+keeps your definition; nothing in your model is redefined by the copy.
+
+Sheet numbers that clash, either with a sheet you already have or with another
+row in the batch, turn red and block the run. The prefix and suffix boxes are
+usually the quickest way past that, or edit the **New number** column directly.
+
+The whole run is one Ctrl+Z. Each sheet is written inside its own group, so
+one sheet that fails is rolled back on its own and named in the report while
+the rest still land.
+
 ## Load Parameters (Parameters, Revit 2023+)
 
 Load Parameters puts shared parameters where they need to be: **into families**,
