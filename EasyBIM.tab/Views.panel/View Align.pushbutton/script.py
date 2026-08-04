@@ -2,7 +2,6 @@
 """Align placed views on sheets using model coordinates only."""
 
 # pylint: disable=import-error,invalid-name,broad-except,too-many-lines
-import math
 from collections import defaultdict
 
 from pyrevit import DB
@@ -15,7 +14,6 @@ from pyrevit.compat import get_elementid_value_func
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
 
-EPS = 1e-9
 MODEL_ANCHOR_HOST = DB.XYZ.Zero
 SCOPE_BOX_BIP = getattr(DB.BuiltInParameter, "VIEWER_VOLUME_OF_INTEREST_CROP", None)
 
@@ -25,6 +23,7 @@ except Exception:
     INVALID_EID = DB.ElementId(-1)
 
 
+from easybim import sheet_geometry
 from easybim.compat import eid_to_int as _eid_int
 from easybim.compat import safe_text as _safe_text
 
@@ -53,28 +52,6 @@ def _doc_path_key(doc):
     except Exception:
         pass
     return "<memory>|{}".format(_safe_text(getattr(doc, "Title", "")).lower())
-
-
-def _rotation_angle_from_viewport(viewport):
-    try:
-        rotation = viewport.Rotation
-    except Exception:
-        rotation = None
-
-    rotation_text = _safe_text(rotation).lower()
-    if "clockwise" in rotation_text and "counter" not in rotation_text:
-        return -math.pi * 0.5
-    if "counter" in rotation_text:
-        return math.pi * 0.5
-    if "upside" in rotation_text or "180" in rotation_text:
-        return math.pi
-    return 0.0
-
-
-def _rotate_xy(x_val, y_val, angle):
-    cos_a = math.cos(angle)
-    sin_a = math.sin(angle)
-    return x_val * cos_a - y_val * sin_a, x_val * sin_a + y_val * cos_a
 
 
 def _is_supported_view_type(view):
@@ -194,53 +171,19 @@ def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
     if not ok:
         return None, reason
 
-    try:
-        origin = view.Origin
-        right_dir = view.RightDirection
-        up_dir = view.UpDirection
-    except Exception:
-        return None, "View does not expose orientation vectors for anchor solve."
+    # One shared implementation with Linked Sheets Copy, in
+    # lib/easybim/sheet_geometry.py - two copies of this maths would drift.
+    projection, projection_reason = sheet_geometry.build_projection(
+        view, viewport)
+    if projection is None:
+        return None, projection_reason
 
-    try:
-        if right_dir.GetLength() < EPS or up_dir.GetLength() < EPS:
-            return None, "View orientation vectors are invalid."
-    except Exception:
-        return None, "View orientation vectors are invalid."
-
-    scale = 1.0
-    try:
-        scale = float(view.Scale)
-        if abs(scale) < EPS:
-            scale = 1.0
-    except Exception:
-        scale = 1.0
-
-    try:
-        model_vec = _xyz_sub(model_point, origin)
-        u_proj = model_vec.DotProduct(right_dir) / scale
-        v_proj = model_vec.DotProduct(up_dir) / scale
-    except Exception:
+    point = sheet_geometry.to_xyz(model_point)
+    if point is None:
         return None, "Unable to project model point to view plane."
 
-    try:
-        outline = view.Outline
-        center_u = (outline.Min.U + outline.Max.U) * 0.5
-        center_v = (outline.Min.V + outline.Max.V) * 0.5
-    except Exception:
-        return None, "View outline is unavailable."
-
-    local_dx = u_proj - center_u
-    local_dy = v_proj - center_v
-
-    angle = _rotation_angle_from_viewport(viewport)
-    rot_dx, rot_dy = _rotate_xy(local_dx, local_dy, angle)
-
-    try:
-        center = viewport.GetBoxCenter()
-    except Exception:
-        return None, "Viewport box center is unavailable."
-
-    return _xyz(center.X + rot_dx, center.Y + rot_dy, center.Z), ""
+    sheet_point = projection.project(point)
+    return _xyz(sheet_point[0], sheet_point[1], sheet_point[2]), ""
 
 
 def _clone_curve_loop(curve_loop):
