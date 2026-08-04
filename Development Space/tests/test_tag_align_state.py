@@ -24,12 +24,17 @@ state = _load_module()
 
 
 def make_rule(**kwargs):
+    # Identity is names, not ElementIds - the ids are along for the ride so the
+    # Show button and tag creation have something to work with.
     defaults = {
         "tag_type_id": "tag-1",
         "tag_type_label": "Door Tag : Standard",
         "tag_family_name": "Door Tag",
+        "tag_type_name": "Standard",
+        "tag_category_signature": "OST_DoorTags",
         "host_category_id": "cat-doors",
         "host_category_name": "Doors",
+        "host_category_signature": "OST_Doors",
         "host_family_name": "Single-Flush",
         "host_type_id": "type-900",
         "host_type_label": "900 x 2100",
@@ -48,6 +53,7 @@ def make_target(**kwargs):
     defaults = {
         "element_id": 1,
         "category_id": "cat-doors",
+        "category_signature": "OST_Doors",
         "family_name": "Single-Flush",
         "type_id": "type-900",
         "type_label": "900 x 2100",
@@ -143,7 +149,11 @@ class ValidationTests(unittest.TestCase):
     def test_mixed_tag_types_are_fatal(self):
         rules = [
             make_rule(),
-            make_rule(tag_type_id="tag-2", tag_type_label="Door Tag : Large"),
+            make_rule(
+                tag_type_id="tag-2",
+                tag_type_name="Large",
+                tag_type_label="Door Tag : Large",
+            ),
         ]
         result = state.validate_references(rules)
         self.assertTrue(result.is_fatal)
@@ -153,7 +163,11 @@ class ValidationTests(unittest.TestCase):
     def test_mixed_categories_are_fatal(self):
         rules = [
             make_rule(),
-            make_rule(host_category_id="cat-windows", host_category_name="Windows"),
+            make_rule(
+                host_category_id="cat-windows",
+                host_category_signature="OST_Windows",
+                host_category_name="Windows",
+            ),
         ]
         result = state.validate_references(rules)
         self.assertTrue(result.is_fatal)
@@ -301,7 +315,8 @@ class ValidationTests(unittest.TestCase):
 class ResolutionTests(unittest.TestCase):
     def test_category_must_match(self):
         match = state.resolve_reference_for_target(
-            [make_rule()], make_target(category_id="cat-windows")
+            [make_rule()],
+            make_target(category_id="cat-windows", category_signature="OST_Windows"),
         )
         self.assertFalse(match.matched)
         self.assertEqual(state.SKIP_CATEGORY_MISMATCH, match.skip_reason)
@@ -309,7 +324,7 @@ class ResolutionTests(unittest.TestCase):
     def test_exact_scope_skips_a_sibling_type(self):
         match = state.resolve_reference_for_target(
             [make_rule()],
-            make_target(type_id="type-1200"),
+            make_target(type_id="type-1200", type_label="1200 x 2100"),
             scope=state.SCOPE_EXACT_TYPE,
         )
         self.assertEqual(state.SKIP_NO_RULE_FOR_TYPE, match.skip_reason)
@@ -317,7 +332,7 @@ class ResolutionTests(unittest.TestCase):
     def test_paired_family_scope_covers_a_sibling_type(self):
         match = state.resolve_reference_for_target(
             [make_rule()],
-            make_target(type_id="type-1200"),
+            make_target(type_id="type-1200", type_label="1200 x 2100"),
             scope=state.SCOPE_PAIRED_FAMILY,
         )
         self.assertTrue(match.matched)
@@ -326,7 +341,7 @@ class ResolutionTests(unittest.TestCase):
     def test_paired_family_scope_still_stops_at_another_family(self):
         match = state.resolve_reference_for_target(
             [make_rule()],
-            make_target(family_name="Double-Flush", type_id="type-x"),
+            make_target(family_name="Double-Flush", type_id="type-x", type_label="1800"),
             scope=state.SCOPE_PAIRED_FAMILY,
         )
         self.assertEqual(state.SKIP_NO_RULE_FOR_FAMILY, match.skip_reason)
@@ -334,7 +349,7 @@ class ResolutionTests(unittest.TestCase):
     def test_category_scope_covers_another_family(self):
         match = state.resolve_reference_for_target(
             [make_rule()],
-            make_target(family_name="Double-Flush", type_id="type-x"),
+            make_target(family_name="Double-Flush", type_id="type-x", type_label="1800"),
             scope=state.SCOPE_SAME_CATEGORY,
         )
         self.assertTrue(match.matched)
@@ -342,7 +357,10 @@ class ResolutionTests(unittest.TestCase):
     def test_category_scope_never_crosses_the_category(self):
         match = state.resolve_reference_for_target(
             [make_rule()],
-            make_target(category_id="cat-windows", family_name="Fixed", type_id="w-1"),
+            make_target(
+                category_id="cat-windows", category_signature="OST_Windows",
+                family_name="Fixed", type_id="w-1", type_label="600",
+            ),
             scope=state.SCOPE_SAME_CATEGORY,
         )
         self.assertEqual(state.SKIP_CATEGORY_MISMATCH, match.skip_reason)
@@ -351,23 +369,29 @@ class ResolutionTests(unittest.TestCase):
         """Widening the scope must only add fallbacks, never steal a target."""
         sibling_family = make_rule(
             host_family_name="Double-Flush", host_type_id="type-1800",
-            offset_view=(9.0, 9.0),
+            host_type_label="1800 x 2100", offset_view=(9.0, 9.0),
         )
-        same_family = make_rule(host_type_id="type-1200", offset_view=(5.0, 5.0))
-        own_type = make_rule(host_type_id="type-900", offset_view=(1.0, 1.0))
+        same_family = make_rule(
+            host_type_id="type-1200", host_type_label="1200 x 2100",
+            offset_view=(5.0, 5.0),
+        )
+        own_type = make_rule(
+            host_type_id="type-900", host_type_label="900 x 2100",
+            offset_view=(1.0, 1.0),
+        )
         rules = [sibling_family, same_family, own_type]
 
         self.assertIs(
             own_type,
             state.resolve_reference_for_target(
-                rules, make_target(type_id="type-900"),
+                rules, make_target(type_id="type-900", type_label="900 x 2100"),
                 scope=state.SCOPE_SAME_CATEGORY,
             ).rule,
         )
         self.assertIs(
             same_family,
             state.resolve_reference_for_target(
-                rules, make_target(type_id="type-1200"),
+                rules, make_target(type_id="type-1200", type_label="1200 x 2100"),
                 scope=state.SCOPE_SAME_CATEGORY,
             ).rule,
         )
@@ -375,16 +399,21 @@ class ResolutionTests(unittest.TestCase):
             sibling_family,
             state.resolve_reference_for_target(
                 rules,
-                make_target(family_name="Sliding", type_id="type-slide"),
+                make_target(
+                    family_name="Sliding", type_id="type-slide", type_label="Slide",
+                ),
                 scope=state.SCOPE_SAME_CATEGORY,
             ).rule,
         )
 
     def test_exact_type_wins_over_a_family_sibling(self):
-        exact = make_rule(host_type_id="type-1200", offset_view=(0.0, 9.0))
+        exact = make_rule(
+            host_type_id="type-1200", host_type_label="1200 x 2100",
+            offset_view=(0.0, 9.0),
+        )
         match = state.resolve_reference_for_target(
             [make_rule(), exact],
-            make_target(type_id="type-1200"),
+            make_target(type_id="type-1200", type_label="1200 x 2100"),
             scope=state.SCOPE_PAIRED_FAMILY,
         )
         self.assertIs(exact, match.rule)
@@ -540,7 +569,11 @@ class SummaryTests(unittest.TestCase):
     def test_fatal_text_names_every_offending_value(self):
         rules = [
             make_rule(),
-            make_rule(tag_type_id="tag-2", tag_type_label="Door Tag : Large"),
+            make_rule(
+                tag_type_id="tag-2",
+                tag_type_name="Large",
+                tag_type_label="Door Tag : Large",
+            ),
         ]
         text = state.build_fatal_text(state.validate_references(rules))
         self.assertIn("Door Tag : Standard", text)
@@ -599,6 +632,163 @@ class FilterTreeTests(unittest.TestCase):
         self.assertEqual("<no type>", tree[0].children[0].children[0].label)
 
 
+class PortableKeyTests(unittest.TestCase):
+    """Matching runs on names so a preset means the same thing in any model."""
+
+    def test_the_same_names_match_across_different_element_ids(self):
+        # The same door type, as it would be numbered in two projects.
+        here = make_rule(host_type_id="type-900")
+        there = make_target(type_id=987654)
+        self.assertEqual(here.type_key(), there.type_key())
+        self.assertEqual(here.category_key(), there.category_key())
+
+    def test_two_families_sharing_a_type_name_stay_distinct(self):
+        single = make_rule(host_family_name="Single-Flush", host_type_label="Standard")
+        double = make_rule(host_family_name="Double-Flush", host_type_label="Standard")
+        self.assertNotEqual(single.type_key(), double.type_key())
+
+    def test_keys_ignore_case_and_padding(self):
+        self.assertEqual(
+            state.type_key_for("Single-Flush", "900 x 2100"),
+            state.type_key_for("  single-flush ", "900 X 2100 "),
+        )
+
+    def test_category_falls_back_to_the_id_without_a_signature(self):
+        self.assertEqual("cat-doors", state.category_key_for("", "cat-doors"))
+        self.assertEqual("ost_doors", state.category_key_for("OST_Doors", "cat-doors"))
+
+    def test_a_rule_with_no_ids_still_matches_by_name(self):
+        loaded = make_rule(
+            host_category_id=None, host_type_id=None, tag_type_id=None
+        )
+        match = state.resolve_reference_for_target(
+            [loaded], make_target(), scope=state.SCOPE_EXACT_TYPE
+        )
+        self.assertTrue(match.matched)
+
+    def test_mixed_tag_types_are_caught_by_name_not_by_id(self):
+        rules = [
+            make_rule(tag_type_id=None),
+            make_rule(tag_type_id=None, tag_type_name="Large"),
+        ]
+        result = state.validate_references(rules)
+        self.assertTrue(result.is_fatal)
+        self.assertEqual(state.TAG_TYPE_MIXED, result.fatals[0].code)
+
+
+class PresetSerializationTests(unittest.TestCase):
+    def _session(self):
+        session = state.TagAlignSession()
+        session.scope = state.SCOPE_EXACT_TYPE
+        session.any_orientation = True
+        session.reference_mode = state.MODE_SINGLE
+        session.include_pinned = True
+        session.copy_leader = False
+        session.references = [
+            make_rule(
+                offset_view=(1.5, -2.25),
+                offset_local=(0.5, 3.75),
+                offset_normal=4.125,
+                elbow_view=(1.0, 1.0),
+                elbow_local=(2.0, 2.0),
+                leader_end_view=(3.0, 3.0),
+                leader_end_local=(4.0, 4.0),
+                has_leader=True,
+                tag_orientation="Horizontal",
+                leader_end_condition="Free",
+            )
+        ]
+        return session
+
+    def test_round_trip_preserves_every_number(self):
+        preset = state.preset_to_dict(self._session(), "Doors")
+        restored = state.apply_preset(state.TagAlignSession(), preset)
+        rule = restored.references[0]
+
+        self.assertEqual((1.5, -2.25), rule.offset_view)
+        self.assertEqual((0.5, 3.75), rule.offset_local)
+        self.assertEqual(4.125, rule.offset_normal)
+        self.assertEqual((1.0, 1.0), rule.elbow_view)
+        self.assertEqual((2.0, 2.0), rule.elbow_local)
+        self.assertEqual((3.0, 3.0), rule.leader_end_view)
+        self.assertEqual((4.0, 4.0), rule.leader_end_local)
+        self.assertEqual(100, rule.view_scale)
+        self.assertTrue(rule.has_direction)
+        self.assertTrue(rule.has_leader)
+
+    def test_round_trip_preserves_the_portable_identity(self):
+        preset = state.preset_to_dict(self._session(), "Doors")
+        restored = state.apply_preset(state.TagAlignSession(), preset)
+        rule = restored.references[0]
+
+        self.assertEqual("OST_Doors", rule.host_category_signature)
+        self.assertEqual("OST_DoorTags", rule.tag_category_signature)
+        self.assertEqual("Single-Flush", rule.host_family_name)
+        self.assertEqual("900 x 2100", rule.host_type_label)
+        self.assertEqual("Door Tag", rule.tag_family_name)
+        self.assertEqual("Standard", rule.tag_type_name)
+
+    def test_enums_travel_as_names(self):
+        preset = state.preset_to_dict(self._session(), "Doors")
+        entry = preset["references"][0]
+        self.assertEqual("Horizontal", entry["tag_orientation"])
+        self.assertEqual("Free", entry["leader_end_condition"])
+
+    def test_enum_resolution_is_delegated_to_the_caller(self):
+        preset = state.preset_to_dict(self._session(), "Doors")
+
+        def _resolve(kind, name):
+            return "{0}:{1}".format(kind, name) if name else None
+
+        rule = state.rule_from_dict(preset["references"][0], _resolve)
+        self.assertEqual("tag_orientation:Horizontal", rule.tag_orientation)
+        self.assertEqual("leader_end_condition:Free", rule.leader_end_condition)
+
+    def test_options_and_scope_round_trip(self):
+        preset = state.preset_to_dict(self._session(), "Doors")
+        restored = state.apply_preset(state.TagAlignSession(), preset)
+
+        self.assertEqual(state.SCOPE_EXACT_TYPE, restored.scope)
+        self.assertEqual(state.MODE_SINGLE, restored.reference_mode)
+        self.assertTrue(restored.any_orientation)
+        self.assertTrue(restored.include_pinned)
+        self.assertFalse(restored.copy_leader)
+
+    def test_an_unknown_scope_falls_back_to_the_default(self):
+        restored = state.apply_preset(
+            state.TagAlignSession(), {"scope": "something_removed", "references": []}
+        )
+        self.assertEqual(state.DEFAULT_SCOPE, restored.scope)
+
+    def test_a_missing_option_keeps_its_default(self):
+        preset = state.preset_to_dict(self._session(), "Doors")
+        del preset["options"]["include_pinned"]
+        restored = state.apply_preset(state.TagAlignSession(), preset)
+        self.assertFalse(restored.include_pinned)
+
+    def test_default_name_reads_from_the_references(self):
+        self.assertEqual(
+            "Doors - Door Tag : Standard", state.default_preset_name(self._session())
+        )
+
+    def test_upsert_replaces_and_find_is_case_insensitive(self):
+        presets = [{"name": "Doors"}, {"name": "Pipes"}]
+        presets = state.upsert_preset(presets, {"name": "doors", "v": 2})
+        self.assertEqual(2, len(presets))
+        self.assertEqual(2, state.find_preset(presets, "DOORS")["v"])
+
+    def test_remove_is_case_insensitive(self):
+        self.assertEqual([], state.remove_preset([{"name": "Doors"}], "doors"))
+
+    def test_preset_info_summarises_a_row(self):
+        preset = state.preset_to_dict(self._session(), "Doors", saved_at="2026-08-03")
+        info = state.PresetInfo("Doors", "local", preset)
+        self.assertEqual(1, info.reference_count)
+        self.assertEqual("Door Tag : Standard", info.tag_type_label)
+        self.assertEqual("Doors", info.category_label)
+        self.assertIn("2026-08-03", info.summary())
+
+
 class SessionTests(unittest.TestCase):
     def test_defaults_match_the_agreed_behaviour(self):
         session = state.TagAlignSession()
@@ -613,16 +803,29 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(session.include_pinned)
         self.assertFalse(session.rotate_fallback)
         self.assertFalse(session.has_references)
+        self.assertEqual("", session.tag_type_missing)
+
+    def test_align_and_tag_is_blocked_when_the_tag_family_is_missing(self):
+        session = state.TagAlignSession()
+        session.references = [make_rule()]
+        self.assertTrue(session.can_create_tags)
+
+        session.tag_type_missing = "The tag family 'Door Tag' is not loaded."
+        self.assertFalse(session.can_create_tags)
+        # Aligning is unaffected - tags are matched by tag family name.
+        self.assertTrue(session.has_references)
 
     def test_reset_clears_the_orientation_answer_too(self):
         session = state.TagAlignSession()
         session.references = [make_rule()]
         session.reference_mode = state.MODE_SINGLE
         session.any_orientation = True
+        session.tag_type_missing = "gone"
         session.reset_references()
         self.assertFalse(session.has_references)
         self.assertIsNone(session.reference_mode)
         self.assertFalse(session.any_orientation)
+        self.assertEqual("", session.tag_type_missing)
 
     def test_tag_type_and_category_come_from_the_references(self):
         session = state.TagAlignSession()
