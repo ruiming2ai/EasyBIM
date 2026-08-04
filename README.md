@@ -139,3 +139,38 @@ Load has something in it even if you never press Save. If a loaded preset names
 a tag family this model has not got, `Align` still works — tags are matched to a
 reference by tag family name — while `Align & Tag` is greyed with the reason,
 because nothing can create a tag from a type that is not there.
+
+## Circuiting (Misc Tools)
+
+A dropdown for batch work on electrical circuits.
+
+### Update Circuit Rating
+
+Circuit ratings are already carried by the equipment sitting on the circuit —
+typically a downstream panelboard, whose own rating is what the feeder has to
+be. This command reads that value off the elements and writes it onto the
+circuits.
+
+1. Pick the **current parameter on circuited elements**. Every parameter that
+   actually holds a value somewhere is listed; parameters measured in amps come
+   first, and each is labelled with where it was found (`Instance`, `Type`, or
+   both — the instance value wins, the type value fills a gap).
+2. Tick the **target circuit parameters**. Every writable numeric parameter on
+   the circuits is offered, so a shared rating parameter works as well as the
+   native ones; **Rating** (the trip rating) and **Frame** are ticked by
+   default.
+3. Review the list and press **Update**. All rows start checked; **All** and
+   **None** toggle the lot, and **Cancel** writes nothing.
+
+Per circuit, the **highest** value found across its elements wins — a tie goes
+to an Electrical Equipment element, so a panel and a receptacle both reading
+20 A credit the panel. The `From Element` column names the element the value
+came from, and `Existing` shows what the ticked targets hold right now, so a
+row that would change nothing is marked `no change`.
+
+Elements without the parameter are simply ignored: a circuit is still listed
+and still updated as long as *one* of its elements carries a value. A circuit
+where none of them does cannot be updated, so it is not listed at all — the
+count under the list says how many were skipped for that reason. Values are
+written raw, with no rounding to standard breaker sizes, and the whole run is
+one undo step.

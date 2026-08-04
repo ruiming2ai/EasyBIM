@@ -1,0 +1,8 @@
+title: |-
+  Update Circuit
+  Rating
+tooltip: |-
+  Transfer the highest amp rating carried by the circuited elements into the circuit's own rating parameters.
+
+  Pick the current parameter that lives on the equipment, tick the circuit parameters to write (Rating and Frame by default), then review the circuit list before updating.
+author: Ruiming Liu
