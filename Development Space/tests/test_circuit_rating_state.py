@@ -207,6 +207,57 @@ class SummarizeTests(unittest.TestCase):
         self.assertIn(u"HP-1 - 2: read only", summary["detail"])
 
 
+class ZeroRatingReportTests(unittest.TestCase):
+    def _circuit(self, panel=u"HP-1", number=u"1", name=u"Load", values=None):
+        return {
+            "panel": panel,
+            "circuit_number": number,
+            "load_name": name,
+            "values": values if values is not None else {},
+        }
+
+    def test_a_rated_circuit_is_not_reported(self):
+        self.assertFalse(state.is_zero_rating({RATING: 20.0}, [RATING]))
+
+    def test_zero_and_blank_both_count_as_zero_amp(self):
+        self.assertTrue(state.is_zero_rating({RATING: 0.0}, [RATING]))
+        self.assertTrue(state.is_zero_rating({RATING: None}, [RATING]))
+        self.assertTrue(state.is_zero_rating({}, [RATING]))
+
+    def test_any_zero_target_reports_the_circuit(self):
+        self.assertTrue(
+            state.is_zero_rating({RATING: 20.0, FRAME: 0.0}, [RATING, FRAME]))
+
+    def test_nothing_is_reported_when_nothing_was_targeted(self):
+        self.assertFalse(state.is_zero_rating({RATING: 0.0}, []))
+
+    def test_only_zero_amp_circuits_reach_the_report(self):
+        rows = state.build_zero_rating_rows(
+            [self._circuit(number=u"1", values={RATING: 20.0}),
+             self._circuit(number=u"2", name=u"Spare", values={RATING: 0.0})],
+            [RATING])
+        self.assertEqual(1, len(rows))
+        self.assertEqual(u"Spare", rows[0].circuit_name)
+        self.assertEqual(u"2", rows[0].circuit_number)
+        self.assertEqual(u"HP-1", rows[0].panel)
+
+    def test_the_report_covers_circuits_the_run_never_touched(self):
+        """A circuit nobody could rate is the one worth reporting."""
+        rows = state.build_zero_rating_rows(
+            [self._circuit(panel=u"AP-9", number=u"4", values={})], [RATING])
+        self.assertEqual([u"AP-9"], [row.panel for row in rows])
+
+    def test_the_report_sorts_by_panel_then_circuit_number(self):
+        rows = state.build_zero_rating_rows(
+            [self._circuit(panel=u"HP-1", number=u"10", values={RATING: 0.0}),
+             self._circuit(panel=u"HP-1", number=u"2", values={RATING: 0.0}),
+             self._circuit(panel=u"AP-1", number=u"1", values={RATING: 0.0})],
+            [RATING])
+        self.assertEqual(
+            [(u"AP-1", u"1"), (u"HP-1", u"2"), (u"HP-1", u"10")],
+            [(row.panel, row.circuit_number) for row in rows])
+
+
 class ValuesMatchTests(unittest.TestCase):
     def test_conversion_noise_still_counts_as_equal(self):
         self.assertTrue(state.values_match(100.0, 100.0 + 1e-9))
