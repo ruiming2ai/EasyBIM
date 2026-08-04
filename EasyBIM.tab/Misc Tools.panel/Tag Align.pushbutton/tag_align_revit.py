@@ -130,6 +130,71 @@ def category_of(element):
     return getattr(category, "Id", None), _safe_text(getattr(category, "Name", ""))
 
 
+def category_signature(category):
+    """A portable name for a category: ``OST_Doors``.
+
+    ElementIds mean nothing in the next document, and the localized display
+    name changes with the Revit language pack.  The ``BuiltInCategory`` enum
+    name is stable across both, which is what makes a saved preset loadable
+    somewhere else.  A category with no built-in name falls back to its id and
+    simply will not rebind elsewhere - the load reports that rather than
+    guessing.
+    """
+    if category is None:
+        return ""
+
+    builtin = getattr(category, "BuiltInCategory", None)  # Revit 2023+
+    if builtin is not None:
+        text = _safe_text(builtin)
+        if text.startswith("OST_"):
+            return text
+
+    value = _eid_int(getattr(category, "Id", None))
+    if value is None:
+        return ""
+
+    try:
+        import System
+
+        name = System.Enum.GetName(DB.BuiltInCategory, System.Int32(value))
+        if name:
+            return _safe_text(name)
+    except Exception:
+        pass
+
+    return "id:{0}".format(value)
+
+
+def element_category_signature(element):
+    return category_signature(getattr(element, "Category", None))
+
+
+def resolve_category(doc, signature, fallback_name=""):
+    """Turn a stored signature back into this document's Category."""
+    text = _safe_text(signature).strip()
+
+    if text.startswith("OST_"):
+        builtin = getattr(DB.BuiltInCategory, text, None)
+        if builtin is not None:
+            try:
+                category = DB.Category.GetCategory(doc, builtin)
+                if category is not None:
+                    return category
+            except Exception:
+                pass
+
+    wanted = _safe_text(fallback_name).strip().lower()
+    if wanted:
+        try:
+            for category in doc.Settings.Categories:
+                if _safe_text(getattr(category, "Name", "")).strip().lower() == wanted:
+                    return category
+        except Exception:
+            pass
+
+    return None
+
+
 def make_length_formatter(doc):
     """Format a length in internal feet using the project's display units."""
     units = None
@@ -500,6 +565,7 @@ def read_target_info(doc, frame, element):
     return TargetInfo(
         element_id=element.Id,
         category_id=category_id,
+        category_signature=element_category_signature(element),
         family_name=family_name,
         type_id=type_id,
         type_label=type_name,
@@ -518,6 +584,7 @@ def measure_reference(doc, tag, view=None):
     """
     tag_type_label = ""
     tag_family_name = ""
+    tag_type_name = ""
     try:
         tag_family_name, tag_type_name = element_type_label(doc, tag)
         tag_type_label = "{0} : {1}".format(tag_family_name, tag_type_name).strip(" :")
@@ -527,11 +594,15 @@ def measure_reference(doc, tag, view=None):
     except Exception:
         pass
 
+    tag_category = element_category_signature(tag)
+
     def _invalid(reason):
         return ReferenceRule(
             tag_id=getattr(tag, "Id", None),
             tag_type_label=tag_type_label,
             tag_family_name=tag_family_name,
+            tag_type_name=tag_type_name,
+            tag_category_signature=tag_category,
             invalid_reason=reason,
         )
 
@@ -630,9 +701,12 @@ def measure_reference(doc, tag, view=None):
         tag_type_id=tag.GetTypeId(),
         tag_type_label=tag_type_label,
         tag_family_name=tag_family_name,
+        tag_type_name=tag_type_name,
+        tag_category_signature=tag_category,
         host_id=host.Id,
         host_category_id=category_id,
         host_category_name=category_name,
+        host_category_signature=element_category_signature(host),
         host_family_name=family_name,
         host_type_id=host_type_id,
         host_type_label=type_name,
@@ -654,6 +728,338 @@ def measure_reference(doc, tag, view=None):
         leader_end_view=leader_end_view,
         leader_end_local=leader_end_local,
         notes=notes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# rebinding a saved preset onto the open document
+# ---------------------------------------------------------------------------
+
+
+def find_tag_type(doc, signature, family_name, type_name):
+    """``(symbol, exact)`` for a tag type named in a preset.
+
+    Falls back to another type of the same family when the exact one is not
+    loaded, because the family is what decides which tags a reference governs.
+    ``exact`` is False in that case so the caller can say what it substituted.
+    """
+    wanted_family = _safe_text(family_name).strip().lower()
+    wanted_type = _safe_text(type_name).strip().lower()
+    if not wanted_family:
+        return None, False
+
+    try:
+        collector = DB.FilteredElementCollector(doc).OfClass(DB.FamilySymbol)
+        category = resolve_category(doc, signature)
+        if category is not None:
+            collector = collector.OfCategoryId(category.Id)
+        symbols = list(collector)
+    except Exception:
+        return None, False
+
+    fallback = None
+    for symbol in symbols:
+        family, type_label = element_type_label(doc, symbol)
+        if family.strip().lower() != wanted_family:
+            continue
+        if type_label.strip().lower() == wanted_type:
+            return symbol, True
+        if fallback is None:
+            fallback = symbol
+    return fallback, False
+
+
+def host_type_exists(doc, signature, family_name, type_name):
+    wanted_family = _safe_text(family_name).strip().lower()
+    wanted_type = _safe_text(type_name).strip().lower()
+    if not wanted_family:
+        return False
+
+    try:
+        collector = DB.FilteredElementCollector(doc).WhereElementIsElementType()
+        category = resolve_category(doc, signature)
+        if category is not None:
+            collector = collector.OfCategoryId(category.Id)
+        for element_type in collector:
+            family, type_label = element_type_label(doc, element_type)
+            if (family.strip().lower() == wanted_family
+                    and type_label.strip().lower() == wanted_type):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+class RebindResult(object):
+    def __init__(self):
+        self.rules = []
+        self.unresolved = []
+        self.notes = []
+        self.tag_type_missing = ""
+
+
+def rebind_rules(doc, rules, enum_value=None):
+    """Bind a preset's names to this document's ElementIds.
+
+    Only two things genuinely have to resolve: the host category, without which
+    the target picker has nothing to filter on, and the tag type, without which
+    no tag can be created.  A missing host family or type is *not* an error -
+    under the category scope a reference from another project is still useful
+    for every other family - so it is reported as a note and the rule stays.
+    """
+    del enum_value
+    result = RebindResult()
+
+    for rule in list(rules or []):
+        category = resolve_category(
+            doc, rule.host_category_signature, rule.host_category_name
+        )
+        if category is None:
+            rule.invalid_reason = "category '{0}' is not in this model".format(
+                rule.host_category_name or rule.host_category_signature or "?"
+            )
+            result.unresolved.append(rule)
+            continue
+
+        rule.host_category_id = category.Id
+        if not rule.host_category_name:
+            rule.host_category_name = _safe_text(getattr(category, "Name", ""))
+
+        symbol, exact = find_tag_type(
+            doc, rule.tag_category_signature, rule.tag_family_name, rule.tag_type_name
+        )
+        if symbol is None:
+            rule.tag_type_id = None
+            if not result.tag_type_missing:
+                result.tag_type_missing = (
+                    "The tag family '{0}' is not loaded in this model.".format(
+                        rule.tag_family_name or "?"
+                    )
+                )
+        else:
+            rule.tag_type_id = symbol.Id
+            if not exact:
+                family, type_label = element_type_label(doc, symbol)
+                result.notes.append(
+                    "'{0} : {1}' is not loaded; using '{2}' instead.".format(
+                        rule.tag_family_name, rule.tag_type_name, type_label
+                    )
+                )
+
+        if not host_type_exists(
+            doc, rule.host_category_signature, rule.host_family_name,
+            rule.host_type_label,
+        ):
+            result.notes.append(
+                "'{0}' is not in this model - that reference only applies to "
+                "other families under the category scope.".format(rule.host_label())
+            )
+
+        # The tag and host the reference was measured on live in another
+        # document; nothing here can Show them.
+        rule.tag_id = None
+        rule.host_id = None
+        rule.view_id = None
+        result.rules.append(rule)
+
+    return result
+
+
+def enum_name(value):
+    """Serialise a CLR enum by name, so a preset survives the API changing."""
+    if value is None:
+        return None
+    return _safe_text(value)
+
+
+def enum_value_factory():
+    """Resolve ``TagOrientation`` / ``LeaderEndCondition`` names back to enums."""
+    owners = {
+        "tag_orientation": getattr(DB, "TagOrientation", None),
+        "leader_end_condition": getattr(DB, "LeaderEndCondition", None),
+    }
+
+    def _resolve(kind, name):
+        if not name:
+            return None
+        owner = owners.get(kind)
+        if owner is None:
+            return None
+        return getattr(owner, _safe_text(name), None)
+
+    return _resolve
+
+
+# ---------------------------------------------------------------------------
+# presets stored inside the model (Extensible Storage)
+# ---------------------------------------------------------------------------
+#
+# This is the only mechanism that reaches a team on an ACC cloud model: the
+# entity travels with the .rvt, so a Sync to Central publishes it to everyone
+# who opens that model.  No Revit API writes files into ACC Docs.
+
+TAG_ALIGN_SCHEMA_GUID = "6f1c4a2e-9d38-4f7b-b0a1-5c2e7d8a3b64"
+SCHEMA_NAME = "EasyBIMTagAlign"
+SCHEMA_VENDOR = "EASYBIM"
+SCHEMA_FIELD = "presets"
+STORAGE_NAME = "EasyBIM Tag Align"
+
+
+def _storage_module():
+    return getattr(DB, "ExtensibleStorage", None)
+
+
+def get_preset_schema():
+    """``(schema, error)``. Reuses a registered schema; never builds twice.
+
+    Schemas are registered per Revit *session*, so a second build under the
+    same GUID throws.  If something else already owns this GUID with a
+    different shape, in-model storage is reported unavailable rather than
+    taking the command down.
+    """
+    storage = _storage_module()
+    if storage is None:
+        return None, "This Revit build has no Extensible Storage."
+
+    try:
+        import System
+
+        guid = System.Guid(TAG_ALIGN_SCHEMA_GUID)
+    except Exception as ex:
+        return None, _exception_text(ex)
+
+    try:
+        existing = storage.Schema.Lookup(guid)
+    except Exception:
+        existing = None
+
+    if existing is not None:
+        try:
+            if existing.GetField(SCHEMA_FIELD) is None:
+                return None, (
+                    "Another add-in has registered a different schema under "
+                    "EasyBIM's id; saving into the model is unavailable."
+                )
+        except Exception as ex:
+            return None, _exception_text(ex)
+        return existing, ""
+
+    try:
+        builder = storage.SchemaBuilder(guid)
+        builder.SetSchemaName(SCHEMA_NAME)
+        builder.SetVendorId(SCHEMA_VENDOR)
+        builder.SetReadAccessLevel(storage.AccessLevel.Public)
+        builder.SetWriteAccessLevel(storage.AccessLevel.Public)
+        builder.AddSimpleField(SCHEMA_FIELD, clr.GetClrType(_string_type()))
+        return builder.Finish(), ""
+    except Exception as ex:
+        return None, _exception_text(ex)
+
+
+def _string_type():
+    import System
+
+    return System.String
+
+
+def _find_preset_storage(doc, schema):
+    storage_module = _storage_module()
+    try:
+        collector = DB.FilteredElementCollector(doc).OfClass(
+            storage_module.DataStorage
+        )
+    except Exception:
+        return None
+
+    for element in collector:
+        try:
+            entity = element.GetEntity(schema)
+            if entity is not None and entity.IsValid():
+                return element
+        except Exception:
+            continue
+    return None
+
+
+def read_model_presets(doc):
+    """The JSON payload stored in this model, or ``""``."""
+    if doc is None:
+        return ""
+    schema, error = get_preset_schema()
+    if schema is None:
+        raise RuntimeError(error)
+
+    element = _find_preset_storage(doc, schema)
+    if element is None:
+        return ""
+    try:
+        entity = element.GetEntity(schema)
+        return _safe_text(entity.Get[_string_type()](SCHEMA_FIELD))
+    except Exception as ex:
+        raise RuntimeError(_exception_text(ex))
+
+
+def model_preset_availability(doc):
+    """``(available, reason)`` - why in-model saving is or is not offered."""
+    if doc is None:
+        return False, "No document is open."
+    if bool(getattr(doc, "IsFamilyDocument", False)):
+        return False, "Open a project rather than a family."
+    schema, error = get_preset_schema()
+    if schema is None:
+        return False, error
+    if bool(getattr(doc, "IsReadOnly", False)):
+        return False, "This model is open read-only."
+    return True, ""
+
+
+def write_model_presets(doc, text):
+    """``(ok, error)``. Opens its own transaction."""
+    available, reason = model_preset_availability(doc)
+    if not available:
+        return False, reason
+
+    schema, error = get_preset_schema()
+    if schema is None:
+        return False, error
+
+    storage_module = _storage_module()
+    element = _find_preset_storage(doc, schema)
+
+    if element is not None and bool(getattr(doc, "IsWorkshared", False)):
+        try:
+            status = DB.WorksharingUtils.GetCheckoutStatus(doc, element.Id)
+            if status == DB.CheckoutStatus.OwnedByOtherUser:
+                return False, (
+                    "Another user has the EasyBIM preset storage checked out. "
+                    "Try again after they synchronise."
+                )
+        except Exception:
+            pass
+
+    transaction = DB.Transaction(doc, "EasyBIM Tag Align presets")
+    transaction.Start()
+    try:
+        if element is None:
+            element = storage_module.DataStorage.Create(doc)
+            try:
+                element.Name = STORAGE_NAME
+            except Exception:
+                pass
+        entity = storage_module.Entity(schema)
+        entity.Set[_string_type()](SCHEMA_FIELD, _safe_text(text))
+        element.SetEntity(entity)
+        transaction.Commit()
+    except Exception as ex:
+        try:
+            transaction.RollBack()
+        except Exception:
+            pass
+        return False, _exception_text(ex)
+
+    return True, (
+        "Saved into the model. On a cloud model your team sees it after "
+        "Sync to Central."
     )
 
 
@@ -789,9 +1195,29 @@ def _apply_leader(tag, rule, elbow, leader_end):
         set_leader_elbow(tag, elbow)
 
 
+def _ensure_symbol_active(doc, type_id):
+    """Revit refuses to place an inactive FamilySymbol.
+
+    Rarely an issue when the reference tag was just picked in this model, but a
+    preset loaded from elsewhere routinely names a tag type nothing has placed
+    yet. Must run inside the caller's transaction.
+    """
+    if type_id is None:
+        return
+    try:
+        symbol = doc.GetElement(type_id)
+        if symbol is None or bool(getattr(symbol, "IsActive", True)):
+            return
+        symbol.Activate()
+        doc.Regenerate()
+    except Exception:
+        pass
+
+
 def create_tag(context, session, host, rule, head, elbow, leader_end):
     """Create a tag on ``host`` at the planned head position."""
     doc = context.doc
+    _ensure_symbol_active(doc, rule.tag_type_id)
     orientation = rule.tag_orientation
     if orientation is None:
         orientation = getattr(getattr(DB, "TagOrientation", None), "Horizontal", None)

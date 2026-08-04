@@ -26,24 +26,38 @@ from easybim.compat import eid_to_int as _eid_int
 from easybim.compat import exception_text as _exception_text
 from easybim.compat import safe_text as _safe_text
 
+from tag_align_presets import SOURCE_LOCAL
+from tag_align_presets import SOURCE_SHARED
+from tag_align_presets import build_library
 from tag_align_revit import TagOnlyFilter
 from tag_align_revit import TargetFilter
 from tag_align_revit import ViewContext
 from tag_align_revit import build_filter_entries
 from tag_align_revit import build_plan
+from tag_align_revit import enum_name
+from tag_align_revit import enum_value_factory
 from tag_align_revit import execute_plan
 from tag_align_revit import is_independent_tag
 from tag_align_revit import make_length_formatter
 from tag_align_revit import measure_reference
+from tag_align_revit import model_preset_availability
+from tag_align_revit import read_model_presets
+from tag_align_revit import rebind_rules
+from tag_align_revit import write_model_presets
+from tag_align_state import LAST_USED_NAME
 from tag_align_state import MODE_MULTI
 from tag_align_state import MODE_SINGLE
 from tag_align_state import SCOPE_EXACT_TYPE
 from tag_align_state import TagAlignSession
 from tag_align_state import apply_conflict_choices
+from tag_align_state import apply_preset
 from tag_align_state import build_fatal_text
 from tag_align_state import build_filter_tree
 from tag_align_state import build_preview_text
+from tag_align_state import default_preset_name
 from tag_align_state import filter_entries
+from tag_align_state import preset_to_dict
+from tag_align_state import rule_from_dict
 from tag_align_state import validate_references
 import tag_align_ui as ui
 
@@ -61,6 +75,8 @@ STEP_MODE = "mode"
 STEP_CLICK = "click"
 STEP_BATCH = "batch"
 STEP_REPORT = "report"
+STEP_SAVE_PRESET = "save_preset"
+STEP_LOAD_PRESET = "load_preset"
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +236,130 @@ def _validate(session):
         scale_with_view=session.scale_with_view,
         collapse_flip=session.collapse_flip,
     )
+
+
+# ---------------------------------------------------------------------------
+# presets
+# ---------------------------------------------------------------------------
+
+
+def _timestamp():
+    try:
+        import datetime
+
+        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
+def _user_name(doc):
+    for source in (
+        lambda: doc.Application.Username,
+        lambda: os.environ.get("USERNAME"),
+        lambda: os.environ.get("USER"),
+    ):
+        try:
+            value = _safe_text(source()).strip()
+            if value:
+                return value
+        except Exception:
+            continue
+    return ""
+
+
+def _make_library(doc, shared_path=None):
+    """The three preset sources, with in-model wired to Extensible Storage."""
+    available, reason = model_preset_availability(doc)
+
+    def _read_model():
+        return read_model_presets(doc)
+
+    def _write_model(text):
+        return write_model_presets(doc, text)
+
+    return build_library(
+        model_reader=_read_model if available else None,
+        model_writer=_write_model if available else None,
+        model_unavailable_reason="" if available else reason,
+        shared_path=shared_path,
+    )
+
+
+def _pick_folder(initial=""):
+    """Native folder browser for the shared-folder destination."""
+    try:
+        import clr as _clr
+
+        _clr.AddReference("System.Windows.Forms")
+        import System.Windows.Forms as WinForms
+
+        dialog = WinForms.FolderBrowserDialog()
+        dialog.Description = "Pick the folder the team's Tag Align settings live in"
+        if initial and os.path.isdir(initial):
+            dialog.SelectedPath = initial
+        if dialog.ShowDialog() == WinForms.DialogResult.OK:
+            return dialog.SelectedPath
+    except Exception as ex:
+        logger.debug("Tag Align folder picker failed | %s", ex)
+    return ""
+
+
+def _save_preset(doc, session, name, target_key, shared_path=""):
+    """``(ok, message)`` - write one preset to one destination."""
+    library = _make_library(doc, shared_path=shared_path or None)
+
+    if target_key == SOURCE_SHARED and shared_path:
+        library.set_shared_path(shared_path)
+        library = _make_library(doc, shared_path=shared_path)
+
+    preset = preset_to_dict(
+        session,
+        name,
+        saved_at=_timestamp(),
+        saved_by=_user_name(doc),
+        enum_name=enum_name,
+    )
+    return library.save(target_key, preset)
+
+
+def _auto_save_last_used(doc, session):
+    """Written on every run, so Load is never empty for a user who never saves."""
+    if not session.has_references:
+        return
+    try:
+        _save_preset(doc, session, LAST_USED_NAME, SOURCE_LOCAL)
+    except Exception as ex:
+        logger.debug("Tag Align could not store Last used | %s", ex)
+
+
+def _load_preset_into_session(doc, session, preset):
+    """Bind a preset's names to this model and report what did not resolve."""
+    resolver = enum_value_factory()
+    rules = [
+        rule_from_dict(entry, resolver) for entry in preset.get("references") or []
+    ]
+    outcome = rebind_rules(doc, rules)
+
+    apply_preset(session, preset, outcome.rules)
+    session.tag_type_missing = outcome.tag_type_missing
+    if outcome.tag_type_missing:
+        session.change_tag_type = False
+
+    lines = [
+        "Loaded {0} of {1} reference(s).".format(
+            len(outcome.rules), len(outcome.rules) + len(outcome.unresolved)
+        )
+    ]
+    for rule in outcome.unresolved:
+        lines.append("- {0}: {1}".format(rule.host_label(), rule.invalid_reason))
+    for note in outcome.notes:
+        lines.append("- {0}".format(note))
+    if outcome.tag_type_missing:
+        lines.append("")
+        lines.append(outcome.tag_type_missing)
+        lines.append("Align still works; Align & Tag needs the tag family loaded.")
+
+    return "\n".join(lines), bool(outcome.rules)
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +535,14 @@ def main():
                 step = STEP_PICK_REFERENCE
                 continue
 
+            if action == ui.ACTION_SAVE_PRESET:
+                step = STEP_SAVE_PRESET
+                continue
+
+            if action == ui.ACTION_LOAD_PRESET:
+                step = STEP_LOAD_PRESET
+                continue
+
             if action in (ui.ACTION_ALIGN, ui.ACTION_ALIGN_AND_TAG):
                 session.create_tags = action == ui.ACTION_ALIGN_AND_TAG
                 validation = _validate(session)
@@ -403,9 +551,84 @@ def main():
                     step = STEP_CONFLICT
                     continue
                 session.references = validation.accepted
+                # These settings are now in use, so they are worth remembering
+                # even if the user never presses Save.
+                _auto_save_last_used(doc, session)
                 step = STEP_ALIGN_OPTIONS if session.create_tags else STEP_MODE
                 continue
 
+            continue
+
+        # ------------------------------------------------------ save preset
+        if step == STEP_SAVE_PRESET:
+            library = _make_library(doc)
+            save_window = ui.SavePresetWindow(
+                "SavePresetWindow.xaml",
+                session,
+                library,
+                suggested_name=default_preset_name(session),
+                shared_path=library.shared_path(),
+                browse_callback=_pick_folder,
+            )
+            save_window.ShowDialog()
+
+            if save_window.result == ui.ACTION_OK:
+                ok, message = _save_preset(
+                    doc,
+                    session,
+                    save_window.preset_name,
+                    save_window.target_key,
+                    save_window.shared_path,
+                )
+                if ok:
+                    forms.alert(
+                        message or "Saved '{0}'.".format(save_window.preset_name),
+                        title=__title__,
+                        warn_icon=False,
+                    )
+                else:
+                    forms.alert(
+                        "Nothing was saved.\n\n{0}".format(message), title=__title__
+                    )
+            step = STEP_MAIN
+            continue
+
+        # ------------------------------------------------------ load preset
+        if step == STEP_LOAD_PRESET:
+            library = _make_library(doc)
+            load_window = ui.LoadPresetWindow(
+                "LoadPresetWindow.xaml", library.infos(), library.errors()
+            )
+            load_window.ShowDialog()
+            chosen = load_window.selected
+
+            if load_window.result == "delete" and chosen is not None:
+                ok, message = library.delete(chosen.source.key, chosen.name)
+                if not ok:
+                    forms.alert(message, title=__title__)
+                continue
+
+            if load_window.result == "rename" and chosen is not None:
+                ok, message = library.rename(
+                    chosen.source.key, chosen.name, load_window.new_name
+                )
+                if not ok:
+                    forms.alert(message, title=__title__)
+                continue
+
+            if load_window.result == ui.ACTION_OK and chosen is not None:
+                report, loaded_any = _load_preset_into_session(
+                    doc, session, chosen.preset
+                )
+                forms.alert(report, title=__title__, warn_icon=not loaded_any)
+                if not loaded_any:
+                    session.reset_references()
+                    step = STEP_MAIN
+                    continue
+                step = STEP_CONFLICT if _validate(session).is_blocked else STEP_MAIN
+                continue
+
+            step = STEP_MAIN
             continue
 
         # --------------------------------------------------- pick reference
@@ -489,7 +712,7 @@ def main():
 
             if not validation.conflicts:
                 session.references = validation.accepted
-                step = _resume_after_conflict(session, pending_action)
+                step = _resume_after_conflict(doc, session, pending_action)
                 pending_action = None
                 continue
 
@@ -505,7 +728,7 @@ def main():
 
             if result == ui.ACTION_OK:
                 session.references = apply_conflict_choices(validation)
-                step = _resume_after_conflict(session, pending_action)
+                step = _resume_after_conflict(doc, session, pending_action)
                 pending_action = None
                 continue
 
@@ -588,7 +811,10 @@ def main():
         return
 
 
-def _resume_after_conflict(session, pending_action):
+def _resume_after_conflict(doc, session, pending_action):
+    if pending_action in (ui.ACTION_ALIGN, ui.ACTION_ALIGN_AND_TAG):
+        # Same moment as the direct Align press: the settings are now in use.
+        _auto_save_last_used(doc, session)
     if pending_action == ui.ACTION_ALIGN:
         return STEP_MODE
     if pending_action == ui.ACTION_ALIGN_AND_TAG:

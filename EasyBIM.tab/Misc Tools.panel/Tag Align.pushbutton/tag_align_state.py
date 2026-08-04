@@ -139,6 +139,40 @@ def safe_text(value):
 
 
 # ---------------------------------------------------------------------------
+# identity keys
+# ---------------------------------------------------------------------------
+#
+# Matching runs on names, not ElementIds.  Within one document the two are
+# equally discriminating - Revit cannot hold two types of the same name inside
+# one family - but names also mean something in the *next* document, which is
+# what lets a saved preset be loaded into another model.
+
+
+def family_key_for(family_name):
+    return safe_text(family_name).strip().lower()
+
+
+def type_key_for(family_name, type_name):
+    """Family and type together: two families may share a type name."""
+    return "{0}|{1}".format(
+        family_key_for(family_name), safe_text(type_name).strip().lower()
+    )
+
+
+def category_key_for(signature, category_id=None):
+    """The BuiltInCategory name when we have one, else the raw id.
+
+    Falling back to the id keeps behaviour correct inside the current document
+    for a category that has no built-in name; such a reference simply will not
+    rebind in a different model, and says so when it fails.
+    """
+    text = safe_text(signature).strip()
+    if text:
+        return text.lower()
+    return safe_text(category_id)
+
+
+# ---------------------------------------------------------------------------
 # angles
 # ---------------------------------------------------------------------------
 
@@ -216,9 +250,12 @@ class ReferenceRule(object):
         tag_type_id=None,
         tag_type_label="",
         tag_family_name="",
+        tag_type_name="",
+        tag_category_signature="",
         host_id=None,
         host_category_id=None,
         host_category_name="",
+        host_category_signature="",
         host_family_name="",
         host_type_id=None,
         host_type_label="",
@@ -250,9 +287,15 @@ class ReferenceRule(object):
         # gets aligned; a "Fire Rating Tag" on the same door is somebody else's
         # tag and is left alone.
         self.tag_family_name = tag_family_name
+        self.tag_type_name = tag_type_name
+        # BuiltInCategory enum names ("OST_Doors", "OST_DoorTags").  These are
+        # what make a reference portable: they mean the same thing in every
+        # document and every Revit release, unlike an ElementId.
+        self.tag_category_signature = tag_category_signature
         self.host_id = host_id
         self.host_category_id = host_category_id
         self.host_category_name = host_category_name
+        self.host_category_signature = host_category_signature
         self.host_family_name = host_family_name
         self.host_type_id = host_type_id
         self.host_type_label = host_type_label
@@ -284,13 +327,13 @@ class ReferenceRule(object):
         return not self.invalid_reason
 
     def type_key(self):
-        return safe_text(self.host_type_id)
+        return type_key_for(self.host_family_name, self.host_type_label)
 
     def family_key(self):
-        return safe_text(self.host_family_name).strip().lower()
+        return family_key_for(self.host_family_name)
 
     def category_key(self):
-        return safe_text(self.host_category_id)
+        return category_key_for(self.host_category_signature, self.host_category_id)
 
     def scope_key(self, scope):
         """What has to be unique for this reference to be unambiguous."""
@@ -321,6 +364,7 @@ class TargetInfo(object):
         self,
         element_id=None,
         category_id=None,
+        category_signature="",
         family_name="",
         type_id=None,
         type_label="",
@@ -331,6 +375,7 @@ class TargetInfo(object):
     ):
         self.element_id = element_id
         self.category_id = category_id
+        self.category_signature = category_signature
         self.family_name = family_name
         self.type_id = type_id
         self.type_label = type_label
@@ -340,10 +385,13 @@ class TargetInfo(object):
         self.label = label
 
     def type_key(self):
-        return safe_text(self.type_id)
+        return type_key_for(self.family_name, self.type_label)
 
     def family_key(self):
-        return safe_text(self.family_name).strip().lower()
+        return family_key_for(self.family_name)
+
+    def category_key(self):
+        return category_key_for(self.category_signature, self.category_id)
 
     def display_label(self):
         if self.label:
@@ -488,10 +536,18 @@ class TagAlignSession(object):
         self.align_existing = True
         self.batch_ids = []
         self.running = ProcessSummary()
+        # Set when a loaded preset names a tag type this model does not have.
+        # Align still works - tags are matched to a reference by tag *family*
+        # name - but nothing can create a tag from a type that is not here.
+        self.tag_type_missing = ""
 
     @property
     def has_references(self):
         return bool(self.references)
+
+    @property
+    def can_create_tags(self):
+        return bool(self.references) and not self.tag_type_missing
 
     @property
     def uses_local_frame_everywhere(self):
@@ -525,6 +581,7 @@ class TagAlignSession(object):
         self.references = []
         self.reference_mode = None
         self.any_orientation = False
+        self.tag_type_missing = ""
 
 
 # ---------------------------------------------------------------------------
@@ -677,9 +734,11 @@ def validate_references(references, scope=DEFAULT_SCOPE, scale_with_view=True,
     if not usable:
         return ValidationResult(accepted=[], fatals=fatals, conflicts=[], notes=notes)
 
+    # Keyed on names rather than ElementIds so the check still means something
+    # for a preset loaded from another model, where the ids are not yet bound.
     tag_types = []
     for rule in usable:
-        key = safe_text(rule.tag_type_id)
+        key = type_key_for(rule.tag_family_name, rule.tag_type_name)
         if key not in [item[0] for item in tag_types]:
             tag_types.append((key, rule.tag_type_label or key))
     if len(tag_types) > 1:
@@ -693,7 +752,7 @@ def validate_references(references, scope=DEFAULT_SCOPE, scale_with_view=True,
 
     categories = []
     for rule in usable:
-        key = safe_text(rule.host_category_id)
+        key = rule.category_key()
         if key not in [item[0] for item in categories]:
             categories.append((key, rule.host_category_name or key))
     if len(categories) > 1:
@@ -800,9 +859,7 @@ def candidates_for_target(references, target, scope):
     the category.  Widening the scope therefore only adds fallbacks.
     """
     same_category = [
-        rule
-        for rule in references
-        if safe_text(rule.host_category_id) == safe_text(target.category_id)
+        rule for rule in references if rule.category_key() == target.category_key()
     ]
     if not same_category:
         return [], SKIP_CATEGORY_MISMATCH
@@ -1032,6 +1089,305 @@ def build_running_text(summary, create_tags=False):
         parts.append("{0} tagged".format(summary.tagged))
     parts.append("{0} skipped".format(len(summary.skipped) + len(summary.failed)))
     return ", ".join(parts) + " so far."
+
+
+# ---------------------------------------------------------------------------
+# presets
+# ---------------------------------------------------------------------------
+#
+# A preset is a plain dict, ready for ``json.dumps``.  References are written by
+# *name* - category signature, family, type - never by ElementId, which is what
+# lets one be loaded into a different model.  ``tag_align_revit.rebind_rules``
+# turns those names back into live ids against whatever document is open.
+
+PRESET_FORMAT_VERSION = 1
+
+LAST_USED_NAME = "Last used"
+
+# Options are round-tripped by name so adding one later cannot silently change
+# the meaning of an old preset: anything missing simply keeps its default.
+PRESET_OPTIONS = (
+    "scale_with_view",
+    "copy_leader",
+    "change_tag_type",
+    "include_pinned",
+    "collapse_flip",
+    "rotate_fallback",
+    "confirm_before_process",
+    "align_existing",
+)
+
+
+class PresetFormatError(Exception):
+    """A payload this build cannot read."""
+
+
+def _pair(value):
+    if value is None:
+        return None
+    return [float(value[0]), float(value[1])]
+
+
+def _pair_from(value):
+    if not value:
+        return None
+    try:
+        return (float(value[0]), float(value[1]))
+    except Exception:
+        return None
+
+
+def rule_to_dict(rule, enum_name=None):
+    """Serialise one reference.
+
+    ``enum_name`` converts a CLR enum (``TagOrientation``, ``LeaderEndCondition``)
+    to its name; the default keeps whatever plain value is already there, which
+    is what the off-Revit tests use.
+    """
+    enum_name = enum_name or (lambda value: None if value is None else safe_text(value))
+    return {
+        "tag_category": safe_text(rule.tag_category_signature),
+        "tag_family": safe_text(rule.tag_family_name),
+        "tag_type": safe_text(rule.tag_type_name),
+        "tag_type_label": safe_text(rule.tag_type_label),
+        "host_category": safe_text(rule.host_category_signature),
+        "host_category_name": safe_text(rule.host_category_name),
+        "host_family": safe_text(rule.host_family_name),
+        "host_type": safe_text(rule.host_type_label),
+        "view_name": safe_text(rule.view_name),
+        "view_scale": int(rule.view_scale or 1),
+        "anchor_kind": safe_text(rule.anchor_kind),
+        "has_direction": bool(rule.has_direction),
+        "angle_deg": float(rule.angle_deg),
+        "axis_symmetric": bool(rule.axis_symmetric),
+        "offset_view": _pair(rule.offset_view),
+        "offset_local": _pair(rule.offset_local),
+        "offset_normal": float(rule.offset_normal),
+        "has_leader": bool(rule.has_leader),
+        "tag_orientation": enum_name(rule.tag_orientation),
+        "leader_end_condition": enum_name(rule.leader_end_condition),
+        "elbow_view": _pair(rule.elbow_view),
+        "elbow_local": _pair(rule.elbow_local),
+        "leader_end_view": _pair(rule.leader_end_view),
+        "leader_end_local": _pair(rule.leader_end_local),
+    }
+
+
+def rule_from_dict(data, enum_value=None):
+    """Rebuild a reference from a preset entry, with no ids bound yet."""
+    data = data or {}
+    enum_value = enum_value or (lambda kind, name: name or None)
+    return ReferenceRule(
+        tag_type_label=data.get("tag_type_label", ""),
+        tag_family_name=data.get("tag_family", ""),
+        tag_type_name=data.get("tag_type", ""),
+        tag_category_signature=data.get("tag_category", ""),
+        host_category_name=data.get("host_category_name", ""),
+        host_category_signature=data.get("host_category", ""),
+        host_family_name=data.get("host_family", ""),
+        host_type_label=data.get("host_type", ""),
+        view_name=data.get("view_name", ""),
+        view_scale=data.get("view_scale", 1),
+        anchor_kind=data.get("anchor_kind", ANCHOR_POINT),
+        has_direction=data.get("has_direction", False),
+        angle_deg=data.get("angle_deg", 0.0),
+        axis_symmetric=data.get("axis_symmetric", False),
+        offset_view=_pair_from(data.get("offset_view")),
+        offset_local=_pair_from(data.get("offset_local")),
+        offset_normal=data.get("offset_normal", 0.0),
+        has_leader=data.get("has_leader", False),
+        tag_orientation=enum_value("tag_orientation", data.get("tag_orientation")),
+        leader_end_condition=enum_value(
+            "leader_end_condition", data.get("leader_end_condition")
+        ),
+        elbow_view=_pair_from(data.get("elbow_view")),
+        elbow_local=_pair_from(data.get("elbow_local")),
+        leader_end_view=_pair_from(data.get("leader_end_view")),
+        leader_end_local=_pair_from(data.get("leader_end_local")),
+    )
+
+
+def preset_to_dict(session, name, saved_at="", saved_by="", enum_name=None):
+    """Everything worth keeping from a session.
+
+    ``batch_ids`` is deliberately absent: it is a per-model, per-session list of
+    ElementIds that means nothing tomorrow.
+    """
+    options = {}
+    for key in PRESET_OPTIONS:
+        options[key] = bool(getattr(session, key, False))
+
+    return {
+        "name": safe_text(name),
+        "saved_at": safe_text(saved_at),
+        "saved_by": safe_text(saved_by),
+        "scope": safe_text(session.scope),
+        "reference_mode": safe_text(session.reference_mode),
+        "any_orientation": bool(session.any_orientation),
+        "options": options,
+        "references": [rule_to_dict(rule, enum_name) for rule in session.references],
+    }
+
+
+def apply_preset(session, preset, rules=None):
+    """Push a preset's options and rules onto a session, in place."""
+    preset = preset or {}
+    scope = safe_text(preset.get("scope"))
+    session.scope = scope if scope in SCOPE_LABELS else DEFAULT_SCOPE
+
+    mode = safe_text(preset.get("reference_mode"))
+    session.reference_mode = mode if mode in (MODE_SINGLE, MODE_MULTI) else MODE_MULTI
+    session.any_orientation = bool(preset.get("any_orientation"))
+
+    options = preset.get("options") or {}
+    for key in PRESET_OPTIONS:
+        if key in options:
+            setattr(session, key, bool(options[key]))
+
+    if rules is None:
+        rules = [rule_from_dict(entry) for entry in preset.get("references") or []]
+    session.references = list(rules)
+    return session
+
+
+class PresetInfo(object):
+    """One row of the preset picker."""
+
+    def __init__(self, name, source, preset=None):
+        self.name = name
+        self.source = source
+        self.preset = preset or {}
+
+    @property
+    def is_last_used(self):
+        return self.name == LAST_USED_NAME
+
+    @property
+    def reference_count(self):
+        return len(self.preset.get("references") or [])
+
+    @property
+    def tag_type_label(self):
+        for entry in self.preset.get("references") or []:
+            label = safe_text(entry.get("tag_type_label"))
+            if label:
+                return label
+            family = safe_text(entry.get("tag_family"))
+            type_name = safe_text(entry.get("tag_type"))
+            if family or type_name:
+                return "{0} : {1}".format(family, type_name).strip(" :")
+        return ""
+
+    @property
+    def category_label(self):
+        for entry in self.preset.get("references") or []:
+            name = safe_text(entry.get("host_category_name"))
+            if name:
+                return name
+            signature = safe_text(entry.get("host_category"))
+            if signature:
+                return signature
+        return ""
+
+    @property
+    def saved_at(self):
+        return safe_text(self.preset.get("saved_at"))
+
+    def summary(self):
+        parts = [self.tag_type_label or "<no reference>"]
+        if self.category_label:
+            parts.append(self.category_label)
+        parts.append("{0} ref(s)".format(self.reference_count))
+        if self.saved_at:
+            parts.append(self.saved_at)
+        return "   |   ".join(parts)
+
+
+def sort_presets(infos):
+    """Last used first, then newest-first by saved date, then name.
+
+    Two stable sorts rather than one composite key, because the date runs
+    descending while the name tiebreak runs ascending.
+    """
+    infos = list(infos or [])
+    rest = [info for info in infos if not info.is_last_used]
+    rest.sort(key=lambda info: safe_text(info.name).lower())
+    rest.sort(key=lambda info: safe_text(info.saved_at), reverse=True)
+    return [info for info in infos if info.is_last_used] + rest
+
+
+def read_payload(raw):
+    """Parse a stored payload dict, refusing a format this build cannot read."""
+    if not raw:
+        return {"format": PRESET_FORMAT_VERSION, "presets": [], "shared_path": ""}
+    if not isinstance(raw, dict):
+        raise PresetFormatError("The preset store is not in the expected shape.")
+
+    version = raw.get("format", PRESET_FORMAT_VERSION)
+    try:
+        version = int(version)
+    except Exception:
+        raise PresetFormatError("The preset store has an unreadable format number.")
+    if version > PRESET_FORMAT_VERSION:
+        raise PresetFormatError(
+            "These presets were written by a newer EasyBIM (format {0}); "
+            "update the extension to read them.".format(version)
+        )
+
+    presets = raw.get("presets")
+    if not isinstance(presets, list):
+        presets = []
+
+    return {
+        "format": version,
+        "presets": [entry for entry in presets if isinstance(entry, dict)],
+        "shared_path": safe_text(raw.get("shared_path")),
+    }
+
+
+def write_payload(presets, shared_path=""):
+    return {
+        "format": PRESET_FORMAT_VERSION,
+        "shared_path": safe_text(shared_path),
+        "presets": list(presets or []),
+    }
+
+
+def upsert_preset(presets, preset):
+    """Replace a preset of the same name, else append. Returns a new list."""
+    name = safe_text(preset.get("name")).strip().lower()
+    kept = [
+        entry
+        for entry in presets or []
+        if safe_text(entry.get("name")).strip().lower() != name
+    ]
+    kept.append(preset)
+    return kept
+
+
+def remove_preset(presets, name):
+    key = safe_text(name).strip().lower()
+    return [
+        entry
+        for entry in presets or []
+        if safe_text(entry.get("name")).strip().lower() != key
+    ]
+
+
+def find_preset(presets, name):
+    key = safe_text(name).strip().lower()
+    for entry in presets or []:
+        if safe_text(entry.get("name")).strip().lower() == key:
+            return entry
+    return None
+
+
+def default_preset_name(session):
+    category = safe_text(session.host_category_name()).strip()
+    tag = safe_text(session.tag_type_label()).strip()
+    if category and tag:
+        return "{0} - {1}".format(category, tag)
+    return category or tag or "Tag Align settings"
 
 
 # ---------------------------------------------------------------------------
