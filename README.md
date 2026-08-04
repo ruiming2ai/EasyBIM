@@ -185,3 +185,67 @@ skipped for want of a value, the ones you unticked, and any target parameter
 that ended up blank all show up here. A circuit is listed if *any* of the
 parameters you ticked reads zero or nothing. That makes the report the list of
 what is left to do — when it is empty it says so.
+
+## Load Parameters (Parameters, Revit 2023+)
+
+Load Parameters puts shared parameters where they need to be: **into families**,
+**into the project**, or both from one selection. The window stays open after a
+load, so doing both is one extra click.
+
+The left half is a table of shared parameters. It starts with every shared
+parameter already in the model, and **Add from Shared Parameter File…** brings in
+more from a `.txt`, grouped exactly as the file groups them. Two columns are
+yours to set — **Group** (where the parameter lands in Family Types or in Project
+Parameters) and **Type / Instance** — and both are pre-filled from what the
+project already says, so the common case needs no editing at all.
+
+Editing several rows at once works two ways: shift-select a range and use the
+bar under the table, or change one selected row's dropdown and it spreads to the
+rest of the selection. Ticking a row that is *not* part of the selection stays a
+single-row action, so the spread never surprises you.
+
+The right half is the targets, on two tabs:
+
+- **Families** — everything loadable in this model, family files scanned from a
+  folder, or both. Checking a family also ticks its category on the other tab;
+  unticking a category stays unticked.
+- **Project categories** — every category that accepts a bound parameter.
+
+Then **Load to Families** or **Load to Project**. Nothing is written until a
+confirmation window has shown you the complete dry run: every family and
+parameter pair, what will be added, what will be updated, and what is skipped
+with the reason.
+
+Only shared parameters can be loaded. The GUID is what makes the parameter in the
+family the *same* parameter the project knows; a non-shared one would be
+recreated by name and would silently fail to line up. If a `.txt` you pick names
+a parameter this model already has under a different GUID, it is refused rather
+than added — two identically-named shared parameters make schedules and filters
+pick whichever they like.
+
+### Where things end up, and what can be undone
+
+| Target | Written to | Undo |
+|---|---|---|
+| **A family in this model** | edited and reloaded into the project | one Ctrl+Z for the whole batch |
+| **A family file in a folder** | its own `.rfa` on disk — never loaded into this project | none; a saved file has no undo |
+| **Project categories** | the project's parameter bindings | one Ctrl+Z |
+
+Because those are not the same promise, a cancelled run reports them separately:
+project families roll back to nothing, and every `.rfa` already written is named
+in the report. The project pass always runs first, so cancelling early costs
+nothing.
+
+**Family files saved in an older Revit are upgraded when they are written**, and
+cannot be opened in that release again. The confirmation says how many, and you
+have to tick the acknowledgement before the run starts. There is also an option
+to mirror the folder into a different output folder instead of overwriting.
+
+A family that already carries the parameter is skipped by default. Switch to
+**Update its group and Type/Instance** and a second run fixes the group or the
+instance/type flag in place instead — usually the reason you are running it
+again.
+
+Families nested inside another family are not updated; only the families in the
+list are.
+
