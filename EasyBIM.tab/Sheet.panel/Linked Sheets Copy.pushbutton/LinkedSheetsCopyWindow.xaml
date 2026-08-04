@@ -1,0 +1,312 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Linked Sheets Copy"
+        Width="1180"
+        Height="820"
+        MinWidth="960"
+        MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- link picker -->
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="360" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0"
+                       Text="Revit link"
+                       VerticalAlignment="Center"
+                       FontWeight="SemiBold"
+                       Margin="0,0,8,0" />
+            <ComboBox x:Name="LinkCombo"
+                      Grid.Column="1"
+                      Height="26"
+                      DisplayMemberPath="display"
+                      SelectionChanged="link_changed" />
+            <TextBlock x:Name="LinkHintText"
+                       Grid.Column="2"
+                       VerticalAlignment="Center"
+                       Foreground="DimGray"
+                       TextTrimming="CharacterEllipsis"
+                       Margin="12,0,0,0" />
+        </Grid>
+
+        <!-- sheets + options -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="360" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <WrapPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,6">
+                <TextBox x:Name="SearchBox"
+                         Width="220"
+                         Height="24"
+                         VerticalContentAlignment="Center"
+                         ToolTip="Filter by sheet number, sheet name or view name."
+                         TextChanged="search_changed" />
+                <Button Content="All"
+                        Width="60"
+                        Height="24"
+                        Margin="8,0,0,0"
+                        Click="select_all_click" />
+                <Button Content="None"
+                        Width="60"
+                        Height="24"
+                        Margin="6,0,0,0"
+                        Click="select_none_click" />
+                <TextBlock Text="Number prefix"
+                           VerticalAlignment="Center"
+                           Margin="18,0,4,0" />
+                <TextBox x:Name="PrefixBox"
+                         Width="90"
+                         Height="24"
+                         VerticalContentAlignment="Center"
+                         ToolTip="Added in front of every sheet number, which is usually the quickest way past a number clash."
+                         TextChanged="affix_changed" />
+                <TextBlock Text="suffix"
+                           VerticalAlignment="Center"
+                           Margin="10,0,4,0" />
+                <TextBox x:Name="SuffixBox"
+                         Width="90"
+                         Height="24"
+                         VerticalContentAlignment="Center"
+                         TextChanged="affix_changed" />
+            </WrapPanel>
+
+            <Border Grid.Row="1"
+                    Grid.Column="0"
+                    BorderBrush="#B8B8B8"
+                    BorderThickness="1">
+                <DataGrid x:Name="SheetGrid"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          HeadersVisibility="Column"
+                          GridLinesVisibility="Horizontal"
+                          HorizontalGridLinesBrush="#DEDEDE"
+                          SelectionMode="Extended"
+                          SelectionUnit="FullRow"
+                          RowHeaderWidth="0"
+                          CellEditEnding="sheet_cell_edit_ending">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Width="34" CanUserSort="False">
+                            <DataGridTemplateColumn.Header>
+                                <CheckBox x:Name="HeaderCheck"
+                                          ToolTip="Check or uncheck every visible sheet."
+                                          Click="header_check_click" />
+                            </DataGridTemplateColumn.Header>
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              IsChecked="{Binding is_checked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              Click="sheet_check_click" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTextColumn Header="Sheet"
+                                            Width="90"
+                                            IsReadOnly="True"
+                                            Binding="{Binding source_number}" />
+                        <DataGridTextColumn Header="Sheet name"
+                                            Width="*"
+                                            IsReadOnly="True"
+                                            Binding="{Binding source_name}" />
+                        <DataGridTextColumn Header="Views"
+                                            Width="130"
+                                            IsReadOnly="True"
+                                            Binding="{Binding views_text}" />
+                        <DataGridTextColumn Header="New number"
+                                            Width="110"
+                                            Binding="{Binding new_number, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <DataGridTextColumn Header="New name"
+                                            Width="*"
+                                            Binding="{Binding new_name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <DataGridTextColumn Header="Status"
+                                            Width="240"
+                                            IsReadOnly="True"
+                                            Binding="{Binding status_text}">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                    <Setter Property="Foreground" Value="DimGray" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding has_problem}" Value="True">
+                                            <Setter Property="Foreground" Value="#C00000" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+
+            <Border Grid.Row="0"
+                    Grid.RowSpan="2"
+                    Grid.Column="1"
+                    Margin="12,0,0,0"
+                    Background="#FAFAFA"
+                    BorderBrush="#D0D0D0"
+                    BorderThickness="1"
+                    Padding="10">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Text="Always done"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,4" />
+                    <TextBlock Grid.Row="1"
+                               Foreground="DimGray"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,12"
+                               Text="Create the sheet, create each plan on its mapped level, match scale, crop, rotation and detail level, set this link to By Linked View, and align every viewport by model coordinates so the grids land where they do on the linked sheet." />
+
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="Options"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,6" />
+                            <ItemsControl x:Name="OptionList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Margin="0,0,0,8"
+                                                  ToolTip="{Binding tooltip}"
+                                                  IsChecked="{Binding is_checked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                            <TextBlock Text="{Binding label}"
+                                                       TextWrapping="Wrap"
+                                                       Width="290" />
+                                        </CheckBox>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- level mapping -->
+        <Expander x:Name="LevelExpander"
+                  Grid.Row="2"
+                  IsExpanded="True"
+                  Margin="0,10,0,0"
+                  Header="Levels">
+            <Grid Margin="0,6,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="170" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0"
+                           Foreground="DimGray"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,4"
+                           Text="A level copied and monitored from this link is used automatically. Anything unmonitored is guessed by name, then by elevation - pick a level yourself where it says Unmapped. Views on an unmapped level are skipped; the rest of their sheet is still built." />
+
+                <Border Grid.Row="1" BorderBrush="#B8B8B8" BorderThickness="1">
+                    <DataGrid x:Name="LevelGrid"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal"
+                              HorizontalGridLinesBrush="#DEDEDE"
+                              RowHeaderWidth="0"
+                              SelectionUnit="FullRow">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Level in the link"
+                                                Width="260"
+                                                IsReadOnly="True"
+                                                Binding="{Binding linked_name}" />
+                            <DataGridTemplateColumn Header="Level in this model" Width="300">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ComboBox Margin="2,1,2,1"
+                                                  DisplayMemberPath="label"
+                                                  ItemsSource="{Binding choices}"
+                                                  SelectedItem="{Binding host_choice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  SelectionChanged="level_choice_changed" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Matched by"
+                                                Width="130"
+                                                IsReadOnly="True"
+                                                Binding="{Binding source_text}">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="DimGray" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding has_problem}" Value="True">
+                                                <Setter Property="Foreground" Value="#C00000" />
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Elevation difference"
+                                                Width="*"
+                                                IsReadOnly="True"
+                                                Binding="{Binding delta_text}" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Border>
+            </Grid>
+        </Expander>
+
+        <!-- actions -->
+        <Grid Grid.Row="3" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="StatusText"
+                       Grid.Column="0"
+                       VerticalAlignment="Center"
+                       TextWrapping="Wrap"
+                       Foreground="DimGray" />
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="CopyButton"
+                        Content="Copy Sheets"
+                        Width="150"
+                        Height="34"
+                        Margin="0,0,8,0"
+                        IsDefault="True"
+                        ToolTipService.ShowOnDisabled="True"
+                        Click="copy_click" />
+                <Button Content="Close"
+                        Width="110"
+                        Height="34"
+                        IsCancel="True"
+                        Click="cancel_click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
