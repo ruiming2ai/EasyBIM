@@ -53,15 +53,23 @@ def _run():
 
     plan = result["plan"]
     target_labels = result["target_labels"]
+    target_keys = sorted(target_labels)
     results = crevit.apply_ratings(doc, plan, target_labels)
     summary = state.summarize(plan, results)
 
-    message = "Updated {0} of {1} circuit(s).".format(
+    message = u"Updated {0} of {1} circuit(s).".format(
         summary["updated"], summary["attempted"])
     if summary["failed"]:
-        message += "\n{0} circuit(s) could not be written.".format(
-            summary["failed"])
-    forms.alert(message, expanded=summary["detail"], title=__title__)
+        # The per-circuit reasons only matter when something went wrong.
+        forms.alert(
+            u"{0}\n{1} circuit(s) could not be written.".format(
+                message, summary["failed"]),
+            expanded=summary["detail"], title=__title__)
+
+    # Read back from the committed model rather than trusting the plan.
+    circuit_values = crevit.read_circuit_rating_values(doc, target_keys)
+    ui.show_zero_rating_report(
+        message, state.build_zero_rating_rows(circuit_values, target_keys))
 
 
 forms.check_modeldoc(exitscript=True)

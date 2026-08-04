@@ -230,6 +230,58 @@ def build_plan(rows, targets):
     return plan
 
 
+class ZeroRatingRow(object):
+    """One line of the post-update zero-amp report.
+
+    Read-only, so unlike the circuit grid it needs no change notification.
+    """
+
+    def __init__(self, panel, circuit_number, circuit_name):
+        self.panel = panel or u""
+        self.circuit_number = circuit_number or u""
+        self.circuit_name = circuit_name or u""
+
+
+def is_zero_rating(values, target_keys):
+    """True when any written target is still blank or zero on this circuit.
+
+    A missing value counts: a circuit that has not got the parameter at all
+    is no better off than one reading 0 A.
+    """
+    if not target_keys:
+        return False
+    for key in target_keys:
+        value = (values or {}).get(key)
+        if value is None:
+            return True
+        try:
+            if float(value) <= 0.0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def build_zero_rating_rows(circuit_values, target_keys):
+    """Every circuit left at zero amps, in panel then circuit-number order.
+
+    Fed from a fresh read taken after the transaction commits, and over
+    *every* circuit in the model - not just the updated ones - so the report
+    also catches the circuits that were skipped or unticked.
+    """
+    rows = []
+    for entry in circuit_values or []:
+        if not is_zero_rating(entry.get("values"), target_keys):
+            continue
+        rows.append(ZeroRatingRow(
+            entry.get("panel"),
+            entry.get("circuit_number"),
+            entry.get("load_name"),
+        ))
+    rows.sort(key=circuit_sort_key)
+    return rows
+
+
 def summarize(plan, results):
     """Counts and detail lines for the completion dialog.
 

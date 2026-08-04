@@ -1,0 +1,68 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Update Circuit Rating - Circuits At Zero Amp"
+        Height="560"
+        Width="720"
+        MinHeight="360"
+        MinWidth="520"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="SummaryText"
+                   Grid.Row="0"
+                   TextWrapping="Wrap"
+                   FontWeight="SemiBold"
+                   Margin="0,0,0,8"/>
+
+        <TextBlock x:Name="ZeroCountText"
+                   Grid.Row="1"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,8"/>
+
+        <DataGrid x:Name="ZeroCircuitsGrid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  RowHeaderWidth="0"
+                  IsReadOnly="True"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserSortColumns="True"
+                  HorizontalGridLinesBrush="#dedede"
+                  VerticalGridLinesBrush="#dedede"
+                  EnableColumnVirtualization="True"
+                  EnableRowVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Panel Name"
+                                    Binding="{Binding panel}"
+                                    Width="180"/>
+                <DataGridTextColumn Header="Circuit Number"
+                                    Binding="{Binding circuit_number}"
+                                    Width="120"/>
+                <DataGridTextColumn Header="Circuit Name"
+                                    Binding="{Binding circuit_name}"
+                                    Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <DockPanel Grid.Row="3" Margin="0,10,0,0" LastChildFill="False">
+            <Button x:Name="CloseButton"
+                    Content="Close"
+                    IsDefault="True"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Right"
+                    Click="close_clicked"/>
+        </DockPanel>
+    </Grid>
+</Window>
