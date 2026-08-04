@@ -24,6 +24,8 @@ WINDOW_CLASSES = {
     "BatchWindow.xaml": "BatchWindow",
     "SelectionFilterWindow.xaml": "SelectionFilterWindow",
     "ReportWindow.xaml": "ReportWindow",
+    "SavePresetWindow.xaml": "SavePresetWindow",
+    "LoadPresetWindow.xaml": "LoadPresetWindow",
 }
 
 
@@ -108,7 +110,7 @@ class TagAlignBundleTests(unittest.TestCase):
 
     def test_expected_modules_exist(self):
         for name in ("script.py", "tag_align_state.py", "tag_align_revit.py",
-                     "tag_align_ui.py"):
+                     "tag_align_ui.py", "tag_align_presets.py"):
             self.assertTrue((COMMAND_DIR / name).exists(), name)
 
 
@@ -193,6 +195,30 @@ class TagAlignXamlTests(unittest.TestCase):
         names = _xaml_names(_xaml_root("BatchWindow.xaml"))
         for required in ("FilterButton", "SelectButton", "DeselectButton", "ProcessButton"):
             self.assertIn(required, names)
+
+    def test_main_window_carries_the_settings_buttons(self):
+        names = _xaml_names(_xaml_root("TagAlignWindow.xaml"))
+        self.assertIn("SaveSettingsButton", names)
+        self.assertIn("LoadSettingsButton", names)
+
+        source = (COMMAND_DIR / "TagAlignWindow.xaml").read_text(encoding="utf-8")
+        save = source.split('x:Name="SaveSettingsButton"')[1].split("/>")[0]
+        self.assertIn('IsEnabled="False"', save)
+        self.assertIn('ToolTipService.ShowOnDisabled="True"', save)
+        # Loading has to work before anything is picked - that is the point.
+        load = source.split('x:Name="LoadSettingsButton"')[1].split("/>")[0]
+        self.assertNotIn('IsEnabled="False"', load)
+
+    def test_save_window_offers_all_three_destinations(self):
+        names = _xaml_names(_xaml_root("SavePresetWindow.xaml"))
+        for required in ("LocalRadio", "ModelRadio", "SharedRadio",
+                         "SharedPathTextBox", "BrowseButton", "NameTextBox"):
+            self.assertIn(required, names)
+
+    def test_save_window_names_the_acc_sync_caveat(self):
+        source = (COMMAND_DIR / "SavePresetWindow.xaml").read_text(encoding="utf-8")
+        self.assertIn("Sync to Central", source)
+        self.assertIn("Desktop Connector", source)
 
 
 class TagAlignIronPythonTests(unittest.TestCase):

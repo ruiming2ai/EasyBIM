@@ -127,6 +127,54 @@ type first. A "Door Tag - Large" on a door whose reference is "Door Tag - Small"
 is the same annotation and gets aligned; a "Fire Rating Tag" on the same door is
 somebody else's tag and is left alone.
 
+## Saving settings
+
+The expensive step is not the maths, it is finding the reference tag. Presets
+keep it.
+
+**Identity is names, not ElementIds.** `type_key` is `family|type`, `family_key`
+is the family name, `category_key` is the `BuiltInCategory` signature
+(`OST_Doors`). Inside one document that is exactly as discriminating as the ids
+were - Revit cannot hold two types of the same name in one family - and it also
+means something in the *next* document, which is what makes a preset portable.
+The cost is that renaming a family or type breaks that reference in an old
+preset; the load reports it rather than guessing.
+
+`tag_align_state` serialises a preset (pure Python, unit tested off Revit),
+`tag_align_presets` owns the three destinations, `tag_align_revit.rebind_rules`
+turns the names back into live ids.
+
+| Destination | Where | Reaches teammates |
+|---|---|---|
+| `local` | `script.get_universal_data_file(...)` in roaming AppData | no |
+| `model` | Extensible Storage `DataStorage` in the `.rvt` | yes, after Sync to Central |
+| `shared` | a JSON file at a user-set path | yes, immediately |
+
+`get_universal_data_file` rather than `get_data_file`: the latter stamps the
+Revit version into the filename and would silo presets per release.
+
+**The ACC answer.** No Revit API writes files into ACC Docs. The two things that
+actually reach a cloud-model team are data inside the model - which syncs to
+central with it - and a file in an ACC Desktop Connector folder, which Revit
+sees as an ordinary local path. Both are offered; the save confirmation says
+"after Sync to Central" so nobody expects it to be instant.
+
+**Rebinding is deliberately lenient.** Only two things must resolve: the host
+category, without which the target picker has nothing to filter on, and the tag
+type, without which no tag can be created. A missing host family or type is a
+*note*, not an error - under the category scope a reference from another
+project is still useful for every other family in that category. When the tag
+type is missing, `Align` still works (tags are matched to a reference by tag
+family name in `_relevant_tags`) and only `Align & Tag` is greyed.
+
+`Last used` is auto-written at the moment the user presses Align or Align & Tag
+- one write per run, not one per click - so Load is never empty. It is pinned
+first in the picker and refuses rename and delete, since the next run would
+overwrite either.
+
+`batch_ids` is never saved: a per-model, per-session list of ElementIds means
+nothing tomorrow.
+
 ## Deliberate exclusions
 
 `RoomTag` / `AreaTag` / `SpaceTag` derive from `SpatialElementTag`, not
