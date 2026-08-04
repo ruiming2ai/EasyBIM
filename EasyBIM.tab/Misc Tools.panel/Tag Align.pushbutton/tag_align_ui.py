@@ -15,7 +15,11 @@ So the windows follow the pattern ``Flip Multiple`` already uses: record a
 from pyrevit import forms
 from pyrevit.framework import Windows
 
+from tag_align_presets import SOURCE_LOCAL
+from tag_align_presets import SOURCE_MODEL
+from tag_align_presets import SOURCE_SHARED
 from tag_align_state import DROP_ALL
+from tag_align_state import LAST_USED_NAME
 from tag_align_state import SCOPE_EXACT_TYPE
 from tag_align_state import SCOPE_LABELS
 from tag_align_state import SCOPE_PAIRED_FAMILY
@@ -48,6 +52,8 @@ ACTION_DESELECT = "deselect"
 ACTION_PROCESS = "process"
 ACTION_RESELECT = "reselect"
 ACTION_SWITCH_SCOPE = "switch_scope"
+ACTION_SAVE_PRESET = "save_preset"
+ACTION_LOAD_PRESET = "load_preset"
 
 REFERENCE_COLUMNS = (
     ("tag_type", "Tag type", 150),
@@ -155,8 +161,21 @@ class TagAlignWindow(forms.WPFWindow):
         self.ClearReferencesButton.IsEnabled = has_references
         self.ScopeBorder.IsEnabled = has_references
         self.OptionsBorder.IsEnabled = has_references
+        self.SaveSettingsButton.IsEnabled = has_references
         self.AlignButton.IsEnabled = has_references
-        self.AlignAndTagButton.IsEnabled = has_references
+
+        # A preset can name a tag family this model has never loaded. Aligning
+        # still works - tags are matched to a reference by tag family name -
+        # but nothing can create a tag from a type that is not here.
+        self.AlignAndTagButton.IsEnabled = session.can_create_tags
+        if session.tag_type_missing:
+            self.AlignAndTagButton.ToolTip = session.tag_type_missing
+            self.ChangeTagTypeCheck.IsEnabled = False
+            self.ChangeTagTypeCheck.IsChecked = False
+            session.change_tag_type = False
+        else:
+            self.AlignAndTagButton.ToolTip = "Select a reference tag first."
+            self.ChangeTagTypeCheck.IsEnabled = True
 
         # A single reference that rotates with the element covers every angle,
         # so the per-orientation fallback has nothing to fall back to.
@@ -175,6 +194,10 @@ class TagAlignWindow(forms.WPFWindow):
         session = self.session
         if not session.has_references:
             return "Select a reference tag to enable Align and Align & Tag."
+        if session.tag_type_missing:
+            return "{0} Align still works; Align & Tag cannot.".format(
+                session.tag_type_missing
+            )
 
         validation = validate_references(
             session.references,
@@ -323,6 +346,14 @@ class TagAlignWindow(forms.WPFWindow):
         del sender, args
         self.session.reset_references()
         self.refresh()
+
+    def save_settings_click(self, sender, args):
+        del sender, args
+        self._leave(ACTION_SAVE_PRESET)
+
+    def load_settings_click(self, sender, args):
+        del sender, args
+        self._leave(ACTION_LOAD_PRESET)
 
     def align_click(self, sender, args):
         del sender, args
@@ -855,6 +886,208 @@ class SelectionFilterWindow(forms.WPFWindow):
         del sender, args
         self.allowed_type_keys = checked_type_keys(self.tree)
         self.result = ACTION_OK
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = ACTION_CANCEL
+        self.Close()
+
+
+# ---------------------------------------------------------------------------
+# presets
+# ---------------------------------------------------------------------------
+
+
+class SavePresetWindow(forms.WPFWindow):
+    """Name the settings and choose which of the three places they go."""
+
+    def __init__(self, xaml_file_name, session, library, suggested_name="",
+                 shared_path="", browse_callback=None):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.session = session
+        self.library = library
+        self.browse_callback = browse_callback
+        self.result = ACTION_CANCEL
+        self.preset_name = ""
+        self.target_key = SOURCE_LOCAL
+        self.shared_path = safe_text(shared_path)
+
+        self.NameTextBox.Text = safe_text(suggested_name)
+        self.SharedPathTextBox.Text = self.shared_path
+
+        self.SummaryText.Text = "{0} reference(s) and every option on the main window.".format(
+            len(session.references)
+        )
+
+        model_source = library.source(SOURCE_MODEL) if library else None
+        if model_source is None or not model_source.available:
+            self.ModelRadio.IsEnabled = False
+            self.ModelRadio.ToolTip = (
+                model_source.unavailable_reason
+                if model_source is not None
+                else "Saving into the model is unavailable."
+            )
+
+        self._refresh()
+
+    def _selected_target(self):
+        if bool(self.ModelRadio.IsChecked):
+            return SOURCE_MODEL
+        if bool(self.SharedRadio.IsChecked):
+            return SOURCE_SHARED
+        return SOURCE_LOCAL
+
+    def _refresh(self):
+        target = self._selected_target()
+        self.SharedPathGrid.IsEnabled = target == SOURCE_SHARED
+
+        name = safe_text(self.NameTextBox.Text).strip()
+        problems = []
+        if not name:
+            problems.append("Enter a name.")
+        elif name == LAST_USED_NAME:
+            problems.append("'{0}' is reserved - it is written for you.".format(
+                LAST_USED_NAME
+            ))
+        if target == SOURCE_SHARED and not safe_text(self.SharedPathTextBox.Text).strip():
+            problems.append("Pick a shared folder.")
+
+        if not problems and self.library is not None and self.library.exists(target, name):
+            self.StatusText.Text = "A preset called '{0}' is already there - saving replaces it.".format(name)
+        else:
+            self.StatusText.Text = "  ".join(problems)
+
+        self.SaveButton.IsEnabled = not problems
+
+    def name_changed(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def target_changed(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def browse_click(self, sender, args):
+        del sender, args
+        if self.browse_callback is None:
+            return
+        try:
+            picked = self.browse_callback(safe_text(self.SharedPathTextBox.Text))
+        except Exception as ex:
+            self.StatusText.Text = "Could not open the folder picker: {0}".format(ex)
+            return
+        if picked:
+            self.SharedPathTextBox.Text = safe_text(picked)
+            self.SharedRadio.IsChecked = True
+        self._refresh()
+
+    def save_click(self, sender, args):
+        del sender, args
+        self._refresh()
+        if not self.SaveButton.IsEnabled:
+            return
+        self.preset_name = safe_text(self.NameTextBox.Text).strip()
+        self.target_key = self._selected_target()
+        self.shared_path = safe_text(self.SharedPathTextBox.Text).strip()
+        self.result = ACTION_OK
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = ACTION_CANCEL
+        self.Close()
+
+
+class LoadPresetWindow(forms.WPFWindow):
+    """Every preset from every source in one list, Last used pinned on top."""
+
+    def __init__(self, xaml_file_name, infos, errors=None):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.infos = list(infos or [])
+        self.result = ACTION_CANCEL
+        self.selected = None
+        self.new_name = ""
+        self._radios = []
+
+        self._render()
+        if errors:
+            self.StatusText.Text = "  ".join(errors)
+        elif not self.infos:
+            self.StatusText.Text = (
+                "Nothing saved yet. Run an align and Last used will appear here, "
+                "or press Save Settings on the main window."
+            )
+        self._refresh_buttons()
+
+    def _render(self):
+        self.PresetPanel.Children.Clear()
+        self._radios = []
+
+        for info in self.infos:
+            radio = Windows.Controls.RadioButton()
+            radio.GroupName = "TagAlignPresets"
+            radio.Margin = Windows.Thickness(0, 4, 0, 4)
+            radio.Tag = info
+            radio.Checked += self._selection_changed
+
+            content = Windows.Controls.StackPanel()
+            header = _row_panel()
+            header.Children.Add(_text_block(info.name, width=210, bold=True))
+            header.Children.Add(
+                _text_block(getattr(info.source, "label", ""), width=120, gray=True)
+            )
+            content.Children.Add(header)
+            content.Children.Add(_text_block(info.summary(), gray=True, wrap=True))
+
+            radio.Content = content
+            self.PresetPanel.Children.Add(radio)
+            self._radios.append(radio)
+
+        if self._radios:
+            self._radios[0].IsChecked = True
+
+    def _selection_changed(self, sender, args):
+        del args
+        self.selected = getattr(sender, "Tag", None)
+        self._refresh_buttons()
+
+    def _refresh_buttons(self):
+        chosen = self.selected
+        self.LoadButton.IsEnabled = chosen is not None
+        # Last used is rewritten on every run, so renaming or deleting it would
+        # be undone the next time the user aligns anything.
+        editable = chosen is not None and not chosen.is_last_used
+        self.RenameButton.IsEnabled = editable
+        self.DeleteButton.IsEnabled = editable
+
+    def load_click(self, sender, args):
+        del sender, args
+        if self.selected is None:
+            return
+        self.result = ACTION_OK
+        self.Close()
+
+    def rename_click(self, sender, args):
+        del sender, args
+        if self.selected is None or self.selected.is_last_used:
+            return
+        name = forms.ask_for_string(
+            default=self.selected.name,
+            prompt="New name for this preset",
+            title=TITLE,
+        )
+        if not name:
+            return
+        self.new_name = safe_text(name).strip()
+        self.result = "rename"
+        self.Close()
+
+    def delete_click(self, sender, args):
+        del sender, args
+        if self.selected is None or self.selected.is_last_used:
+            return
+        self.result = "delete"
         self.Close()
 
     def cancel_click(self, sender, args):

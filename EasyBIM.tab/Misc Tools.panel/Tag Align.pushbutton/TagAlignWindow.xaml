@@ -203,19 +203,43 @@
         </Border>
 
         <Grid Grid.Row="5" Margin="0,10,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <TextBlock x:Name="HintText"
-                       Grid.Column="0"
-                       VerticalAlignment="Center"
+                       Grid.Row="0"
+                       Grid.ColumnSpan="3"
+                       Margin="0,0,0,8"
                        Foreground="#B06000"
                        TextWrapping="Wrap"
                        Text="Select a reference tag to enable Align and Align &amp; Tag." />
 
-            <StackPanel Grid.Column="1" Orientation="Horizontal">
+            <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal">
+                <Button x:Name="SaveSettingsButton"
+                        Content="Save Settings"
+                        Width="130"
+                        Height="36"
+                        Margin="0,0,8,0"
+                        IsEnabled="False"
+                        ToolTipService.ShowOnDisabled="True"
+                        ToolTip="Select a reference tag first."
+                        Click="save_settings_click" />
+                <Button x:Name="LoadSettingsButton"
+                        Content="Load Previous Settings"
+                        Width="170"
+                        Height="36"
+                        ToolTip="Reuse a setup saved on this computer, inside this model, or in a shared folder."
+                        Click="load_settings_click" />
+            </StackPanel>
+
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal">
                 <Button x:Name="AlignButton"
                         Content="Align"
                         Width="120"

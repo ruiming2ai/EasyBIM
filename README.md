@@ -110,3 +110,32 @@ The offset is measured from the element rather than from the sheet, so it
 survives rotation, and it is stored with its source view scale, so a reference
 measured at 1:100 reproduces the same printed distance at 1:50. Room, area and
 space tags are not supported yet and are rejected when picked as a reference.
+
+### Saving and reusing settings
+
+**Save Settings** keeps the reference tags and every option under a name;
+**Load Previous Settings** brings them back. A preset records its references by
+*name* — category, family, type — never by ElementId, so it can be loaded into a
+different project. Anything the target model does not have is named in the load
+report rather than silently dropped; renaming a family or type in the model
+breaks that reference in an old preset, by design.
+
+There are three places to save, answering three different questions:
+
+| Save to | Survives reopen | Other models | Your team |
+|---|---|---|---|
+| **This computer** — `%APPDATA%\pyRevit\pyRevit_EasyBIM_TagAlign_presets.json` | yes | yes | no |
+| **This model** — stored inside the `.rvt` | yes | no | yes, after Sync to Central |
+| **Shared folder** — a network drive or an ACC Desktop Connector folder | yes | yes | yes, immediately |
+
+**For ACC cloud models**, saving into the model is the mechanism that reaches a
+team: the settings travel with the model and land in central on the next
+synchronise, so anyone who opens that cloud model has them. No Revit API writes
+files into ACC Docs, so the alternative is a shared folder on an ACC Desktop
+Connector path, which Revit treats as an ordinary local path.
+
+A **Last used** preset is written automatically every time you run an align, so
+Load has something in it even if you never press Save. If a loaded preset names
+a tag family this model has not got, `Align` still works — tags are matched to a
+reference by tag family name — while `Align & Tag` is greyed with the reason,
+because nothing can create a tag from a type that is not there.
