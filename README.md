@@ -174,3 +174,14 @@ where none of them does cannot be updated, so it is not listed at all — the
 count under the list says how many were skipped for that reason. Values are
 written raw, with no rounding to standard breaker sizes, and the whole run is
 one undo step.
+
+#### The zero-amp report
+
+Every run ends with a table of the circuits that are **still at zero amp** —
+panel name, circuit number, circuit name. It is read back from the model after
+the write, so it reflects what is actually there, and it covers *every* circuit
+in the project, not just the ones the run touched: the circuits that were
+skipped for want of a value, the ones you unticked, and any target parameter
+that ended up blank all show up here. A circuit is listed if *any* of the
+parameters you ticked reads zero or nothing. That makes the report the list of
+what is left to do — when it is empty it says so.

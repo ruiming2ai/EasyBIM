@@ -16,6 +16,7 @@ HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged", "TextChang
 
 WINDOW_CLASSES = {
     "UpdateCircuitRatingWindow.xaml": "UpdateCircuitRatingWindow",
+    "ZeroRatingReportWindow.xaml": "ZeroRatingReportWindow",
 }
 
 CONTROL_ATTRIBUTE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -158,6 +159,27 @@ class CircuitRatingXamlTests(unittest.TestCase):
             "UpdateSourceTrigger=PropertyChanged}\"",
             source,
         )
+
+    def test_the_zero_report_carries_its_three_columns(self):
+        source = (COMMAND_DIR / "ZeroRatingReportWindow.xaml").read_text(
+            encoding="utf-8")
+        for header in ("Panel Name", "Circuit Number", "Circuit Name"):
+            self.assertIn('Header="%s"' % header, source)
+        for binding in ("panel", "circuit_number", "circuit_name"):
+            self.assertIn('Binding="{Binding %s}"' % binding, source)
+
+    def test_the_zero_report_is_read_only(self):
+        """It reports; it must never become another way to edit circuits."""
+        source = (COMMAND_DIR / "ZeroRatingReportWindow.xaml").read_text(
+            encoding="utf-8")
+        grid = source.split('x:Name="ZeroCircuitsGrid"')[1].split(">")[0]
+        self.assertIn('IsReadOnly="True"', grid)
+
+    def test_the_zero_report_carries_the_agreed_controls(self):
+        names = _xaml_names(_xaml_root("ZeroRatingReportWindow.xaml"))
+        required = {"SummaryText", "ZeroCountText", "ZeroCircuitsGrid",
+                    "CloseButton"}
+        self.assertFalse(required - names, "missing x:Name(s): %s" % (required - names))
 
     def test_update_is_the_default_and_cancel_is_the_escape(self):
         source = (COMMAND_DIR / "UpdateCircuitRatingWindow.xaml").read_text(

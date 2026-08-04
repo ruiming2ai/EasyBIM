@@ -429,6 +429,29 @@ def apply_ratings(doc, plan, target_labels):
     return results
 
 
+def read_circuit_rating_values(doc, target_keys):
+    """Re-read the target parameters on every circuit in the model.
+
+    Called after the transaction commits, so the report reflects what is
+    actually in the model rather than what the plan intended.  It covers all
+    circuits, including the ones the run never touched - a circuit nobody
+    could rate is exactly the one worth reporting.
+    """
+    circuits = []
+    for circuit in collect_circuits(doc):
+        try:
+            circuits.append({
+                "panel": _circuit_text(circuit, "RBS_ELEC_CIRCUIT_PANEL_PARAM"),
+                "circuit_number": _circuit_text(
+                    circuit, "RBS_ELEC_CIRCUIT_NUMBER"),
+                "load_name": _circuit_text(circuit, "RBS_ELEC_CIRCUIT_NAME"),
+                "values": _read_existing(circuit, target_keys, doc),
+            })
+        except Exception:
+            continue
+    return circuits
+
+
 def _write_param(param, display_value, doc):
     if display_value is None:
         return False
