@@ -1,0 +1,14 @@
+title: |-
+  Link
+  Probe
+tooltip: |-
+  Read-only diagnostic for Revit link display settings. Nothing is written.
+
+  Reports how every link is displayed in the active view - By Host View, By Linked View or Custom - and diagnoses which Custom views are frozen. Frozen is inferred, not measured: the Revit API cannot read the Model Categories tab of a link's display settings, so a link that is Custom while every readable Basics property still inherits must have been customized on a category tab.
+
+  It also runs one experiment: whether link geometry pulled with Options.View respects the link's display settings. If it does, a tool can read which categories a link is actually drawing.
+
+  Set a view up first: put a link on Custom and untick one category on its Model Categories tab.
+min_revit_version: 2024
+max_revit_version: 2027
+author: Ruiming Liu

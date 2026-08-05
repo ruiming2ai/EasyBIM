@@ -328,3 +328,44 @@ again.
 Families nested inside another family are not updated; only the families in the
 list are.
 
+
+## Link Probe (Views, Revit 2024+)
+
+Link Probe is a **read-only** diagnostic for Revit link display settings. It
+opens no transaction and changes nothing, so it is safe on a live project.
+
+It reports how every link is displayed in the active view and diagnoses the
+Custom ones. **Frozen is inferred, never measured.** The Revit API cannot read
+the Model Categories tab of a link's display settings — so a link that is
+Custom while all nine readable Basics properties still inherit must have been
+customized on a category or workset tab, and that is what the report says.
+Check each verdict against the Revit dialog; a wrong one is worth knowing about.
+
+Frozen is the whole problem this diagnostic exists to size up. Once a link is
+set to Custom and a category tab is edited, Revit keeps a private copy of the
+linked view's category table and that background stops following the architect.
+Reloading the link updates geometry but not graphics.
+
+### The experiment
+
+The probe also answers one question that decides what can be built next:
+whether link geometry pulled with `Options.View` respects the link's display
+settings. It walks the link's geometry twice — once with the view applied and
+once without — and reports whether the category you hid disappears from the
+first pass. If it does, a tool can read which categories a link is actually
+drawing.
+
+Set one view up first: put a link on **Custom**, and on its **Model Categories**
+tab set the tab to Custom and untick one obvious category. The probe asks which
+one.
+
+The geometry pass stops at 250,000 objects or 90 seconds. When it does, the
+report says **sampled, incomplete** — a truncated walk can prove a category is
+present but never that it is absent, and no verdict that rests on absence is
+reported from a truncated run.
+
+The report also dumps the Revit version and which link APIs it exposes, every
+loaded and unloaded link, all nine Basics properties per link, whether the view
+is dependent or its template controls RVT Links (both make writes silently
+inert), and everything readable in the architect's own linked view. Output goes
+to the pyRevit window as plain text — copy the whole thing.
