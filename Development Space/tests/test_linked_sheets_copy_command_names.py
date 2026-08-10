@@ -21,6 +21,7 @@ UI_MODULE = COMMAND_DIR / "linked_sheets_copy_ui.py"
 STATE_MODULE = COMMAND_DIR / "linked_sheets_copy_state.py"
 REVIT_MODULE = COMMAND_DIR / "linked_sheets_copy_revit.py"
 GEOMETRY_MODULE = REPO_ROOT / "lib" / "easybim" / "sheet_geometry.py"
+COPY_PASTE_MODULE = REPO_ROOT / "lib" / "easybim" / "copy_paste.py"
 VIEW_ALIGN = (REPO_ROOT / "EasyBIM.tab" / "Views.panel"
               / "View Align.pushbutton" / "script.py")
 
@@ -288,18 +289,25 @@ class LinkedSheetsCopyContractTests(unittest.TestCase):
         self.assertIn('hasattr(DB, "RevitLinkGraphicsSettings")', source)
 
     def test_a_name_clash_always_resolves_in_favour_of_this_model(self):
-        source = REVIT_MODULE.read_text(encoding="utf-8")
+        source = COPY_PASTE_MODULE.read_text(encoding="utf-8")
         self.assertIn("IDuplicateTypeNamesHandler", source)
         self.assertIn("DuplicateTypeAction.UseDestinationTypes", source)
         self.assertNotIn("DuplicateTypeAction.UseOtherTypes", source)
 
     def test_every_cross_document_copy_carries_that_handler(self):
-        source = REVIT_MODULE.read_text(encoding="utf-8")
+        # The factory moved to lib/ once a second tool needed it; one call
+        # site repo-wide is what stops a new copy forgetting the handler.
         self.assertEqual(
-            source.count("DB.CopyPasteOptions()"), 1,
+            COPY_PASTE_MODULE.read_text(encoding="utf-8")
+            .count("DB.CopyPasteOptions()"), 1,
             "CopyPasteOptions is built in one place so the duplicate-type "
             "handler cannot be forgotten at a new call site")
-        self.assertIn("SetDuplicateTypeNamesHandler", source)
+        self.assertIn("SetDuplicateTypeNamesHandler",
+                      COPY_PASTE_MODULE.read_text(encoding="utf-8"))
+        source = REVIT_MODULE.read_text(encoding="utf-8")
+        self.assertNotIn("DB.CopyPasteOptions()", source)
+        self.assertIn("from easybim.copy_paste import copy_paste_options",
+                      source)
 
     def test_the_viewport_is_measured_after_it_is_configured(self):
         # This is the bug View Align has: it solves the anchor in a precheck

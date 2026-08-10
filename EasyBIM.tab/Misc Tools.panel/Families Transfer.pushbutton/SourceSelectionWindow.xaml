@@ -2,9 +2,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Families Transfer"
         Width="720"
-        Height="760"
+        Height="880"
         MinWidth="640"
-        MinHeight="620"
+        MinHeight="700"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
         ResizeMode="CanResizeWithGrip">
@@ -17,7 +17,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Families Transfer" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Start with the families already selected in the model, or select more family instances before choosing what to transfer."
+            <TextBlock Text="Start with the families already selected in the model, then add more from this project, from opened .rfa files, or straight out of a Revit link."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -29,6 +29,8 @@
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="12"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
@@ -44,8 +46,7 @@
                     <TextBlock Grid.Row="0" Text="Selection Source" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
                     <TextBlock Grid.Row="1" x:Name="selected_count_tb" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,10"/>
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Left">
-                        <Button x:Name="select_btn" Content="Click to Select More in Project" Width="220" Height="34" Margin="0,0,8,0" Click="select_click"/>
-                        <Button x:Name="load_more_btn" Content="Load More from Project" Width="180" Height="34" Click="load_more_click"/>
+                        <Button x:Name="load_more_btn" Content="Load More from Recent Project" Width="240" Height="34" Click="load_more_click"/>
                     </StackPanel>
 
                     <StackPanel Grid.Row="3" Margin="0,12,0,6">
@@ -91,6 +92,44 @@
                             <StackPanel x:Name="OpenFamilyListPanel"/>
                         </ScrollViewer>
                     </Border>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" LastChildFill="True">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Select All" Width="96" Height="30" Margin="0,0,8,0" Click="link_select_all_click"/>
+                            <Button Content="Select None" Width="96" Height="30" Click="link_select_none_click"/>
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="Load More from Revit Links" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
+                            <TextBlock x:Name="link_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <StackPanel Grid.Row="1" Margin="0,10,0,6">
+                        <TextBlock Text="Search Revit links (families come straight out of the link; the .rvt is never opened, and links nested inside a link are not reachable)"
+                                   FontSize="11" FontWeight="SemiBold" Foreground="DimGray" TextWrapping="Wrap"/>
+                        <TextBox x:Name="LinkSearchBox" Height="28" Margin="0,4,0,0" TextChanged="link_search_changed"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
+                        <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel x:Name="LinkListPanel"/>
+                        </ScrollViewer>
+                    </Border>
+
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,10,0,0">
+                        <Button x:Name="load_link_families_btn" Content="Load More from Revit Links" Width="240" Height="34" Click="load_link_families_click"/>
+                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>
