@@ -7,6 +7,32 @@
 - Primary goal: Maintain and expand EasyBIM pyRevit commands/hooks with safe workflow governance
 - Primary stack: Python (pyRevit/Revit API), XAML for command UI
 
+## Deployment Rules (read before touching `main`)
+
+The Revit machine updates itself by running pyRevit's native updater, which is
+a **`git pull`** (`lib/easybim/auto_update.py` -> `updater.update_pyrevit()`).
+Everything below follows from that one fact.
+
+- **`main` is append-only. Never `git push --force` it, and never
+  `git reset` a commit that has been pushed.** A rewritten history leaves the
+  Revit machine on a different lineage, so its next pull becomes a *merge*
+  rather than a fast-forward. Files it added on the old lineage are kept by
+  that merge, files deleted upstream come back, and no amount of pulling,
+  reloading pyRevit or restarting Revit will ever converge. Recovery requires
+  hands-on `git reset --hard origin/main` on that machine.
+- **To undo shipped work, commit the deletion forward.** A plain removal
+  commit propagates correctly through a pull. It costs a few commits of
+  honest history; a force-push costs a broken deployment.
+- **Deleting a command must also remove its ignored build artefacts.**
+  `git rm` and `git reset --hard` both leave `__pycache__` behind, and a
+  `.pushbutton` folder containing nothing but `__pycache__` still looks like a
+  button to pyRevit. Finish every removal with
+  `git clean -fdx "<path to the .pushbutton folder>"`, on every clone.
+- **Verify the Revit machine actually matches the remote** rather than
+  assuming a pull worked:
+  `git fetch origin && git rev-parse HEAD origin/main && git status --short`.
+  The two hashes must be equal and the status empty.
+
 ## Current Workflow Summary
 
 - Work inside existing pyRevit folder conventions (`*.panel`, `*.pushbutton`, `*.pulldown`).
@@ -133,6 +159,8 @@
 | 2026-08-04 | View-level annotations are not copied by default; sheet-level content is the only thing the title-block options turn on | With the link shown By Linked View, the linked view's own text, detail lines and filled regions already draw through the link, so copying them draws everything twice. A sheet is not part of the linked model's geometry, so nothing on it can arrive that way and copying is the only route | The option is off, warned in its tooltip and in the confirmation, and gated behind an acknowledgement tick; tags, dimensions and view references are never copied at all because their references do not survive the document boundary | Active |
 | 2026-08-04 | Every cross-document copy goes through one `CopyPasteOptions` factory whose `IDuplicateTypeNamesHandler` answers `UseDestinationTypes` | Without a handler Revit either raises or puts a modal dialog in the middle of a batch; `UseDestinationTypes` is the only safe answer, because a type here that shares a name with one in the link is *this* model's type and a copy must never redefine it. This is the repo's first `IDuplicateTypeNamesHandler` | `test_linked_sheets_copy_command_names` fails the build if `DB.CopyPasteOptions()` appears at more than one call site, so a new copy cannot forget the handler | Active |
 | 2026-08-04 | The host title block is moved to the linked instance's position on the sheet | Sheet coordinates are absolute and the viewports are aligned to the *linked sheet's* absolute coordinates; a title block at a different spot puts every correctly-placed viewport in the wrong place on the page | `ViewSheet.Create` drops the title block at the family's own origin, so the move is unconditional wherever a title block was placed | Active |
+| 2026-08-05 | `main` is append-only: never force-push it, and undo shipped work with a forward deletion commit | The Revit machine updates through pyRevit's native updater, which is a `git pull`. Rewriting a pushed history puts that clone on a different lineage, so its next pull is a merge instead of a fast-forward - and a merge *keeps* the files the old lineage added. Proved the hard way: `main` was reset to drop a removed tool, and the Revit machine kept the tool through pulls, pyRevit reloads and a Revit restart, because the files were genuinely still on disk | Recovery is manual and per-machine (`git fetch && git reset --hard origin/main && git clean -fdx`), so the cost of one force-push is an intervention on every deployed clone. A few extra commits of honest history is the cheaper trade | Active |
+| 2026-08-05 | Removing a command is not finished until its ignored build artefacts are gone | `git rm` removes tracked files and `git reset --hard` skips ignored ones, so `__pycache__` survives both. A `.pushbutton` folder holding nothing but `__pycache__` still presents itself to pyRevit as a button | Every removal ends with `git clean -fdx "<the .pushbutton folder>"`, and the same command has to run on each deployed clone; a `git status` that reads clean does not prove the folder is gone | Active |
 | 2026-08-05 | A Revit link's per-category visibility cannot be read or written by any API through 2026, so no tool can sync a "Custom" link display back to its linked view | Verified against `RevitAPI.xml` 2023-2026: `RevitLinkGraphicsSettings` has 23 members and none touches categories; `RevitLinkInstance` has 5 and none touches display; no method anywhere takes a link id and a category id together; `View.HideElements` explicitly excludes links; `Category.Visible(View)` and `View.GetCategoryHidden` are host-only. Host view filters do reach a link via `ViewFilterType = ByHostView` but also hit host elements, so they cannot express "hide Ceilings in the arch link but keep mine" | Any future link tool must treat the frozen category table as opaque: transport it whole (`GetLinkOverrides` -> `SetLinkOverrides` between views, which `view_template_transfer_revit._apply_link_item` already relies on), or work around it. What *is* readable: the nine 2025 Basics properties, and the whole linked document through `GetLinkDocument()` | Active |
 | 2026-08-05 | "Frozen" is diagnosed by inference and must always be labelled as such | The category tabs are unreadable, so the only available evidence is that a link is `Custom` while all nine readable Basics properties still say `ByLinkView` - nothing on the Basics tab put it into Custom, and the only other door is a category or workset tab. It is sound but it cannot say *which* tab, and a view whose tab was set to Custom and then manually back to "by linked view" reads as a false positive | Any future implementation must label it "(inferred)" in the value itself rather than in a comment, so no caller can present it as measured, and must pin the nine Basics members literally in a test - a tenth property in a future Revit would otherwise quietly weaken the diagnosis. Two further traps found on a real model: only `ByLinkView` requires a valid `LinkedViewId`, so `Custom` with none is legal and must not be called broken; and a link following no linked view cannot be stale at all, whatever its category tabs hold | Active |
 | 2026-08-05 | Link geometry cannot be used to observe which categories a link draws - the last workaround, tested on a real model and closed | A `RevitLinkInstance` does not materialise the linked model's geometry in the host document. `get_Geometry` returns `None` with no view and an empty `GeometryElement` with one, identically for a plan view and a 3D view, with and without `IncludeNonVisibleObjects` and at every `DetailLevel`; the instance reports no model extents from `get_BoundingBox(None)`. So there is nothing to walk and no way to infer per-category visibility by observation | Per-category state inside a link is unreadable by *every* route now tested: no API surface, no host view filter that does not also hit host elements, no geometry. A tool can read which linked view a link points at and all nine Basics rows with their values, and can read the linked document itself in full - it can never read or write the five category and workset tabs | Active |
