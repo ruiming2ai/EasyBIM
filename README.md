@@ -186,6 +186,53 @@ that ended up blank all show up here. A circuit is listed if *any* of the
 parameters you ticked reads zero or nothing. That makes the report the list of
 what is left to do — when it is empty it says so.
 
+## Families Transfer (Misc Tools)
+
+Collect loadable families from wherever they happen to be, then push them into
+the other project files you have open — or write them out as `.rfa`.
+
+The first page gathers the sources. Whatever you had selected in the model is
+already listed; three cards add to it:
+
+- **Selection Source** — the families you have picked. **Load More from Recent
+  Project** opens the full browser for the active project, grouped by category.
+  That browser carries **Select More in the model**, which drops you back into
+  Revit to pick more instances and returns with them ticked.
+- **Add Opened .rfa Files** — any family file already open in this session.
+  These need no extraction at all; the open document *is* the family.
+- **Load More from Revit Links** — families out of a loaded Revit link.
+
+Then choose the open project files to load into, and finish with **Export**,
+**Transfer**, or **Transfer & Close All .rfa**. Long runs show a progress bar
+and can be cancelled; anything already loaded stays loaded.
+
+### Families from a Revit link
+
+**The linked `.rvt` is never opened.** A loaded link is already a readable
+document in memory, so the families are read straight out of it.
+
+Tick the links you want and press **Load More from Revit Links**. Each link is
+probed once, before the browser opens, so a link that will not give up its
+families says so in one sentence instead of one failure line per family.
+Getting a family *out* of a read-only document is the part Revit does not
+guarantee, so there are three routes and the tool takes the first that works:
+
+1. If the linked file also happens to be **open in this session**, it is read
+   from that document — no read-only question arises.
+2. Otherwise the link itself is asked for the family. This is the normal path,
+   and it behaves exactly like a project family: existing families in the
+   target are overwritten.
+3. If the link refuses, the family is **copied** into each target instead.
+   A copy cannot overwrite: where the target already has a family of that
+   name, that row is skipped and says so, because Revit would otherwise
+   resolve the clash in favour of the target and report a success that changed
+   nothing. **Export** has no third route — writing an `.rfa` needs a family
+   document, which is the thing the link refused — so it reports the refusal.
+
+Two instances of one link are one row, not two. Unloaded links are listed but
+greyed, so a missing link looks missing rather than absent. Links nested
+inside a link are not reachable through the API and are not listed.
+
 ## Linked Sheets Copy (Sheet, Revit 2024+)
 
 Linked Sheets Copy reuses a Revit link's sheets. Pick a loaded link, tick its

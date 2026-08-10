@@ -1,7 +1,7 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Transferable Families"
-        Width="660"
+        Width="720"
         Height="640"
         MinWidth="560"
         MinHeight="480"
@@ -16,7 +16,7 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
-            <TextBlock Text="Transferable Families" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock x:Name="header_tb" Text="Transferable Families" FontSize="30" FontWeight="SemiBold"/>
             <TextBlock x:Name="count_tb" Margin="0,6,0,0" FontSize="13" Foreground="DimGray"/>
         </StackPanel>
 
@@ -33,6 +33,7 @@
                 </Grid.RowDefinitions>
                 <DockPanel Grid.Row="0" LastChildFill="True">
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="pick_more_btn" Content="Select More in the model" Width="190" Height="30" Margin="0,0,8,0" Click="pick_more_click"/>
                         <Button Content="Expand All" Width="100" Height="30" Margin="0,0,8,0" Click="expand_all_click"/>
                         <Button Content="Collapse All" Width="110" Height="30" Click="collapse_all_click"/>
                     </StackPanel>
