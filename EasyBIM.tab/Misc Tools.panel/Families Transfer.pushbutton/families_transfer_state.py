@@ -9,8 +9,10 @@ SUMMARY_DISPLAY_LIMIT = 20
 INVALID_FILENAME_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 SOURCE_PROJECT = "project"
 SOURCE_OPEN_RFA = "open_rfa"
+SOURCE_LINK = "link"
 PROJECT_FAMILY_KEY_PREFIX = "project|"
 OPEN_RFA_FAMILY_KEY_PREFIX = "open-rfa|"
+LINK_FAMILY_KEY_PREFIX = "link|"
 UNKNOWN_CATEGORY = "Unknown Category"
 
 
@@ -40,6 +42,9 @@ class FamilyOption(object):
         family_document=None,
         document_key=None,
         category_name=None,
+        source_document=None,
+        source_label=None,
+        is_editable=True,
     ):
         self.name = _safe_text(name) or "(Unnamed Family)"
         self.family_key = _safe_text(family_key)
@@ -50,6 +55,14 @@ class FamilyOption(object):
         self.family_document = family_document
         self.document_key = _safe_text(document_key)
         self.category_name = normalize_category_name(category_name)
+        # The document that owns ``family`` and must be asked to edit it.  A
+        # link family belongs to the linked document, not the active project,
+        # so ``EditFamily`` has to be called on that one.  Kept separate from
+        # ``family_document``, which is an *already open* .rfa the transfer
+        # calls ``LoadFamily`` on directly.
+        self.source_document = source_document
+        self.source_label = _safe_text(source_label)
+        self.is_editable = bool(is_editable)
 
     def __str__(self):
         return self.name
@@ -62,6 +75,42 @@ class OpenFamilyDocumentOption(object):
         self.is_selected = bool(is_selected)
         self.document = document
         self.category_name = normalize_category_name(category_name)
+
+    def __str__(self):
+        return self.display_name
+
+
+class LinkDocumentOption(object):
+    """One loaded Revit link, deduped to one row per linked document.
+
+    ``is_extractable`` is ``None`` until the link has been probed: reading a
+    linked document is always allowed, but getting a family *out* of one is
+    not guaranteed, and the probe is what turns that into a sentence the user
+    can act on rather than one failure line per family.
+    """
+
+    def __init__(
+        self,
+        display_name,
+        document_key,
+        is_selected=False,
+        document=None,
+        is_loaded=True,
+        is_extractable=None,
+        note="",
+    ):
+        self.display_name = _safe_text(display_name) or "(Untitled Link)"
+        self.document_key = _safe_text(document_key)
+        self.is_selected = bool(is_selected)
+        self.document = document
+        self.is_loaded = bool(is_loaded)
+        self.is_extractable = is_extractable
+        self.note = _safe_text(note)
+        # The document families are actually read and edited from.  Normally
+        # the link document itself; the *open* copy when the same file also
+        # happens to be open in this session, which sidesteps the question of
+        # what a read-only document will allow.
+        self.read_document = document
 
     def __str__(self):
         return self.display_name
@@ -86,11 +135,21 @@ class TransferResult(object):
 
 
 class TransferSummary(object):
-    def __init__(self, loaded=None, skipped=None, failed=None, closed_rfa_count=0):
+    def __init__(self, loaded=None, skipped=None, failed=None, closed_rfa_count=0,
+                 notes=None, cancelled=False):
         self.loaded = list(loaded or [])
         self.skipped = list(skipped or [])
         self.failed = list(failed or [])
         self.closed_rfa_count = int(closed_rfa_count or 0)
+        # One line per whole-source reason, so a link that refuses every
+        # family reads as one sentence instead of filling the detail list.
+        self.notes = list(notes or [])
+        self.cancelled = bool(cancelled)
+
+    def add_note(self, note):
+        note = _safe_text(note).strip()
+        if note and note not in self.notes:
+            self.notes.append(note)
 
 
 class FamilyCategoryGroup(object):
@@ -113,6 +172,22 @@ def make_open_family_document_key(document_key):
     return "{}{}".format(OPEN_RFA_FAMILY_KEY_PREFIX, document_key)
 
 
+def make_link_family_key(link_document_key, raw_family_key):
+    """Namespace a link family by the document it lives in.
+
+    An ElementId is only unique inside its own document, so two links can
+    both hold family 12345.  The document key has to be part of the key.
+    """
+    raw_family_key = _safe_text(raw_family_key)
+    if raw_family_key.startswith(LINK_FAMILY_KEY_PREFIX):
+        return raw_family_key
+    return "{}{}|{}".format(
+        LINK_FAMILY_KEY_PREFIX,
+        _safe_text(link_document_key),
+        raw_family_key,
+    )
+
+
 def is_project_family_key(family_key):
     return _safe_text(family_key).startswith(PROJECT_FAMILY_KEY_PREFIX)
 
@@ -121,11 +196,58 @@ def is_open_family_document_key(family_key):
     return _safe_text(family_key).startswith(OPEN_RFA_FAMILY_KEY_PREFIX)
 
 
+def is_link_family_key(family_key):
+    return _safe_text(family_key).startswith(LINK_FAMILY_KEY_PREFIX)
+
+
 def open_family_document_key_from_family_key(family_key):
     family_key = _safe_text(family_key)
     if not is_open_family_document_key(family_key):
         return ""
     return family_key[len(OPEN_RFA_FAMILY_KEY_PREFIX):]
+
+
+def link_document_key_from_family_key(family_key):
+    """Recover the link's document key from a ``link|`` family key.
+
+    Document keys are ``path|<lowercased path>``; ``|`` is illegal in a
+    Windows path, so the last separator is always the one before the id.
+    """
+    family_key = _safe_text(family_key)
+    if not is_link_family_key(family_key):
+        return ""
+    body = family_key[len(LINK_FAMILY_KEY_PREFIX):]
+    if "|" not in body:
+        return ""
+    return body.rsplit("|", 1)[0]
+
+
+def split_selected_family_keys(selected_family_keys):
+    """Sort a mixed key set into its three sources.
+
+    Project families and link families keep their family keys; opened .rfa
+    files collapse to document keys, because there the document *is* the
+    family.
+    """
+    project_family_keys = set()
+    open_family_document_keys = set()
+    link_family_keys = set()
+
+    for family_key in selected_family_keys or []:
+        if is_open_family_document_key(family_key):
+            document_key = open_family_document_key_from_family_key(family_key)
+            if document_key:
+                open_family_document_keys.add(document_key)
+            continue
+
+        if is_link_family_key(family_key):
+            link_family_keys.add(family_key)
+            continue
+
+        if is_project_family_key(family_key):
+            project_family_keys.add(family_key)
+
+    return project_family_keys, open_family_document_keys, link_family_keys
 
 
 def restore_family_selection(families, selected_family_keys):
@@ -246,8 +368,36 @@ def filter_open_family_document_options(documents, search_text):
     ]
 
 
-def merge_transferable_family_options(project_families, open_family_documents):
+def prune_link_families_to_checked_links(link_families, checked_document_keys):
+    """Drop families whose link is no longer checked.
+
+    Unchecking a link has to mean "not this one": leaving its families in the
+    selection would transfer out of a link the user has just excluded.
+    """
+    checked_document_keys = set(checked_document_keys or [])
+    return [
+        family
+        for family in list(link_families or [])
+        if link_document_key_from_family_key(
+            _safe_text(getattr(family, "family_key", ""))
+        ) in checked_document_keys
+    ]
+
+
+def filter_link_document_options(documents, search_text):
+    return [
+        document
+        for document in list(documents or [])
+        if _matches_family_search(getattr(document, "display_name", ""), "", search_text)
+    ]
+
+
+def merge_transferable_family_options(project_families, open_family_documents,
+                                      link_families=None):
     merged = list(project_families or [])
+    # Link families arrive as FamilyOptions already, so unlike an opened .rfa
+    # document they need no conversion - only checked ones are ever passed in.
+    merged.extend(list(link_families or []))
     for document in list(open_family_documents or []):
         if not bool(getattr(document, "is_selected", False)):
             continue
@@ -363,13 +513,21 @@ def build_transfer_summary_text(summary):
 
     closed_rfa_count = int(getattr(summary, "closed_rfa_count", 0) or 0)
     lines = [
-        "Families Transfer completed.",
+        "Families Transfer cancelled."
+        if bool(getattr(summary, "cancelled", False))
+        else "Families Transfer completed.",
         "Loaded/overwritten: {}".format(len(loaded)),
         "Skipped: {}".format(len(skipped)),
         "Failed: {}".format(len(failed)),
     ]
     if closed_rfa_count:
         lines.append("Closed .rfa files: {}".format(closed_rfa_count))
+
+    # Whole-source reasons go above the per-family detail, so a link that
+    # refused everything is one sentence rather than twenty identical rows.
+    for note in list(getattr(summary, "notes", []) or []):
+        lines.append("")
+        lines.append(_safe_text(note))
 
     _append_result_lines(lines, "Loaded/overwritten:", loaded)
     _append_result_lines(lines, "Skipped:", skipped)

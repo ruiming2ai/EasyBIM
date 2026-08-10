@@ -5,6 +5,7 @@ from pyrevit import forms
 from pyrevit.framework import Windows
 
 from families_transfer_state import filter_family_options
+from families_transfer_state import filter_link_document_options
 from families_transfer_state import filter_open_family_document_options
 from families_transfer_state import get_selected_document_keys
 from families_transfer_state import get_selected_family_keys
@@ -41,6 +42,19 @@ def _option_text(name, category_name):
     return _safe_text(name)
 
 
+def _family_row_text(family):
+    """A family row, suffixed with where it came from when that is not obvious.
+
+    ``source_label`` is only set on link families, and only matters when more
+    than one link is in play - two links can each hold a Door_Single.
+    """
+    text = _safe_text(getattr(family, "name", ""))
+    source_label = _safe_text(getattr(family, "source_label", ""))
+    if source_label:
+        return "{}  [{}]".format(text, source_label)
+    return text
+
+
 def _search_text(control):
     try:
         return _safe_text(control.Text)
@@ -63,26 +77,38 @@ class SourceSelectionWindow(forms.WPFWindow):
         open_family_documents,
         selected_document_keys=None,
         status_text="",
+        link_documents=None,
+        selected_link_document_keys=None,
+        link_family_count=0,
     ):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.selected_families = list(selected_families or [])
         self.open_family_documents = list(open_family_documents or [])
+        self.link_documents = list(link_documents or [])
         self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
         self.selected_document_keys = set(selected_document_keys or [])
+        self.selected_link_document_keys = set(selected_link_document_keys or [])
+        self.link_family_count = int(link_family_count or 0)
         self.result = None
         self._selected_family_controls = []
         self._open_rfa_controls = []
+        self._link_controls = []
 
         restore_open_family_document_selection(
             self.open_family_documents,
             self.selected_document_keys,
+        )
+        restore_document_selection(
+            self.link_documents,
+            self.selected_link_document_keys,
         )
 
         self.selected_count_tb.Text = _family_count_text(len(self.selected_families))
         self.status_tb.Text = _safe_text(status_text)
         self._populate_selected_families()
         self._populate_open_family_documents()
+        self._populate_link_documents()
         self._is_ready = True
 
     def _populate_selected_families(self):
@@ -153,6 +179,9 @@ class SourceSelectionWindow(forms.WPFWindow):
             else:
                 _add_empty_text(self.OpenFamilyListPanel, "No opened .rfa family files were found.")
 
+        self._refresh_open_rfa_count()
+
+    def _refresh_open_rfa_count(self):
         checked_count = len(get_selected_open_family_document_keys(self.open_family_documents))
         if self.open_family_documents:
             self.open_rfa_count_tb.Text = "{} opened .rfa file(s), {} checked.".format(
@@ -169,6 +198,67 @@ class SourceSelectionWindow(forms.WPFWindow):
         )
         return self.selected_document_keys
 
+    def _sync_link_controls(self):
+        for checkbox in self._link_controls:
+            option = getattr(checkbox, "Tag", None)
+            if option is not None:
+                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+
+    def _populate_link_documents(self):
+        self.LinkListPanel.Children.Clear()
+        self._link_controls = []
+        visible_links = filter_link_document_options(
+            self.link_documents,
+            _search_text(self.LinkSearchBox),
+        )
+        for link_document in visible_links:
+            checkbox = Windows.Controls.CheckBox()
+            label = _safe_text(getattr(link_document, "display_name", ""))
+            note = _safe_text(getattr(link_document, "note", ""))
+            if note:
+                label = "{}  - {}".format(label, note)
+            checkbox.Content = label
+            checkbox.IsChecked = bool(getattr(link_document, "is_selected", False))
+            checkbox.Tag = link_document
+            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
+            # An unloaded link is shown greyed rather than hidden: leaving it
+            # out reads as "the tool cannot see my link".
+            checkbox.IsEnabled = bool(getattr(link_document, "is_loaded", True))
+            self.LinkListPanel.Children.Add(checkbox)
+            self._link_controls.append(checkbox)
+
+        if not visible_links:
+            if self.link_documents:
+                _add_empty_text(self.LinkListPanel, "No Revit links match the search.")
+            else:
+                _add_empty_text(self.LinkListPanel, "No Revit links were found in this project.")
+
+        self._refresh_link_count()
+
+    def _refresh_link_count(self):
+        if not self.link_documents:
+            self.link_count_tb.Text = "No Revit links were found in this project."
+            return
+
+        checked_count = len(get_selected_document_keys(self.link_documents))
+        text = "{} link(s) loaded, {} checked.".format(
+            len(self.link_documents),
+            checked_count,
+        )
+        if self.link_family_count:
+            text = "{} {} family/families chosen from links.".format(
+                text,
+                self.link_family_count,
+            )
+        self.link_count_tb.Text = text
+
+    def _read_selected_link_document_keys(self):
+        self._sync_link_controls()
+        self.selected_link_document_keys = set(
+            get_selected_document_keys(self.link_documents)
+        )
+        return self.selected_link_document_keys
+
     def selected_source_search_changed(self, sender, args):
         del sender, args
         if not getattr(self, "_is_ready", False):
@@ -183,38 +273,67 @@ class SourceSelectionWindow(forms.WPFWindow):
         self._sync_open_rfa_controls()
         self._populate_open_family_documents()
 
+    def link_search_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._sync_link_controls()
+        self._populate_link_documents()
+
     def open_family_select_all_click(self, sender, args):
         del sender, args
+        # The rows are already on screen: flipping IsChecked is enough, and
+        # rebuilding every CheckBox afterwards only costs time.
         for checkbox in self._open_rfa_controls:
             checkbox.IsChecked = True
         self._read_selected_document_keys()
-        self._populate_open_family_documents()
+        self._refresh_open_rfa_count()
 
     def open_family_select_none_click(self, sender, args):
         del sender, args
         for checkbox in self._open_rfa_controls:
             checkbox.IsChecked = False
         self._read_selected_document_keys()
-        self._populate_open_family_documents()
+        self._refresh_open_rfa_count()
 
-    def select_click(self, sender, args):
+    def link_select_all_click(self, sender, args):
         del sender, args
+        for checkbox in self._link_controls:
+            if checkbox.IsEnabled:
+                checkbox.IsChecked = True
+        self._read_selected_link_document_keys()
+        self._refresh_link_count()
+
+    def link_select_none_click(self, sender, args):
+        del sender, args
+        for checkbox in self._link_controls:
+            checkbox.IsChecked = False
+        self._read_selected_link_document_keys()
+        self._refresh_link_count()
+
+    def _read_every_selection(self):
         self._read_selected_family_keys()
         self._read_selected_document_keys()
-        self.result = "select"
+        self._read_selected_link_document_keys()
+
+    def load_link_families_click(self, sender, args):
+        del sender, args
+        self._read_every_selection()
+        if not self.selected_link_document_keys:
+            forms.alert("Check at least one Revit link first.", title=TITLE)
+            return
+        self.result = "load_links"
         self.Close()
 
     def load_more_click(self, sender, args):
         del sender, args
-        self._read_selected_family_keys()
-        self._read_selected_document_keys()
+        self._read_every_selection()
         self.result = "load_more"
         self.Close()
 
     def next_click(self, sender, args):
         del sender, args
-        self._read_selected_family_keys()
-        self._read_selected_document_keys()
+        self._read_every_selection()
         self.result = "next"
         self.Close()
 
@@ -225,15 +344,34 @@ class SourceSelectionWindow(forms.WPFWindow):
 
 
 class FamilySelectionWindow(forms.WPFWindow):
-    def __init__(self, xaml_file_name, families, selected_family_keys=None):
+    """The family browser, in one of two modes.
+
+    Project mode carries the "Select More in the model" pick button; link
+    mode hides it (there is nothing in the active model to pick that would
+    belong to a link) and allows an empty Add, which is how a user clears
+    every link family they had chosen.
+    """
+
+    def __init__(self, xaml_file_name, families, selected_family_keys=None,
+                 header_text=None, allow_model_pick=True, require_selection=True):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.families = list(families or [])
         self.selected_family_keys = set(selected_family_keys or [])
+        self.allow_model_pick = bool(allow_model_pick)
+        self.require_selection = bool(require_selection)
         self.result = None
         self._controls = []
         self._category_expanders = []
         self._expanded_categories = {}
+
+        header_text = _safe_text(header_text)
+        if header_text:
+            self.header_tb.Text = header_text
+            self.Title = header_text
+
+        if not self.allow_model_pick:
+            self.pick_more_btn.Visibility = Windows.Visibility.Collapsed
 
         restore_family_selection(self.families, self.selected_family_keys)
         self._populate()
@@ -272,7 +410,7 @@ class FamilySelectionWindow(forms.WPFWindow):
 
             for family in group.families:
                 checkbox = Windows.Controls.CheckBox()
-                checkbox.Content = family.name
+                checkbox.Content = _family_row_text(family)
                 checkbox.IsChecked = bool(family.is_selected)
                 checkbox.Tag = family
                 checkbox.Margin = Windows.Thickness(18, 4, 8, 4)
@@ -313,19 +451,16 @@ class FamilySelectionWindow(forms.WPFWindow):
 
     def select_all_click(self, sender, args):
         del sender, args
+        # No rebuild: the rows are on screen and only their tick changed.
         for checkbox in self._controls:
             checkbox.IsChecked = True
-        self._sync_category_expanders()
         self._read_selected_family_keys()
-        self._populate()
 
     def select_none_click(self, sender, args):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = False
-        self._sync_category_expanders()
         self._read_selected_family_keys()
-        self._populate()
 
     def expand_all_click(self, sender, args):
         del sender, args
@@ -344,11 +479,20 @@ class FamilySelectionWindow(forms.WPFWindow):
         self.result = "back"
         self.Close()
 
+    def pick_more_click(self, sender, args):
+        del sender, args
+        # PickObjects cannot run while a modal window is up, so the page hands
+        # its selection back and script.py reopens it once the pick is done.
+        self._sync_category_expanders()
+        self.selected_family_keys = self._read_selected_family_keys()
+        self.result = "pick"
+        self.Close()
+
     def add_click(self, sender, args):
         del sender, args
         self._sync_category_expanders()
         selected = self._read_selected_family_keys()
-        if not selected:
+        if self.require_selection and not selected:
             forms.alert("Select at least one family or opened .rfa file.", title=TITLE)
             return
         self.selected_family_keys = selected

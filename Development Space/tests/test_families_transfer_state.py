@@ -349,13 +349,109 @@ class FamiliesTransferStateTests(unittest.TestCase):
 
         self.assertNotIn("get_source_family_options", calls_before_show_dialog)
 
-    def test_source_window_xaml_exposes_pick_and_load_more_buttons(self):
+    def test_source_window_load_more_names_the_recent_project(self):
         self.assertTrue(SOURCE_XAML_PATH.exists(), "SourceSelectionWindow.xaml is missing")
         source = SOURCE_XAML_PATH.read_text()
 
-        self.assertIn("Click to Select More in Project", source)
-        self.assertIn("Load More from Project", source)
+        self.assertIn("Load More from Recent Project", source)
         self.assertIn('Click="load_more_click"', source)
+        self.assertNotIn('Content="Load More from Project"', source)
+
+    def test_the_model_pick_button_left_the_source_window(self):
+        # It lives on the family browser now; two entry points to the same
+        # pick is exactly the drift this file exists to catch.
+        source = SOURCE_XAML_PATH.read_text()
+
+        self.assertNotIn("Click to Select More in Project", source)
+        self.assertNotIn('Click="select_click"', source)
+
+    def test_family_window_carries_the_model_pick_button(self):
+        self.assertTrue(FAMILY_XAML_PATH.exists(), "FamilySelectionWindow.xaml is missing")
+        source = FAMILY_XAML_PATH.read_text()
+
+        self.assertIn("Select More in the model", source)
+        self.assertIn('Click="pick_more_click"', source)
+        self.assertIn('x:Name="pick_more_btn"', source)
+
+    def test_the_family_browser_keeps_its_own_title(self):
+        # Only the in-window heading switches between the two modes.
+        source = FAMILY_XAML_PATH.read_text()
+
+        self.assertIn('Title="Transferable Families"', source)
+        self.assertIn('x:Name="header_tb"', source)
+
+    def test_source_window_xaml_exposes_the_revit_links_card(self):
+        source = SOURCE_XAML_PATH.read_text()
+
+        self.assertIn("Load More from Revit Links", source)
+        self.assertIn('Click="load_link_families_click"', source)
+        self.assertIn('Click="link_select_all_click"', source)
+        self.assertIn('Click="link_select_none_click"', source)
+        self.assertIn('x:Name="LinkListPanel"', source)
+        self.assertIn('x:Name="LinkSearchBox"', source)
+
+    def test_the_links_card_sits_below_the_opened_rfa_card(self):
+        source = SOURCE_XAML_PATH.read_text()
+
+        self.assertLess(
+            source.index("Add Opened .rfa Files"),
+            source.index('Text="Load More from Revit Links"'),
+        )
+
+    def test_link_families_are_collected_only_after_a_link_is_checked(self):
+        # Scanning every linked document up front would cost a full collector
+        # pass per link before the user has said which one they care about.
+        tree = ast.parse(SCRIPT_MODULE_PATH.read_text(), filename=str(SCRIPT_MODULE_PATH))
+
+        run_function = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_run":
+                run_function = node
+                break
+        self.assertIsNotNone(run_function, "_run is missing")
+
+        source_step_body = None
+        for node in ast.walk(run_function):
+            if not isinstance(node, ast.If):
+                continue
+            comparison = ast.dump(node.test)
+            if "step" in comparison and "STEP_SOURCE" in comparison:
+                source_step_body = node.body
+                break
+        self.assertIsNotNone(source_step_body, "STEP_SOURCE branch is missing")
+
+        called = []
+        for node in source_step_body:
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "ShowDialog"
+            ):
+                break
+            called.extend(
+                call.func.id
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            )
+
+        self.assertNotIn("get_link_family_options", called)
+        self.assertNotIn("prepare_link_documents", called)
+
+    def test_transfer_and_export_take_a_progress_callback(self):
+        source = REVIT_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(REVIT_MODULE_PATH))
+
+        for name in ("transfer_families", "export_families"):
+            target = None
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name == name:
+                    target = node
+                    break
+            self.assertIsNotNone(target, "{} is missing".format(name))
+            self.assertIn("progress", [arg.arg for arg in target.args.args], name)
+
+        self.assertIn("ProgressBar", SCRIPT_MODULE_PATH.read_text())
 
     def test_target_window_title_loads_families_into_selected_open_files(self):
         self.assertTrue(TARGET_XAML_PATH.exists(), "TargetSelectionWindow.xaml is missing")
@@ -479,6 +575,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
             "selected_source_search_changed",
             "open_family_search_changed",
             "family_search_changed",
+            "link_search_changed",
         }
         found_handlers = set()
         for node in ast.walk(tree):
@@ -490,6 +587,162 @@ class FamiliesTransferStateTests(unittest.TestCase):
             self.assertIn("Return", handler_source)
 
         self.assertEqual(guarded_handlers, found_handlers)
+
+    def test_a_link_family_key_carries_the_document_it_came_from(self):
+        module = _load_state_module()
+
+        key = module.make_link_family_key("path|c:\\jobs\\arch model.rvt", "12345")
+
+        self.assertTrue(module.is_link_family_key(key))
+        self.assertFalse(module.is_project_family_key(key))
+        self.assertFalse(module.is_open_family_document_key(key))
+        self.assertEqual(
+            "path|c:\\jobs\\arch model.rvt",
+            module.link_document_key_from_family_key(key),
+        )
+
+    def test_the_same_element_id_in_two_links_yields_two_keys(self):
+        # An ElementId is only unique inside its own document, so without the
+        # document key two links would collapse onto one row.
+        module = _load_state_module()
+
+        first = module.make_link_family_key("path|c:\\a.rvt", "12345")
+        second = module.make_link_family_key("path|c:\\b.rvt", "12345")
+
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, module.make_project_family_key("12345"))
+
+    def test_make_link_family_key_is_idempotent(self):
+        module = _load_state_module()
+
+        once = module.make_link_family_key("path|c:\\a.rvt", "12345")
+
+        self.assertEqual(once, module.make_link_family_key("path|c:\\a.rvt", once))
+
+    def test_link_document_key_is_empty_for_other_kinds_of_key(self):
+        module = _load_state_module()
+
+        self.assertEqual("", module.link_document_key_from_family_key("project|7"))
+        self.assertEqual("", module.link_document_key_from_family_key(""))
+
+    def test_split_selected_family_keys_sorts_all_three_sources(self):
+        module = _load_state_module()
+
+        project_keys, open_keys, link_keys = module.split_selected_family_keys([
+            module.make_project_family_key("7"),
+            module.make_open_family_document_key("doc-desk"),
+            module.make_link_family_key("path|c:\\a.rvt", "12345"),
+            "nonsense",
+        ])
+
+        self.assertEqual({"project|7"}, project_keys)
+        self.assertEqual({"doc-desk"}, open_keys)
+        self.assertEqual({"link|path|c:\\a.rvt|12345"}, link_keys)
+
+    def test_unchecking_a_link_drops_the_families_chosen_from_it(self):
+        module = _load_state_module()
+
+        chosen = [
+            module.FamilyOption("Door", module.make_link_family_key("path|c:\\a.rvt", "1")),
+            module.FamilyOption("Column", module.make_link_family_key("path|c:\\b.rvt", "2")),
+        ]
+
+        kept = module.prune_link_families_to_checked_links(chosen, {"path|c:\\b.rvt"})
+
+        self.assertEqual(["Column"], [family.name for family in kept])
+        self.assertEqual([], module.prune_link_families_to_checked_links(chosen, set()))
+
+    def test_link_document_option_starts_unchecked_and_unprobed(self):
+        module = _load_state_module()
+
+        option = module.LinkDocumentOption("Arch.rvt", "path|c:\\a.rvt")
+
+        self.assertFalse(option.is_selected)
+        self.assertTrue(option.is_loaded)
+        self.assertIsNone(option.is_extractable)
+        self.assertEqual("", option.note)
+
+    def test_family_option_carries_the_document_that_owns_it(self):
+        module = _load_state_module()
+
+        default = module.FamilyOption("Door", "project|1")
+        link_family = module.FamilyOption(
+            "Door", "link|path|c:\\a.rvt|1",
+            source_kind=module.SOURCE_LINK,
+            source_document="link-doc",
+            source_label="Arch.rvt",
+        )
+
+        self.assertIsNone(default.source_document)
+        self.assertEqual("", default.source_label)
+        self.assertEqual("link-doc", link_family.source_document)
+        self.assertEqual("Arch.rvt", link_family.source_label)
+
+    def test_merge_transferable_families_takes_all_three_sources(self):
+        module = _load_state_module()
+
+        project_families = [
+            module.FamilyOption("Door", "project|1", is_selected=True, category_name="Doors"),
+        ]
+        open_documents = [
+            module.OpenFamilyDocumentOption(
+                "Desk.rfa", "doc-desk", is_selected=True, category_name="Furniture"),
+            module.OpenFamilyDocumentOption("Light.rfa", "doc-light", is_selected=False),
+        ]
+        link_families = [
+            module.FamilyOption(
+                "Column", "link|path|c:\\a.rvt|9", is_selected=True,
+                source_kind=module.SOURCE_LINK, category_name="Columns"),
+        ]
+
+        merged = module.merge_transferable_family_options(
+            project_families, open_documents, link_families)
+
+        self.assertEqual(
+            ["Column", "Door", "Desk.rfa"],
+            [family.name for family in merged],
+        )
+        self.assertEqual(
+            [module.SOURCE_LINK, module.SOURCE_PROJECT, module.SOURCE_OPEN_RFA],
+            [family.source_kind for family in merged],
+        )
+
+    def test_merge_transferable_families_still_works_with_two_sources(self):
+        module = _load_state_module()
+
+        merged = module.merge_transferable_family_options(
+            [module.FamilyOption("Door", "project|1", is_selected=True)], [])
+
+        self.assertEqual(["Door"], [family.name for family in merged])
+
+    def test_a_whole_source_reason_is_reported_once_not_per_family(self):
+        module = _load_state_module()
+
+        summary = module.TransferSummary(
+            skipped=[
+                module.TransferResult("Door", "Tower.rvt", "already in the target"),
+                module.TransferResult("Column", "Tower.rvt", "already in the target"),
+            ],
+        )
+        summary.add_note("Arch.rvt: Revit will not open a family out of this link")
+        summary.add_note("Arch.rvt: Revit will not open a family out of this link")
+
+        message = module.build_transfer_summary_text(summary)
+
+        self.assertEqual(1, message.count("will not open a family out of this link"))
+        self.assertLess(
+            message.index("will not open a family out of this link"),
+            message.index("Skipped:\n"),
+        )
+
+    def test_a_cancelled_run_says_so_on_the_first_line(self):
+        module = _load_state_module()
+
+        summary = module.TransferSummary(cancelled=True)
+
+        self.assertTrue(
+            module.build_transfer_summary_text(summary).startswith(
+                "Families Transfer cancelled."))
 
     def test_transferability_does_not_restrict_to_model_categories(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")
