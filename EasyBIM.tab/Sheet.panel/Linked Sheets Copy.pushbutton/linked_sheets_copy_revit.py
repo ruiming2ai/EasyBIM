@@ -22,6 +22,7 @@ from __future__ import print_function
 from pyrevit import DB
 
 from easybim import sheet_geometry
+from easybim.copy_paste import copy_paste_options
 from easybim.compat import eid_to_int
 from easybim.compat import element_id_factory
 from easybim.compat import exception_text
@@ -621,20 +622,6 @@ def _host_viewport_types(document):
 # cross-document copying
 # ---------------------------------------------------------------------------
 
-class UseDestinationTypes(DB.IDuplicateTypeNamesHandler):
-    """Answer Revit's duplicate-type prompt without showing it.
-
-    ``UseDestinationTypes`` is the only safe answer here: a type in this model
-    that happens to share a name with one in the link is *this* model's type,
-    and a copy must never redefine it.  Without a handler Revit either raises
-    or puts a modal dialog in the middle of a batch.
-    """
-
-    def OnDuplicateTypeNamesFound(self, args):
-        del args
-        return DB.DuplicateTypeAction.UseDestinationTypes
-
-
 class _WarningSwallower(DB.IFailuresPreprocessor):
     """Delete warnings so a batch is not interrupted; errors still surface."""
 
@@ -646,15 +633,6 @@ class _WarningSwallower(DB.IFailuresPreprocessor):
         except Exception:
             pass
         return DB.FailureProcessingResult.Continue
-
-
-def copy_paste_options():
-    options = DB.CopyPasteOptions()
-    try:
-        options.SetDuplicateTypeNamesHandler(UseDestinationTypes())
-    except Exception:
-        pass
-    return options
 
 
 def _start_transaction(doc, name):
