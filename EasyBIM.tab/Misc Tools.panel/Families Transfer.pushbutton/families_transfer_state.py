@@ -402,6 +402,19 @@ def format_selection_count_text(checked_count, total_count):
     )
 
 
+def format_total_selection_text(total_count):
+    """The footer line: everything ticked, across every source.
+
+    Each card already reports its own count. The footer is the only place
+    that answers "how much am I about to transfer", so it must never name a
+    single source.
+    """
+    total_count = int(total_count or 0)
+    if total_count == 1:
+        return "1 family selected in total."
+    return "{} families selected in total.".format(total_count)
+
+
 def needs_repopulate_after_bulk_toggle(is_select_all, hide_unchecked):
     """Select All can never reveal a hidden row; Select None hides every one.
 
