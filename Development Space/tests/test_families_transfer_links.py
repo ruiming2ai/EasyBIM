@@ -14,8 +14,10 @@ afterwards so the stubs cannot leak into the rest of the suite.
 
 import importlib.util
 import os
+import shutil
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 
@@ -125,6 +127,9 @@ class FakeDocument(object):
         self.edited = []
         self.copied_in = []
         self.closed = False
+        # Every argument Close was called with, so a bare Close() - which
+        # saves - cannot pass unnoticed.
+        self.close_saved = []
 
     def GetElement(self, element_id):
         for family in self.families:
@@ -138,9 +143,10 @@ class FakeDocument(object):
             raise Exception(self.edit_error)
         return FakeFamilyDocument(family)
 
-    def Close(self, save):
-        del save
+    def Close(self, save=True):
+        self.close_saved.append(bool(save))
         self.closed = True
+        return True
 
 
 class FakeCollector(object):
@@ -199,7 +205,62 @@ class _FakeGenericList(object):
         return _IdCollection
 
 
+class FakeBasicFileInfo(object):
+    """Header reader. ``_headers`` is what each path pretends to contain."""
+
+    _headers = {}
+
+    def __init__(self, file_format, is_later):
+        self.Format = file_format
+        self.IsSavedInLaterVersion = is_later
+
+    @classmethod
+    def Extract(cls, path):
+        header = cls._headers.get(path)
+        if header is None:
+            raise Exception("BasicFileInfo storage could not be read")
+        return cls(header[0], header[1])
+
+
+class FakeOpenOptions(object):
+    def __init__(self):
+        self.DoNotLoadLinks = False
+        self.DetachFromCentralOption = None
+
+
+class FakeApplication(object):
+    def __init__(self, documents=None, open_map=None, open_error=None):
+        self.Documents = list(documents or [])
+        self.VersionNumber = "2026"
+        self._open_map = dict(open_map or {})
+        self._open_error = open_error
+        self.opened = []
+        self.purges = 0
+        self.failure_handlers = []
+
+    def OpenDocumentFile(self, path, options=None):
+        del options
+        self.opened.append(str(path))
+        if self._open_error:
+            raise Exception(self._open_error)
+        document = self._open_map.get(str(path))
+        if document is None:
+            raise Exception("The document can not be opened.")
+        return document
+
+    def PurgeReleasedAPIObjects(self):
+        self.purges += 1
+
+
 FAKE_DB = types.SimpleNamespace(
+    BasicFileInfo=FakeBasicFileInfo,
+    OpenOptions=FakeOpenOptions,
+    DetachFromCentralOption=types.SimpleNamespace(
+        DetachAndDiscardWorksets="DetachAndDiscardWorksets"),
+    ModelPathUtils=types.SimpleNamespace(
+        ConvertUserVisiblePathToModelPath=lambda path: path),
+    FailureSeverity=types.SimpleNamespace(Warning="Warning"),
+    FailureProcessingResult=types.SimpleNamespace(Continue="Continue"),
     FilteredElementCollector=FakeCollector,
     ElementId=FakeElementId,
     FamilySymbol=FakeFamilySymbol,
@@ -224,7 +285,8 @@ STUBS = {
     "System": {},
     "System.Windows": {},
     "System.Windows.Forms": dict(
-        DialogResult=types.SimpleNamespace(OK=1), FolderBrowserDialog=object),
+        DialogResult=types.SimpleNamespace(OK=1), FolderBrowserDialog=object,
+        OpenFileDialog=object),
     "System.Collections": {},
     "System.Collections.Generic": dict(List=_FakeGenericList()),
     "pyrevit": dict(DB=FAKE_DB),
@@ -235,13 +297,14 @@ STUBS = {
 
 state = None
 ft_revit = None
+ft_files = None
 _saved_modules = {}
 _saved_path = None
 
 
 def setUpModule():
     """Install the stubs, load both modules, then put sys.modules back."""
-    global state, ft_revit, _saved_path
+    global state, ft_revit, ft_files, _saved_path
     _saved_path = list(sys.path)
 
     for name, attrs in STUBS.items():
@@ -252,7 +315,8 @@ def setUpModule():
         sys.modules[name] = module
 
     sys.path.insert(0, str(COMMAND_DIR))
-    for name in ("families_transfer_state", "families_transfer_revit"):
+    for name in ("families_transfer_state", "families_transfer_revit",
+                 "families_transfer_files"):
         _saved_modules.setdefault(name, sys.modules.get(name))
         spec = importlib.util.spec_from_file_location(
             name, str(COMMAND_DIR / (name + ".py")))
@@ -262,6 +326,7 @@ def setUpModule():
 
     state = sys.modules["families_transfer_state"]
     ft_revit = sys.modules["families_transfer_revit"]
+    ft_files = sys.modules["families_transfer_files"]
 
 
 def tearDownModule():
@@ -580,6 +645,194 @@ class CloseGuardTests(unittest.TestCase):
         self.assertEqual(
             ["linked documents are never closed"],
             [result.status for result in summary.skipped])
+
+
+class ProjectFileSourceTests(unittest.TestCase):
+    """Families out of `.rvt` files that are never opened in a tab.
+
+    The three things that would be silently wrong rather than loudly broken:
+    a newer file must be refused from its header, an older file must be
+    upgraded in memory only, and no document may ever be closed with a save.
+    """
+
+    def setUp(self):
+        # Real (empty) files on disk: inspect_project_files checks
+        # os.path.isfile before it reads a header, and that guard is part of
+        # what is being tested.
+        self._folder = tempfile.mkdtemp(prefix="easybim-ft-")
+        self.addCleanup(shutil.rmtree, self._folder, True)
+
+        def _make(name):
+            path = os.path.join(self._folder, name)
+            with open(path, "wb") as handle:
+                handle.write(b"")
+            return path
+
+        self.CURRENT = _make("Current.rvt")
+        self.OLDER = _make("Older.rvt")
+        self.NEWER = _make("Newer.rvt")
+        self.BROKEN = _make("Broken.rvt")
+        self.MISSING = os.path.join(self._folder, "Gone.rvt")
+
+        FakeBasicFileInfo._headers = {
+            self.CURRENT: ("2026", False),
+            self.OLDER: ("2021", False),
+            self.NEWER: ("", True),
+            # BROKEN is deliberately absent: Extract throws for it.
+        }
+        self.current_doc = FakeDocument(
+            "Current", self.CURRENT,
+            families=[FakeFamily(11, "Door_Single", "Doors"),
+                      FakeFamily(12, "InPlace_Mass", "Generic Models", in_place=True)])
+        self.older_doc = FakeDocument(
+            "Older", self.OLDER,
+            families=[FakeFamily(11, "Column_W", "Structural Columns")])
+        self.app = FakeApplication(open_map={
+            self.CURRENT: self.current_doc,
+            self.OLDER: self.older_doc,
+        })
+
+    def _inspect(self, paths):
+        return ft_files.inspect_project_files(paths)
+
+    def test_a_newer_file_is_refused_without_being_opened(self):
+        options = self._inspect([self.NEWER])
+        by_name = dict((o.display_name, o) for o in options)
+
+        self.assertFalse(by_name["Newer.rvt"].is_readable)
+        self.assertIn("newer Revit", by_name["Newer.rvt"].note)
+        self.assertFalse(by_name["Newer.rvt"].is_selected)
+        # The whole point: no open was attempted.
+        self.assertEqual([], self.app.opened)
+
+    def test_a_path_that_is_not_there_is_reported_as_missing(self):
+        options = self._inspect([self.MISSING])
+
+        self.assertFalse(options[0].is_readable)
+        self.assertIn("missing", options[0].note)
+        self.assertEqual([], self.app.opened)
+
+    def test_an_unreadable_header_says_so_rather_than_guessing(self):
+        options = self._inspect([self.BROKEN])
+
+        self.assertFalse(options[0].is_readable)
+        self.assertIn("header", options[0].note)
+
+    def test_an_older_file_is_accepted_and_its_version_recorded(self):
+        options = self._inspect([self.OLDER])
+
+        self.assertTrue(options[0].is_readable)
+        self.assertEqual("2021", options[0].file_version)
+        self.assertTrue(options[0].is_selected)
+
+    def test_a_row_says_an_older_file_is_upgraded_in_memory_only(self):
+        options = self._inspect([self.OLDER, self.CURRENT])
+        by_name = dict((o.display_name, o) for o in options)
+
+        older = state.format_project_file_label(
+            by_name["Older.rvt"].display_name, by_name["Older.rvt"].file_version,
+            "2026", by_name["Older.rvt"].note)
+        current = state.format_project_file_label(
+            by_name["Current.rvt"].display_name, by_name["Current.rvt"].file_version,
+            "2026", by_name["Current.rvt"].note)
+
+        self.assertIn("in memory only", older)
+        self.assertNotIn("in memory only", current)
+
+    def test_the_same_file_is_never_listed_twice(self):
+        options = ft_files.inspect_project_files(
+            [self.CURRENT], ft_files.inspect_project_files([self.CURRENT]))
+
+        self.assertEqual(1, len(options))
+
+    def test_scanning_opens_each_checked_file_once_and_leaves_it_open(self):
+        options = self._inspect([self.CURRENT, self.OLDER])
+        rows, notes, cancelled = ft_files.scan_project_files(self.app, options)
+
+        self.assertFalse(cancelled)
+        self.assertEqual([], notes)
+        self.assertEqual(2, len(self.app.opened))
+        # Held open on purpose: EditFamily needs the owning document, and
+        # closing here would invalidate every handle just collected.
+        self.assertIsNotNone(options[0].document)
+        self.assertEqual(2, self.app.purges)
+
+        self.assertEqual(["Column_W", "Door_Single"],
+                         sorted(row.name for row in rows))
+        self.assertNotIn("InPlace_Mass", [row.name for row in rows])
+
+    def test_an_unchecked_file_is_never_opened(self):
+        options = self._inspect([self.CURRENT, self.OLDER])
+        for option in options:
+            option.is_selected = option.display_name == "Older.rvt"
+
+        ft_files.scan_project_files(self.app, options)
+
+        self.assertEqual([self.OLDER], self.app.opened)
+
+    def test_every_row_names_the_file_it_came_from(self):
+        options = self._inspect([self.CURRENT, self.OLDER])
+        rows, _, _ = ft_files.scan_project_files(self.app, options)
+        by_name = dict((row.name, row) for row in rows)
+
+        self.assertEqual("Current.rvt", by_name["Door_Single"].source_label)
+        self.assertEqual(state.SOURCE_FILE, by_name["Door_Single"].source_kind)
+        self.assertIs(self.current_doc, by_name["Door_Single"].source_document)
+
+    def test_two_files_holding_one_element_id_stay_two_families(self):
+        # Both fixtures use id 11 on purpose.
+        options = self._inspect([self.CURRENT, self.OLDER])
+        rows, _, _ = ft_files.scan_project_files(self.app, options)
+        keys = [row.family_key for row in rows]
+
+        self.assertEqual(2, len(set(keys)))
+        for key in keys:
+            self.assertTrue(state.is_file_family_key(key))
+
+    def test_a_cancel_lands_between_files(self):
+        options = self._inspect([self.CURRENT, self.OLDER])
+        rows, _, cancelled = ft_files.scan_project_files(
+            self.app, options, progress=lambda done, total: done < 1)
+
+        self.assertTrue(cancelled)
+        self.assertEqual(1, len(self.app.opened))
+        self.assertEqual(1, len(rows))
+
+    def test_a_file_that_will_not_open_is_reported_not_raised(self):
+        options = self._inspect([self.CURRENT])
+        app = FakeApplication(open_map={})
+
+        rows, notes, _ = ft_files.scan_project_files(app, options)
+
+        self.assertEqual([], rows)
+        self.assertEqual(1, len(notes))
+        self.assertFalse(options[0].is_readable)
+        self.assertEqual(notes, ft_files.file_notes(options))
+
+    def test_closing_never_saves(self):
+        # Document.Close() saves; an older file upgraded on open counts as
+        # modified, so a bare close would rewrite the user's file.
+        options = self._inspect([self.CURRENT, self.OLDER])
+        ft_files.scan_project_files(self.app, options)
+
+        closed = ft_files.close_project_documents(options)
+
+        self.assertEqual(2, closed)
+        self.assertTrue(self.current_doc.closed)
+        self.assertTrue(self.older_doc.closed)
+        self.assertEqual([False, False], self.current_doc.close_saved
+                         + self.older_doc.close_saved)
+        for option in options:
+            self.assertIsNone(option.document)
+
+    def test_the_open_is_cheap_and_detached(self):
+        options = self._inspect([self.CURRENT])
+        ft_files.scan_project_files(self.app, options)
+        opened_options = ft_files._open_options()
+
+        self.assertTrue(opened_options.DoNotLoadLinks)
+        self.assertEqual("DetachAndDiscardWorksets",
+                         opened_options.DetachFromCentralOption)
 
 
 class ElementToFamilyTests(unittest.TestCase):
