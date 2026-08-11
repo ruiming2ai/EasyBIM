@@ -76,6 +76,17 @@ def _xaml_handlers(root):
     return handlers
 
 
+def _function_source(path, function_name):
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            end = getattr(node, "end_lineno", None) or len(lines)
+            return u"\n".join(lines[node.lineno - 1:end])
+    return u""
+
+
 def _class_node(path, class_name):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
@@ -238,7 +249,19 @@ class LoadParametersContractTests(unittest.TestCase):
     def test_older_family_files_are_detected_before_they_are_written(self):
         source = REVIT_MODULE.read_text(encoding="utf-8")
         self.assertIn("BasicFileInfo", source)
-        self.assertIn("SavedInVersion", source)
+        # BasicFileInfo.SavedInVersion was removed in Revit 2020, so reading
+        # only that name made this check dead code on every supported Revit -
+        # getattr fell through to "" and no family was ever flagged. Format is
+        # the replacement; SavedInVersion may remain only as a fallback.
+        self.assertIn('getattr(info, "Format"', source)
+        self.assertLess(source.index('getattr(info, "Format"'),
+                        source.index('getattr(info, "SavedInVersion"'))
+
+    def test_an_unreadable_version_claims_nothing(self):
+        # Without the truthiness guard, _version_number("") returns 0, 0 is
+        # less than any host version, and every file reads as "older".
+        body = _function_source(REVIT_MODULE, "_folder_family_row")
+        self.assertIn("saved_number and saved_number < host_version", body)
 
     def test_shared_parameter_filename_is_always_restored(self):
         # It persists into Revit's .ini across sessions, so a leak follows the
