@@ -711,8 +711,17 @@ def _folder_family_row(path, file_name, host_version, open_titles, open_paths,
         if info is not None:
             if bool(getattr(info, "IsWorkshared", False)):
                 return None
-            saved_version = safe_text(getattr(info, "SavedInVersion", u""))
-            if host_version and _version_number(saved_version) < host_version:
+            # BasicFileInfo.SavedInVersion was REMOVED in Revit 2020; Format
+            # replaced it, documented as the major release ("2019").  Reading
+            # only the old name meant getattr always fell through to "" on
+            # every supported Revit, so this whole check silently never fired
+            # and the upgrade acknowledgement was never shown.  The old name
+            # is kept as a fallback for a 2015-2019 host.
+            saved_version = safe_text(getattr(info, "Format", u"")) or safe_text(
+                getattr(info, "SavedInVersion", u""))
+            saved_number = _version_number(saved_version)
+            # An unreadable version must claim nothing, in either direction.
+            if host_version and saved_number and saved_number < host_version:
                 saved_in = saved_version
     except Exception:
         # Not a readable Revit file - leave it in the list and let the run
