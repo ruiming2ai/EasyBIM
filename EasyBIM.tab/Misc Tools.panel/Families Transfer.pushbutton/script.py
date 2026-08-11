@@ -44,6 +44,7 @@ from families_transfer_state import restore_family_selection
 from families_transfer_state import split_selected_family_keys
 from families_transfer_ui import ActionWindow
 from families_transfer_ui import FamilySelectionWindow
+from families_transfer_ui import LinkSelectionWindow
 from families_transfer_ui import SourceSelectionWindow
 from families_transfer_ui import TargetSelectionWindow
 
@@ -54,6 +55,11 @@ LOGGER = script.get_logger()
 
 STEP_SOURCE = "source"
 STEP_FAMILIES = "families"
+# "link_docs" and "link_families" are deliberately not substrings of each
+# other, and neither STEP_ constant contains the other. The branch tests in
+# test_families_transfer_state.py match ast.dump output by substring, so a
+# name that contains another one silently rebinds somebody else's assertions.
+STEP_LINK_DOCS = "link_docs"
 STEP_LINK_FAMILIES = "link_families"
 STEP_TARGETS = "targets"
 STEP_ACTION = "action"
@@ -178,12 +184,27 @@ def _run():
             link_documents[0] = get_link_document_options(doc, selected_link_document_keys)
         return link_documents[0]
 
+    def _probed_links():
+        """Links already collected, without provoking the collection.
+
+        The report asks for these at the end of every run; going through
+        _link_documents() would enumerate every link instance in the project
+        even for a run that never opened the link pages.
+        """
+        return link_documents[0] or []
+
     def _read_link_selection(window):
+        """Page 2's link ticks, with the families of unticked links dropped."""
         checked = set(window.selected_link_document_keys)
         return checked, prune_link_families_to_checked_links(
             selected_link_families,
             checked,
         )
+
+    def _read_link_families(window):
+        """Card 3's own ticks: keep what is still ticked, drop the rest."""
+        keys = set(window.selected_link_family_keys)
+        return keys, get_selected_source_family_options(selected_link_families, keys)
 
     while True:
         if step == STEP_SOURCE:
@@ -202,9 +223,8 @@ def _run():
                 open_family_documents,
                 selected_open_family_document_keys,
                 source_status,
-                link_documents=_link_documents(),
-                selected_link_document_keys=selected_link_document_keys,
-                link_family_count=len(selected_link_families),
+                link_families=selected_link_families,
+                selected_link_family_keys=selected_link_family_keys,
             )
             source_window.ShowDialog()
 
@@ -212,17 +232,15 @@ def _run():
                 selected_project_family_keys = set(source_window.selected_family_keys)
                 selected_family_keys = set(selected_project_family_keys)
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
-                selected_link_document_keys, selected_link_families = _read_link_selection(source_window)
-                selected_link_family_keys = set(get_selected_family_keys(selected_link_families))
+                selected_link_family_keys, selected_link_families = _read_link_families(source_window)
                 step = STEP_FAMILIES
                 continue
 
             if source_window.result == "load_links":
                 selected_project_family_keys = set(source_window.selected_family_keys)
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
-                selected_link_document_keys, selected_link_families = _read_link_selection(source_window)
-                selected_link_family_keys = set(get_selected_family_keys(selected_link_families))
-                step = STEP_LINK_FAMILIES
+                selected_link_family_keys, selected_link_families = _read_link_families(source_window)
+                step = STEP_LINK_DOCS
                 continue
 
             if source_window.result == "next":
@@ -232,8 +250,7 @@ def _run():
                     selected_project_family_keys,
                 )
                 selected_open_family_document_keys = set(source_window.selected_document_keys)
-                selected_link_document_keys, selected_link_families = _read_link_selection(source_window)
-                selected_link_family_keys = set(get_selected_family_keys(selected_link_families))
+                selected_link_family_keys, selected_link_families = _read_link_families(source_window)
                 open_family_documents = get_open_family_documents(
                     uiapp,
                     doc,
@@ -257,6 +274,31 @@ def _run():
                 continue
             return
 
+        if step == STEP_LINK_DOCS:
+            if not _link_documents():
+                forms.alert("No Revit links were found in this project.", title=__title__)
+                step = STEP_SOURCE
+                continue
+
+            link_docs_window = LinkSelectionWindow(
+                "LinkSelectionWindow.xaml",
+                _link_documents(),
+                selected_link_document_keys,
+            )
+            link_docs_window.ShowDialog()
+
+            if link_docs_window.result in ("next", "back"):
+                # Both directions prune: unticking a link here has to drop the
+                # families already chosen from it, and page 1 no longer has the
+                # link checkboxes that used to do that.
+                selected_link_document_keys, selected_link_families = _read_link_selection(
+                    link_docs_window
+                )
+                selected_link_family_keys = set(get_selected_family_keys(selected_link_families))
+                step = STEP_LINK_FAMILIES if link_docs_window.result == "next" else STEP_SOURCE
+                continue
+            return
+
         if step == STEP_LINK_FAMILIES:
             prepare_link_documents(uiapp, doc, _link_documents())
             link_families = get_link_family_options(
@@ -273,7 +315,7 @@ def _run():
                     ),
                     title=__title__,
                 )
-                step = STEP_SOURCE
+                step = STEP_LINK_DOCS
                 continue
 
             links_window = FamilySelectionWindow(
@@ -299,7 +341,7 @@ def _run():
                 continue
 
             if links_window.result == "back":
-                step = STEP_SOURCE
+                step = STEP_LINK_DOCS
                 continue
             return
 
@@ -436,7 +478,7 @@ def _run():
                     lambda tick: export_families(
                         doc, selected_families, folder_path, progress=tick),
                 )
-                _show_summary(_note_link_refusals(summary, _link_documents()))
+                _show_summary(_note_link_refusals(summary, _probed_links()))
                 return
 
             if action_window.result == "transfer":
@@ -449,7 +491,7 @@ def _run():
                     lambda tick: transfer_families(
                         doc, selected_families, selected_targets, progress=tick),
                 )
-                _show_summary(_note_link_refusals(summary, _link_documents()))
+                _show_summary(_note_link_refusals(summary, _probed_links()))
                 return
 
             if action_window.result == "transfer_close_all_rfa":
@@ -467,7 +509,7 @@ def _run():
                 _show_summary(
                     _note_link_refusals(
                         _merge_close_summary(summary, close_summary),
-                        _link_documents(),
+                        _probed_links(),
                     )
                 )
                 return
