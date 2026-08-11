@@ -153,7 +153,6 @@ def _run():
     selected_open_family_document_keys = set()
     selected_family_keys = set(selected_project_family_keys)
     selected_document_keys = set()
-    source_status = ""
     open_family_documents = []
     families = []
     targets = []
@@ -222,7 +221,6 @@ def _run():
                 selected_source_families,
                 open_family_documents,
                 selected_open_family_document_keys,
-                source_status,
                 link_families=selected_link_families,
                 selected_link_family_keys=selected_link_family_keys,
             )
@@ -267,7 +265,6 @@ def _run():
                         "Select at least one family, opened .rfa file or link family before continuing.",
                         title=__title__,
                     )
-                    source_status = "Select at least one family, opened .rfa file or link family before continuing."
                     continue
                 target_back_step = STEP_SOURCE
                 step = STEP_TARGETS
@@ -333,9 +330,6 @@ def _run():
                 selected_link_families = get_selected_source_family_options(
                     link_families,
                     selected_link_family_keys,
-                )
-                source_status = "{} link family/families selected.".format(
-                    len(selected_link_families)
                 )
                 step = STEP_SOURCE
                 continue
@@ -420,9 +414,6 @@ def _run():
                 selected_project_family_keys = set(get_selected_family_keys(selected_source_families))
                 selected_open_family_document_keys.update(add_open_family_document_keys)
                 selected_family_keys = set(selected_project_family_keys)
-                source_status = "{} active-project families selected.".format(
-                    len(selected_project_family_keys)
-                )
                 step = STEP_SOURCE
                 continue
 
@@ -432,9 +423,6 @@ def _run():
                     selected_project_family_keys,
                 )
                 selected_family_keys = set(selected_project_family_keys)
-                source_status = "{} active-project families selected.".format(
-                    len(selected_project_family_keys)
-                )
                 step = STEP_SOURCE
                 continue
             return

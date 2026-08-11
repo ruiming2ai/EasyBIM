@@ -862,6 +862,58 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertEqual("7 selected, 0 unchecked.",
                          module.format_selection_count_text(7, 5))
 
+    def test_the_footer_counts_every_source_not_one_of_them(self):
+        module = _load_state_module()
+
+        self.assertEqual("1 family selected in total.",
+                         module.format_total_selection_text(1))
+        self.assertEqual("7 families selected in total.",
+                         module.format_total_selection_text(7))
+        self.assertEqual("0 families selected in total.",
+                         module.format_total_selection_text(0))
+
+    def test_the_footer_never_names_a_single_source(self):
+        # It used to read "N active-project families selected." while sitting
+        # under three cards, so it looked like the whole selection.
+        ui_source = UI_MODULE_PATH.read_text()
+        script_source = SCRIPT_MODULE_PATH.read_text()
+
+        for text in ("active-project families selected",
+                     "link family/families selected"):
+            self.assertNotIn(text, ui_source)
+            self.assertNotIn(text, script_source)
+
+        self.assertNotIn("source_status", script_source)
+        self.assertIn("_refresh_total", ui_source)
+
+    def test_every_card_read_refreshes_the_footer(self):
+        # A tick in any card has to move the total, so all three readers
+        # must call it - the link card was the easy one to forget.
+        tree = ast.parse(UI_MODULE_PATH.read_text(), filename=str(UI_MODULE_PATH))
+        readers = {
+            "_read_selected_family_keys",
+            "_read_selected_document_keys",
+            "_read_selected_link_family_keys",
+        }
+
+        # Scoped to the source window on purpose: FamilySelectionWindow has a
+        # method of the same name and no footer to refresh.
+        window = None
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == "SourceSelectionWindow":
+                window = node
+                break
+        self.assertIsNotNone(window, "SourceSelectionWindow is missing")
+
+        found = set()
+        for node in window.body:
+            if not isinstance(node, ast.FunctionDef) or node.name not in readers:
+                continue
+            found.add(node.name)
+            self.assertIn("_refresh_total", ast.dump(node), node.name)
+
+        self.assertEqual(readers, found)
+
     def test_hide_unchecked_keeps_only_ticked_rows(self):
         module = _load_state_module()
 
