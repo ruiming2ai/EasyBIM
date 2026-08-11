@@ -9,6 +9,7 @@ from families_transfer_state import filter_link_document_options
 from families_transfer_state import filter_open_family_document_options
 from families_transfer_state import filter_unchecked_options
 from families_transfer_state import format_selection_count_text
+from families_transfer_state import format_total_selection_text
 from families_transfer_state import get_selected_document_keys
 from families_transfer_state import get_selected_family_keys
 from families_transfer_state import get_selected_open_family_document_keys
@@ -151,7 +152,6 @@ class SourceSelectionWindow(forms.WPFWindow):
         selected_families,
         open_family_documents,
         selected_document_keys=None,
-        status_text="",
         link_families=None,
         selected_link_family_keys=None,
     ):
@@ -174,11 +174,19 @@ class SourceSelectionWindow(forms.WPFWindow):
         )
         restore_family_selection(self.link_families, self.selected_link_family_keys)
 
-        self.status_tb.Text = _safe_text(status_text)
         self._populate_selected_families()
         self._populate_open_family_documents()
         self._populate_link_families()
+        self._refresh_total()
         self._is_ready = True
+
+    def _refresh_total(self):
+        """The footer, recomputed from all three cards after any tick."""
+        self.status_tb.Text = format_total_selection_text(
+            len(get_selected_family_keys(self.selected_families))
+            + len(get_selected_open_family_document_keys(self.open_family_documents))
+            + len(get_selected_family_keys(self.link_families))
+        )
 
     # -- card 1: families chosen from the active project --------------------
 
@@ -207,6 +215,7 @@ class SourceSelectionWindow(forms.WPFWindow):
         _sync_checkbox_options(self._selected_family_controls)
         self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
         self._refresh_selected_count()
+        self._refresh_total()
         return self.selected_family_keys
 
     # -- card 2: opened .rfa files -----------------------------------------
@@ -238,6 +247,7 @@ class SourceSelectionWindow(forms.WPFWindow):
             get_selected_open_family_document_keys(self.open_family_documents)
         )
         self._refresh_open_rfa_count()
+        self._refresh_total()
         return self.selected_document_keys
 
     # -- card 3: families chosen out of Revit links -------------------------
@@ -267,6 +277,7 @@ class SourceSelectionWindow(forms.WPFWindow):
         _sync_checkbox_options(self._link_family_controls)
         self.selected_link_family_keys = set(get_selected_family_keys(self.link_families))
         self._refresh_link_family_count()
+        self._refresh_total()
         return self.selected_link_family_keys
 
     # -- handlers ----------------------------------------------------------
