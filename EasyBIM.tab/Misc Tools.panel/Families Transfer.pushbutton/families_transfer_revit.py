@@ -1053,6 +1053,15 @@ def export_families(source_doc, family_options, folder_path, progress=None):
     return summary
 
 
+# Shared with families_transfer_files, which reads families out of documents
+# opened from disk and needs the same eligibility and labelling rules. Aliases
+# rather than copies, so the two sources cannot drift apart.
+family_element_key = _family_key
+family_display_name = _family_name
+family_category_name = _family_category_name
+is_editable_family = _is_editable_family
+
+
 def close_open_family_documents(open_family_documents):
     summary = TransferSummary()
     for document_option in list(open_family_documents or []):

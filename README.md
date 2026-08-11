@@ -203,6 +203,8 @@ buttons never move.
   into Revit to pick more and returns with them ticked.
 - **Add Opened .rfa Files** — any family file already open in this session.
   These need no extraction at all; the open document *is* the family.
+- **Selection from Unopened Project Files** — families read out of `.rvt`
+  files on disk, including ones saved in older Revit versions.
 - **Selection from Revit Links** — families pulled out of a loaded Revit link.
 
 Then choose the open project files to load into, and finish with **Export**,
@@ -231,6 +233,30 @@ view reference tags *are* real loadable families, and they already appear in
 the **Load More from Recent Project** browser. You just cannot reach them by
 clicking, because the thing you click is the system element that references
 them.
+
+### Families from an unopened project file
+
+**Load More from Project Files** reads families straight out of `.rvt` files
+you have not opened. Pick the files, tick the ones you want, and press Next to
+browse their families.
+
+Be precise about what "unopened" means here: there is no way to read a Revit
+file that stays closed, and nothing pretends otherwise. Each file is loaded
+into memory — fully parsed, and upgraded if it is older — but it never gets a
+tab, a view, or the active document. You keep working in your own model
+throughout. What that costs is time and memory per file, so Revit pauses while
+each one loads. Files are processed one at a time and the run can be cancelled
+between them.
+
+- **Older files are read, and never written.** An older model is upgraded in
+  memory only; the file on disk is untouched, because every document this tool
+  opens is closed without saving. The row tells you the version it was saved
+  in.
+- **Newer files cannot be read at all.** No Revit API can open a file from a
+  later release. Those are refused from their header before anything is
+  opened, and listed greyed with the reason rather than silently dropped.
+- Files are opened detached, with links not loaded — nothing touches a central
+  model, and a federated project does not drag its whole link set in behind it.
 
 ### Families from a Revit link
 
