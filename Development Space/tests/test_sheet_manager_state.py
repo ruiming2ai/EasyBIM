@@ -231,6 +231,22 @@ class NumberPlanningTests(unittest.TestCase):
             self.assertNotIn(number, ("A1", "A2", "A3"))
         self.assertEqual(final, [(1, "A2"), (2, "A3"), (3, "A1")])
 
+    def test_temp_numbers_contain_no_prohibited_characters(self):
+        # Regression: temps used "~", which Revit rejects in sheet numbers.
+        renames = [(1, "11070-P061-001", "11070-P061-002"),
+                   (2, "11070-P061-002", "11070-P061-001")]
+        temp, _ = st.plan_number_assignments(
+            renames, ["11070-P061-001", "11070-P061-002"])
+        for _, number in temp:
+            self.assertEqual(st.invalid_number_chars(number), [], number)
+
+    def test_invalid_number_chars(self):
+        self.assertEqual(st.invalid_number_chars("11070-P061-001"), [])
+        self.assertEqual(st.invalid_number_chars("A1.01 East"), [])
+        self.assertEqual(st.invalid_number_chars("A~1"), ["~"])
+        self.assertEqual(st.invalid_number_chars("A[1]{2}"),
+                         ["[", "]", "{", "}"])
+
     def test_find_number_problems(self):
         columns = build_columns()
         rows = [make_row(columns, sheet_id=1, number="A101"),

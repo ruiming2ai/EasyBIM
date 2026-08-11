@@ -345,6 +345,10 @@ class SheetManagerWindow(forms.WPFWindow):
         number = u"{0}".format(new_text or u"").strip()
         if not number:
             return "Sheet Number cannot be empty."
+        bad_chars = state.invalid_number_chars(number)
+        if bad_chars:
+            return (u"Sheet Number cannot include prohibited "
+                    u"characters: {0}".format(u" ".join(bad_chars)))
         for other in self._all_rows:
             if other is row:
                 continue
