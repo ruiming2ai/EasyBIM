@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import xml.etree.ElementTree as ET
 import pathlib
 import unittest
 
@@ -17,6 +18,18 @@ UI_MODULE_PATH = COMMAND_DIR / "families_transfer_ui.py"
 SOURCE_XAML_PATH = COMMAND_DIR / "SourceSelectionWindow.xaml"
 FAMILY_XAML_PATH = COMMAND_DIR / "FamilySelectionWindow.xaml"
 TARGET_XAML_PATH = COMMAND_DIR / "TargetSelectionWindow.xaml"
+LINK_XAML_PATH = COMMAND_DIR / "LinkSelectionWindow.xaml"
+
+
+def _function_source_text(path, function_name):
+    source = path.read_text()
+    tree = ast.parse(source, filename=str(path))
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            end = getattr(node, "end_lineno", None) or len(lines)
+            return u"\n".join(lines[node.lineno - 1:end])
+    return u""
 
 
 def _load_state_module():
@@ -369,7 +382,8 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertTrue(FAMILY_XAML_PATH.exists(), "FamilySelectionWindow.xaml is missing")
         source = FAMILY_XAML_PATH.read_text()
 
-        self.assertIn("Select More in the model", source)
+        self.assertIn("Select in the model", source)
+        self.assertNotIn("Select More in the model", source)
         self.assertIn('Click="pick_more_click"', source)
         self.assertIn('x:Name="pick_more_btn"', source)
 
@@ -380,22 +394,66 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertIn('Title="Transferable Families"', source)
         self.assertIn('x:Name="header_tb"', source)
 
-    def test_source_window_xaml_exposes_the_revit_links_card(self):
+    def test_source_window_xaml_exposes_the_chosen_link_families_card(self):
         source = SOURCE_XAML_PATH.read_text()
 
         self.assertIn("Load More from Revit Links", source)
         self.assertIn('Click="load_link_families_click"', source)
-        self.assertIn('Click="link_select_all_click"', source)
-        self.assertIn('Click="link_select_none_click"', source)
+        self.assertIn('Click="link_family_select_all_click"', source)
+        self.assertIn('Click="link_family_select_none_click"', source)
+        self.assertIn('x:Name="LinkFamilyListPanel"', source)
+        self.assertIn('x:Name="LinkFamilySearchBox"', source)
+        # Lowercase x:Names are invisible to the drift checker's
+        # ^[A-Z] filter, so they are asserted by hand.
+        self.assertIn('x:Name="link_family_count_tb"', source)
+
+    def test_the_links_themselves_moved_off_the_source_window(self):
+        source = SOURCE_XAML_PATH.read_text()
+
+        self.assertNotIn('x:Name="LinkListPanel"', source)
+        self.assertNotIn('x:Name="LinkSearchBox"', source)
+
+    def test_link_selection_window_lists_the_links(self):
+        self.assertTrue(LINK_XAML_PATH.exists(), "LinkSelectionWindow.xaml is missing")
+        source = LINK_XAML_PATH.read_text()
+
         self.assertIn('x:Name="LinkListPanel"', source)
         self.assertIn('x:Name="LinkSearchBox"', source)
+        self.assertIn('x:Name="link_count_tb"', source)
+        self.assertIn('Click="link_select_all_click"', source)
+        self.assertIn('Click="link_select_none_click"', source)
+        self.assertIn('Click="back_click"', source)
+        self.assertIn('Click="next_click"', source)
+
+    def test_hide_unchecked_is_on_both_second_pages(self):
+        for path in (FAMILY_XAML_PATH, LINK_XAML_PATH):
+            source = path.read_text()
+            self.assertIn("Hide Un-checked", source, path.name)
+            self.assertIn('x:Name="hide_unchecked_cb"', source, path.name)
+            self.assertIn('Click="hide_unchecked_click"', source, path.name)
+
+        ui_source = UI_MODULE_PATH.read_text()
+        self.assertEqual(2, ui_source.count("def hide_unchecked_click"))
+
+    def test_no_source_card_can_be_squashed_to_nothing(self):
+        # A star row with no MinHeight shrinks to zero and paints its child
+        # outside the cell - which is what let the cards eat their own
+        # headers when the window was dragged short.
+        root = ET.parse(str(SOURCE_XAML_PATH)).getroot()
+        star_rows = 0
+        for row in root.iter(
+                "{http://schemas.microsoft.com/winfx/2006/xaml/presentation}RowDefinition"):
+            if row.attrib.get("Height") == "*":
+                star_rows += 1
+                self.assertIn("MinHeight", row.attrib)
+        self.assertGreaterEqual(star_rows, 4)
 
     def test_the_links_card_sits_below_the_opened_rfa_card(self):
         source = SOURCE_XAML_PATH.read_text()
 
         self.assertLess(
             source.index("Add Opened .rfa Files"),
-            source.index('Text="Load More from Revit Links"'),
+            source.index('Content="Load More from Revit Links"'),
         )
 
     def test_link_families_are_collected_only_after_a_link_is_checked(self):
@@ -437,6 +495,43 @@ class FamiliesTransferStateTests(unittest.TestCase):
 
         self.assertNotIn("get_link_family_options", called)
         self.assertNotIn("prepare_link_documents", called)
+
+    def test_the_link_flow_runs_over_three_pages(self):
+        source = SCRIPT_MODULE_PATH.read_text()
+
+        self.assertIn('STEP_LINK_DOCS = "link_docs"', source)
+        self.assertIn("LinkSelectionWindow", source)
+        # Page 1 -> page 2.
+        self.assertIn("step = STEP_LINK_DOCS", source)
+        # Page 2 -> page 3, and page 3 Back -> page 2 rather than page 1.
+        self.assertIn("STEP_LINK_FAMILIES if link_docs_window.result", source)
+
+    def test_the_link_browser_local_avoids_the_family_window_substring(self):
+        # test_family_add_branch_returns_to_source_without_target_navigation
+        # matches if-branches by substring over ast.dump and breaks on the
+        # first hit, so a local containing "family_window" silently rebinds
+        # it to a different branch - where it still passes, testing nothing.
+        source = SCRIPT_MODULE_PATH.read_text()
+
+        self.assertNotIn("link_family_window", source)
+        self.assertIn("link_docs_window", source)
+
+    def test_the_links_are_not_re_enumerated_just_to_write_the_report(self):
+        source = SCRIPT_MODULE_PATH.read_text()
+
+        self.assertIn("_probed_links()", source)
+        self.assertNotIn("_note_link_refusals(summary, _link_documents())", source)
+
+    def test_a_tag_reaches_its_family_through_the_type_id(self):
+        # Only FamilyInstance and TextElement declare Symbol in the whole
+        # Revit API, so every tag class needs the GetTypeId route - and
+        # TextElement.Symbol is a TextElementType, which is why the
+        # isinstance guard is load-bearing rather than defensive.
+        body = _function_source_text(REVIT_MODULE_PATH, "_family_from_element")
+
+        self.assertIn("GetTypeId", body)
+        self.assertIn("isinstance(symbol, DB.FamilySymbol)", body)
+        self.assertIn("InvalidElementId", body)
 
     def test_transfer_and_export_take_a_progress_callback(self):
         source = REVIT_MODULE_PATH.read_text()
@@ -495,8 +590,19 @@ class FamiliesTransferStateTests(unittest.TestCase):
                 break
 
         self.assertIsNotNone(populate_method, "_populate_selected_families is missing")
+        # The rows are built by the shared list helper now - all three cards
+        # and both second pages build the same list - so the assertion is
+        # that this card goes through it, and that it makes CheckBoxes.
         populate_source = ast.dump(populate_method)
-        self.assertIn("CheckBox", populate_source)
+        self.assertIn("_fill_checkbox_list", populate_source)
+
+        filler = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_fill_checkbox_list":
+                filler = node
+                break
+        self.assertIsNotNone(filler, "_fill_checkbox_list is missing")
+        self.assertIn("CheckBox", ast.dump(filler))
 
     def test_source_next_goes_to_targets_without_full_family_selector(self):
         self.assertTrue(SCRIPT_MODULE_PATH.exists(), "script.py is missing")
@@ -576,6 +682,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
             "open_family_search_changed",
             "family_search_changed",
             "link_search_changed",
+            "link_family_search_changed",
         }
         found_handlers = set()
         for node in ast.walk(tree):
@@ -743,6 +850,75 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertTrue(
             module.build_transfer_summary_text(summary).startswith(
                 "Families Transfer cancelled."))
+
+    def test_the_count_line_reads_the_same_on_every_list(self):
+        module = _load_state_module()
+
+        self.assertEqual("2 selected, 3 unchecked.",
+                         module.format_selection_count_text(2, 5))
+        self.assertEqual("0 selected, 0 unchecked.",
+                         module.format_selection_count_text(0, 0))
+        # A stale checked count must never render a negative.
+        self.assertEqual("7 selected, 0 unchecked.",
+                         module.format_selection_count_text(7, 5))
+
+    def test_hide_unchecked_keeps_only_ticked_rows(self):
+        module = _load_state_module()
+
+        options = [
+            module.FamilyOption("Door", "project|1", is_selected=True),
+            module.FamilyOption("Desk", "project|2", is_selected=False),
+        ]
+
+        self.assertEqual(
+            ["Door", "Desk"],
+            [o.name for o in module.filter_unchecked_options(options, False)])
+        self.assertEqual(
+            ["Door"],
+            [o.name for o in module.filter_unchecked_options(options, True)])
+
+    def test_everything_hide_unchecked_keeps_is_ticked(self):
+        # This is the invariant that lets the WPF sync leave hidden rows
+        # alone: a hidden row is always an unticked row, so it never holds
+        # state a later read would need.
+        module = _load_state_module()
+
+        options = [
+            module.OpenFamilyDocumentOption("A.rfa", "a", is_selected=True),
+            module.OpenFamilyDocumentOption("B.rfa", "b", is_selected=False),
+            module.LinkDocumentOption("C.rvt", "c", is_selected=True),
+        ]
+
+        for option in module.filter_unchecked_options(options, True):
+            self.assertTrue(option.is_selected)
+
+    def test_search_then_hide_matches_hide_then_search(self):
+        module = _load_state_module()
+
+        options = [
+            module.FamilyOption("Door Single", "project|1", is_selected=True, category_name="Doors"),
+            module.FamilyOption("Door Double", "project|2", is_selected=False, category_name="Doors"),
+            module.FamilyOption("Desk", "project|3", is_selected=True, category_name="Furniture"),
+        ]
+
+        forward = module.filter_unchecked_options(
+            module.filter_family_options(options, "door"), True)
+        backward = module.filter_family_options(
+            module.filter_unchecked_options(options, True), "door")
+
+        self.assertEqual([o.name for o in forward], [o.name for o in backward])
+        self.assertEqual(["Door Single"], [o.name for o in forward])
+
+    def test_only_select_none_with_the_filter_on_needs_a_rebuild(self):
+        module = _load_state_module()
+
+        self.assertFalse(module.needs_repopulate_after_bulk_toggle(True, False))
+        self.assertFalse(module.needs_repopulate_after_bulk_toggle(False, False))
+        # Select All cannot reveal a hidden row - the hidden rows are exactly
+        # the ones it does not touch.
+        self.assertFalse(module.needs_repopulate_after_bulk_toggle(True, True))
+        # Select None unchecks every visible row, so every one must vanish.
+        self.assertTrue(module.needs_repopulate_after_bulk_toggle(False, True))
 
     def test_transferability_does_not_restrict_to_model_categories(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")

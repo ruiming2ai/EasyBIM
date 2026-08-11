@@ -33,7 +33,7 @@
                 </Grid.RowDefinitions>
                 <DockPanel Grid.Row="0" LastChildFill="True">
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button x:Name="pick_more_btn" Content="Select More in the model" Width="190" Height="30" Margin="0,0,8,0" Click="pick_more_click"/>
+                        <Button x:Name="pick_more_btn" Content="Select in the model" Width="150" Height="30" Margin="0,0,8,0" Click="pick_more_click"/>
                         <Button Content="Expand All" Width="100" Height="30" Margin="0,0,8,0" Click="expand_all_click"/>
                         <Button Content="Collapse All" Width="110" Height="30" Click="collapse_all_click"/>
                     </StackPanel>
@@ -42,7 +42,7 @@
                 <TextBox Grid.Row="1" x:Name="FamilySearchBox" Height="28" Margin="0,4,0,0" TextChanged="family_search_changed"/>
             </Grid>
 
-            <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10">
+            <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" MinHeight="120">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="FamilyListPanel"/>
                 </ScrollViewer>
@@ -54,6 +54,8 @@
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                     <Button Content="Select All" Width="100" Height="34" Margin="0,0,8,0" Click="select_all_click"/>
                     <Button Content="Select None" Width="100" Height="34" Click="select_none_click"/>
+                    <CheckBox x:Name="hide_unchecked_cb" Content="Hide Un-checked" VerticalAlignment="Center"
+                              Margin="12,0,0,0" Click="hide_unchecked_click"/>
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">

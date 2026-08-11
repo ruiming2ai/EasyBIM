@@ -33,9 +33,43 @@ COMMAND_DIR = (
 # --------------------------------------------------------------------------
 
 class FakeElementId(object):
+    InvalidElementId = None  # replaced below, once the class exists
+
     def __init__(self, value):
         self.Value = value
         self.IntegerValue = value
+
+    def __eq__(self, other):
+        return isinstance(other, FakeElementId) and other.Value == self.Value
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash(self.Value)
+
+
+FakeElementId.InvalidElementId = FakeElementId(-1)
+
+
+class FakeFamilySymbol(object):
+    def __init__(self, family):
+        self.Family = family
+
+
+class FakeTextElementType(object):
+    """TextElement.Symbol returns one of these, not a FamilySymbol."""
+
+
+class FakeTypeHost(object):
+    """The minimum Document an element needs to resolve its own type."""
+
+    def __init__(self, type_element):
+        self._type_element = type_element
+
+    def GetElement(self, element_id):
+        del element_id
+        return self._type_element
 
 
 class FakeFamily(object):
@@ -168,6 +202,7 @@ class _FakeGenericList(object):
 FAKE_DB = types.SimpleNamespace(
     FilteredElementCollector=FakeCollector,
     ElementId=FakeElementId,
+    FamilySymbol=FakeFamilySymbol,
     Family=FakeFamily,
     RevitLinkInstance=FakeLinkInstance,
     Transform=types.SimpleNamespace(Identity=object()),
@@ -545,6 +580,85 @@ class CloseGuardTests(unittest.TestCase):
         self.assertEqual(
             ["linked documents are never closed"],
             [result.status for result in summary.skipped])
+
+
+class ElementToFamilyTests(unittest.TestCase):
+    """What the user can click and have land in the list.
+
+    Exactly two classes in the Revit API declare ``Symbol`` - FamilyInstance
+    and TextElement - so every tag has to go the GetTypeId route, and
+    TextElement.Symbol returning a TextElementType is why the isinstance
+    guard in _family_from_element is load-bearing.
+    """
+
+    def setUp(self):
+        self.family = FakeFamily(500, "Door_Tag", "Door Tags")
+        self.symbol = FakeFamilySymbol(self.family)
+
+    def test_a_family_instance_resolves_through_its_symbol(self):
+        instance = types.SimpleNamespace(Symbol=self.symbol)
+
+        self.assertIs(self.family, ft_revit._family_from_element(instance))
+
+    def test_a_tag_resolves_through_its_type_id(self):
+        # IndependentTag derives from Element and has no Symbol at all.
+        tag = types.SimpleNamespace(
+            GetTypeId=lambda: FakeElementId(500),
+            Document=FakeTypeHost(self.symbol),
+        )
+
+        self.assertIs(self.family, ft_revit._family_from_element(tag))
+
+    def test_a_spatial_tag_resolves_the_same_way(self):
+        room_tag = types.SimpleNamespace(
+            GetTypeId=lambda: FakeElementId(500),
+            Document=FakeTypeHost(self.symbol),
+        )
+
+        self.assertIs(self.family, ft_revit._family_from_element(room_tag))
+
+    def test_a_text_note_is_not_mistaken_for_a_family(self):
+        # TextElement.Symbol succeeds and returns the wrong kind of object.
+        text_note = types.SimpleNamespace(
+            Symbol=FakeTextElementType(),
+            GetTypeId=lambda: FakeElementId(700),
+            Document=FakeTypeHost(FakeTextElementType()),
+        )
+
+        self.assertIsNone(ft_revit._family_from_element(text_note))
+
+    def test_a_matchline_yields_nothing_because_it_has_no_type(self):
+        # A matchline is a sketched system element: no Family, no
+        # FamilySymbol, and GetTypeId reports InvalidElementId.
+        matchline = types.SimpleNamespace(
+            GetTypeId=lambda: FakeElementId.InvalidElementId,
+            Document=FakeTypeHost(None),
+        )
+
+        self.assertIsNone(ft_revit._family_from_element(matchline))
+
+    def test_a_family_element_passes_straight_through(self):
+        self.assertIs(self.family, ft_revit._family_from_element(self.family))
+
+    def test_none_and_junk_are_survived(self):
+        self.assertIsNone(ft_revit._family_from_element(None))
+        self.assertIsNone(ft_revit._family_from_element(object()))
+
+    def test_the_selection_filter_accepts_a_tag(self):
+        tag = types.SimpleNamespace(
+            GetTypeId=lambda: FakeElementId(500),
+            Document=FakeTypeHost(self.symbol),
+        )
+
+        self.assertTrue(ft_revit.FamilyTransferSelectionFilter().AllowElement(tag))
+
+    def test_the_selection_filter_rejects_a_matchline(self):
+        matchline = types.SimpleNamespace(
+            GetTypeId=lambda: FakeElementId.InvalidElementId,
+            Document=FakeTypeHost(None),
+        )
+
+        self.assertFalse(ft_revit.FamilyTransferSelectionFilter().AllowElement(matchline))
 
 
 class ResolveTests(unittest.TestCase):

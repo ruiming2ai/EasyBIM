@@ -368,6 +368,52 @@ def filter_open_family_document_options(documents, search_text):
     ]
 
 
+def filter_unchecked_options(options, hide_unchecked):
+    """Drop the rows the user has not ticked, when that filter is on.
+
+    Works on anything carrying ``is_selected`` - families, opened .rfa
+    documents and links all do - so there is one of these, not three.
+
+    Note the invariant this establishes, which the WPF sync relies on: every
+    row this filter hides is an unticked row, so a hidden row never holds
+    state a later read would need.
+    """
+    if not hide_unchecked:
+        return list(options or [])
+    return [
+        option
+        for option in list(options or [])
+        if bool(getattr(option, "is_selected", False))
+    ]
+
+
+def format_selection_count_text(checked_count, total_count):
+    """The one count sentence every list uses.
+
+    Counted over the *whole* list, never the visible one - this line is the
+    only thing telling the user that a search or the hide filter is holding
+    rows back, so it has to be counted before any filter runs.
+    """
+    checked_count = int(checked_count or 0)
+    total_count = int(total_count or 0)
+    return "{} selected, {} unchecked.".format(
+        checked_count,
+        max(total_count - checked_count, 0),
+    )
+
+
+def needs_repopulate_after_bulk_toggle(is_select_all, hide_unchecked):
+    """Select All can never reveal a hidden row; Select None hides every one.
+
+    Rebuilding the rows after a bulk tick was dropped on purpose - they are
+    already on screen and only their tick changed. That stays true in three
+    of the four cases. Only "Select None" with "Hide Un-checked" on changes
+    *which* rows belong on screen, and there the rebuild is cheap: the result
+    is an empty panel, so no CheckBox is built at all.
+    """
+    return bool(hide_unchecked) and not bool(is_select_all)
+
+
 def prune_link_families_to_checked_links(link_families, checked_document_keys):
     """Drop families whose link is no longer checked.
 

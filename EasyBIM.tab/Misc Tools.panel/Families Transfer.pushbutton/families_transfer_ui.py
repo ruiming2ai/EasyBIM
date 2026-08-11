@@ -7,10 +7,13 @@ from pyrevit.framework import Windows
 from families_transfer_state import filter_family_options
 from families_transfer_state import filter_link_document_options
 from families_transfer_state import filter_open_family_document_options
+from families_transfer_state import filter_unchecked_options
+from families_transfer_state import format_selection_count_text
 from families_transfer_state import get_selected_document_keys
 from families_transfer_state import get_selected_family_keys
 from families_transfer_state import get_selected_open_family_document_keys
 from families_transfer_state import group_family_options_by_category
+from families_transfer_state import needs_repopulate_after_bulk_toggle
 from families_transfer_state import restore_document_selection
 from families_transfer_state import restore_family_selection
 from families_transfer_state import restore_open_family_document_selection
@@ -66,10 +69,82 @@ def _add_empty_text(panel, message):
     textblock = Windows.Controls.TextBlock()
     textblock.Text = message
     textblock.Margin = Windows.Thickness(8, 4, 8, 4)
+    textblock.TextWrapping = Windows.TextWrapping.Wrap
     panel.Children.Add(textblock)
 
 
+def _document_row_text(document):
+    return _option_text(
+        getattr(document, "display_name", ""),
+        getattr(document, "category_name", ""),
+    )
+
+
+def _link_row_text(link_document):
+    label = _safe_text(getattr(link_document, "display_name", ""))
+    note = _safe_text(getattr(link_document, "note", ""))
+    if note:
+        return "{}  - {}".format(label, note)
+    return label
+
+
+def _link_is_loaded(link_document):
+    return bool(getattr(link_document, "is_loaded", True))
+
+
+def _fill_checkbox_list(panel, options, label_for, empty_message, enabled_for=None):
+    """One checkbox per option, and the controls handed back.
+
+    Every list in this tool is the same list; only the label, the empty
+    message and (for links) whether a row is enabled ever differ.
+    """
+    panel.Children.Clear()
+    controls = []
+    for option in options:
+        checkbox = Windows.Controls.CheckBox()
+        checkbox.Content = label_for(option)
+        checkbox.IsChecked = bool(getattr(option, "is_selected", False))
+        checkbox.Tag = option
+        checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
+        if enabled_for is not None:
+            checkbox.IsEnabled = bool(enabled_for(option))
+        panel.Children.Add(checkbox)
+        controls.append(checkbox)
+
+    if not controls:
+        _add_empty_text(panel, empty_message)
+    return controls
+
+
+def _sync_checkbox_options(controls):
+    """Write the on-screen ticks back onto the options behind them.
+
+    Options with no control are left alone on purpose. A row is missing
+    either because it failed the search - and its state must survive that -
+    or because it was hidden for being unchecked, in which case there is
+    nothing a sync could change.
+    """
+    for checkbox in controls:
+        option = getattr(checkbox, "Tag", None)
+        if option is not None:
+            option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+
+
+def _set_all_checked(controls, is_checked, only_enabled=False):
+    for checkbox in controls:
+        if only_enabled and not checkbox.IsEnabled:
+            continue
+        checkbox.IsChecked = bool(is_checked)
+
+
 class SourceSelectionWindow(forms.WPFWindow):
+    """Page 1: three sources, one shape.
+
+    Every card is header + count + Select All/None (+ a Load More button)
+    then search then list, and only the list row flexes - so dragging the
+    window resizes the three lists and moves nothing else.
+    """
+
     def __init__(
         self,
         xaml_file_name,
@@ -77,187 +152,124 @@ class SourceSelectionWindow(forms.WPFWindow):
         open_family_documents,
         selected_document_keys=None,
         status_text="",
-        link_documents=None,
-        selected_link_document_keys=None,
-        link_family_count=0,
+        link_families=None,
+        selected_link_family_keys=None,
     ):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.selected_families = list(selected_families or [])
         self.open_family_documents = list(open_family_documents or [])
-        self.link_documents = list(link_documents or [])
+        self.link_families = list(link_families or [])
         self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
         self.selected_document_keys = set(selected_document_keys or [])
-        self.selected_link_document_keys = set(selected_link_document_keys or [])
-        self.link_family_count = int(link_family_count or 0)
+        self.selected_link_family_keys = set(selected_link_family_keys or [])
         self.result = None
         self._selected_family_controls = []
         self._open_rfa_controls = []
-        self._link_controls = []
+        self._link_family_controls = []
 
         restore_open_family_document_selection(
             self.open_family_documents,
             self.selected_document_keys,
         )
-        restore_document_selection(
-            self.link_documents,
-            self.selected_link_document_keys,
-        )
+        restore_family_selection(self.link_families, self.selected_link_family_keys)
 
-        self.selected_count_tb.Text = _family_count_text(len(self.selected_families))
         self.status_tb.Text = _safe_text(status_text)
         self._populate_selected_families()
         self._populate_open_family_documents()
-        self._populate_link_documents()
+        self._populate_link_families()
         self._is_ready = True
 
+    # -- card 1: families chosen from the active project --------------------
+
     def _populate_selected_families(self):
-        self.SelectedSourceListPanel.Children.Clear()
-        self._selected_family_controls = []
         visible_families = filter_family_options(
             self.selected_families,
             _search_text(self.SelectedSourceSearchBox),
         )
-        for family in visible_families:
-            checkbox = Windows.Controls.CheckBox()
-            checkbox.Content = _option_text(
-                getattr(family, "name", ""),
-                getattr(family, "category_name", ""),
-            )
-            checkbox.IsChecked = bool(getattr(family, "is_selected", False))
-            checkbox.Tag = family
-            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
-            self.SelectedSourceListPanel.Children.Add(checkbox)
-            self._selected_family_controls.append(checkbox)
+        self._selected_family_controls = _fill_checkbox_list(
+            self.SelectedSourceListPanel,
+            visible_families,
+            _family_row_text,
+            "No families match the search."
+            if self.selected_families
+            else "Nothing selected yet. Select families in the model, or use Load More from Recent Project.",
+        )
+        self._refresh_selected_count()
 
-        if not visible_families:
-            if self.selected_families:
-                _add_empty_text(self.SelectedSourceListPanel, "No selected families match the search.")
-            else:
-                _add_empty_text(self.SelectedSourceListPanel, "No active-project families selected.")
-
-    def _sync_selected_family_controls(self):
-        for checkbox in self._selected_family_controls:
-            option = getattr(checkbox, "Tag", None)
-            if option is not None:
-                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+    def _refresh_selected_count(self):
+        self.selected_count_tb.Text = format_selection_count_text(
+            len(get_selected_family_keys(self.selected_families)),
+            len(self.selected_families),
+        )
 
     def _read_selected_family_keys(self):
-        self._sync_selected_family_controls()
+        _sync_checkbox_options(self._selected_family_controls)
         self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
-        self.selected_count_tb.Text = _family_count_text(len(self.selected_family_keys))
+        self._refresh_selected_count()
         return self.selected_family_keys
 
-    def _sync_open_rfa_controls(self):
-        for checkbox in self._open_rfa_controls:
-            option = getattr(checkbox, "Tag", None)
-            if option is not None:
-                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+    # -- card 2: opened .rfa files -----------------------------------------
 
     def _populate_open_family_documents(self):
-        self.OpenFamilyListPanel.Children.Clear()
-        self._open_rfa_controls = []
         visible_documents = filter_open_family_document_options(
             self.open_family_documents,
             _search_text(self.OpenFamilySearchBox),
         )
-        for document in visible_documents:
-            checkbox = Windows.Controls.CheckBox()
-            checkbox.Content = _option_text(
-                getattr(document, "display_name", ""),
-                getattr(document, "category_name", ""),
-            )
-            checkbox.IsChecked = bool(document.is_selected)
-            checkbox.Tag = document
-            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
-            self.OpenFamilyListPanel.Children.Add(checkbox)
-            self._open_rfa_controls.append(checkbox)
-
-        if not visible_documents:
-            if self.open_family_documents:
-                _add_empty_text(self.OpenFamilyListPanel, "No opened .rfa files match the search.")
-            else:
-                _add_empty_text(self.OpenFamilyListPanel, "No opened .rfa family files were found.")
-
+        self._open_rfa_controls = _fill_checkbox_list(
+            self.OpenFamilyListPanel,
+            visible_documents,
+            _document_row_text,
+            "No opened .rfa files match the search."
+            if self.open_family_documents
+            else "No opened .rfa family files were found.",
+        )
         self._refresh_open_rfa_count()
 
     def _refresh_open_rfa_count(self):
-        checked_count = len(get_selected_open_family_document_keys(self.open_family_documents))
-        if self.open_family_documents:
-            self.open_rfa_count_tb.Text = "{} opened .rfa file(s), {} checked.".format(
-                len(self.open_family_documents),
-                checked_count,
-            )
-        else:
-            self.open_rfa_count_tb.Text = "No opened .rfa family files were found."
+        self.open_rfa_count_tb.Text = format_selection_count_text(
+            len(get_selected_open_family_document_keys(self.open_family_documents)),
+            len(self.open_family_documents),
+        )
 
     def _read_selected_document_keys(self):
-        self._sync_open_rfa_controls()
+        _sync_checkbox_options(self._open_rfa_controls)
         self.selected_document_keys = set(
             get_selected_open_family_document_keys(self.open_family_documents)
         )
+        self._refresh_open_rfa_count()
         return self.selected_document_keys
 
-    def _sync_link_controls(self):
-        for checkbox in self._link_controls:
-            option = getattr(checkbox, "Tag", None)
-            if option is not None:
-                option.is_selected = bool(getattr(checkbox, "IsChecked", False))
+    # -- card 3: families chosen out of Revit links -------------------------
 
-    def _populate_link_documents(self):
-        self.LinkListPanel.Children.Clear()
-        self._link_controls = []
-        visible_links = filter_link_document_options(
-            self.link_documents,
-            _search_text(self.LinkSearchBox),
+    def _populate_link_families(self):
+        visible_families = filter_family_options(
+            self.link_families,
+            _search_text(self.LinkFamilySearchBox),
         )
-        for link_document in visible_links:
-            checkbox = Windows.Controls.CheckBox()
-            label = _safe_text(getattr(link_document, "display_name", ""))
-            note = _safe_text(getattr(link_document, "note", ""))
-            if note:
-                label = "{}  - {}".format(label, note)
-            checkbox.Content = label
-            checkbox.IsChecked = bool(getattr(link_document, "is_selected", False))
-            checkbox.Tag = link_document
-            checkbox.Margin = Windows.Thickness(8, 4, 8, 4)
-            # An unloaded link is shown greyed rather than hidden: leaving it
-            # out reads as "the tool cannot see my link".
-            checkbox.IsEnabled = bool(getattr(link_document, "is_loaded", True))
-            self.LinkListPanel.Children.Add(checkbox)
-            self._link_controls.append(checkbox)
-
-        if not visible_links:
-            if self.link_documents:
-                _add_empty_text(self.LinkListPanel, "No Revit links match the search.")
-            else:
-                _add_empty_text(self.LinkListPanel, "No Revit links were found in this project.")
-
-        self._refresh_link_count()
-
-    def _refresh_link_count(self):
-        if not self.link_documents:
-            self.link_count_tb.Text = "No Revit links were found in this project."
-            return
-
-        checked_count = len(get_selected_document_keys(self.link_documents))
-        text = "{} link(s) loaded, {} checked.".format(
-            len(self.link_documents),
-            checked_count,
+        self._link_family_controls = _fill_checkbox_list(
+            self.LinkFamilyListPanel,
+            visible_families,
+            _family_row_text,
+            "No link families match the search."
+            if self.link_families
+            else "Nothing chosen yet. Use Load More from Revit Links.",
         )
-        if self.link_family_count:
-            text = "{} {} family/families chosen from links.".format(
-                text,
-                self.link_family_count,
-            )
-        self.link_count_tb.Text = text
+        self._refresh_link_family_count()
 
-    def _read_selected_link_document_keys(self):
-        self._sync_link_controls()
-        self.selected_link_document_keys = set(
-            get_selected_document_keys(self.link_documents)
+    def _refresh_link_family_count(self):
+        self.link_family_count_tb.Text = format_selection_count_text(
+            len(get_selected_family_keys(self.link_families)),
+            len(self.link_families),
         )
-        return self.selected_link_document_keys
+
+    def _read_selected_link_family_keys(self):
+        _sync_checkbox_options(self._link_family_controls)
+        self.selected_link_family_keys = set(get_selected_family_keys(self.link_families))
+        self._refresh_link_family_count()
+        return self.selected_link_family_keys
+
+    # -- handlers ----------------------------------------------------------
 
     def selected_source_search_changed(self, sender, args):
         del sender, args
@@ -270,58 +282,58 @@ class SourceSelectionWindow(forms.WPFWindow):
         del sender, args
         if not getattr(self, "_is_ready", False):
             return
-        self._sync_open_rfa_controls()
+        self._read_selected_document_keys()
         self._populate_open_family_documents()
 
-    def link_search_changed(self, sender, args):
+    def link_family_search_changed(self, sender, args):
         del sender, args
         if not getattr(self, "_is_ready", False):
             return
-        self._sync_link_controls()
-        self._populate_link_documents()
+        self._read_selected_link_family_keys()
+        self._populate_link_families()
+
+    # Select All / None only flip ticks on rows that are already on screen,
+    # so there is nothing to rebuild - just re-read and refresh the count.
+
+    def selected_source_select_all_click(self, sender, args):
+        del sender, args
+        _set_all_checked(self._selected_family_controls, True)
+        self._read_selected_family_keys()
+
+    def selected_source_select_none_click(self, sender, args):
+        del sender, args
+        _set_all_checked(self._selected_family_controls, False)
+        self._read_selected_family_keys()
 
     def open_family_select_all_click(self, sender, args):
         del sender, args
-        # The rows are already on screen: flipping IsChecked is enough, and
-        # rebuilding every CheckBox afterwards only costs time.
-        for checkbox in self._open_rfa_controls:
-            checkbox.IsChecked = True
+        _set_all_checked(self._open_rfa_controls, True)
         self._read_selected_document_keys()
-        self._refresh_open_rfa_count()
 
     def open_family_select_none_click(self, sender, args):
         del sender, args
-        for checkbox in self._open_rfa_controls:
-            checkbox.IsChecked = False
+        _set_all_checked(self._open_rfa_controls, False)
         self._read_selected_document_keys()
-        self._refresh_open_rfa_count()
 
-    def link_select_all_click(self, sender, args):
+    def link_family_select_all_click(self, sender, args):
         del sender, args
-        for checkbox in self._link_controls:
-            if checkbox.IsEnabled:
-                checkbox.IsChecked = True
-        self._read_selected_link_document_keys()
-        self._refresh_link_count()
+        _set_all_checked(self._link_family_controls, True)
+        self._read_selected_link_family_keys()
 
-    def link_select_none_click(self, sender, args):
+    def link_family_select_none_click(self, sender, args):
         del sender, args
-        for checkbox in self._link_controls:
-            checkbox.IsChecked = False
-        self._read_selected_link_document_keys()
-        self._refresh_link_count()
+        _set_all_checked(self._link_family_controls, False)
+        self._read_selected_link_family_keys()
 
     def _read_every_selection(self):
         self._read_selected_family_keys()
         self._read_selected_document_keys()
-        self._read_selected_link_document_keys()
+        # Without this a tick removed in card 3 is silently ignored.
+        self._read_selected_link_family_keys()
 
     def load_link_families_click(self, sender, args):
         del sender, args
         self._read_every_selection()
-        if not self.selected_link_document_keys:
-            forms.alert("Check at least one Revit link first.", title=TITLE)
-            return
         self.result = "load_links"
         self.Close()
 
@@ -397,13 +409,25 @@ class FamilySelectionWindow(forms.WPFWindow):
         for expander in self._category_expanders:
             expander.IsExpanded = bool(is_expanded)
 
+    def _hide_unchecked(self):
+        try:
+            return bool(self.hide_unchecked_cb.IsChecked)
+        except Exception:
+            return False
+
     def _populate(self):
         self.FamilyListPanel.Children.Clear()
         self._controls = []
         self._category_expanders = []
-        visible_families = filter_family_options(
+        searched_families = filter_family_options(
             self.families,
             _search_text(self.FamilySearchBox),
+        )
+        # Two stages, kept apart on purpose: an empty result means something
+        # different depending on which of them emptied it.
+        visible_families = filter_unchecked_options(
+            searched_families,
+            self._hide_unchecked(),
         )
         for group in group_family_options_by_category(visible_families):
             family_panel = Windows.Controls.StackPanel()
@@ -427,15 +451,29 @@ class FamilySelectionWindow(forms.WPFWindow):
             self._category_expanders.append(expander)
 
         if not visible_families:
-            _add_empty_text(self.FamilyListPanel, "No transferable families match the search.")
+            if searched_families and self._hide_unchecked():
+                _add_empty_text(
+                    self.FamilyListPanel,
+                    "Every match is un-checked, and Hide Un-checked is on.",
+                )
+            else:
+                _add_empty_text(self.FamilyListPanel, "No transferable families match the search.")
 
-        if visible_families and len(visible_families) != len(self.families):
-            self.count_tb.Text = "{} transferable families, {} shown.".format(
-                len(self.families),
-                len(visible_families),
-            )
-        else:
-            self.count_tb.Text = "{} transferable families.".format(len(self.families))
+        self._refresh_count(len(visible_families))
+
+    def _refresh_count(self, visible_count):
+        """The shared count line, plus how many rows a filter is holding back.
+
+        Counted over the whole list, never the visible one - this line is the
+        only thing that tells the user something is filtered out of view.
+        """
+        text = format_selection_count_text(
+            len(get_selected_family_keys(self.families)),
+            len(self.families),
+        )
+        if visible_count != len(self.families):
+            text = "{} {} of {} shown.".format(text, visible_count, len(self.families))
+        self.count_tb.Text = text
 
     def _read_selected_family_keys(self):
         self._sync_family_controls()
@@ -449,18 +487,40 @@ class FamilySelectionWindow(forms.WPFWindow):
         self._sync_category_expanders()
         self._populate()
 
+    def hide_unchecked_click(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        # Same three steps as the search handler, same order: syncing first
+        # is what stops a freshly ticked row being lost when the filter goes on.
+        self._sync_family_controls()
+        self._sync_category_expanders()
+        self._populate()
+
     def select_all_click(self, sender, args):
         del sender, args
         # No rebuild: the rows are on screen and only their tick changed.
+        # Select All cannot reveal a hidden row either - the hidden rows are
+        # exactly the ones it does not touch.
         for checkbox in self._controls:
             checkbox.IsChecked = True
         self._read_selected_family_keys()
+        self._refresh_count(len(self._controls))
 
     def select_none_click(self, sender, args):
         del sender, args
         for checkbox in self._controls:
             checkbox.IsChecked = False
         self._read_selected_family_keys()
+        if needs_repopulate_after_bulk_toggle(False, self._hide_unchecked()):
+            # Every visible row just became unchecked, so with the filter on
+            # the list has to go empty. The expander sync is not optional:
+            # _populate reads back the expanded state this would otherwise
+            # never have captured, and every category would spring open.
+            self._sync_category_expanders()
+            self._populate()
+        else:
+            self._refresh_count(len(self._controls))
 
     def expand_all_click(self, sender, args):
         del sender, args
@@ -497,6 +557,122 @@ class FamilySelectionWindow(forms.WPFWindow):
             return
         self.selected_family_keys = selected
         self.result = "add"
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = "cancel"
+        self.Close()
+
+
+class LinkSelectionWindow(forms.WPFWindow):
+    """Page 2 of the link flow: which links to read families out of.
+
+    Lifted out of the source page, where a list of links sat in a card that
+    is now for the families chosen *from* them.
+    """
+
+    def __init__(self, xaml_file_name, link_documents, selected_document_keys=None):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.link_documents = list(link_documents or [])
+        self.selected_link_document_keys = set(selected_document_keys or [])
+        self.result = None
+        self._controls = []
+
+        restore_document_selection(self.link_documents, self.selected_link_document_keys)
+        self._populate()
+        self._is_ready = True
+
+    def _hide_unchecked(self):
+        try:
+            return bool(self.hide_unchecked_cb.IsChecked)
+        except Exception:
+            return False
+
+    def _populate(self):
+        searched_links = filter_link_document_options(
+            self.link_documents,
+            _search_text(self.LinkSearchBox),
+        )
+        visible_links = filter_unchecked_options(searched_links, self._hide_unchecked())
+        if searched_links and not visible_links and self._hide_unchecked():
+            empty_message = "Every match is un-checked, and Hide Un-checked is on."
+        elif self.link_documents:
+            empty_message = "No Revit links match the search."
+        else:
+            empty_message = "No Revit links were found in this project."
+
+        self._controls = _fill_checkbox_list(
+            self.LinkListPanel,
+            visible_links,
+            _link_row_text,
+            empty_message,
+            # An unloaded link is greyed rather than hidden: leaving it out
+            # reads as "the tool cannot see my link".
+            enabled_for=_link_is_loaded,
+        )
+        self._refresh_count(len(visible_links))
+
+    def _refresh_count(self, visible_count):
+        text = format_selection_count_text(
+            len(get_selected_document_keys(self.link_documents)),
+            len(self.link_documents),
+        )
+        if visible_count != len(self.link_documents):
+            text = "{} {} of {} shown.".format(
+                text, visible_count, len(self.link_documents))
+        self.link_count_tb.Text = text
+
+    def _read_selected_link_document_keys(self):
+        _sync_checkbox_options(self._controls)
+        self.selected_link_document_keys = set(
+            get_selected_document_keys(self.link_documents)
+        )
+        return self.selected_link_document_keys
+
+    def link_search_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._read_selected_link_document_keys()
+        self._populate()
+
+    def hide_unchecked_click(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._read_selected_link_document_keys()
+        self._populate()
+
+    def link_select_all_click(self, sender, args):
+        del sender, args
+        _set_all_checked(self._controls, True, only_enabled=True)
+        self._read_selected_link_document_keys()
+        self._refresh_count(len(self._controls))
+
+    def link_select_none_click(self, sender, args):
+        del sender, args
+        _set_all_checked(self._controls, False)
+        self._read_selected_link_document_keys()
+        if needs_repopulate_after_bulk_toggle(False, self._hide_unchecked()):
+            self._populate()
+        else:
+            self._refresh_count(len(self._controls))
+
+    def back_click(self, sender, args):
+        del sender, args
+        self._read_selected_link_document_keys()
+        self.result = "back"
+        self.Close()
+
+    def next_click(self, sender, args):
+        del sender, args
+        self._read_selected_link_document_keys()
+        if not self.selected_link_document_keys:
+            forms.alert("Check at least one Revit link first.", title=TITLE)
+            return
+        self.result = "next"
         self.Close()
 
     def cancel_click(self, sender, args):

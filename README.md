@@ -191,31 +191,62 @@ what is left to do — when it is empty it says so.
 Collect loadable families from wherever they happen to be, then push them into
 the other project files you have open — or write them out as `.rfa`.
 
-The first page gathers the sources. Whatever you had selected in the model is
-already listed; three cards add to it:
+The first page gathers the sources. Three cards, all the same shape — header,
+`X selected, Y unchecked.`, Select All / Select None, a search box, and a list
+of checkboxes. Dragging the window resizes the three lists; the headers and
+buttons never move.
 
-- **Selection Source** — the families you have picked. **Load More from Recent
-  Project** opens the full browser for the active project, grouped by category.
-  That browser carries **Select More in the model**, which drops you back into
-  Revit to pick more instances and returns with them ticked.
+- **Selection from Recent Project** — whatever you had selected in the model
+  when you launched, plus anything added since. **Load More from Recent
+  Project** opens the full browser for the active project, grouped by
+  category. That browser carries **Select in the model**, which drops you back
+  into Revit to pick more and returns with them ticked.
 - **Add Opened .rfa Files** — any family file already open in this session.
   These need no extraction at all; the open document *is* the family.
-- **Load More from Revit Links** — families out of a loaded Revit link.
+- **Selection from Revit Links** — families pulled out of a loaded Revit link.
 
 Then choose the open project files to load into, and finish with **Export**,
 **Transfer**, or **Transfer & Close All .rfa**. Long runs show a progress bar
 and can be cancelled; anything already loaded stays loaded.
+
+Every browser page carries **Hide Un-checked**, which collapses the list down
+to what you have ticked — useful once a few hundred rows are on screen. It
+filters the view only; nothing is deselected by turning it on.
+
+### What can and cannot be picked in the model
+
+**Select in the model** takes anything with a loadable family behind it:
+model families, generic annotations, and tags — including room, area and space
+tags, keynote tags and material tags.
+
+It will not take **text notes, dimensions, spot dimensions, detail lines or
+matchlines**, because those are system families with no family to load.
+A matchline in particular is not a family at all: Revit gives it a category
+and four sketch parameters, but no `Family`, no type, and no `.rfa`. To move
+its appearance between projects use **Transfer Project Standards** (Object
+Styles and line patterns), not this tool.
+
+Section heads, callout heads, elevation marks, grid heads, level heads and
+view reference tags *are* real loadable families, and they already appear in
+the **Load More from Recent Project** browser. You just cannot reach them by
+clicking, because the thing you click is the system element that references
+them.
 
 ### Families from a Revit link
 
 **The linked `.rvt` is never opened.** A loaded link is already a readable
 document in memory, so the families are read straight out of it.
 
-Tick the links you want and press **Load More from Revit Links**. Each link is
-probed once, before the browser opens, so a link that will not give up its
-families says so in one sentence instead of one failure line per family.
-Getting a family *out* of a read-only document is the part Revit does not
-guarantee, so there are three routes and the tool takes the first that works:
+**Load More from Revit Links** opens a page listing the links; tick the ones
+you want and press Next to browse their families. What you add there comes
+back to the third card on page 1, where you can untick individual families
+without going back in.
+
+Each link is probed once, before the browser opens, so a link that will not
+give up its families says so in one sentence instead of one failure line per
+family. Getting a family *out* of a read-only document is the part Revit does
+not guarantee, so there are three routes and the tool takes the first that
+works:
 
 1. If the linked file also happens to be **open in this session**, it is read
    from that document — no read-only question arises.
