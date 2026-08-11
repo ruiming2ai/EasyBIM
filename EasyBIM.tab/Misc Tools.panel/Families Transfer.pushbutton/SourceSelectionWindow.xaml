@@ -1,60 +1,69 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Families Transfer"
-        Width="720"
-        Height="880"
-        MinWidth="640"
-        MinHeight="700"
+        Width="820"
+        Height="920"
+        MinWidth="760"
+        MinHeight="720"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
         ResizeMode="CanResizeWithGrip">
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
+            <RowDefinition Height="*" MinHeight="528"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Families Transfer" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Start with the families already selected in the model, then add more from this project, from opened .rfa files, or straight out of a Revit link."
+            <TextBlock Text="Collect families from this project, from opened .rfa files, and from Revit links."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
-                       TextWrapping="Wrap"/>
+                       TextTrimming="CharacterEllipsis"/>
         </StackPanel>
 
+        <!-- Every star row carries a MinHeight. An unconstrained star row shrinks
+             to zero and paints its child outside the cell, which is what let the
+             first two cards eat their own headers when the window was dragged
+             short. Inside each card only the list row flexes, so dragging the
+             window resizes the three lists and moves nothing else. -->
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="*" MinHeight="168"/>
                 <RowDefinition Height="12"/>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="*" MinHeight="168"/>
                 <RowDefinition Height="12"/>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*" MinHeight="168"/>
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+            <Border Grid.Row="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*" MinHeight="60"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Selection Source" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                    <TextBlock Grid.Row="1" x:Name="selected_count_tb" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,10"/>
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Left">
-                        <Button x:Name="load_more_btn" Content="Load More from Recent Project" Width="240" Height="34" Click="load_more_click"/>
-                    </StackPanel>
+                    <DockPanel Grid.Row="0" LastChildFill="True">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                            <Button x:Name="load_more_btn" Content="Load More from Recent Project" Width="220" Height="30" Margin="8,0,8,0" Click="load_more_click"/>
+                            <Button Content="Select All" Width="90" Height="30" Margin="0,0,8,0" Click="selected_source_select_all_click"/>
+                            <Button Content="Select None" Width="90" Height="30" Click="selected_source_select_none_click"/>
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="Selection from Recent Project" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="selected_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </DockPanel>
 
-                    <StackPanel Grid.Row="3" Margin="0,12,0,6">
-                        <TextBlock Text="Search selected families" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                        <TextBox x:Name="SelectedSourceSearchBox" Height="28" Margin="0,4,0,0" TextChanged="selected_source_search_changed"/>
-                    </StackPanel>
+                    <DockPanel Grid.Row="1" Margin="0,8,0,6" LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Left" Text="Search" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="SelectedSourceSearchBox" Height="28" VerticalAlignment="Center" TextChanged="selected_source_search_changed"/>
+                    </DockPanel>
 
-                    <Border Grid.Row="4" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
+                    <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="SelectedSourceListPanel"/>
                         </ScrollViewer>
@@ -62,32 +71,31 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+            <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*" MinHeight="60"/>
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0" LastChildFill="True">
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="Select All" Width="96" Height="30" Margin="0,0,8,0" Click="open_family_select_all_click"/>
-                            <Button Content="Select None" Width="96" Height="30" Click="open_family_select_none_click"/>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                            <Button Content="Select All" Width="90" Height="30" Margin="8,0,8,0" Click="open_family_select_all_click"/>
+                            <Button Content="Select None" Width="90" Height="30" Click="open_family_select_none_click"/>
                         </StackPanel>
                         <StackPanel>
-                            <TextBlock Text="Add Opened .rfa Files" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                            <TextBlock x:Name="open_rfa_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray"/>
+                            <TextBlock Text="Add Opened .rfa Files" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="open_rfa_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </DockPanel>
 
-                    <StackPanel Grid.Row="1" Margin="0,10,0,6">
-                        <TextBlock Text="Search opened .rfa files" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                        <TextBox x:Name="OpenFamilySearchBox" Height="28" Margin="0,4,0,0" TextChanged="open_family_search_changed"/>
-                    </StackPanel>
+                    <DockPanel Grid.Row="1" Margin="0,8,0,6" LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Left" Text="Search" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="OpenFamilySearchBox" Height="28" VerticalAlignment="Center" TextChanged="open_family_search_changed"/>
+                    </DockPanel>
 
-                    <Border Grid.Row="3" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
+                    <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="OpenFamilyListPanel"/>
                         </ScrollViewer>
@@ -95,41 +103,36 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+            <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*" MinHeight="60"/>
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0" LastChildFill="True">
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="Select All" Width="96" Height="30" Margin="0,0,8,0" Click="link_select_all_click"/>
-                            <Button Content="Select None" Width="96" Height="30" Click="link_select_none_click"/>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                            <Button x:Name="load_link_families_btn" Content="Load More from Revit Links" Width="220" Height="30" Margin="8,0,8,0" Click="load_link_families_click"/>
+                            <Button Content="Select All" Width="90" Height="30" Margin="0,0,8,0" Click="link_family_select_all_click"/>
+                            <Button Content="Select None" Width="90" Height="30" Click="link_family_select_none_click"/>
                         </StackPanel>
                         <StackPanel>
-                            <TextBlock Text="Load More from Revit Links" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                            <TextBlock x:Name="link_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
+                            <TextBlock Text="Selection from Revit Links" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="link_family_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </DockPanel>
 
-                    <StackPanel Grid.Row="1" Margin="0,10,0,6">
-                        <TextBlock Text="Search Revit links (families come straight out of the link; the .rvt is never opened, and links nested inside a link are not reachable)"
-                                   FontSize="11" FontWeight="SemiBold" Foreground="DimGray" TextWrapping="Wrap"/>
-                        <TextBox x:Name="LinkSearchBox" Height="28" Margin="0,4,0,0" TextChanged="link_search_changed"/>
-                    </StackPanel>
+                    <DockPanel Grid.Row="1" Margin="0,8,0,6" LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Left" Text="Search" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="LinkFamilySearchBox" Height="28" VerticalAlignment="Center" TextChanged="link_family_search_changed"/>
+                    </DockPanel>
 
                     <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
-                        <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <StackPanel x:Name="LinkListPanel"/>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel x:Name="LinkFamilyListPanel"/>
                         </ScrollViewer>
                     </Border>
-
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,10,0,0">
-                        <Button x:Name="load_link_families_btn" Content="Load More from Revit Links" Width="240" Height="34" Click="load_link_families_click"/>
-                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>
@@ -141,7 +144,9 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextWrapping="Wrap"/>
+                <!-- Trimmed, never wrapped: a two-line status grows this Auto row
+                     and pushes the body past the bottom of the window. -->
+                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="Next" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="next_click"/>

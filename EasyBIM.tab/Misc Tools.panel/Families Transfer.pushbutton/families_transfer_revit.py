@@ -282,22 +282,63 @@ def _family_option(family, is_selected=False):
 
 
 def _family_from_element(element):
+    """The loadable family behind any element the user can click.
+
+    Exactly two classes in the Revit API declare ``Symbol``: ``FamilyInstance``
+    (so model families and generic annotations arrive that way) and
+    ``TextElement``, whose ``Symbol`` is a ``TextElementType`` and not a
+    family at all - hence the isinstance guard, which is not optional.
+
+    Everything else reaches its type through ``GetTypeId()``. Tags are the
+    reason: ``IndependentTag`` derives from ``Element``, has no ``Symbol``,
+    and its type is a plain ``FamilySymbol``. Room, area and space tags are
+    the same shape.
+
+    Returns ``None`` for system-family elements - text notes, dimensions,
+    detail lines, matchlines - which have no owning family to transfer.
+    """
     if element is None:
         return None
 
     if isinstance(element, DB.Family):
         return element
 
+    symbol = None
     try:
         symbol = element.Symbol
     except Exception:
         symbol = None
+    if not isinstance(symbol, DB.FamilySymbol):
+        symbol = None
+
+    if symbol is None:
+        try:
+            type_id = element.GetTypeId()
+        except Exception:
+            type_id = None
+        # An element that cannot have a type assigned reports InvalidElementId;
+        # a matchline is exactly that case.
+        if type_id is not None and type_id != DB.ElementId.InvalidElementId:
+            try:
+                candidate = element.Document.GetElement(type_id)
+            except Exception:
+                candidate = None
+            if isinstance(candidate, DB.FamilySymbol):
+                symbol = candidate
+
+    if symbol is None and isinstance(element, DB.FamilySymbol):
+        symbol = element
+
+    if symbol is None:
+        return None
 
     try:
         family = symbol.Family
     except Exception:
         family = None
 
+    if not isinstance(family, DB.Family):
+        return None
     return family
 
 

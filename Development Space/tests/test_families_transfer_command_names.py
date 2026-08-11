@@ -33,6 +33,7 @@ HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",
 WINDOW_CLASSES = {
     "SourceSelectionWindow.xaml": "SourceSelectionWindow",
     "FamilySelectionWindow.xaml": "FamilySelectionWindow",
+    "LinkSelectionWindow.xaml": "LinkSelectionWindow",
     "TargetSelectionWindow.xaml": "TargetSelectionWindow",
     "ActionWindow.xaml": "ActionWindow",
 }
@@ -164,6 +165,29 @@ class FamiliesTransferXamlTests(unittest.TestCase):
                     handler, members,
                     "%s references %s but %s has no such method"
                     % (xaml_name, handler, class_name))
+
+    def test_every_lowercase_control_has_a_matching_x_name(self):
+        # CONTROL_ATTRIBUTE only matches ^[A-Z], so the snake_case controls
+        # this tool uses for its TextBlocks and CheckBoxes are invisible to
+        # the check below. A typo in one of those fails only inside Revit.
+        lowercase = re.compile(r"^[a-z][a-z0-9_]*_(tb|cb|btn|box|panel)$")
+        for xaml_name, class_name in sorted(WINDOW_CLASSES.items()):
+            names = _xaml_names(_xaml_root(xaml_name))
+            members = _class_members(UI_MODULE, class_name) or set()
+            node = _class_node(UI_MODULE, class_name)
+            self.assertIsNotNone(node, class_name)
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Attribute):
+                    continue
+                value = child.value
+                if not (isinstance(value, ast.Name) and value.id == "self"):
+                    continue
+                if not lowercase.match(child.attr) or child.attr in members:
+                    continue
+                self.assertIn(
+                    child.attr, names,
+                    "%s uses self.%s but %s has no such x:Name"
+                    % (class_name, child.attr, xaml_name))
 
     def test_every_control_attribute_has_a_matching_x_name(self):
         for xaml_name, class_name in sorted(WINDOW_CLASSES.items()):
