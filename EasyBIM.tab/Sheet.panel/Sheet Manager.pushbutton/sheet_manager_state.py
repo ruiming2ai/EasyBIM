@@ -330,12 +330,26 @@ def find_number_problems(rows):
     return empty_rows, duplicate_groups
 
 
+# Characters Revit rejects in sheet numbers (ViewSheet.SheetNumber throws
+# "sheetNumber cannot include prohibited characters, such as { } [ ] ..."):
+PROHIBITED_NUMBER_CHARS = u"\\:{}[]|;<>?`~\n\r"
+
+
+def invalid_number_chars(number):
+    """Prohibited characters present in a proposed sheet number."""
+    text = u"{0}".format(number or u"")
+    return sorted(set(ch for ch in text
+                      if ch in PROHIBITED_NUMBER_CHARS))
+
+
 def plan_number_assignments(renames, existing_numbers):
     """Two-phase renumber plan safe for swaps and cycles.
 
     ``renames``: [(key, old_number, new_number)]. ``existing_numbers``: every
     current sheet number in the model. Every renamed sheet first gets a
-    unique temporary number, then its final number.
+    unique temporary number, then its final number. Temporary numbers use
+    only hyphen/alphanumeric characters - Revit rejects sheet numbers
+    containing { } [ ] | ; < > ? ` ~ backslash or colon.
     Returns (phase_temp, phase_final): lists of (key, number).
     """
     taken = set(u"{0}".format(n) for n in existing_numbers)
@@ -347,7 +361,7 @@ def plan_number_assignments(renames, existing_numbers):
     counter = 0
     for key, _, new_number in renames:
         while True:
-            temp = u"{0}~EBIMTMP{1}".format(new_number, counter)
+            temp = u"{0}-EBIMTMP{1}".format(new_number, counter)
             counter += 1
             if temp not in taken:
                 taken.add(temp)
