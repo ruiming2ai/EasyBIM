@@ -2,16 +2,16 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Families Transfer"
         Width="820"
-        Height="1000"
+        Height="920"
         MinWidth="760"
-        MinHeight="820"
+        MinHeight="720"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
         ResizeMode="CanResizeWithGrip">
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*" MinHeight="596"/>
+            <RowDefinition Height="*" MinHeight="528"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -31,13 +31,11 @@
              window resizes the three lists and moves nothing else. -->
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>
-                <RowDefinition Height="*" MinHeight="140"/>
+                <RowDefinition Height="*" MinHeight="168"/>
                 <RowDefinition Height="12"/>
-                <RowDefinition Height="*" MinHeight="140"/>
+                <RowDefinition Height="*" MinHeight="168"/>
                 <RowDefinition Height="12"/>
-                <RowDefinition Height="*" MinHeight="140"/>
-                <RowDefinition Height="12"/>
-                <RowDefinition Height="*" MinHeight="140"/>
+                <RowDefinition Height="*" MinHeight="168"/>
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
@@ -106,39 +104,6 @@
             </Border>
 
             <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*" MinHeight="60"/>
-                    </Grid.RowDefinitions>
-
-                    <DockPanel Grid.Row="0" LastChildFill="True">
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
-                            <Button x:Name="load_file_families_btn" Content="Load More from Project Files" Width="220" Height="30" Margin="8,0,8,0" Click="load_file_families_click"/>
-                            <Button Content="Select All" Width="90" Height="30" Margin="0,0,8,0" Click="file_family_select_all_click"/>
-                            <Button Content="Select None" Width="90" Height="30" Click="file_family_select_none_click"/>
-                        </StackPanel>
-                        <StackPanel>
-                            <TextBlock Text="Selection from Unopened Project Files" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
-                            <TextBlock x:Name="file_family_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
-                        </StackPanel>
-                    </DockPanel>
-
-                    <DockPanel Grid.Row="1" Margin="0,8,0,6" LastChildFill="True">
-                        <TextBlock DockPanel.Dock="Left" Text="Search" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                        <TextBox x:Name="FileFamilySearchBox" Height="28" VerticalAlignment="Center" TextChanged="file_family_search_changed"/>
-                    </DockPanel>
-
-                    <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <StackPanel x:Name="FileFamilyListPanel"/>
-                        </ScrollViewer>
-                    </Border>
-                </Grid>
-            </Border>
-
-            <Border Grid.Row="6" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
