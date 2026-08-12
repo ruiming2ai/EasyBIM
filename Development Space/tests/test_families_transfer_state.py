@@ -19,8 +19,6 @@ SOURCE_XAML_PATH = COMMAND_DIR / "SourceSelectionWindow.xaml"
 FAMILY_XAML_PATH = COMMAND_DIR / "FamilySelectionWindow.xaml"
 TARGET_XAML_PATH = COMMAND_DIR / "TargetSelectionWindow.xaml"
 LINK_XAML_PATH = COMMAND_DIR / "LinkSelectionWindow.xaml"
-PROJECT_FILE_XAML_PATH = COMMAND_DIR / "ProjectFileSelectionWindow.xaml"
-FILES_MODULE_PATH = COMMAND_DIR / "families_transfer_files.py"
 
 
 def _function_source_text(path, function_name):
@@ -427,17 +425,15 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertIn('Click="back_click"', source)
         self.assertIn('Click="next_click"', source)
 
-    def test_hide_unchecked_is_on_every_second_page(self):
-        second_pages = (FAMILY_XAML_PATH, LINK_XAML_PATH, PROJECT_FILE_XAML_PATH)
-        for path in second_pages:
+    def test_hide_unchecked_is_on_both_second_pages(self):
+        for path in (FAMILY_XAML_PATH, LINK_XAML_PATH):
             source = path.read_text()
             self.assertIn("Hide Un-checked", source, path.name)
             self.assertIn('x:Name="hide_unchecked_cb"', source, path.name)
             self.assertIn('Click="hide_unchecked_click"', source, path.name)
 
         ui_source = UI_MODULE_PATH.read_text()
-        self.assertEqual(len(second_pages),
-                         ui_source.count("def hide_unchecked_click"))
+        self.assertEqual(2, ui_source.count("def hide_unchecked_click"))
 
     def test_no_source_card_can_be_squashed_to_nothing(self):
         # A star row with no MinHeight shrinks to zero and paints its child
@@ -736,64 +732,19 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertEqual("", module.link_document_key_from_family_key("project|7"))
         self.assertEqual("", module.link_document_key_from_family_key(""))
 
-    def test_split_selected_family_keys_sorts_all_four_sources(self):
+    def test_split_selected_family_keys_sorts_all_three_sources(self):
         module = _load_state_module()
 
-        project_keys, open_keys, link_keys, file_keys = module.split_selected_family_keys([
+        project_keys, open_keys, link_keys = module.split_selected_family_keys([
             module.make_project_family_key("7"),
             module.make_open_family_document_key("doc-desk"),
             module.make_link_family_key("path|c:\\a.rvt", "12345"),
-            module.make_file_family_key("path|c:\\b.rvt", "99"),
             "nonsense",
         ])
 
         self.assertEqual({"project|7"}, project_keys)
         self.assertEqual({"doc-desk"}, open_keys)
         self.assertEqual({"link|path|c:\\a.rvt|12345"}, link_keys)
-        self.assertEqual({"file|path|c:\\b.rvt|99"}, file_keys)
-
-    def test_a_file_family_key_never_collides_with_the_other_kinds(self):
-        module = _load_state_module()
-
-        file_key = module.make_file_family_key("path|c:\\a.rvt", "12345")
-        link_key = module.make_link_family_key("path|c:\\a.rvt", "12345")
-
-        self.assertNotEqual(file_key, link_key)
-        self.assertTrue(module.is_file_family_key(file_key))
-        self.assertFalse(module.is_link_family_key(file_key))
-        self.assertFalse(module.is_project_family_key(file_key))
-        self.assertEqual("path|c:\\a.rvt",
-                         module.file_document_key_from_family_key(file_key))
-        self.assertEqual(file_key,
-                         module.make_file_family_key("path|c:\\a.rvt", file_key))
-
-    def test_removing_a_file_drops_the_families_chosen_from_it(self):
-        module = _load_state_module()
-
-        chosen = [
-            module.FamilyOption("Door", module.make_file_family_key("path|c:\\a.rvt", "1")),
-            module.FamilyOption("Column", module.make_file_family_key("path|c:\\b.rvt", "2")),
-        ]
-
-        kept = module.prune_file_families_to_kept_files(chosen, {"path|c:\\b.rvt"})
-
-        self.assertEqual(["Column"], [family.name for family in kept])
-        self.assertEqual([], module.prune_file_families_to_kept_files(chosen, set()))
-
-    def test_a_file_row_always_states_the_version_it_was_saved_in(self):
-        module = _load_state_module()
-
-        self.assertEqual(
-            "Tower.rvt  [2021, will be upgraded in memory only]",
-            module.format_project_file_label("Tower.rvt", "2021", "2026"))
-        self.assertEqual(
-            "Tower.rvt  [2026]",
-            module.format_project_file_label("Tower.rvt", "2026", "2026"))
-        self.assertEqual(
-            "Tower.rvt  [saved in a newer Revit and cannot be read]",
-            module.format_project_file_label(
-                "Tower.rvt", "", "2026",
-                note="saved in a newer Revit and cannot be read"))
 
     def test_unchecking_a_link_drops_the_families_chosen_from_it(self):
         module = _load_state_module()
