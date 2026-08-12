@@ -259,6 +259,44 @@ class NumberPlanningTests(unittest.TestCase):
         self.assertEqual(len(duplicates[0][1]), 2)
 
 
+class NumberConflictTests(unittest.TestCase):
+    """Swaps stage as transient collisions marked 'conflict' (orange)."""
+
+    def test_half_staged_swap_flags_both_then_clears(self):
+        columns = build_columns()
+        number_col = column_by_key(columns, "number")
+        row_a = make_row(columns, sheet_id=1, number="A101", name="A")
+        row_b = make_row(columns, sheet_id=2, number="A102", name="B")
+        self.assertTrue(st.apply_cell_edit(row_a, number_col, "A102"))
+        count = st.refresh_number_conflicts([row_a, row_b], number_col)
+        self.assertEqual(count, 2)
+        self.assertEqual(row_a.get_state("number"), st.STATE_CONFLICT)
+        self.assertEqual(row_b.get_state("number"), st.STATE_CONFLICT)
+        # finish the swap
+        self.assertTrue(st.apply_cell_edit(row_b, number_col, "A101"))
+        count = st.refresh_number_conflicts([row_a, row_b], number_col)
+        self.assertEqual(count, 0)
+        self.assertEqual(row_a.get_state("number"), st.STATE_DIRTY)
+        self.assertEqual(row_b.get_state("number"), st.STATE_DIRTY)
+
+    def test_revert_clears_conflict_back_to_normal(self):
+        columns = build_columns()
+        number_col = column_by_key(columns, "number")
+        row_a = make_row(columns, sheet_id=1, number="A101")
+        row_b = make_row(columns, sheet_id=2, number="A102")
+        st.apply_cell_edit(row_a, number_col, "A102")
+        st.refresh_number_conflicts([row_a, row_b], number_col)
+        st.apply_cell_edit(row_a, number_col, "A101")
+        st.refresh_number_conflicts([row_a, row_b], number_col)
+        self.assertEqual(row_a.get_state("number"), st.STATE_NORMAL)
+        self.assertEqual(row_b.get_state("number"), st.STATE_NORMAL)
+
+    def test_empty_number_counts_as_conflict(self):
+        columns = build_columns()
+        row = make_row(columns, sheet_id=1, number=" ")
+        self.assertEqual(len(st.conflicted_number_rows([row])), 1)
+
+
 class FilterTests(unittest.TestCase):
     def test_all_ten_ops(self):
         cases = [

@@ -89,6 +89,14 @@ _TEXT_CELL_STYLE = (
     '<Setter Property="ToolTip"'
     ' Value="This sheet has more than one title block."/>'
     '</DataTrigger>'
+    '<DataTrigger Binding="{{Binding {attr}_state}}" Value="conflict">'
+    '<Setter Property="Foreground" Value="#B25000"/>'
+    '<Setter Property="Background" Value="#FFE8CC"/>'
+    '<Setter Property="FontWeight" Value="SemiBold"/>'
+    '<Setter Property="ToolTip"'
+    ' Value="Sheet number conflicts with another sheet - finish the'
+    ' swap or pick a unique number before Apply Changes."/>'
+    '</DataTrigger>'
     '</Style.Triggers>'
     '</Style>')
 
@@ -334,6 +342,8 @@ class SheetManagerWindow(forms.WPFWindow):
                 args.Cancel = True
                 return
         state.apply_cell_edit(row, spec, new_text)
+        if spec.kind == state.KIND_NUMBER:
+            self._refresh_number_conflicts()
         if spec.kind not in (state.KIND_NUMBER, state.KIND_NAME):
             selected = [item for item in self.sheets_dg.SelectedItems
                         if isinstance(item, SheetRow)]
@@ -342,6 +352,10 @@ class SheetManagerWindow(forms.WPFWindow):
         self._update_status()
 
     def _validate_number_edit(self, row, new_text):
+        """Intrinsic validity only. Collisions with other rows are ALLOWED
+        while staging (that is how swaps start) - they render as orange
+        conflicts and block Apply Changes instead."""
+        del row
         number = u"{0}".format(new_text or u"").strip()
         if not number:
             return "Sheet Number cannot be empty."
@@ -349,13 +363,19 @@ class SheetManagerWindow(forms.WPFWindow):
         if bad_chars:
             return (u"Sheet Number cannot include prohibited "
                     u"characters: {0}".format(u" ".join(bad_chars)))
-        for other in self._all_rows:
-            if other is row:
-                continue
-            if u"{0}".format(other.number or u"").strip() == number:
-                return (u"Sheet Number '{0}' is already used by sheet "
-                        u"'{1}'.".format(number, other.name))
         return None
+
+    def _number_column(self):
+        for column in self._columns:
+            if column.kind == state.KIND_NUMBER:
+                return column
+        return None
+
+    def _refresh_number_conflicts(self):
+        column = self._number_column()
+        if column is None:
+            return 0
+        return state.refresh_number_conflicts(self._all_rows, column)
 
     def _commit_pending_edit(self):
         try:
@@ -460,6 +480,10 @@ class SheetManagerWindow(forms.WPFWindow):
         if self._copy_content_ops:
             bits.append("{0} copy operation(s) pending Apply".format(
                 len(self._copy_content_ops)))
+        conflicts = len(state.conflicted_number_rows(self._all_rows))
+        if conflicts:
+            bits.append("{0} sheet-number conflict(s) - resolve before "
+                        "Apply".format(conflicts))
         self.status_tb.Text = "  |  ".join(bits)
         self.source_tb.Text = "Source: {0}".format(self._source_label)
 
@@ -880,7 +904,7 @@ class SheetManagerWindow(forms.WPFWindow):
                         title="Import from Excel")
             return
         staged = 0
-        collisions = []
+        invalid_numbers = []
         for row, column, value in plan.cell_edits:
             if column.kind == state.KIND_REVISION:
                 if state.apply_revision_toggle(row, column, value):
@@ -889,8 +913,9 @@ class SheetManagerWindow(forms.WPFWindow):
             if column.kind == state.KIND_NUMBER:
                 error = self._validate_number_edit(row, value)
                 if error:
-                    collisions.append(
-                        u"{0} -> {1}".format(row.number, value))
+                    invalid_numbers.append(
+                        u"{0} -> {1}: {2}".format(row.number, value,
+                                                  error))
                     continue
             if state.apply_cell_edit(row, column, value):
                 staged += 1
@@ -911,12 +936,17 @@ class SheetManagerWindow(forms.WPFWindow):
             state.mark_pending_row_dirty(row, self._columns)
             self._all_rows.append(row)
             created += 1
+        conflicts = self._refresh_number_conflicts()
         self._refresh_visible_rows()
         message = [
             "Matched sheets: {0}".format(plan.matched_count),
             "Staged edits (red): {0}".format(staged),
             "New sheets staged for creation: {0}".format(created),
         ]
+        if conflicts:
+            message.append(
+                "Sheet-number conflicts to resolve (orange): "
+                "{0}".format(conflicts))
         if plan.skipped_readonly:
             message.append("Skipped read-only cells: {0}".format(
                 plan.skipped_readonly))
@@ -924,11 +954,11 @@ class SheetManagerWindow(forms.WPFWindow):
             message.append("Ignored unknown columns: {0}".format(
                 len(plan.unmatched_columns)))
         expanded_lines = []
-        if collisions:
-            message.append("Skipped colliding sheet numbers: {0}".format(
-                len(collisions)))
-            expanded_lines += [u"Number collision: {0}".format(text)
-                               for text in collisions]
+        if invalid_numbers:
+            message.append("Skipped invalid sheet numbers: {0}".format(
+                len(invalid_numbers)))
+            expanded_lines += [u"Invalid number: {0}".format(text)
+                               for text in invalid_numbers]
         if plan.skipped_rows:
             message.append(
                 "SKIPPED ROWS (red flag): {0} - see details.".format(
@@ -1029,23 +1059,34 @@ class SheetManagerWindow(forms.WPFWindow):
         if not dialog.result:
             return
         applied = 0
-        skipped_numbers = []
+        skipped_invalid = []
         for row, column, old_text, new_text in dialog.result:
             if column.kind == state.KIND_NUMBER:
                 error = self._validate_number_edit(row, new_text)
                 if error:
-                    skipped_numbers.append(
-                        u"{0} -> {1}".format(old_text, new_text))
+                    skipped_invalid.append(
+                        u"{0} -> {1}: {2}".format(
+                            old_text, new_text, error))
                     continue
             if state.apply_cell_edit(row, column, new_text):
                 applied += 1
+        conflicts = self._refresh_number_conflicts()
         self._update_status()
-        if skipped_numbers:
-            forms.alert(
-                "{0} replacement(s) staged. Skipped sheet-number "
-                "replacements that would collide:".format(applied),
-                expanded=u"\n".join(skipped_numbers),
-                title="Search & Replace")
+        if conflicts or skipped_invalid:
+            message = ["{0} replacement(s) staged.".format(applied)]
+            if conflicts:
+                message.append(
+                    "{0} sheet-number conflict(s) are highlighted "
+                    "orange - resolve them (finish the swap or pick "
+                    "unique numbers) before Apply Changes.".format(
+                        conflicts))
+            if skipped_invalid:
+                message.append(
+                    "Skipped {0} invalid sheet-number "
+                    "replacement(s).".format(len(skipped_invalid)))
+            forms.alert(u"\n".join(message),
+                        expanded=u"\n".join(skipped_invalid) or None,
+                        title="Search & Replace")
 
     def save_print_set(self, sender, args):
         del sender, args
@@ -1185,6 +1226,7 @@ class SheetManagerWindow(forms.WPFWindow):
                 state.refresh_cell_state(row, column)
         self._copy_content_ops = []
         self._filter_extra_cache = {}
+        self._refresh_number_conflicts()
         self._refresh_visible_rows()
 
     def apply_changes(self, sender, args):
@@ -1204,9 +1246,12 @@ class SheetManagerWindow(forms.WPFWindow):
             for number, group in duplicate_groups:
                 names = u", ".join(r.name for r in group)
                 lines.append(u"{0} - {1}".format(number, names))
+            self._refresh_number_conflicts()
             forms.alert(
                 "Sheet numbers must be unique and non-empty before "
-                "applying. Fix the listed sheets first.",
+                "applying. Conflicting number cells are highlighted "
+                "orange - finish the swap or pick unique numbers for "
+                "the listed sheets first.",
                 title="Sheet Manager", expanded=u"\n".join(lines))
             return
         decisions = self._confirm_cloud_operations(changes)

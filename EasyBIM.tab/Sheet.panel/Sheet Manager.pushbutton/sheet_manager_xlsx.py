@@ -205,19 +205,22 @@ def plan_import(export_rows, metadata_rows, all_rows, columns,
 
     rows_by_id = {}
     rows_by_number = {}
-    taken_numbers = set()
     for row in all_rows:
         if row.sheet_id is not None:
             rows_by_id[row.sheet_id] = row
         number_key = normalize(row.number)
         if number_key:
             rows_by_number.setdefault(number_key, row)
-            taken_numbers.add(number_key)
 
     number_pos = file_keys.index("number") if "number" in file_keys \
         else None
     name_pos = file_keys.index("name") if "name" in file_keys else None
 
+    # Pass 1: stage edits for matched rows; keep unmatched rows for pass 2
+    # so the create-check can run against PROJECTED numbers (a staged
+    # rename frees its old number for a new row).
+    unmatched_rows = []
+    imported_numbers = {}
     for excel_row, cells in data_rows:
         if not cells or not any(u"{0}".format(c or u"").strip()
                                 for c in cells):
@@ -262,9 +265,21 @@ def plan_import(export_rows, metadata_rows, all_rows, columns,
                         plan.skipped_readonly += 1
                         continue
                     plan.cell_edits.append((target, column, text))
+                    if column.kind == state.KIND_NUMBER:
+                        imported_numbers[target] = text
             continue
 
-        # unmatched -> creation candidate
+        unmatched_rows.append((excel_row, cells))
+
+    # Pass 2: creation candidates checked against projected numbers.
+    taken_numbers = set()
+    for row in all_rows:
+        projected = imported_numbers.get(row, row.number)
+        number_key = normalize(projected)
+        if number_key:
+            taken_numbers.add(number_key)
+
+    for excel_row, cells in unmatched_rows:
         number = u""
         if number_pos is not None and number_pos < len(cells):
             number = u"{0}".format(cells[number_pos] or u"").strip()

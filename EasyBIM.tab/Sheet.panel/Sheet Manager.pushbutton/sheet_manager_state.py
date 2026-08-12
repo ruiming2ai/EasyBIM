@@ -14,6 +14,7 @@ STATE_DIRTY = "dirty"
 STATE_LOCKED = "locked"
 STATE_DUPLICATED = "duplicated"
 STATE_CLOUD = "cloud"
+STATE_CONFLICT = "conflict"
 
 KIND_SELECT = "select"
 KIND_INDEX = "index"
@@ -328,6 +329,33 @@ def find_number_problems(rows):
         if len(group) > 1:
             duplicate_groups.append((number, group))
     return empty_rows, duplicate_groups
+
+
+def conflicted_number_rows(rows):
+    """Rows whose staged number is empty or duplicated by another row.
+
+    Collisions are allowed while staging (a swap is a transient collision);
+    they only block Apply Changes.
+    """
+    empty_rows, duplicate_groups = find_number_problems(rows)
+    conflicted = list(empty_rows)
+    for _, group in duplicate_groups:
+        conflicted.extend(group)
+    return conflicted
+
+
+def refresh_number_conflicts(rows, number_column):
+    """Paint number cells: conflict overrides, else normal dirty logic.
+
+    Returns the conflict count (for status display).
+    """
+    conflicted = set(conflicted_number_rows(rows))
+    for row in rows:
+        if row in conflicted:
+            row.set_state(number_column.attr, STATE_CONFLICT)
+        else:
+            refresh_cell_state(row, number_column)
+    return len(conflicted)
 
 
 # Characters Revit rejects in sheet numbers (ViewSheet.SheetNumber throws

@@ -165,6 +165,39 @@ class PlanImportTests(unittest.TestCase):
         self.assertEqual(plan.skipped_readonly, 1)
         self.assertEqual(plan.cell_edits, [])
 
+    def test_swap_pair_stages_both_number_edits(self):
+        export_rows, metadata_rows = export_rows_fixture(
+            self.columns, self.rows)
+        export_rows[1] = (2, ["101", "A102", "Plan L1", "AB",
+                              "Yes", "No"])
+        export_rows[2] = (3, ["102", "A101", "Plan L2", "CD",
+                              "No", "No"])
+        plan = sx.plan_import(export_rows, metadata_rows, self.rows,
+                              self.columns)
+        number_edits = sorted(
+            (row.sheet_id, value)
+            for row, column, value in plan.cell_edits
+            if column.key == "number")
+        self.assertEqual(number_edits, [(101, "A102"), (102, "A101")])
+        self.assertEqual(plan.skipped_rows, [])
+        self.assertEqual(plan.creatable, [])
+
+    def test_rename_frees_number_for_new_row(self):
+        export_rows, metadata_rows = export_rows_fixture(
+            self.columns, self.rows)
+        # A101 -> A150 frees A101 for a new row; A102 stays taken.
+        export_rows[1] = (2, ["101", "A150", "Plan L1", "AB",
+                              "Yes", "No"])
+        export_rows.append((4, ["", "A101", "Backfill", "", "No", "No"]))
+        export_rows.append((5, ["", "A102", "Still taken", "", "", ""]))
+        plan = sx.plan_import(export_rows, metadata_rows, self.rows,
+                              self.columns)
+        self.assertEqual(
+            [item["number"] for item in plan.creatable], ["A101"])
+        self.assertEqual(len(plan.skipped_rows), 1)
+        self.assertEqual(plan.skipped_rows[0][0], "A102")
+        self.assertIn("Duplicate", plan.skipped_rows[0][1])
+
     def test_header_fallback_without_metadata(self):
         export_rows, _ = export_rows_fixture(self.columns, self.rows)
         export_rows[1] = (2, ["101", "A101", "Plan EDITED", "AB",
