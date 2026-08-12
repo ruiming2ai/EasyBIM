@@ -10,11 +10,9 @@ INVALID_FILENAME_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 SOURCE_PROJECT = "project"
 SOURCE_OPEN_RFA = "open_rfa"
 SOURCE_LINK = "link"
-SOURCE_FILE = "file"
 PROJECT_FAMILY_KEY_PREFIX = "project|"
 OPEN_RFA_FAMILY_KEY_PREFIX = "open-rfa|"
 LINK_FAMILY_KEY_PREFIX = "link|"
-FILE_FAMILY_KEY_PREFIX = "file|"
 UNKNOWN_CATEGORY = "Unknown Category"
 
 
@@ -118,41 +116,6 @@ class LinkDocumentOption(object):
         return self.display_name
 
 
-class ProjectFileOption(object):
-    """One `.rvt` on disk that families may be pulled out of.
-
-    ``is_readable`` is ``None`` until the header has been checked. A file
-    saved in a newer Revit than the one running cannot be opened by any API,
-    so it is refused here rather than failing halfway through a batch.
-    """
-
-    def __init__(
-        self,
-        display_name,
-        document_key,
-        path="",
-        is_selected=False,
-        document=None,
-        file_version="",
-        is_readable=None,
-        note="",
-    ):
-        self.display_name = _safe_text(display_name) or "(Untitled Project)"
-        self.document_key = _safe_text(document_key)
-        self.path = _safe_text(path)
-        self.is_selected = bool(is_selected)
-        # Held open between the scan and the load: EditFamily needs the
-        # document that owns the family, and closing in between would
-        # invalidate every handle the scan collected.
-        self.document = document
-        self.file_version = _safe_text(file_version)
-        self.is_readable = is_readable
-        self.note = _safe_text(note)
-
-    def __str__(self):
-        return self.display_name
-
-
 class TargetDocumentOption(object):
     def __init__(self, display_name, document_key, is_selected=False, document=None):
         self.display_name = _safe_text(display_name) or "(Untitled Project)"
@@ -237,36 +200,6 @@ def is_link_family_key(family_key):
     return _safe_text(family_key).startswith(LINK_FAMILY_KEY_PREFIX)
 
 
-def make_file_family_key(file_document_key, raw_family_key):
-    """Namespace a family by the file on disk it came out of.
-
-    Same reason as the link keys: an ElementId means nothing outside its own
-    document, so two projects can both hold family 12345.
-    """
-    raw_family_key = _safe_text(raw_family_key)
-    if raw_family_key.startswith(FILE_FAMILY_KEY_PREFIX):
-        return raw_family_key
-    return "{}{}|{}".format(
-        FILE_FAMILY_KEY_PREFIX,
-        _safe_text(file_document_key),
-        raw_family_key,
-    )
-
-
-def is_file_family_key(family_key):
-    return _safe_text(family_key).startswith(FILE_FAMILY_KEY_PREFIX)
-
-
-def file_document_key_from_family_key(family_key):
-    family_key = _safe_text(family_key)
-    if not is_file_family_key(family_key):
-        return ""
-    body = family_key[len(FILE_FAMILY_KEY_PREFIX):]
-    if "|" not in body:
-        return ""
-    return body.rsplit("|", 1)[0]
-
-
 def open_family_document_key_from_family_key(family_key):
     family_key = _safe_text(family_key)
     if not is_open_family_document_key(family_key):
@@ -290,16 +223,15 @@ def link_document_key_from_family_key(family_key):
 
 
 def split_selected_family_keys(selected_family_keys):
-    """Sort a mixed key set into its four sources.
+    """Sort a mixed key set into its three sources.
 
-    Project, link and file families keep their family keys; opened .rfa
+    Project families and link families keep their family keys; opened .rfa
     files collapse to document keys, because there the document *is* the
     family.
     """
     project_family_keys = set()
     open_family_document_keys = set()
     link_family_keys = set()
-    file_family_keys = set()
 
     for family_key in selected_family_keys or []:
         if is_open_family_document_key(family_key):
@@ -312,15 +244,10 @@ def split_selected_family_keys(selected_family_keys):
             link_family_keys.add(family_key)
             continue
 
-        if is_file_family_key(family_key):
-            file_family_keys.add(family_key)
-            continue
-
         if is_project_family_key(family_key):
             project_family_keys.add(family_key)
 
-    return (project_family_keys, open_family_document_keys, link_family_keys,
-            file_family_keys)
+    return project_family_keys, open_family_document_keys, link_family_keys
 
 
 def restore_family_selection(families, selected_family_keys):
@@ -516,54 +443,6 @@ def prune_link_families_to_checked_links(link_families, checked_document_keys):
     ]
 
 
-def prune_file_families_to_kept_files(file_families, kept_document_keys):
-    """Drop families whose file is no longer in the list.
-
-    Removing a file has to mean "not this one": its document is closed on
-    removal, so any family left behind would hold a dead handle.
-    """
-    kept_document_keys = set(kept_document_keys or [])
-    return [
-        family
-        for family in list(file_families or [])
-        if file_document_key_from_family_key(
-            _safe_text(getattr(family, "family_key", ""))
-        ) in kept_document_keys
-    ]
-
-
-def format_project_file_label(display_name, file_version, host_version, note=""):
-    """A file row: name, the version it was saved in, and any refusal.
-
-    The version is always shown, not only when it differs - "which Revit was
-    this saved in" is the question this card exists to answer.
-    """
-    display_name = _safe_text(display_name)
-    file_version = _safe_text(file_version)
-    host_version = _safe_text(host_version)
-    note = _safe_text(note)
-
-    parts = []
-    if file_version:
-        parts.append(file_version)
-        if host_version and file_version != host_version:
-            parts.append("will be upgraded in memory only")
-    if note:
-        parts.append(note)
-
-    if not parts:
-        return display_name
-    return "{}  [{}]".format(display_name, ", ".join(parts))
-
-
-def filter_project_file_options(documents, search_text):
-    return [
-        document
-        for document in list(documents or [])
-        if _matches_family_search(getattr(document, "display_name", ""), "", search_text)
-    ]
-
-
 def filter_link_document_options(documents, search_text):
     return [
         document
@@ -573,13 +452,11 @@ def filter_link_document_options(documents, search_text):
 
 
 def merge_transferable_family_options(project_families, open_family_documents,
-                                      link_families=None, file_families=None):
+                                      link_families=None):
     merged = list(project_families or [])
-    # Link and file families arrive as FamilyOptions already, so unlike an
-    # opened .rfa document they need no conversion - only checked ones are
-    # ever passed in.
+    # Link families arrive as FamilyOptions already, so unlike an opened .rfa
+    # document they need no conversion - only checked ones are ever passed in.
     merged.extend(list(link_families or []))
-    merged.extend(list(file_families or []))
     for document in list(open_family_documents or []):
         if not bool(getattr(document, "is_selected", False)):
             continue

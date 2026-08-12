@@ -7,10 +7,8 @@ from pyrevit.framework import Windows
 from families_transfer_state import filter_family_options
 from families_transfer_state import filter_link_document_options
 from families_transfer_state import filter_open_family_document_options
-from families_transfer_state import filter_project_file_options
 from families_transfer_state import filter_unchecked_options
 from families_transfer_state import format_selection_count_text
-from families_transfer_state import format_project_file_label
 from families_transfer_state import format_total_selection_text
 from families_transfer_state import get_selected_document_keys
 from families_transfer_state import get_selected_family_keys
@@ -156,35 +154,28 @@ class SourceSelectionWindow(forms.WPFWindow):
         selected_document_keys=None,
         link_families=None,
         selected_link_family_keys=None,
-        file_families=None,
-        selected_file_family_keys=None,
     ):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.selected_families = list(selected_families or [])
         self.open_family_documents = list(open_family_documents or [])
         self.link_families = list(link_families or [])
-        self.file_families = list(file_families or [])
         self.selected_family_keys = set(get_selected_family_keys(self.selected_families))
         self.selected_document_keys = set(selected_document_keys or [])
         self.selected_link_family_keys = set(selected_link_family_keys or [])
-        self.selected_file_family_keys = set(selected_file_family_keys or [])
         self.result = None
         self._selected_family_controls = []
         self._open_rfa_controls = []
         self._link_family_controls = []
-        self._file_family_controls = []
 
         restore_open_family_document_selection(
             self.open_family_documents,
             self.selected_document_keys,
         )
         restore_family_selection(self.link_families, self.selected_link_family_keys)
-        restore_family_selection(self.file_families, self.selected_file_family_keys)
 
         self._populate_selected_families()
         self._populate_open_family_documents()
-        self._populate_file_families()
         self._populate_link_families()
         self._refresh_total()
         self._is_ready = True
@@ -195,7 +186,6 @@ class SourceSelectionWindow(forms.WPFWindow):
             len(get_selected_family_keys(self.selected_families))
             + len(get_selected_open_family_document_keys(self.open_family_documents))
             + len(get_selected_family_keys(self.link_families))
-            + len(get_selected_family_keys(self.file_families))
         )
 
     # -- card 1: families chosen from the active project --------------------
@@ -260,36 +250,6 @@ class SourceSelectionWindow(forms.WPFWindow):
         self._refresh_total()
         return self.selected_document_keys
 
-    # -- card 4: families chosen out of unopened project files -------------
-
-    def _populate_file_families(self):
-        visible_families = filter_family_options(
-            self.file_families,
-            _search_text(self.FileFamilySearchBox),
-        )
-        self._file_family_controls = _fill_checkbox_list(
-            self.FileFamilyListPanel,
-            visible_families,
-            _family_row_text,
-            "No families match the search."
-            if self.file_families
-            else "Nothing chosen yet. Use Load More from Project Files.",
-        )
-        self._refresh_file_family_count()
-
-    def _refresh_file_family_count(self):
-        self.file_family_count_tb.Text = format_selection_count_text(
-            len(get_selected_family_keys(self.file_families)),
-            len(self.file_families),
-        )
-
-    def _read_selected_file_family_keys(self):
-        _sync_checkbox_options(self._file_family_controls)
-        self.selected_file_family_keys = set(get_selected_family_keys(self.file_families))
-        self._refresh_file_family_count()
-        self._refresh_total()
-        return self.selected_file_family_keys
-
     # -- card 3: families chosen out of Revit links -------------------------
 
     def _populate_link_families(self):
@@ -336,13 +296,6 @@ class SourceSelectionWindow(forms.WPFWindow):
         self._read_selected_document_keys()
         self._populate_open_family_documents()
 
-    def file_family_search_changed(self, sender, args):
-        del sender, args
-        if not getattr(self, "_is_ready", False):
-            return
-        self._read_selected_file_family_keys()
-        self._populate_file_families()
-
     def link_family_search_changed(self, sender, args):
         del sender, args
         if not getattr(self, "_is_ready", False):
@@ -373,16 +326,6 @@ class SourceSelectionWindow(forms.WPFWindow):
         _set_all_checked(self._open_rfa_controls, False)
         self._read_selected_document_keys()
 
-    def file_family_select_all_click(self, sender, args):
-        del sender, args
-        _set_all_checked(self._file_family_controls, True)
-        self._read_selected_file_family_keys()
-
-    def file_family_select_none_click(self, sender, args):
-        del sender, args
-        _set_all_checked(self._file_family_controls, False)
-        self._read_selected_file_family_keys()
-
     def link_family_select_all_click(self, sender, args):
         del sender, args
         _set_all_checked(self._link_family_controls, True)
@@ -396,20 +339,13 @@ class SourceSelectionWindow(forms.WPFWindow):
     def _read_every_selection(self):
         self._read_selected_family_keys()
         self._read_selected_document_keys()
-        # Without these a tick removed in card 3 or 4 is silently ignored.
+        # Without this a tick removed in card 3 is silently ignored.
         self._read_selected_link_family_keys()
-        self._read_selected_file_family_keys()
 
     def load_link_families_click(self, sender, args):
         del sender, args
         self._read_every_selection()
         self.result = "load_links"
-        self.Close()
-
-    def load_file_families_click(self, sender, args):
-        del sender, args
-        self._read_every_selection()
-        self.result = "load_files"
         self.Close()
 
     def load_more_click(self, sender, args):
@@ -632,141 +568,6 @@ class FamilySelectionWindow(forms.WPFWindow):
             return
         self.selected_family_keys = selected
         self.result = "add"
-        self.Close()
-
-    def cancel_click(self, sender, args):
-        del sender, args
-        self.result = "cancel"
-        self.Close()
-
-
-class ProjectFileSelectionWindow(forms.WPFWindow):
-    """Page 2 of the file flow: which `.rvt` files to read families out of.
-
-    ``add_files`` is a callback rather than a direct call so this window keeps
-    no Revit imports - the file dialog and the header check live in
-    ``families_transfer_files``.
-    """
-
-    def __init__(self, xaml_file_name, file_options, host_version="", add_files=None):
-        self._is_ready = False
-        forms.WPFWindow.__init__(self, xaml_file_name)
-        self.file_options = list(file_options or [])
-        self.host_version = _safe_text(host_version)
-        self._add_files = add_files
-        self.result = None
-        self._controls = []
-
-        self._populate()
-        self._is_ready = True
-
-    def _hide_unchecked(self):
-        try:
-            return bool(self.hide_unchecked_cb.IsChecked)
-        except Exception:
-            return False
-
-    def _row_text(self, file_option):
-        return format_project_file_label(
-            getattr(file_option, "display_name", ""),
-            getattr(file_option, "file_version", ""),
-            self.host_version,
-            getattr(file_option, "note", ""),
-        )
-
-    def _populate(self):
-        searched_files = filter_project_file_options(
-            self.file_options,
-            _search_text(self.FileSearchBox),
-        )
-        visible_files = filter_unchecked_options(searched_files, self._hide_unchecked())
-        if searched_files and not visible_files and self._hide_unchecked():
-            empty_message = "Every match is un-checked, and Hide Un-checked is on."
-        elif self.file_options:
-            empty_message = "No files match the search."
-        else:
-            empty_message = "No files added yet. Use Add Files..."
-
-        self._controls = _fill_checkbox_list(
-            self.FileListPanel,
-            visible_files,
-            self._row_text,
-            empty_message,
-            # A file that cannot be read is shown greyed with its reason
-            # rather than dropped, so a refusal is visible rather than silent.
-            enabled_for=lambda option: getattr(option, "is_readable", None) is not False,
-        )
-        self._refresh_count(len(visible_files))
-
-    def _refresh_count(self, visible_count):
-        text = format_selection_count_text(
-            len(get_selected_document_keys(self.file_options)),
-            len(self.file_options),
-        )
-        if visible_count != len(self.file_options):
-            text = "{} {} of {} shown.".format(
-                text, visible_count, len(self.file_options))
-        self.file_count_tb.Text = text
-
-    def _read_selected_file_keys(self):
-        _sync_checkbox_options(self._controls)
-        return set(get_selected_document_keys(self.file_options))
-
-    def add_files_click(self, sender, args):
-        del sender, args
-        if self._add_files is None:
-            return
-        self._read_selected_file_keys()
-        try:
-            added = self._add_files(self.file_options)
-        except Exception as ex:
-            forms.alert("Could not read those files:\n{}".format(ex), title=TITLE)
-            return
-        if added is not None:
-            self.file_options = list(added)
-        self._populate()
-
-    def file_search_changed(self, sender, args):
-        del sender, args
-        if not getattr(self, "_is_ready", False):
-            return
-        self._read_selected_file_keys()
-        self._populate()
-
-    def hide_unchecked_click(self, sender, args):
-        del sender, args
-        if not getattr(self, "_is_ready", False):
-            return
-        self._read_selected_file_keys()
-        self._populate()
-
-    def file_select_all_click(self, sender, args):
-        del sender, args
-        _set_all_checked(self._controls, True, only_enabled=True)
-        self._read_selected_file_keys()
-        self._refresh_count(len(self._controls))
-
-    def file_select_none_click(self, sender, args):
-        del sender, args
-        _set_all_checked(self._controls, False)
-        self._read_selected_file_keys()
-        if needs_repopulate_after_bulk_toggle(False, self._hide_unchecked()):
-            self._populate()
-        else:
-            self._refresh_count(len(self._controls))
-
-    def back_click(self, sender, args):
-        del sender, args
-        self._read_selected_file_keys()
-        self.result = "back"
-        self.Close()
-
-    def next_click(self, sender, args):
-        del sender, args
-        if not self._read_selected_file_keys():
-            forms.alert("Check at least one project file first.", title=TITLE)
-            return
-        self.result = "next"
         self.Close()
 
     def cancel_click(self, sender, args):
