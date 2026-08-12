@@ -8,10 +8,8 @@ silently wrong rather than loudly broken if a refactor undid them.
 """
 
 import ast
-import io
 import pathlib
 import re
-import tokenize
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -23,7 +21,6 @@ SCRIPT_MODULE = COMMAND_DIR / "script.py"
 UI_MODULE = COMMAND_DIR / "families_transfer_ui.py"
 STATE_MODULE = COMMAND_DIR / "families_transfer_state.py"
 REVIT_MODULE = COMMAND_DIR / "families_transfer_revit.py"
-FILES_MODULE = COMMAND_DIR / "families_transfer_files.py"
 COPY_PASTE_MODULE = REPO_ROOT / "lib" / "easybim" / "copy_paste.py"
 LINKED_SHEETS_REVIT = (REPO_ROOT / "EasyBIM.tab" / "Sheet.panel"
                        / "Linked Sheets Copy.pushbutton"
@@ -37,7 +34,6 @@ WINDOW_CLASSES = {
     "SourceSelectionWindow.xaml": "SourceSelectionWindow",
     "FamilySelectionWindow.xaml": "FamilySelectionWindow",
     "LinkSelectionWindow.xaml": "LinkSelectionWindow",
-    "ProjectFileSelectionWindow.xaml": "ProjectFileSelectionWindow",
     "TargetSelectionWindow.xaml": "TargetSelectionWindow",
     "ActionWindow.xaml": "ActionWindow",
 }
@@ -47,7 +43,6 @@ EXPECTED_MODULES = (
     "families_transfer_state.py",
     "families_transfer_revit.py",
     "families_transfer_ui.py",
-    "families_transfer_files.py",
 )
 
 CONTROL_ATTRIBUTE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -119,33 +114,6 @@ def _class_control_attributes(path, class_name):
                     and child.attr not in WINDOW_MEMBERS):
                 attributes.add(child.attr)
     return attributes
-
-
-def _code_without_prose(path):
-    """Source with comments and string literals blanked out.
-
-    These contract tests assert on what the code *does*. The modules explain
-    the same hazards in their own docstrings - "Document.Close() saves", "not
-    CloseAllWorksets" - which would otherwise satisfy the very assertions
-    written to catch them. Offsets are preserved so line numbers still line up.
-    """
-    source = path.read_text(encoding="utf-8")
-    lines = source.splitlines(True)
-    try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    except Exception:
-        return source
-
-    for token in tokens:
-        if token.type not in (tokenize.COMMENT, tokenize.STRING):
-            continue
-        (start_row, start_col), (end_row, end_col) = token.start, token.end
-        for row in range(start_row, end_row + 1):
-            line = lines[row - 1]
-            begin = start_col if row == start_row else 0
-            finish = end_col if row == end_row else len(line)
-            lines[row - 1] = line[:begin] + (" " * (finish - begin)) + line[finish:]
-    return "".join(lines)
 
 
 def _function_source(path, function_name):
@@ -284,50 +252,6 @@ class FamiliesTransferContractTests(unittest.TestCase):
             self.assertNotIn("DB.CopyPasteOptions()", source, path.name)
             self.assertIn("from easybim.copy_paste import copy_paste_options",
                           source, path.name)
-
-    def test_a_document_opened_from_disk_is_never_closed_with_a_save(self):
-        # Document.Close() with no argument SAVES: "Closes the document, save
-        # the changes if there are."  Opening an older file upgrades it, and
-        # an upgrade counts as changes - so a bare Close() would silently
-        # overwrite the user's 2019 file with a current-version one.
-        source = _code_without_prose(FILES_MODULE)
-        self.assertIn("Close(False)", source)
-        self.assertIsNone(re.search(r"\.Close\(\s*\)", source))
-        self.assertNotIn("SaveAs", source)
-        self.assertNotIn(".Save(", source)
-
-    def test_a_newer_file_is_refused_from_its_header(self):
-        # No API can read a file saved in a later Revit, so it has to be
-        # caught before the batch starts rather than failing part way in.
-        body = _function_source(FILES_MODULE, "_read_header")
-        self.assertIn("BasicFileInfo", body)
-        self.assertIn("IsSavedInLaterVersion", body)
-        # SavedInVersion was removed in Revit 2020; Format replaced it.
-        self.assertIn('getattr(info, "Format"', body)
-
-    def test_the_open_is_cheap_and_never_hides_families(self):
-        body = _function_source(FILES_MODULE, "_open_options")
-        self.assertIn("DoNotLoadLinks = True", body)
-        self.assertIn("DetachAndDiscardWorksets", body)
-        # CloseAllWorksets looks like free speed, but a closed workset's
-        # elements are not reliably enumerable - families would go missing
-        # from the scan and nobody would know.
-        self.assertNotIn("CloseAllWorksets", _code_without_prose(FILES_MODULE))
-
-    def test_upgrade_warnings_cannot_put_a_modal_dialog_in_the_batch(self):
-        # An open is not a transaction, so IFailuresPreprocessor never sees
-        # these - Application.FailuresProcessing is the one that does.
-        source = _code_without_prose(FILES_MODULE)
-        self.assertIn("FailuresProcessing", source)
-        self.assertIn("DeleteWarning", source)
-        self.assertIn("FailureSeverity.Warning", source)
-
-    def test_the_run_always_closes_what_it_opened(self):
-        # An in-memory document that outlives the tool is a leak the user
-        # can neither see nor reach.
-        body = _function_source(SCRIPT_MODULE, "_run")
-        self.assertIn("finally:", body)
-        self.assertIn("close_project_documents(project_file_options)", body)
 
     def test_the_link_source_never_stages_a_file_on_disk(self):
         source = REVIT_MODULE.read_text(encoding="utf-8")

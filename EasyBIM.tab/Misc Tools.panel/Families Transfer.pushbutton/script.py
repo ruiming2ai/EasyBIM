@@ -21,12 +21,6 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
-from families_transfer_files import close_project_documents
-from families_transfer_files import file_notes
-from families_transfer_files import host_version_text
-from families_transfer_files import inspect_project_files
-from families_transfer_files import pick_project_files
-from families_transfer_files import scan_project_files
 from families_transfer_revit import close_open_family_documents
 from families_transfer_revit import export_families
 from families_transfer_revit import get_link_document_options
@@ -45,14 +39,12 @@ from families_transfer_state import get_selected_family_keys
 from families_transfer_state import get_selected_source_family_options
 from families_transfer_state import merge_source_family_options
 from families_transfer_state import merge_transferable_family_options
-from families_transfer_state import prune_file_families_to_kept_files
 from families_transfer_state import prune_link_families_to_checked_links
 from families_transfer_state import restore_family_selection
 from families_transfer_state import split_selected_family_keys
 from families_transfer_ui import ActionWindow
 from families_transfer_ui import FamilySelectionWindow
 from families_transfer_ui import LinkSelectionWindow
-from families_transfer_ui import ProjectFileSelectionWindow
 from families_transfer_ui import SourceSelectionWindow
 from families_transfer_ui import TargetSelectionWindow
 
@@ -67,8 +59,6 @@ STEP_FAMILIES = "families"
 # other, and neither STEP_ constant contains the other. The branch tests in
 # test_families_transfer_state.py match ast.dump output by substring, so a
 # name that contains another one silently rebinds somebody else's assertions.
-STEP_FILE_DOCS = "file_docs"
-STEP_FILE_FAMILIES = "file_families"
 STEP_LINK_DOCS = "link_docs"
 STEP_LINK_FAMILIES = "link_families"
 STEP_TARGETS = "targets"
@@ -121,16 +111,13 @@ def _with_progress(title, work):
         return work(_tick)
 
 
-def _note_source_refusals(summary, link_document_options, project_file_options):
-    """Carry each source's one-sentence refusal into the report.
+def _note_link_refusals(summary, link_document_options):
+    """Carry each link's one-sentence refusal into the report.
 
-    Without this a link or a file that would not hand over any family
-    reports the same line once per family, which buries the reason under its
-    own repetition.
+    Without this a link that would not hand over any family reports the same
+    line once per family, which buries the reason under its own repetition.
     """
     for note in link_notes(link_document_options):
-        summary.add_note(note)
-    for note in file_notes(project_file_options):
         summary.add_note(note)
     return summary
 
@@ -180,9 +167,6 @@ def _run():
     selected_link_document_keys = set()
     selected_link_family_keys = set()
     selected_link_families = []
-    project_file_options = []
-    selected_file_family_keys = set()
-    selected_file_families = []
 
     def _project_families():
         if project_families_cache[0] is None:
@@ -216,426 +200,313 @@ def _run():
             checked,
         )
 
-    def _read_file_families(window):
-        """Card 4's own ticks: keep what is still ticked, drop the rest."""
-        keys = set(window.selected_file_family_keys)
-        return keys, get_selected_source_family_options(selected_file_families, keys)
-
     def _read_link_families(window):
         """Card 3's own ticks: keep what is still ticked, drop the rest."""
         keys = set(window.selected_link_family_keys)
         return keys, get_selected_source_family_options(selected_link_families, keys)
 
-    # Every path out of the loop closes what this run opened: an
-    # in-memory document that outlives the tool is a leak the user cannot
-    # see and cannot reach, and several hundred exhaust Revit.
-    try:
-        while True:
-            if step == STEP_SOURCE:
+    while True:
+        if step == STEP_SOURCE:
+            selected_source_families = get_selected_source_family_options(
+                selected_source_families,
+                selected_project_family_keys,
+            )
+            open_family_documents = get_open_family_documents(
+                uiapp,
+                doc,
+                selected_open_family_document_keys,
+            )
+            source_window = SourceSelectionWindow(
+                "SourceSelectionWindow.xaml",
+                selected_source_families,
+                open_family_documents,
+                selected_open_family_document_keys,
+                link_families=selected_link_families,
+                selected_link_family_keys=selected_link_family_keys,
+            )
+            source_window.ShowDialog()
+
+            if source_window.result == "load_more":
+                selected_project_family_keys = set(source_window.selected_family_keys)
+                selected_family_keys = set(selected_project_family_keys)
+                selected_open_family_document_keys = set(source_window.selected_document_keys)
+                selected_link_family_keys, selected_link_families = _read_link_families(source_window)
+                step = STEP_FAMILIES
+                continue
+
+            if source_window.result == "load_links":
+                selected_project_family_keys = set(source_window.selected_family_keys)
+                selected_open_family_document_keys = set(source_window.selected_document_keys)
+                selected_link_family_keys, selected_link_families = _read_link_families(source_window)
+                step = STEP_LINK_DOCS
+                continue
+
+            if source_window.result == "next":
+                selected_project_family_keys = set(source_window.selected_family_keys)
                 selected_source_families = get_selected_source_family_options(
                     selected_source_families,
                     selected_project_family_keys,
                 )
+                selected_open_family_document_keys = set(source_window.selected_document_keys)
+                selected_link_family_keys, selected_link_families = _read_link_families(source_window)
                 open_family_documents = get_open_family_documents(
                     uiapp,
                     doc,
                     selected_open_family_document_keys,
                 )
-                source_window = SourceSelectionWindow(
-                    "SourceSelectionWindow.xaml",
+                families = merge_transferable_family_options(
                     selected_source_families,
                     open_family_documents,
-                    selected_open_family_document_keys,
-                    link_families=selected_link_families,
-                    selected_link_family_keys=selected_link_family_keys,
-                    file_families=selected_file_families,
-                    selected_file_family_keys=selected_file_family_keys,
+                    selected_link_families,
                 )
-                source_window.ShowDialog()
-
-                if source_window.result == "load_more":
-                    selected_project_family_keys = set(source_window.selected_family_keys)
-                    selected_family_keys = set(selected_project_family_keys)
-                    selected_open_family_document_keys = set(source_window.selected_document_keys)
-                    selected_link_family_keys, selected_link_families = _read_link_families(source_window)
-                    selected_file_family_keys, selected_file_families = _read_file_families(source_window)
-                    step = STEP_FAMILIES
-                    continue
-
-                if source_window.result == "load_files":
-                    selected_project_family_keys = set(source_window.selected_family_keys)
-                    selected_open_family_document_keys = set(source_window.selected_document_keys)
-                    selected_link_family_keys, selected_link_families = _read_link_families(source_window)
-                    selected_file_family_keys, selected_file_families = _read_file_families(source_window)
-                    step = STEP_FILE_DOCS
-                    continue
-
-                if source_window.result == "load_links":
-                    selected_project_family_keys = set(source_window.selected_family_keys)
-                    selected_open_family_document_keys = set(source_window.selected_document_keys)
-                    selected_link_family_keys, selected_link_families = _read_link_families(source_window)
-                    selected_file_family_keys, selected_file_families = _read_file_families(source_window)
-                    step = STEP_LINK_DOCS
-                    continue
-
-                if source_window.result == "next":
-                    selected_project_family_keys = set(source_window.selected_family_keys)
-                    selected_source_families = get_selected_source_family_options(
-                        selected_source_families,
-                        selected_project_family_keys,
-                    )
-                    selected_open_family_document_keys = set(source_window.selected_document_keys)
-                    selected_link_family_keys, selected_link_families = _read_link_families(source_window)
-                    selected_file_family_keys, selected_file_families = _read_file_families(source_window)
-                    open_family_documents = get_open_family_documents(
-                        uiapp,
-                        doc,
-                        selected_open_family_document_keys,
-                    )
-                    families = merge_transferable_family_options(
-                        selected_source_families,
-                        open_family_documents,
-                        selected_link_families,
-                        selected_file_families,
-                    )
-                    selected_family_keys = set(get_selected_family_keys(families))
-                    if not selected_family_keys:
-                        forms.alert(
-                            "Select at least one family, opened .rfa file or link family before continuing.",
-                            title=__title__,
-                        )
-                        continue
-                    target_back_step = STEP_SOURCE
-                    step = STEP_TARGETS
-                    continue
-                return
-
-            if step == STEP_FILE_DOCS:
-                def _add_project_files(current_options):
-                    paths = pick_project_files()
-                    if not paths:
-                        return current_options
-                    return inspect_project_files(paths, current_options)
-
-                if not project_file_options:
-                    project_file_options = _add_project_files(project_file_options)
-                    if not project_file_options:
-                        step = STEP_SOURCE
-                        continue
-
-                file_docs_window = ProjectFileSelectionWindow(
-                    "ProjectFileSelectionWindow.xaml",
-                    project_file_options,
-                    host_version_text(getattr(uiapp, "Application", None)),
-                    _add_project_files,
-                )
-                file_docs_window.ShowDialog()
-                project_file_options = list(file_docs_window.file_options)
-
-                if file_docs_window.result in ("next", "back"):
-                    # Unticking a file drops the families chosen from it: its
-                    # document is closed on the way out, so any row left behind
-                    # would be holding a dead handle.
-                    kept_keys = set(
-                        option.document_key for option in project_file_options
-                        if bool(getattr(option, "is_selected", False))
-                    )
-                    selected_file_families = prune_file_families_to_kept_files(
-                        selected_file_families, kept_keys)
-                    selected_file_family_keys = set(
-                        get_selected_family_keys(selected_file_families))
-                    step = STEP_FILE_FAMILIES if file_docs_window.result == "next" else STEP_SOURCE
-                    continue
-                return
-
-            if step == STEP_FILE_FAMILIES:
-                scanned, scan_notes, scan_cancelled = _with_progress(
-                    "Reading project files",
-                    lambda tick: scan_project_files(
-                        getattr(uiapp, "Application", None),
-                        project_file_options,
-                        selected_file_family_keys,
-                        progress=tick),
-                )
-
-                if scan_cancelled:
-                    step = STEP_FILE_DOCS
-                    continue
-
-                if not scanned:
+                selected_family_keys = set(get_selected_family_keys(families))
+                if not selected_family_keys:
                     forms.alert(
-                        "\n\n".join(
-                            ["No families could be read from the checked project files."]
-                            + scan_notes
-                        ),
+                        "Select at least one family, opened .rfa file or link family before continuing.",
                         title=__title__,
                     )
-                    step = STEP_FILE_DOCS
                     continue
+                target_back_step = STEP_SOURCE
+                step = STEP_TARGETS
+                continue
+            return
 
-                files_window = FamilySelectionWindow(
-                    "FamilySelectionWindow.xaml",
-                    scanned,
-                    selected_file_family_keys,
-                    header_text="Load More from Project Files",
-                    allow_model_pick=False,
-                    require_selection=False,
+        if step == STEP_LINK_DOCS:
+            if not _link_documents():
+                forms.alert("No Revit links were found in this project.", title=__title__)
+                step = STEP_SOURCE
+                continue
+
+            link_docs_window = LinkSelectionWindow(
+                "LinkSelectionWindow.xaml",
+                _link_documents(),
+                selected_link_document_keys,
+            )
+            link_docs_window.ShowDialog()
+
+            if link_docs_window.result in ("next", "back"):
+                # Both directions prune: unticking a link here has to drop the
+                # families already chosen from it, and page 1 no longer has the
+                # link checkboxes that used to do that.
+                selected_link_document_keys, selected_link_families = _read_link_selection(
+                    link_docs_window
                 )
-                files_window.ShowDialog()
+                selected_link_family_keys = set(get_selected_family_keys(selected_link_families))
+                step = STEP_LINK_FAMILIES if link_docs_window.result == "next" else STEP_SOURCE
+                continue
+            return
 
-                if files_window.result == "add":
-                    selected_file_family_keys = set(files_window.selected_family_keys)
-                    selected_file_families = get_selected_source_family_options(
-                        scanned,
-                        selected_file_family_keys,
-                    )
-                    step = STEP_SOURCE
-                    continue
+        if step == STEP_LINK_FAMILIES:
+            prepare_link_documents(uiapp, doc, _link_documents())
+            link_families = get_link_family_options(
+                _link_documents(),
+                selected_link_family_keys,
+                link_family_cache,
+            )
+            refusals = link_notes(_link_documents())
 
-                if files_window.result == "back":
-                    step = STEP_FILE_DOCS
-                    continue
-                return
-
-            if step == STEP_LINK_DOCS:
-                if not _link_documents():
-                    forms.alert("No Revit links were found in this project.", title=__title__)
-                    step = STEP_SOURCE
-                    continue
-
-                link_docs_window = LinkSelectionWindow(
-                    "LinkSelectionWindow.xaml",
-                    _link_documents(),
-                    selected_link_document_keys,
+            if not link_families:
+                forms.alert(
+                    "\n\n".join(
+                        ["No families could be read from the checked Revit links."] + refusals
+                    ),
+                    title=__title__,
                 )
-                link_docs_window.ShowDialog()
+                step = STEP_LINK_DOCS
+                continue
 
-                if link_docs_window.result in ("next", "back"):
-                    # Both directions prune: unticking a link here has to drop the
-                    # families already chosen from it, and page 1 no longer has the
-                    # link checkboxes that used to do that.
-                    selected_link_document_keys, selected_link_families = _read_link_selection(
-                        link_docs_window
-                    )
-                    selected_link_family_keys = set(get_selected_family_keys(selected_link_families))
-                    step = STEP_LINK_FAMILIES if link_docs_window.result == "next" else STEP_SOURCE
-                    continue
-                return
+            links_window = FamilySelectionWindow(
+                "FamilySelectionWindow.xaml",
+                link_families,
+                selected_link_family_keys,
+                header_text="Load More from Revit Links",
+                allow_model_pick=False,
+                require_selection=False,
+            )
+            links_window.ShowDialog()
 
-            if step == STEP_LINK_FAMILIES:
-                prepare_link_documents(uiapp, doc, _link_documents())
-                link_families = get_link_family_options(
-                    _link_documents(),
-                    selected_link_family_keys,
-                    link_family_cache,
-                )
-                refusals = link_notes(_link_documents())
-
-                if not link_families:
-                    forms.alert(
-                        "\n\n".join(
-                            ["No families could be read from the checked Revit links."] + refusals
-                        ),
-                        title=__title__,
-                    )
-                    step = STEP_LINK_DOCS
-                    continue
-
-                links_window = FamilySelectionWindow(
-                    "FamilySelectionWindow.xaml",
+            if links_window.result == "add":
+                selected_link_family_keys = set(links_window.selected_family_keys)
+                selected_link_families = get_selected_source_family_options(
                     link_families,
                     selected_link_family_keys,
-                    header_text="Load More from Revit Links",
-                    allow_model_pick=False,
-                    require_selection=False,
                 )
-                links_window.ShowDialog()
+                step = STEP_SOURCE
+                continue
 
-                if links_window.result == "add":
-                    selected_link_family_keys = set(links_window.selected_family_keys)
-                    selected_link_families = get_selected_source_family_options(
-                        link_families,
-                        selected_link_family_keys,
-                    )
-                    step = STEP_SOURCE
-                    continue
+            if links_window.result == "back":
+                step = STEP_LINK_DOCS
+                continue
+            return
 
-                if links_window.result == "back":
-                    step = STEP_LINK_DOCS
-                    continue
+        if step == STEP_FAMILIES:
+            project_families = _project_families()
+            restore_family_selection(project_families, selected_project_family_keys)
+            open_family_documents = get_open_family_documents(
+                uiapp,
+                doc,
+                selected_open_family_document_keys,
+            )
+            families = merge_transferable_family_options(project_families, open_family_documents)
+            if not families:
+                forms.alert(
+                    "No transferable active-project families or selected opened .rfa files were found.",
+                    title=__title__,
+                )
                 return
 
-            if step == STEP_FAMILIES:
-                project_families = _project_families()
-                restore_family_selection(project_families, selected_project_family_keys)
-                open_family_documents = get_open_family_documents(
-                    uiapp,
-                    doc,
-                    selected_open_family_document_keys,
+            selected_family_keys = set(get_selected_family_keys(families))
+
+            family_window = FamilySelectionWindow(
+                "FamilySelectionWindow.xaml",
+                families,
+                selected_family_keys,
+            )
+            family_window.ShowDialog()
+
+            if family_window.result == "pick":
+                # The page's own ticks have to survive the pick: this step is
+                # now re-entered rather than left, so dropping them would wipe
+                # whatever the user had checked before reaching for the model.
+                pick_project_keys, pick_open_keys, _ = split_selected_family_keys(
+                    set(family_window.selected_family_keys)
                 )
-                families = merge_transferable_family_options(project_families, open_family_documents)
-                if not families:
-                    forms.alert(
-                        "No transferable active-project families or selected opened .rfa files were found.",
-                        title=__title__,
-                    )
+                selected_project_family_keys = pick_project_keys
+                selected_open_family_document_keys = pick_open_keys
+
+                try:
+                    picked_families = pick_more_family_options(uidoc)
+                except Exception as ex:
+                    if _is_cancelled_pick(ex):
+                        continue
+                    forms.alert("Select failed: {}".format(ex), title=__title__)
                     return
 
-                selected_family_keys = set(get_selected_family_keys(families))
-
-                family_window = FamilySelectionWindow(
-                    "FamilySelectionWindow.xaml",
-                    families,
-                    selected_family_keys,
-                )
-                family_window.ShowDialog()
-
-                if family_window.result == "pick":
-                    # The page's own ticks have to survive the pick: this step is
-                    # now re-entered rather than left, so dropping them would wipe
-                    # whatever the user had checked before reaching for the model.
-                    pick_project_keys, pick_open_keys, _, _ = split_selected_family_keys(
-                        set(family_window.selected_family_keys)
-                    )
-                    selected_project_family_keys = pick_project_keys
-                    selected_open_family_document_keys = pick_open_keys
-
-                    try:
-                        picked_families = pick_more_family_options(uidoc)
-                    except Exception as ex:
-                        if _is_cancelled_pick(ex):
-                            continue
-                        forms.alert("Select failed: {}".format(ex), title=__title__)
-                        return
-
-                    selected_source_families = merge_source_family_options(
-                        get_selected_source_family_options(
-                            selected_source_families,
-                            selected_project_family_keys,
-                        ),
-                        picked_families,
-                    )
-                    selected_project_family_keys.update(
-                        get_selected_family_keys(picked_families)
-                    )
-                    selected_family_keys = set(selected_project_family_keys)
-                    continue
-
-                if family_window.result == "add":
-                    add_project_family_keys, add_open_family_document_keys, _, _ = split_selected_family_keys(
-                        set(family_window.selected_family_keys)
-                    )
-                    selected_existing_source_families = get_selected_source_family_options(
+                selected_source_families = merge_source_family_options(
+                    get_selected_source_family_options(
                         selected_source_families,
                         selected_project_family_keys,
-                    )
-                    added_source_families = get_selected_source_family_options(
-                        project_families,
-                        add_project_family_keys,
-                    )
-                    selected_source_families = merge_source_family_options(
-                        selected_existing_source_families,
-                        added_source_families,
-                    )
-                    selected_project_family_keys = set(get_selected_family_keys(selected_source_families))
-                    selected_open_family_document_keys.update(add_open_family_document_keys)
-                    selected_family_keys = set(selected_project_family_keys)
-                    step = STEP_SOURCE
-                    continue
+                    ),
+                    picked_families,
+                )
+                selected_project_family_keys.update(
+                    get_selected_family_keys(picked_families)
+                )
+                selected_family_keys = set(selected_project_family_keys)
+                continue
 
-                if family_window.result == "back":
-                    selected_source_families = get_selected_source_family_options(
-                        selected_source_families,
-                        selected_project_family_keys,
-                    )
-                    selected_family_keys = set(selected_project_family_keys)
-                    step = STEP_SOURCE
-                    continue
+            if family_window.result == "add":
+                add_project_family_keys, add_open_family_document_keys, _ = split_selected_family_keys(
+                    set(family_window.selected_family_keys)
+                )
+                selected_existing_source_families = get_selected_source_family_options(
+                    selected_source_families,
+                    selected_project_family_keys,
+                )
+                added_source_families = get_selected_source_family_options(
+                    project_families,
+                    add_project_family_keys,
+                )
+                selected_source_families = merge_source_family_options(
+                    selected_existing_source_families,
+                    added_source_families,
+                )
+                selected_project_family_keys = set(get_selected_family_keys(selected_source_families))
+                selected_open_family_document_keys.update(add_open_family_document_keys)
+                selected_family_keys = set(selected_project_family_keys)
+                step = STEP_SOURCE
+                continue
+
+            if family_window.result == "back":
+                selected_source_families = get_selected_source_family_options(
+                    selected_source_families,
+                    selected_project_family_keys,
+                )
+                selected_family_keys = set(selected_project_family_keys)
+                step = STEP_SOURCE
+                continue
+            return
+
+        if step == STEP_TARGETS:
+            targets = get_open_target_documents(uiapp, doc, selected_document_keys)
+            target_window = TargetSelectionWindow(
+                "TargetSelectionWindow.xaml",
+                targets,
+                selected_document_keys,
+            )
+            target_window.ShowDialog()
+
+            if target_window.result == "next":
+                selected_document_keys = set(target_window.selected_document_keys)
+                step = STEP_ACTION
+                continue
+
+            if target_window.result == "back":
+                selected_document_keys = set(target_window.selected_document_keys)
+                step = target_back_step
+                continue
+            return
+
+        if step == STEP_ACTION:
+            selected_families = _selected_options(families, selected_family_keys, "family_key")
+            selected_targets = _selected_options(targets, selected_document_keys, "document_key")
+            action_window = ActionWindow(
+                "ActionWindow.xaml",
+                len(selected_families),
+                len(selected_targets),
+            )
+            action_window.ShowDialog()
+
+            if action_window.result == "export":
+                folder_path = pick_export_folder()
+                if not folder_path:
+                    return
+                summary = _with_progress(
+                    "Exporting families",
+                    lambda tick: export_families(
+                        doc, selected_families, folder_path, progress=tick),
+                )
+                _show_summary(_note_link_refusals(summary, _probed_links()))
                 return
 
-            if step == STEP_TARGETS:
-                targets = get_open_target_documents(uiapp, doc, selected_document_keys)
-                target_window = TargetSelectionWindow(
-                    "TargetSelectionWindow.xaml",
-                    targets,
-                    selected_document_keys,
+            if action_window.result == "transfer":
+                if not selected_targets:
+                    forms.alert("Select at least one open target file before transferring.", title=__title__)
+                    step = STEP_TARGETS
+                    continue
+                summary = _with_progress(
+                    "Transferring families",
+                    lambda tick: transfer_families(
+                        doc, selected_families, selected_targets, progress=tick),
                 )
-                target_window.ShowDialog()
-
-                if target_window.result == "next":
-                    selected_document_keys = set(target_window.selected_document_keys)
-                    step = STEP_ACTION
-                    continue
-
-                if target_window.result == "back":
-                    selected_document_keys = set(target_window.selected_document_keys)
-                    step = target_back_step
-                    continue
+                _show_summary(_note_link_refusals(summary, _probed_links()))
                 return
 
-            if step == STEP_ACTION:
-                selected_families = _selected_options(families, selected_family_keys, "family_key")
-                selected_targets = _selected_options(targets, selected_document_keys, "document_key")
-                action_window = ActionWindow(
-                    "ActionWindow.xaml",
-                    len(selected_families),
-                    len(selected_targets),
-                )
-                action_window.ShowDialog()
-
-                if action_window.result == "export":
-                    folder_path = pick_export_folder()
-                    if not folder_path:
-                        return
-                    summary = _with_progress(
-                        "Exporting families",
-                        lambda tick: export_families(
-                            doc, selected_families, folder_path, progress=tick),
-                    )
-                    _show_summary(_note_source_refusals(summary, _probed_links(), project_file_options))
-                    return
-
-                if action_window.result == "transfer":
-                    if not selected_targets:
-                        forms.alert("Select at least one open target file before transferring.", title=__title__)
-                        step = STEP_TARGETS
-                        continue
-                    summary = _with_progress(
-                        "Transferring families",
-                        lambda tick: transfer_families(
-                            doc, selected_families, selected_targets, progress=tick),
-                    )
-                    _show_summary(_note_source_refusals(summary, _probed_links(), project_file_options))
-                    return
-
-                if action_window.result == "transfer_close_all_rfa":
-                    if not selected_targets:
-                        forms.alert("Select at least one open target file before transferring.", title=__title__)
-                        step = STEP_TARGETS
-                        continue
-
-                    summary = _with_progress(
-                        "Transferring families",
-                        lambda tick: transfer_families(
-                            doc, selected_families, selected_targets, progress=tick),
-                    )
-                    close_summary = close_open_family_documents(get_open_family_documents(uiapp, doc))
-                    _show_summary(
-                        _note_source_refusals(
-                            _merge_close_summary(summary, close_summary),
-                            _probed_links(),
-                            project_file_options,
-                        )
-                    )
-                    return
-
-                if action_window.result == "back":
+            if action_window.result == "transfer_close_all_rfa":
+                if not selected_targets:
+                    forms.alert("Select at least one open target file before transferring.", title=__title__)
                     step = STEP_TARGETS
                     continue
 
+                summary = _with_progress(
+                    "Transferring families",
+                    lambda tick: transfer_families(
+                        doc, selected_families, selected_targets, progress=tick),
+                )
+                close_summary = close_open_family_documents(get_open_family_documents(uiapp, doc))
+                _show_summary(
+                    _note_link_refusals(
+                        _merge_close_summary(summary, close_summary),
+                        _probed_links(),
+                    )
+                )
                 return
-    finally:
-        close_project_documents(project_file_options)
+
+            if action_window.result == "back":
+                step = STEP_TARGETS
+                continue
+
+            return
 
 
 try:
