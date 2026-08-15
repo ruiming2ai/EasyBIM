@@ -8,8 +8,10 @@ silently wrong rather than loudly broken if a refactor undid them.
 """
 
 import ast
+import io
 import pathlib
 import re
+import tokenize
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -114,6 +116,34 @@ def _class_control_attributes(path, class_name):
                     and child.attr not in WINDOW_MEMBERS):
                 attributes.add(child.attr)
     return attributes
+
+
+def _code_without_prose(path):
+    """Source with comments and string literals blanked out.
+
+    These contract tests assert on what the code *does*. The modules explain
+    the same API facts in their own docstrings - naming
+    ``RevitUIFamilyLoadOptions`` to say it is *not* usable, for instance -
+    which would otherwise satisfy the very assertions written to catch its
+    use. Offsets are preserved so line numbers still line up.
+    """
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines(True)
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except Exception:
+        return source
+
+    for token in tokens:
+        if token.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        (start_row, start_col), (end_row, end_col) = token.start, token.end
+        for row in range(start_row, end_row + 1):
+            line = lines[row - 1]
+            begin = start_col if row == start_row else 0
+            finish = end_col if row == end_row else len(line)
+            lines[row - 1] = line[:begin] + (" " * (finish - begin)) + line[finish:]
+    return "".join(lines)
 
 
 def _function_source(path, function_name):
@@ -235,10 +265,15 @@ class FamiliesTransferContractTests(unittest.TestCase):
         self.assertIn("ProgressBar", SCRIPT_MODULE.read_text(encoding="utf-8"))
 
     def test_a_name_clash_always_resolves_in_favour_of_the_destination(self):
+        # DuplicateTypeAction has exactly two members - UseDestinationTypes
+        # and Abort - verified against the assembly metadata for 2021-2026.
+        # There is no overwrite on the copy path, so the only thing worth
+        # asserting is that the handler never aborts: returning Abort would
+        # cancel the whole paste mid-batch.
         source = COPY_PASTE_MODULE.read_text(encoding="utf-8")
         self.assertIn("IDuplicateTypeNamesHandler", source)
         self.assertIn("DuplicateTypeAction.UseDestinationTypes", source)
-        self.assertNotIn("DuplicateTypeAction.UseOtherTypes", source)
+        self.assertNotIn("DuplicateTypeAction.Abort", source)
 
     def test_every_cross_document_copy_shares_one_options_factory(self):
         # AGENTS.md records this as repo-wide: a new copy call site must not
@@ -252,6 +287,29 @@ class FamiliesTransferContractTests(unittest.TestCase):
             self.assertNotIn("DB.CopyPasteOptions()", source, path.name)
             self.assertIn("from easybim.copy_paste import copy_paste_options",
                           source, path.name)
+
+    def test_revit_is_asked_before_a_family_is_overwritten(self):
+        # RevitUIFamilyLoadOptions, which the LoadFamily docs name, is not an
+        # instantiable type in any shipped version - the static accessor is
+        # the only way to Revit's own prompt.
+        source = _code_without_prose(REVIT_MODULE)
+        self.assertIn("GetRevitUIFamilyLoadOptions", source)
+        # Not the bare constructor - GetRevitUIFamilyLoadOptions() ends with
+        # that same substring, so the boundary matters.
+        self.assertIsNone(
+            re.search(r"(?<![A-Za-z0-9_])RevitUIFamilyLoadOptions\(", source))
+        # and there is still a silent answer for UI-less mode
+        self.assertIn("FamilyTransferLoadOptions", source)
+
+    def test_a_declined_overwrite_is_not_reported_as_a_failure(self):
+        body = _function_source(REVIT_MODULE, "_load_family_document_into_targets")
+        self.assertIn("_is_declined_overwrite", body)
+        self.assertIn("summary.skipped.append", body)
+
+    def test_export_asks_before_it_replaces_files_on_disk(self):
+        source = _code_without_prose(SCRIPT_MODULE)
+        self.assertIn("_pick_export_folder_confirming_overwrites", source)
+        self.assertIn("build_export_overwrite_text", source)
 
     def test_the_link_source_never_stages_a_file_on_disk(self):
         source = REVIT_MODULE.read_text(encoding="utf-8")

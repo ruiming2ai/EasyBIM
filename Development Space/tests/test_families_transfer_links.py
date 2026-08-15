@@ -90,6 +90,32 @@ class FakeLinkInstance(object):
         return self._link_doc
 
 
+class FakeInvalidOperationException(Exception):
+    """Stands in for Autodesk.Revit.Exceptions.InvalidOperationException."""
+
+
+class FakeNativeLoadOptions(object):
+    """What UIDocument.GetRevitUIFamilyLoadOptions() hands back.
+
+    Opaque on purpose - the real one is Revit's own object and answers the
+    prompt itself, which is exactly why "loaded" vs "overwritten" can no
+    longer come from a flag we set.
+    """
+
+
+class FakeUIDocument(object):
+    """The static accessor, with a switch for the UI-less case."""
+
+    options = None
+    error = None
+
+    @staticmethod
+    def GetRevitUIFamilyLoadOptions():
+        if FakeUIDocument.error:
+            raise FakeInvalidOperationException(FakeUIDocument.error)
+        return FakeUIDocument.options
+
+
 class FakeFamilyDocument(object):
     def __init__(self, family):
         self.family = family
@@ -98,8 +124,18 @@ class FakeFamilyDocument(object):
         self.loaded_into = []
 
     def LoadFamily(self, target_doc, load_options):
-        del load_options
         self.loaded_into.append(target_doc.Title)
+        target_doc.load_options_seen.append(load_options)
+
+        already_there = self.family.Name in [f.Name for f in target_doc.families]
+        if already_there and getattr(target_doc, "decline_overwrite", False):
+            # A declined overwrite arrives as an exception, not a False
+            # return - this is the behaviour the real API documents.
+            raise FakeInvalidOperationException(
+                "The load was cancelled due to a conflict and a False return "
+                "from one of the interface methods.")
+        if not already_there:
+            target_doc.families.append(self.family)
         return True
 
     def SaveAs(self, path, options):
@@ -125,6 +161,8 @@ class FakeDocument(object):
         self.edited = []
         self.copied_in = []
         self.closed = False
+        self.load_options_seen = []
+        self.decline_overwrite = False
 
     def GetElement(self, element_id):
         for family in self.families:
@@ -218,7 +256,9 @@ STUBS = {
     "clr": dict(AddReference=lambda *a, **k: None),
     "Autodesk": {},
     "Autodesk.Revit": {},
-    "Autodesk.Revit.UI": {},
+    "Autodesk.Revit.UI": dict(UIDocument=FakeUIDocument),
+    "Autodesk.Revit.Exceptions": dict(
+        InvalidOperationException=FakeInvalidOperationException),
     "Autodesk.Revit.UI.Selection": dict(
         ISelectionFilter=object, ObjectType=types.SimpleNamespace(Element=1)),
     "System": {},
@@ -461,9 +501,27 @@ class TransferTests(unittest.TestCase):
 
         self.assertEqual(3, len(summary.loaded))
         self.assertEqual([], summary.failed)
+        self.assertEqual([], world.target.copied_in)
+
+    def test_the_report_says_which_families_replaced_an_existing_one(self):
+        # The fixture target already holds Door_Single and nothing else, and
+        # "overwritten" is now decided by asking the target rather than by a
+        # flag our own load options used to set - Revit's dialog answers for
+        # itself and cannot report back.
+        world = build_world()
+        _, _, summary = self._transfer(world)
+        statuses = dict((r.family_name, r.status) for r in summary.loaded)
+
+        self.assertEqual("overwritten", statuses["Door_Single"])
+        self.assertEqual("loaded", statuses["Column_W"])
+        self.assertEqual("loaded", statuses["Window_Fixed"])
+
+    def test_nothing_reads_as_overwritten_when_the_target_is_empty(self):
+        world = build_world(target_has_door=False)
+        _, _, summary = self._transfer(world)
+
         self.assertEqual(
             set(["loaded"]), set(result.status for result in summary.loaded))
-        self.assertEqual([], world.target.copied_in)
 
     def test_a_refusing_link_falls_back_to_copying_into_the_target(self):
         world = build_world(edit_error="The document is read-only.")
@@ -482,7 +540,9 @@ class TransferTests(unittest.TestCase):
         skipped = dict((r.family_name, r.status) for r in summary.skipped)
 
         self.assertIn("Door_Single", skipped)
-        self.assertIn("cannot overwrite", skipped["Door_Single"])
+        self.assertIn("no overwrite on the copy path", skipped["Door_Single"])
+        # and it names a route that does work, rather than only refusing
+        self.assertIn("Load More from Recent Project", skipped["Door_Single"])
         self.assertNotIn("Door_Single", [r.family_name for r in summary.loaded])
 
     def test_the_copy_route_works_when_the_target_is_empty(self):
@@ -524,6 +584,79 @@ class TransferTests(unittest.TestCase):
 
         self.assertEqual(["Host_Wall"], [r.family_name for r in summary.loaded])
         self.assertEqual(["Host_Wall"], world.host.edited)
+
+
+class OverwritePromptTests(unittest.TestCase):
+    """Revit asks before replacing a family, and the answer is honoured.
+
+    The tool used to answer for the user and never show the prompt. Now it
+    hands Revit its own dialog, which means "loaded" vs "overwritten" has to
+    be worked out by asking the target, and a decline arrives as an exception
+    rather than a False return.
+    """
+
+    def setUp(self):
+        FakeUIDocument.options = FakeNativeLoadOptions()
+        FakeUIDocument.error = None
+        self.addCleanup(setattr, FakeUIDocument, "options", None)
+        self.addCleanup(setattr, FakeUIDocument, "error", None)
+
+    def _transfer(self, world):
+        links = checked_links(world)
+        families = ft_revit.get_link_family_options(links)
+        for family in families:
+            family.is_selected = True
+        return ft_revit.transfer_families(
+            world.host, families, target_options(world))
+
+    def test_revits_own_dialog_is_used_when_there_is_a_ui(self):
+        world = build_world()
+        self._transfer(world)
+
+        self.assertTrue(world.target.load_options_seen)
+        for seen in world.target.load_options_seen:
+            self.assertIs(FakeUIDocument.options, seen)
+
+    def test_the_silent_fallback_is_used_when_there_is_no_ui(self):
+        # GetRevitUIFamilyLoadOptions is documented to throw in UI-less mode.
+        FakeUIDocument.error = "UI less mode"
+        world = build_world()
+        self._transfer(world)
+
+        self.assertTrue(world.target.load_options_seen)
+        for seen in world.target.load_options_seen:
+            self.assertIsInstance(seen, ft_revit.FamilyTransferLoadOptions)
+
+    def test_declining_an_overwrite_is_skipped_not_failed(self):
+        world = build_world()
+        world.target.decline_overwrite = True
+        summary = self._transfer(world)
+
+        skipped = dict((r.family_name, r.status) for r in summary.skipped)
+        self.assertIn("Door_Single", skipped)
+        self.assertIn("overwrite declined", skipped["Door_Single"])
+        # Nothing failed - the user made a choice.
+        self.assertEqual([], summary.failed)
+        # And it is not the batch-level abort, which the progress bar owns.
+        self.assertFalse(summary.cancelled)
+
+    def test_declining_one_family_does_not_stop_the_rest(self):
+        world = build_world()
+        world.target.decline_overwrite = True
+        summary = self._transfer(world)
+
+        self.assertEqual(["Column_W", "Window_Fixed"],
+                         sorted(r.family_name for r in summary.loaded))
+
+    def test_a_real_load_failure_is_still_a_failure(self):
+        # Only a clash can produce the prompt, so an exception on a family
+        # that was not already there must not be misfiled as a decline.
+        world = build_world(target_has_door=False)
+        world.target.decline_overwrite = True
+        summary = self._transfer(world)
+
+        self.assertEqual(3, len(summary.loaded))
+        self.assertEqual([], summary.skipped)
 
 
 class ExportTests(unittest.TestCase):

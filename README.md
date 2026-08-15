@@ -213,6 +213,31 @@ Every browser page carries **Hide Un-checked**, which collapses the list down
 to what you have ticked — useful once a few hundred rows are on screen. It
 filters the view only; nothing is deselected by turning it on.
 
+### When a family is already in the target
+
+Revit asks, the same as loading a family by hand. Its own **Family Already
+Exists** dialog appears once per clashing family, offering to overwrite the
+existing version, overwrite it and its parameter values, or not overwrite.
+Declining skips that family and the run carries on; the summary lists it under
+Skipped rather than Failed. Overwriting keeps every placed instance in the
+model and gives them the new definition.
+
+There is no "apply to all" — the Revit API's callback is per family and offers
+no way to remember an answer, so a batch with twelve clashes asks twelve times.
+Where Revit has no UI to ask through, the tool overwrites without asking, as it
+did before.
+
+The one exception is a family arriving from a Revit link when that link refused
+to hand over a family document. That path copies the element rather than loading
+a family, and Revit's copy API has no overwrite at all — its only choices are
+"use what the destination already has" or "cancel the paste". Those rows are
+skipped, with the message naming the two routes that do work: open the linked
+file as a target, or use **Load More from Recent Project**.
+
+**Export** checks the folder once before it starts. If any of the files it is
+about to write are already there, it says how many and lets you replace them or
+pick a different folder.
+
 ### What can and cannot be picked in the model
 
 **Select in the model** takes anything with a loadable family behind it:

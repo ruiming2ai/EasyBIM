@@ -502,6 +502,36 @@ def build_unique_export_path(folder_path, family_name, used_paths):
     return candidate
 
 
+def planned_export_filenames(family_options):
+    """The filenames an export would write, in order.
+
+    Runs the same sanitising and de-duplication the export itself uses, so
+    the "these will be replaced" warning names exactly the files that would
+    be written - including the ``_2`` suffix two families sharing a name get.
+    """
+    used_paths = set()
+    names = []
+    for family_option in list(family_options or []):
+        path = build_unique_export_path("", _safe_text(getattr(family_option, "name", "")), used_paths)
+        names.append(os.path.basename(path))
+    return names
+
+
+def build_export_overwrite_text(existing_names, total_count):
+    """The one warning shown before an export replaces anything."""
+    existing_names = list(existing_names or [])
+    lines = [
+        "{} of {} file(s) already exist in that folder and will be replaced:".format(
+            len(existing_names), int(total_count or 0)),
+        "",
+    ]
+    for name in existing_names[:SUMMARY_DISPLAY_LIMIT]:
+        lines.append("- {}".format(name))
+    if len(existing_names) > SUMMARY_DISPLAY_LIMIT:
+        lines.append("- Plus {} more.".format(len(existing_names) - SUMMARY_DISPLAY_LIMIT))
+    return "\n".join(lines)
+
+
 def get_selected_family_keys(families):
     selected = []
     seen = set()
