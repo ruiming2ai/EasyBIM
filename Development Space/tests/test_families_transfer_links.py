@@ -97,23 +97,31 @@ class FakeInvalidOperationException(Exception):
 class FakeNativeLoadOptions(object):
     """What UIDocument.GetRevitUIFamilyLoadOptions() hands back.
 
-    Opaque on purpose - the real one is Revit's own object and answers the
-    prompt itself, which is exactly why "loaded" vs "overwritten" can no
-    longer come from a flag we set.
+    Opaque on purpose - the real one is Revit's own object, shows Revit's own
+    dialog and answers the prompt itself. That is why "loaded" vs
+    "overwritten" cannot come from a flag we set, and why the user's answer to
+    the "Do this for all loading families" checkbox is not readable from here.
     """
 
 
 class FakeUIDocument(object):
-    """The static accessor, with a switch for the UI-less case."""
+    """The static accessor, with a switch for the UI-less case.
 
-    options = None
+    Hands back a *fresh* object per call on purpose. The real one may or may
+    not be a singleton, and if this fake returned a shared instance then
+    asserting identity across a batch would pass whether the caller fetched
+    once or once per family - which is exactly the regression worth catching.
+    """
+
     error = None
+    calls = 0
 
     @staticmethod
     def GetRevitUIFamilyLoadOptions():
+        FakeUIDocument.calls += 1
         if FakeUIDocument.error:
             raise FakeInvalidOperationException(FakeUIDocument.error)
-        return FakeUIDocument.options
+        return FakeNativeLoadOptions()
 
 
 class FakeFamilyDocument(object):
@@ -596,10 +604,10 @@ class OverwritePromptTests(unittest.TestCase):
     """
 
     def setUp(self):
-        FakeUIDocument.options = FakeNativeLoadOptions()
         FakeUIDocument.error = None
-        self.addCleanup(setattr, FakeUIDocument, "options", None)
+        FakeUIDocument.calls = 0
         self.addCleanup(setattr, FakeUIDocument, "error", None)
+        self.addCleanup(setattr, FakeUIDocument, "calls", 0)
 
     def _transfer(self, world):
         links = checked_links(world)
@@ -615,7 +623,21 @@ class OverwritePromptTests(unittest.TestCase):
 
         self.assertTrue(world.target.load_options_seen)
         for seen in world.target.load_options_seen:
-            self.assertIs(FakeUIDocument.options, seen)
+            self.assertIsInstance(seen, FakeNativeLoadOptions)
+
+    def test_the_load_options_are_fetched_once_per_batch(self):
+        # Revit's dialog carries a "Do this for all loading families" checkbox.
+        # If Revit stores that answer on the options object, one instance for
+        # the whole run is the only thing that could let the answer span more
+        # than one family - so fetching per family would silently bring back a
+        # dialog each time.
+        world = build_world()
+        self._transfer(world)
+
+        self.assertEqual(1, FakeUIDocument.calls)
+        seen = world.target.load_options_seen
+        self.assertGreater(len(seen), 1)
+        self.assertEqual(1, len(set(id(options) for options in seen)))
 
     def test_the_silent_fallback_is_used_when_there_is_no_ui(self):
         # GetRevitUIFamilyLoadOptions is documented to throw in UI-less mode.

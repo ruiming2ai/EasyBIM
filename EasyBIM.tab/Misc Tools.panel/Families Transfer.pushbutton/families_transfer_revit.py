@@ -1022,6 +1022,13 @@ def transfer_families(source_doc, family_options, target_options, progress=None)
     # Revit's own dialog when it is reachable, so an overwrite is the user's
     # decision and they see it happen; our silent-overwrite answers only where
     # there is no UI to ask through.
+    #
+    # Fetched ONCE, outside the loop, and that placement is load-bearing: the
+    # dialog carries a "Do this for all loading families" checkbox, and if
+    # Revit stores that answer on the options object then one instance for the
+    # whole batch is the only thing that could let it span more than a single
+    # family. Moving this inside the loop would silently bring back a dialog
+    # per family. Pinned by test_the_load_options_are_fetched_once_per_batch.
     load_options = native_family_load_options() or FamilyTransferLoadOptions()
     families = list(family_options or [])
     total = len(families)
