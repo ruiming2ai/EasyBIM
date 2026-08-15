@@ -298,6 +298,82 @@ Two instances of one link are one row, not two. Unloaded links are listed but
 greyed, so a missing link looks missing rather than absent. Links nested
 inside a link are not reachable through the API and are not listed.
 
+## Families Downgrade (Misc Tools, Revit 2021+)
+
+Rebuild loadable families for an older Revit. A family saved by a newer
+release cannot be opened by an older one, and there is no "save as older
+version" anywhere in Revit or its API - so this tool does not convert the
+file. It **rebuilds** the family from its geometry and data, and it says so
+on its first page.
+
+One button, two modes, and you run the same button on both sides:
+
+1. **Export downgrade packages** - in the newer Revit. Pick families exactly
+   as in Families Transfer (this project, opened `.rfa` files, Revit links),
+   choose a folder, and one sub-folder per family is written, named
+   `<Family>.downgrade`, holding `manifest.json` and the family's solids as
+   SAT files. Existing packages of the same name are replaced after one
+   warning.
+2. **Rebuild families from downgrade packages** - in the older Revit (or in
+   the same one, to see what a round trip keeps). Point it at the folder,
+   tick the packages, choose an output folder, and every package becomes a
+   native `.rfa` of *that* Revit. No project needs to be open for this half.
+
+Both modes end with a summary and write `families_downgrade_report.txt` next
+to the outputs, listing per family everything that was not carried.
+
+### What survives, and what does not
+
+Carried: category and family settings, every family parameter (data type,
+group, instance/type, shared GUID, formula), every named type and its values,
+exact solid geometry (cylinders stay round), materials by name or by the
+family parameter that drove them, subcategories with line colour and
+weights, detail-level and plan visibility, **Visible** associations, MEP
+connectors (system, shape, size, direction, primary and linked pairs,
+parameter associations), symbolic and model lines, named reference planes.
+
+Not carried, and always listed in the report: parametric geometry - the
+rebuilt solids are static, so a type's dimensions no longer reshape them -
+dimensions, labels and text, nested families (flattened into geometry), voids
+as separate forms (their cuts are already in the exported solids), the wall
+opening of a hosted family (a door rebuilt on a door template keeps the
+template's opening), type catalogs, images, reporting parameters (rebuilt as
+plain ones), and 2D families - annotations, tags, detail items, profiles,
+title blocks - which are skipped with a reason, as are adaptive, mass and
+in-place families.
+
+### The options that matter
+
+**One family per type.** Off, one package per family: the solids come from
+the family's current type and every type keeps its parameter values. On, one
+package per type, each with that type's exact geometry and connector
+positions - the right choice for MEP fittings whose sizes differ per type.
+
+**Geometry format.** SAT is Revit's own exchange format for solids and the
+default. If the older Revit refuses the SAT files, export again with **DWG
+with ACIS solids**: the same solids travel inside an AutoCAD 2007 file.
+
+### How the rebuild bridges the versions
+
+The parameter API changed shape between 2021 and 2026 (`ParameterType` and
+`BuiltInParameterGroup` gave way to `ForgeTypeId`); the package records the
+ForgeTypeId string, which Revit 2021 already understands for every measurable
+type, and the rebuild picks the right `AddParameter` overload by asking the
+running Revit what it has. Categories that only exist from 2022 (Plumbing
+Equipment, Medical Equipment, Mechanical Control Devices, ...) land in the
+category people used before, and the report names the swap. Templates come
+from Revit's own template folder, hosting first (a face-based fixture is
+built on `Generic Model face based` and given its category), and if that
+folder is empty the run asks once for an `.rft`.
+
+Geometry is imported origin-to-origin and checked against the exported
+extents: a wrong unit header is re-read in feet, an offset is corrected, and
+every body becomes a native solid - or, if one refuses, the group stays an
+imported instance and the report says so. Connectors are placed on the face
+that carries their exported origin; the API puts a connector at the centre of
+its face, so a connector that shared a big face with others reports how far
+it landed from where it was.
+
 ## Linked Sheets Copy (Sheet, Revit 2024+)
 
 Linked Sheets Copy reuses a Revit link's sheets. Pick a loaded link, tick its

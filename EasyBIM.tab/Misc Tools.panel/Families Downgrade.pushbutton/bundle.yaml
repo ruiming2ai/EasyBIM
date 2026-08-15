@@ -1,0 +1,13 @@
+title: "Families\nDowngrade"
+tooltip: >-
+  Rebuild loadable families for an older Revit. In the newer Revit, pick
+  families from this project, opened .rfa files and Revit links, and write one
+  downgrade package per family (its solids as SAT plus parameters, types,
+  formulas, materials, visibility, MEP connectors, lines and reference planes as
+  data). In the older Revit, run the same button to rebuild native .rfa files
+  of that release from the packages. A downgrade is a rebuild, not a file
+  conversion: rebuilt solids are static, and everything a family loses is
+  listed in the report written next to the files.
+author: Ruiming Liu
+min_revit_version: 2021
+context: zero-doc
