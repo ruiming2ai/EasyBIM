@@ -73,6 +73,10 @@
             <Button x:Name="addsheetparam_b"
                     Content="Add Sheet Parameter"
                     Click="add_sheet_parameter"/>
+            <Button x:Name="refresh_b"
+                    Content="Refresh"
+                    ToolTip="Reload sheets, revisions, and parameter values from the model. Staged (red) edits are kept."
+                    Click="refresh_clicked"/>
         </WrapPanel>
 
         <DataGrid x:Name="sheets_dg"

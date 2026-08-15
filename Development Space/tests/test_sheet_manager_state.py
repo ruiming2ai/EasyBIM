@@ -394,6 +394,183 @@ class SortSearchTests(unittest.TestCase):
             st.plan_search_replace([row], columns, "Plan", "Plan"), [])
 
 
+class MergeTests(unittest.TestCase):
+    """Fresh model values fold in without discarding staged edits."""
+
+    def test_clean_cell_takes_model_value(self):
+        columns = build_columns()
+        row = make_row(columns, values={"p:Drawn By": "AB"})
+        updated, reverted, kept = st.merge_row_values(
+            row, columns, {"p:Drawn By": "CD", "name": "Renamed"})
+        self.assertEqual(sorted(updated), ["name", "p0"])
+        self.assertEqual(row.p0, "CD")
+        self.assertEqual(row.original["p0"], "CD")
+        self.assertEqual(row.name, "Renamed")
+        self.assertEqual(row.get_state("p0"), st.STATE_NORMAL)
+        self.assertEqual(row.get_state("name"), st.STATE_NORMAL)
+
+    def test_dirty_cell_keeps_value_and_moves_baseline(self):
+        columns = build_columns()
+        column = column_by_key(columns, "p:Drawn By")
+        row = make_row(columns, values={"p:Drawn By": "AB"})
+        st.apply_cell_edit(row, column, "MINE")
+        updated, reverted, kept = st.merge_row_values(
+            row, columns, {"p:Drawn By": "THEIRS"})
+        self.assertEqual(kept, ["p0"])
+        self.assertEqual(row.p0, "MINE")           # staged value shown...
+        self.assertEqual(row.original["p0"], "THEIRS")  # ...against new base
+        self.assertEqual(row.get_state("p0"), st.STATE_DIRTY)  # still red
+
+    def test_dirty_cell_reverts_when_model_catches_up(self):
+        columns = build_columns()
+        column = column_by_key(columns, "p:Drawn By")
+        row = make_row(columns, values={"p:Drawn By": "AB"})
+        st.apply_cell_edit(row, column, "SAME")
+        updated, reverted, kept = st.merge_row_values(
+            row, columns, {"p:Drawn By": "SAME"})
+        self.assertEqual(reverted, ["p0"])
+        self.assertEqual(row.get_state("p0"), st.STATE_NORMAL)
+
+    def test_revision_merge_respects_cloud_base_state(self):
+        columns = build_columns()
+        row = make_row(columns, cloud_ids=[22])
+        st.merge_row_values(row, columns, {"rev:22": True, "rev:11": True})
+        self.assertTrue(row.r0)
+        self.assertTrue(row.r1)
+        self.assertEqual(row.get_state("r0"), st.STATE_NORMAL)
+        self.assertEqual(row.get_state("r1"), st.STATE_CLOUD)
+
+    def test_multi_titleblock_normalisation_applies(self):
+        columns = build_columns()
+        row = make_row(columns, tblock_count=1,
+                       values={"tb:Sheet Width": "36"})
+        row.tblock_count = 2  # a second title block appeared in the model
+        st.merge_row_values(row, columns, {"tb:Sheet Width": "36"})
+        self.assertEqual(row.p1, st.DUPLICATED_TEXT)
+        self.assertEqual(row.get_state("p1"), st.STATE_DUPLICATED)
+
+    def test_conflict_number_treated_as_staged(self):
+        columns = build_columns()
+        number_col = column_by_key(columns, "number")
+        row_a = make_row(columns, sheet_id=1, number="A101")
+        row_b = make_row(columns, sheet_id=2, number="A102")
+        st.apply_cell_edit(row_a, number_col, "A102")
+        st.refresh_number_conflicts([row_a, row_b], number_col)
+        st.merge_row_values(row_a, columns, {"number": "A101"})
+        self.assertEqual(row_a.number, "A102")  # staged value kept
+        self.assertEqual(row_a.original["number"], "A101")
+
+    def test_untouched_keys_left_alone(self):
+        columns = build_columns()
+        row = make_row(columns, values={"p:Drawn By": "AB"})
+        updated, reverted, kept = st.merge_row_values(
+            row, columns, {"name": "Only name"})
+        self.assertEqual(updated, ["name"])
+        self.assertEqual(row.p0, "AB")
+
+
+class MissingRowTests(unittest.TestCase):
+    def test_mark_locks_everything_and_apply_skips(self):
+        columns = build_columns()
+        column = column_by_key(columns, "p:Drawn By")
+        row = make_row(columns, values={"p:Drawn By": "AB"})
+        st.apply_cell_edit(row, column, "CD")
+        st.mark_row_missing(row, columns)
+        self.assertTrue(row.is_missing)
+        self.assertEqual(row.get_state("p0"), st.STATE_LOCKED)
+        self.assertEqual(row.get_state("number"), st.STATE_LOCKED)
+        self.assertFalse(st.can_edit_cell(row, column))
+        self.assertFalse(st.apply_revision_toggle(
+            row, column_by_key(columns, "rev:11"), True))
+        changes = st.compute_staged_changes([row], columns)
+        self.assertTrue(changes.is_empty())
+        # values survive so a Revit undo restores the staged edit
+        st.unmark_row_missing(row, columns)
+        self.assertEqual(row.p0, "CD")
+        self.assertEqual(row.get_state("p0"), st.STATE_DIRTY)
+
+
+class StaleChangeTests(unittest.TestCase):
+    def _staged(self):
+        columns = build_columns()
+        row = make_row(columns, sheet_id=7, number="A101", name="Plan",
+                       values={"p:Drawn By": "AB"}, checked_revisions=[11])
+        st.apply_cell_edit(row, column_by_key(columns, "number"), "A150")
+        st.apply_cell_edit(row, column_by_key(columns, "name"), "New")
+        st.apply_cell_edit(row, column_by_key(columns, "p:Drawn By"), "CD")
+        st.apply_revision_toggle(row, column_by_key(columns, "rev:11"),
+                                 False)
+        st.apply_revision_toggle(row, column_by_key(columns, "rev:22"),
+                                 True)
+        return columns, row, st.compute_staged_changes([row], columns)
+
+    def test_all_clean_when_model_matches_snapshot(self):
+        columns, row, changes = self._staged()
+        current = {(7, "number"): "A101", (7, "name"): "Plan",
+                   (7, "p0"): "AB", (7, "r0"): True, (7, "r1"): False}
+        clean, stale = st.partition_stale_changes(changes, current)
+        self.assertEqual(stale, [])
+        self.assertEqual(len(clean.renames), 1)
+        self.assertEqual(len(clean.name_edits), 1)
+        self.assertEqual(len(clean.param_edits), 1)
+        self.assertEqual(len(clean.revision_removes), 1)
+        self.assertEqual(len(clean.revision_adds), 1)
+
+    def test_changed_cells_are_stale_others_clean(self):
+        columns, row, changes = self._staged()
+        current = {(7, "number"): "A101",
+                   (7, "name"): "Someone renamed",   # stale
+                   (7, "p0"): "AB",
+                   (7, "r0"): False,                 # already removed -> stale
+                   (7, "r1"): False}
+        clean, stale = st.partition_stale_changes(changes, current)
+        stale_attrs = sorted(attr for _, _, attr, _ in stale)
+        self.assertEqual(stale_attrs, ["name", "r0"])
+        self.assertEqual(len(clean.name_edits), 0)
+        self.assertEqual(len(clean.revision_removes), 0)
+        self.assertEqual(len(clean.renames), 1)
+        self.assertEqual(len(clean.param_edits), 1)
+        self.assertEqual(len(clean.revision_adds), 1)
+
+    def test_missing_sheet_makes_everything_stale(self):
+        columns, row, changes = self._staged()
+        current = {}
+        for attr in ("number", "name", "p0", "r0", "r1"):
+            current[(7, attr)] = st.MISSING
+        clean, stale = st.partition_stale_changes(changes, current)
+        self.assertEqual(len(stale), 5)
+        self.assertTrue(all(value is st.MISSING for _, _, _, value in stale))
+        self.assertTrue(clean.is_empty())
+
+    def test_pending_rows_and_copy_ops_always_clean(self):
+        columns = build_columns()
+        row = st.SheetRowBase(None, "A200", "New", False, 0)
+        st.populate_row(row, columns, {"rev:11": True})
+        st.mark_pending_row_dirty(row, columns)
+        changes = st.compute_staged_changes([row], columns)
+        changes.copy_content_ops = ["op"]
+        clean, stale = st.partition_stale_changes(changes, {})
+        self.assertEqual(stale, [])
+        self.assertEqual(clean.pending_sheets, [row])
+        self.assertEqual(clean.copy_content_ops, ["op"])
+        self.assertEqual(len(clean.revision_adds), 1)
+
+    def test_record_stale_changes_adds_skipped_items(self):
+        columns, row, changes = self._staged()
+        results = st.ApplyResults()
+        st.record_stale_changes(results, [
+            (row, None, "name", "Someone renamed"),
+            (row, column_by_key(columns, "rev:11"), "r0", False),
+            (row, None, "number", st.MISSING),
+        ])
+        self.assertEqual(len(results.errors), 3)
+        self.assertTrue(all(item.status == "skipped"
+                            for item in results.errors))
+        self.assertIn("Someone renamed", results.errors[0].new_value)
+        self.assertIn("Off", results.errors[1].new_value)
+        self.assertIn("no longer exists", results.errors[2].new_value)
+
+
 class ExportMatrixTests(unittest.TestCase):
     def test_matrix_headers_values_locks_metadata(self):
         columns = build_columns()
