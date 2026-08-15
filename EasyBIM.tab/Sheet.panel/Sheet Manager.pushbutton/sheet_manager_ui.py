@@ -229,6 +229,7 @@ class SheetManagerWindow(forms.WPFWindow):
             self._bridge.on_error = self._on_bridge_error
             self._bridge.on_idle = self._on_bridge_idle
             self.Activated += self._on_activated
+        self.Closing += self._on_closing
         self.Closed += self._on_closed
 
         self._load_model()
@@ -359,6 +360,31 @@ class SheetManagerWindow(forms.WPFWindow):
             pass
         dialog.ShowDialog()
         return dialog
+
+    def _on_closing(self, sender, args):
+        """A modeless window is easy to close by accident: confirm when
+        staged edits or Revit work would be lost."""
+        del sender
+        if self._closing:
+            return
+        self._commit_pending_edit()
+        staged = state.count_staged_cells(self._all_rows, self._columns)
+        pending_ops = len(self._copy_content_ops)
+        busy = self._bridge is not None and self._bridge.is_busy()
+        if not (staged or pending_ops or busy):
+            return
+        if busy:
+            message = ("Sheet Manager is still waiting for Revit to finish "
+                       "a request.\n\nClose anyway?")
+        else:
+            message = ("You have {0} staged change(s) that have not been "
+                       "applied.\n\nClose Sheet Manager anyway?".format(
+                           staged + pending_ops))
+        choice = self._alert(
+            message, title="Sheet Manager",
+            options=["Close and discard", "Keep window open"])
+        if choice != "Close and discard":
+            args.Cancel = True
 
     def _on_closed(self, sender, args):
         del sender, args
