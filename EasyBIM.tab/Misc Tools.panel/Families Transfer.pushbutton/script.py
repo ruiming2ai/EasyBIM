@@ -22,36 +22,42 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
+# The family-selection pages, collectors and link cascade are shared with
+# Families Downgrade and live in lib/easybim/family_selection_*; only the
+# transfer/export/close machinery is this bundle's own.
+from easybim.family_selection_revit import get_link_document_options
+from easybim.family_selection_revit import get_link_family_options
+from easybim.family_selection_revit import get_open_family_documents
+from easybim.family_selection_revit import get_selected_family_options_from_selection
+from easybim.family_selection_revit import get_source_family_options
+from easybim.family_selection_revit import link_notes
+from easybim.family_selection_revit import pick_more_family_options
+from easybim.family_selection_revit import prepare_link_documents
+from easybim.family_selection_state import build_export_overwrite_text
+from easybim.family_selection_state import get_selected_family_keys
+from easybim.family_selection_state import get_selected_source_family_options
+from easybim.family_selection_state import merge_source_family_options
+from easybim.family_selection_state import merge_transferable_family_options
+from easybim.family_selection_state import planned_export_filenames
+from easybim.family_selection_state import prune_link_families_to_checked_links
+from easybim.family_selection_state import restore_family_selection
+from easybim.family_selection_state import split_selected_family_keys
+from easybim.family_selection_ui import FAMILY_SELECTION_XAML
+from easybim.family_selection_ui import FamilySelectionWindow
+from easybim.family_selection_ui import LINK_SELECTION_XAML
+from easybim.family_selection_ui import LinkSelectionWindow
+from easybim.family_selection_ui import SOURCE_SELECTION_XAML
+from easybim.family_selection_ui import SourceSelectionWindow
 from families_transfer_revit import DECLINE
 from families_transfer_revit import OVERWRITE
 from families_transfer_revit import OVERWRITE_WITH_VALUES
 from families_transfer_revit import close_open_family_documents
 from families_transfer_revit import export_families
-from families_transfer_revit import get_link_document_options
-from families_transfer_revit import get_link_family_options
-from families_transfer_revit import get_open_family_documents
 from families_transfer_revit import get_open_target_documents
-from families_transfer_revit import get_selected_family_options_from_selection
-from families_transfer_revit import get_source_family_options
-from families_transfer_revit import link_notes
 from families_transfer_revit import pick_export_folder
-from families_transfer_revit import pick_more_family_options
-from families_transfer_revit import prepare_link_documents
 from families_transfer_revit import transfer_families
-from families_transfer_state import build_export_overwrite_text
 from families_transfer_state import build_transfer_summary_text
-from families_transfer_state import get_selected_family_keys
-from families_transfer_state import get_selected_source_family_options
-from families_transfer_state import merge_source_family_options
-from families_transfer_state import merge_transferable_family_options
-from families_transfer_state import planned_export_filenames
-from families_transfer_state import prune_link_families_to_checked_links
-from families_transfer_state import restore_family_selection
-from families_transfer_state import split_selected_family_keys
 from families_transfer_ui import ActionWindow
-from families_transfer_ui import FamilySelectionWindow
-from families_transfer_ui import LinkSelectionWindow
-from families_transfer_ui import SourceSelectionWindow
 from families_transfer_ui import TargetSelectionWindow
 
 
@@ -324,7 +330,7 @@ def _run():
                 selected_open_family_document_keys,
             )
             source_window = SourceSelectionWindow(
-                "SourceSelectionWindow.xaml",
+                SOURCE_SELECTION_XAML,
                 selected_source_families,
                 open_family_documents,
                 selected_open_family_document_keys,
@@ -385,7 +391,7 @@ def _run():
                 continue
 
             link_docs_window = LinkSelectionWindow(
-                "LinkSelectionWindow.xaml",
+                LINK_SELECTION_XAML,
                 _link_documents(),
                 selected_link_document_keys,
             )
@@ -423,7 +429,7 @@ def _run():
                 continue
 
             links_window = FamilySelectionWindow(
-                "FamilySelectionWindow.xaml",
+                FAMILY_SELECTION_XAML,
                 link_families,
                 selected_link_family_keys,
                 header_text="Load More from Revit Links",
@@ -465,7 +471,7 @@ def _run():
             selected_family_keys = set(get_selected_family_keys(families))
 
             family_window = FamilySelectionWindow(
-                "FamilySelectionWindow.xaml",
+                FAMILY_SELECTION_XAML,
                 families,
                 selected_family_keys,
             )

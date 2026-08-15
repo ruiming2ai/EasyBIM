@@ -1,24 +1,33 @@
 import ast
 import importlib.util
+import sys
 import xml.etree.ElementTree as ET
 import pathlib
 import unittest
 
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 COMMAND_DIR = (
-    pathlib.Path(__file__).resolve().parents[2]
+    REPO_ROOT
     / "EasyBIM.tab"
     / "Misc Tools.panel"
     / "Families Transfer.pushbutton"
 )
+LIB_DIR = REPO_ROOT / "lib" / "easybim"
+UI_DIR = LIB_DIR / "ui"
 STATE_MODULE_PATH = COMMAND_DIR / "families_transfer_state.py"
 REVIT_MODULE_PATH = COMMAND_DIR / "families_transfer_revit.py"
 SCRIPT_MODULE_PATH = COMMAND_DIR / "script.py"
 UI_MODULE_PATH = COMMAND_DIR / "families_transfer_ui.py"
-SOURCE_XAML_PATH = COMMAND_DIR / "SourceSelectionWindow.xaml"
-FAMILY_XAML_PATH = COMMAND_DIR / "FamilySelectionWindow.xaml"
+# The family-selection pages, collectors and helpers are shared with Families
+# Downgrade and live in lib; the transfer-only pieces stay in the bundle.
+SELECTION_STATE_MODULE_PATH = LIB_DIR / "family_selection_state.py"
+SELECTION_UI_MODULE_PATH = LIB_DIR / "family_selection_ui.py"
+SELECTION_REVIT_MODULE_PATH = LIB_DIR / "family_selection_revit.py"
+SOURCE_XAML_PATH = UI_DIR / "family_selection_source.xaml"
+FAMILY_XAML_PATH = UI_DIR / "family_selection_families.xaml"
 TARGET_XAML_PATH = COMMAND_DIR / "TargetSelectionWindow.xaml"
-LINK_XAML_PATH = COMMAND_DIR / "LinkSelectionWindow.xaml"
+LINK_XAML_PATH = UI_DIR / "family_selection_links.xaml"
 
 
 def _function_source_text(path, function_name):
@@ -32,14 +41,46 @@ def _function_source_text(path, function_name):
     return u""
 
 
+def _load_selection_state_module():
+    """The shared, pure-Python selection helpers from lib."""
+    spec = importlib.util.spec_from_file_location(
+        "family_selection_state",
+        str(SELECTION_STATE_MODULE_PATH),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _StateSurface(object):
+    """The state surface the command sees: its own module over the shared one.
+
+    The bundle module holds only the transfer-specific pieces and imports the
+    rest from ``easybim.family_selection_state``; the tests below were written
+    against the one flat namespace the command has, so that is what they get.
+    """
+
+    def __init__(self, bundle_module, selection_module):
+        self._bundle = bundle_module
+        self._selection = selection_module
+
+    def __getattr__(self, name):
+        if hasattr(self._bundle, name):
+            return getattr(self._bundle, name)
+        return getattr(self._selection, name)
+
+
 def _load_state_module():
+    lib_root = str(REPO_ROOT / "lib")
+    if lib_root not in sys.path:
+        sys.path.insert(0, lib_root)
     spec = importlib.util.spec_from_file_location(
         "families_transfer_state",
         str(STATE_MODULE_PATH),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module
+    return _StateSurface(module, _load_selection_state_module())
 
 
 class FamiliesTransferStateTests(unittest.TestCase):
@@ -432,7 +473,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
             self.assertIn('x:Name="hide_unchecked_cb"', source, path.name)
             self.assertIn('Click="hide_unchecked_click"', source, path.name)
 
-        ui_source = UI_MODULE_PATH.read_text()
+        ui_source = SELECTION_UI_MODULE_PATH.read_text()
         self.assertEqual(2, ui_source.count("def hide_unchecked_click"))
 
     def test_no_source_card_can_be_squashed_to_nothing(self):
@@ -527,7 +568,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
         # Revit API, so every tag class needs the GetTypeId route - and
         # TextElement.Symbol is a TextElementType, which is why the
         # isinstance guard is load-bearing rather than defensive.
-        body = _function_source_text(REVIT_MODULE_PATH, "_family_from_element")
+        body = _function_source_text(SELECTION_REVIT_MODULE_PATH, "family_from_element")
 
         self.assertIn("GetTypeId", body)
         self.assertIn("isinstance(symbol, DB.FamilySymbol)", body)
@@ -575,9 +616,9 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertNotIn('Click="next_click"', source)
 
     def test_source_window_supports_family_checkboxes_and_load_more_result(self):
-        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
-        source = UI_MODULE_PATH.read_text()
-        tree = ast.parse(source, filename=str(UI_MODULE_PATH))
+        self.assertTrue(SELECTION_UI_MODULE_PATH.exists(), "family_selection_ui.py is missing")
+        source = SELECTION_UI_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(SELECTION_UI_MODULE_PATH))
 
         self.assertIn("_selected_family_controls", source)
         self.assertIn("selected_family_keys", source)
@@ -630,9 +671,9 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertIn("STEP_FAMILIES", load_more_assignments)
 
     def test_family_selection_window_exposes_add_result(self):
-        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
-        source = UI_MODULE_PATH.read_text()
-        tree = ast.parse(source, filename=str(UI_MODULE_PATH))
+        self.assertTrue(SELECTION_UI_MODULE_PATH.exists(), "family_selection_ui.py is missing")
+        source = SELECTION_UI_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(SELECTION_UI_MODULE_PATH))
 
         add_method = None
         for node in ast.walk(tree):
@@ -666,16 +707,16 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertIn("get_selected_source_family_options", add_assignments)
 
     def test_family_selection_window_uses_expanders_and_expand_collapse_handlers(self):
-        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
-        source = UI_MODULE_PATH.read_text()
+        self.assertTrue(SELECTION_UI_MODULE_PATH.exists(), "family_selection_ui.py is missing")
+        source = SELECTION_UI_MODULE_PATH.read_text()
 
         self.assertIn("Windows.Controls.Expander", source)
         self.assertIn("def expand_all_click", source)
         self.assertIn("def collapse_all_click", source)
 
     def test_wpf_search_handlers_guard_until_window_is_ready(self):
-        self.assertTrue(UI_MODULE_PATH.exists(), "families_transfer_ui.py is missing")
-        tree = ast.parse(UI_MODULE_PATH.read_text(), filename=str(UI_MODULE_PATH))
+        self.assertTrue(SELECTION_UI_MODULE_PATH.exists(), "family_selection_ui.py is missing")
+        tree = ast.parse(SELECTION_UI_MODULE_PATH.read_text(), filename=str(SELECTION_UI_MODULE_PATH))
 
         guarded_handlers = {
             "selected_source_search_changed",
@@ -875,7 +916,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
     def test_the_footer_never_names_a_single_source(self):
         # It used to read "N active-project families selected." while sitting
         # under three cards, so it looked like the whole selection.
-        ui_source = UI_MODULE_PATH.read_text()
+        ui_source = SELECTION_UI_MODULE_PATH.read_text()
         script_source = SCRIPT_MODULE_PATH.read_text()
 
         for text in ("active-project families selected",
@@ -889,7 +930,7 @@ class FamiliesTransferStateTests(unittest.TestCase):
     def test_every_card_read_refreshes_the_footer(self):
         # A tick in any card has to move the total, so all three readers
         # must call it - the link card was the easy one to forget.
-        tree = ast.parse(UI_MODULE_PATH.read_text(), filename=str(UI_MODULE_PATH))
+        tree = ast.parse(SELECTION_UI_MODULE_PATH.read_text(), filename=str(SELECTION_UI_MODULE_PATH))
         readers = {
             "_read_selected_family_keys",
             "_read_selected_document_keys",
@@ -995,9 +1036,9 @@ class FamiliesTransferStateTests(unittest.TestCase):
         self.assertEqual(["Door_Single.rfa", "Door_Single_2.rfa", "Desk.rfa"], names)
 
     def test_transferability_does_not_restrict_to_model_categories(self):
-        self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")
-        source = REVIT_MODULE_PATH.read_text()
-        tree = ast.parse(source, filename=str(REVIT_MODULE_PATH))
+        self.assertTrue(SELECTION_REVIT_MODULE_PATH.exists(), "family_selection_revit.py is missing")
+        source = SELECTION_REVIT_MODULE_PATH.read_text()
+        tree = ast.parse(source, filename=str(SELECTION_REVIT_MODULE_PATH))
 
         target = None
         for node in ast.walk(tree):
