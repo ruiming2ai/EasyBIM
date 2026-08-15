@@ -288,23 +288,46 @@ class FamiliesTransferContractTests(unittest.TestCase):
             self.assertIn("from easybim.copy_paste import copy_paste_options",
                           source, path.name)
 
-    def test_revit_is_asked_before_a_family_is_overwritten(self):
-        # RevitUIFamilyLoadOptions, which the LoadFamily docs name, is not an
-        # instantiable type in any shipped version - the static accessor is
-        # the only way to Revit's own prompt.
-        source = _code_without_prose(REVIT_MODULE)
-        self.assertIn("GetRevitUIFamilyLoadOptions", source)
-        # Not the bare constructor - GetRevitUIFamilyLoadOptions() ends with
-        # that same substring, so the boundary matters.
-        self.assertIsNone(
-            re.search(r"(?<![A-Za-z0-9_])RevitUIFamilyLoadOptions\(", source))
-        # and there is still a silent answer for UI-less mode
-        self.assertIn("FamilyTransferLoadOptions", source)
+    def test_the_user_is_asked_before_a_family_is_overwritten(self):
+        # Our own prompt, not Revit's: Revit's carries the same checkbox but
+        # scopes it to one LoadFamily call, and this tool loads one family
+        # per call, so the tick would never cover a batch.
+        source = _code_without_prose(SCRIPT_MODULE)
+        self.assertIn("AddCommandLink", source)
+        self.assertIn("VerificationText", source)
+        self.assertIn("WasVerificationChecked", source)
+        self.assertNotIn("GetRevitUIFamilyLoadOptions", source)
+        self.assertNotIn("GetRevitUIFamilyLoadOptions",
+                         _code_without_prose(REVIT_MODULE))
+
+    def test_the_prompt_cannot_collide_with_the_other_checkbox(self):
+        # Setting VerificationText and ExtraCheckBoxText on one TaskDialog
+        # makes Show() throw.
+        source = _code_without_prose(SCRIPT_MODULE)
+        self.assertNotIn("ExtraCheckBoxText", source)
+        self.assertNotIn("WasExtraCheckBoxChecked", source)
+
+    def test_the_prompt_owns_its_own_title(self):
+        # Without TitleAutoPrefix = False, Revit prepends the command name
+        # and the window stops matching the one it is imitating.
+        body = _function_source(SCRIPT_MODULE, "_build_overwrite_prompt")
+        self.assertIn("TitleAutoPrefix = False", body)
+        self.assertIn("Family Already Exists", body)
 
     def test_a_declined_overwrite_is_not_reported_as_a_failure(self):
+        # The decline is now a fact our own options object records, not an
+        # exception message we pattern-match.
         body = _function_source(REVIT_MODULE, "_load_family_document_into_targets")
-        self.assertIn("_is_declined_overwrite", body)
+        self.assertIn("load_options.declined", body)
         self.assertIn("summary.skipped.append", body)
+
+    def test_one_options_object_carries_the_remembered_answer(self):
+        # The apply-to-all lives on it, so building one per family would mean
+        # the tick never covered anything.
+        body = _function_source(REVIT_MODULE, "transfer_families")
+        self.assertIn("FamilyTransferLoadOptions(ask=overwrite_prompt)", body)
+        loop_at = body.index("for done, family_option in enumerate(families)")
+        self.assertLess(body.index("FamilyTransferLoadOptions("), loop_at)
 
     def test_export_asks_before_it_replaces_files_on_disk(self):
         source = _code_without_prose(SCRIPT_MODULE)

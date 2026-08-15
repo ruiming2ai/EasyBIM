@@ -90,38 +90,15 @@ class FakeLinkInstance(object):
         return self._link_doc
 
 
+class _OutBool(object):
+    """Stands in for a Revit ``out bool`` parameter."""
+
+    def __init__(self, value=False):
+        self.Value = value
+
+
 class FakeInvalidOperationException(Exception):
     """Stands in for Autodesk.Revit.Exceptions.InvalidOperationException."""
-
-
-class FakeNativeLoadOptions(object):
-    """What UIDocument.GetRevitUIFamilyLoadOptions() hands back.
-
-    Opaque on purpose - the real one is Revit's own object, shows Revit's own
-    dialog and answers the prompt itself. That is why "loaded" vs
-    "overwritten" cannot come from a flag we set, and why the user's answer to
-    the "Do this for all loading families" checkbox is not readable from here.
-    """
-
-
-class FakeUIDocument(object):
-    """The static accessor, with a switch for the UI-less case.
-
-    Hands back a *fresh* object per call on purpose. The real one may or may
-    not be a singleton, and if this fake returned a shared instance then
-    asserting identity across a batch would pass whether the caller fetched
-    once or once per family - which is exactly the regression worth catching.
-    """
-
-    error = None
-    calls = 0
-
-    @staticmethod
-    def GetRevitUIFamilyLoadOptions():
-        FakeUIDocument.calls += 1
-        if FakeUIDocument.error:
-            raise FakeInvalidOperationException(FakeUIDocument.error)
-        return FakeNativeLoadOptions()
 
 
 class FakeFamilyDocument(object):
@@ -135,13 +112,18 @@ class FakeFamilyDocument(object):
         self.loaded_into.append(target_doc.Title)
         target_doc.load_options_seen.append(load_options)
 
+        # Revit raises OnFamilyFound only when the family is already there
+        # AND different, so an identical one loads with no callback at all.
         already_there = self.family.Name in [f.Name for f in target_doc.families]
-        if already_there and getattr(target_doc, "decline_overwrite", False):
-            # A declined overwrite arrives as an exception, not a False
-            # return - this is the behaviour the real API documents.
-            raise FakeInvalidOperationException(
-                "The load was cancelled due to a conflict and a False return "
-                "from one of the interface methods.")
+        if already_there and not getattr(self.family, "unchanged", False):
+            overwrite_values = _OutBool()
+            proceed = load_options.OnFamilyFound(False, overwrite_values)
+            target_doc.overwrite_values_seen.append(bool(overwrite_values.Value))
+            if not proceed:
+                # A declined load arrives as an exception, not a False return.
+                raise FakeInvalidOperationException(
+                    "The load was cancelled due to a conflict and a False "
+                    "return from one of the interface methods.")
         if not already_there:
             target_doc.families.append(self.family)
         return True
@@ -170,7 +152,7 @@ class FakeDocument(object):
         self.copied_in = []
         self.closed = False
         self.load_options_seen = []
-        self.decline_overwrite = False
+        self.overwrite_values_seen = []
 
     def GetElement(self, element_id):
         for family in self.families:
@@ -264,7 +246,7 @@ STUBS = {
     "clr": dict(AddReference=lambda *a, **k: None),
     "Autodesk": {},
     "Autodesk.Revit": {},
-    "Autodesk.Revit.UI": dict(UIDocument=FakeUIDocument),
+    "Autodesk.Revit.UI": {},
     "Autodesk.Revit.Exceptions": dict(
         InvalidOperationException=FakeInvalidOperationException),
     "Autodesk.Revit.UI.Selection": dict(
@@ -329,8 +311,13 @@ ARCH_PATH = "C:/jobs/Arch.rvt"
 STRUCT_PATH = "C:/jobs/Struct.rvt"
 
 
-def build_world(edit_error=None, arch_also_open=False, target_has_door=True):
-    """A host with two links (one placed twice) plus one unloaded link."""
+def build_world(edit_error=None, arch_also_open=False, target_has_door=True,
+                clashing_names=None):
+    """A host with two links (one placed twice) plus one unloaded link.
+
+    ``clashing_names`` seeds the target with families of those names, which is
+    how a test arranges more than one overwrite prompt in a single batch.
+    """
     arch_families = [
         FakeFamily(101, "Door_Single", "Doors"),
         FakeFamily(102, "Window_Fixed", "Windows"),
@@ -355,7 +342,10 @@ def build_world(edit_error=None, arch_also_open=False, target_has_door=True):
             FakeLinkInstance("Missing.rvt : 1", None),
         ])
 
-    target_families = [FakeFamily(9, "Door_Single", "Doors")] if target_has_door else []
+    if clashing_names is None:
+        clashing_names = ["Door_Single"] if target_has_door else []
+    target_families = [FakeFamily(900 + index, name, "Doors")
+                       for index, name in enumerate(clashing_names)]
     target = FakeDocument("Target", "C:/jobs/Target.rvt", families=target_families)
 
     open_documents = [host, target]
@@ -365,7 +355,9 @@ def build_world(edit_error=None, arch_also_open=False, target_has_door=True):
 
     uiapp = types.SimpleNamespace(
         Application=types.SimpleNamespace(Documents=open_documents))
-    return types.SimpleNamespace(host=host, target=target, uiapp=uiapp)
+    return types.SimpleNamespace(host=host, target=target, uiapp=uiapp,
+                                 arch_families=arch_families,
+                                 struct_families=struct_link.families)
 
 
 def checked_links(world):
@@ -595,90 +587,135 @@ class TransferTests(unittest.TestCase):
 
 
 class OverwritePromptTests(unittest.TestCase):
-    """Revit asks before replacing a family, and the answer is honoured.
+    """We ask before replacing a family, and one tick covers the batch.
 
-    The tool used to answer for the user and never show the prompt. Now it
-    hands Revit its own dialog, which means "loaded" vs "overwritten" has to
-    be worked out by asking the target, and a decline arrives as an exception
-    rather than a False return.
+    Revit's own dialog carries the same checkbox but scopes it to a single
+    LoadFamily call, and this tool loads one family per call - so the prompt
+    is ours, and the remembered answer lives on the load-options object that
+    spans the whole run.
     """
 
     def setUp(self):
-        FakeUIDocument.error = None
-        FakeUIDocument.calls = 0
-        self.addCleanup(setattr, FakeUIDocument, "error", None)
-        self.addCleanup(setattr, FakeUIDocument, "calls", 0)
+        #: Every family name we were asked about, in order.
+        self.asked = []
+        #: What the fake user answers, and whether they tick the box.
+        self.answer = ft_revit.OVERWRITE_WITH_VALUES
+        self.apply_to_all = False
 
-    def _transfer(self, world):
+    def _ask(self, family_name):
+        self.asked.append(family_name)
+        return self.answer, self.apply_to_all
+
+    def _transfer(self, world, ask=True):
         links = checked_links(world)
         families = ft_revit.get_link_family_options(links)
         for family in families:
             family.is_selected = True
         return ft_revit.transfer_families(
-            world.host, families, target_options(world))
+            world.host, families, target_options(world),
+            overwrite_prompt=self._ask if ask else None)
 
-    def test_revits_own_dialog_is_used_when_there_is_a_ui(self):
+    # -- when the prompt appears at all ------------------------------------
+
+    def test_a_family_not_already_there_is_never_asked_about(self):
+        world = build_world(target_has_door=False)
+        summary = self._transfer(world)
+
+        self.assertEqual([], self.asked)
+        self.assertEqual(3, len(summary.loaded))
+
+    def test_an_identical_family_is_not_asked_about_either(self):
+        # Revit fires the callback only when the family is loaded AND
+        # changed, so a byte-identical one loads silently.
+        world = build_world()
+        for family in world.arch_families:
+            family.unchanged = True
+        self._transfer(world)
+
+        self.assertEqual([], self.asked)
+
+    def test_a_changed_family_already_there_is_asked_about(self):
         world = build_world()
         self._transfer(world)
 
-        self.assertTrue(world.target.load_options_seen)
-        for seen in world.target.load_options_seen:
-            self.assertIsInstance(seen, FakeNativeLoadOptions)
+        self.assertEqual(["Door_Single"], self.asked)
 
-    def test_the_load_options_are_fetched_once_per_batch(self):
-        # Revit's dialog carries a "Do this for all loading families" checkbox.
-        # If Revit stores that answer on the options object, one instance for
-        # the whole run is the only thing that could let the answer span more
-        # than one family - so fetching per family would silently bring back a
-        # dialog each time.
-        world = build_world()
+    # -- the checkbox ------------------------------------------------------
+
+    def test_ticking_apply_to_all_asks_only_once_for_the_batch(self):
+        world = build_world(clashing_names=["Door_Single", "Window_Fixed", "Column_W"])
+        self.apply_to_all = True
+        summary = self._transfer(world)
+
+        self.assertEqual(1, len(self.asked))
+        self.assertEqual(3, len(summary.loaded))
+
+    def test_without_the_tick_every_clash_is_asked_about(self):
+        world = build_world(clashing_names=["Door_Single", "Window_Fixed", "Column_W"])
+        self.apply_to_all = False
         self._transfer(world)
 
-        self.assertEqual(1, FakeUIDocument.calls)
-        seen = world.target.load_options_seen
-        self.assertGreater(len(seen), 1)
-        self.assertEqual(1, len(set(id(options) for options in seen)))
+        self.assertEqual(3, len(self.asked))
 
-    def test_the_silent_fallback_is_used_when_there_is_no_ui(self):
-        # GetRevitUIFamilyLoadOptions is documented to throw in UI-less mode.
-        FakeUIDocument.error = "UI less mode"
+    # -- what the answer does ----------------------------------------------
+
+    def test_overwrite_without_values_leaves_parameter_values_alone(self):
         world = build_world()
+        self.answer = ft_revit.OVERWRITE
         self._transfer(world)
 
-        self.assertTrue(world.target.load_options_seen)
-        for seen in world.target.load_options_seen:
-            self.assertIsInstance(seen, ft_revit.FamilyTransferLoadOptions)
+        self.assertEqual([False], world.target.overwrite_values_seen)
 
-    def test_declining_an_overwrite_is_skipped_not_failed(self):
+    def test_overwrite_with_values_says_so(self):
         world = build_world()
-        world.target.decline_overwrite = True
+        self.answer = ft_revit.OVERWRITE_WITH_VALUES
+        self._transfer(world)
+
+        self.assertEqual([True], world.target.overwrite_values_seen)
+
+    # -- declining ---------------------------------------------------------
+
+    def test_declining_is_skipped_not_failed(self):
+        world = build_world()
+        self.answer = ft_revit.DECLINE
         summary = self._transfer(world)
 
         skipped = dict((r.family_name, r.status) for r in summary.skipped)
         self.assertIn("Door_Single", skipped)
         self.assertIn("overwrite declined", skipped["Door_Single"])
-        # Nothing failed - the user made a choice.
         self.assertEqual([], summary.failed)
-        # And it is not the batch-level abort, which the progress bar owns.
+        # Not the batch-level abort, which belongs to the progress bar.
         self.assertFalse(summary.cancelled)
 
     def test_declining_one_family_does_not_stop_the_rest(self):
         world = build_world()
-        world.target.decline_overwrite = True
+        self.answer = ft_revit.DECLINE
         summary = self._transfer(world)
 
         self.assertEqual(["Column_W", "Window_Fixed"],
                          sorted(r.family_name for r in summary.loaded))
 
-    def test_a_real_load_failure_is_still_a_failure(self):
-        # Only a clash can produce the prompt, so an exception on a family
-        # that was not already there must not be misfiled as a decline.
-        world = build_world(target_has_door=False)
-        world.target.decline_overwrite = True
-        summary = self._transfer(world)
+    def test_a_declined_answer_is_never_remembered(self):
+        # Cancel means "not this one", so the tick is ignored for it and the
+        # next clashing family asks again.
+        world = build_world(clashing_names=["Door_Single", "Window_Fixed", "Column_W"])
+        self.answer = ft_revit.DECLINE
+        self.apply_to_all = True
+        self._transfer(world)
 
+        self.assertEqual(3, len(self.asked))
+
+    # -- no prompt available -----------------------------------------------
+
+    def test_without_a_prompt_it_overwrites_silently(self):
+        # The original behaviour, kept for a UI-less session or a Revit too
+        # old to show the dialog.
+        world = build_world()
+        summary = self._transfer(world, ask=False)
+
+        self.assertEqual([], self.asked)
         self.assertEqual(3, len(summary.loaded))
-        self.assertEqual([], summary.skipped)
+        self.assertEqual([True], world.target.overwrite_values_seen)
 
 
 class ExportTests(unittest.TestCase):
