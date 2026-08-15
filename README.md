@@ -440,3 +440,44 @@ again.
 Families nested inside another family are not updated; only the families in the
 list are.
 
+
+## My Ribbon (Misc Tools)
+
+My Ribbon puts buttons from **other pyRevit extensions** on panels of your own.
+Paste a GitHub link, or pick an extension already installed on the computer, or
+browse pyRevit's catalogue of community extensions; tick the buttons you want;
+say where they go — any panel on the EasyBIM tab, a new panel there, a tab of
+your own, or a panel on another tab. Press **Apply** and they are there. No
+reload is needed to re-arrange; only a newly downloaded extension needs one, and
+My Ribbon offers it.
+
+Two things make it safe to lean on:
+
+- **A downloaded repository is installed as a normal pyRevit extension** (under
+  `%APPDATA%\pyRevit\Extensions`, the folder pyRevit always scans). That is why
+  **pyRevit ▸ Update** — and EasyBIM Auto Update, which calls the same routine —
+  keep it up to date, and Reload rebuilds it. My Ribbon runs no updater of its
+  own. Its original tab can stay hidden ("Hide its own tab", on by default for
+  repositories you bring in this way, off for extensions that were already
+  installed); its startup script and hooks keep working.
+- **A placed button is the extension's own live button**, added to your panel —
+  the same trick that puts EasyBIM's Slope and Flip Multiple on Revit's Modify
+  tab. It runs the same command, greys out in the same situations, and shows the
+  same icon and tooltip. Nothing is copied to disk. (Because it is the same
+  object, a placed button keeps its own title; renaming copies is not in this
+  version.)
+
+The window has your **Sources** on the left and your **buttons** on the right as
+a tree of tab › panel. Every session, on the first idle moment after pyRevit has
+finished loading, My Ribbon rebuilds your panels and tabs from its settings; the
+pyRevit tab is never hidden and is never a destination, so there is always a way
+back. **Export…** writes the whole setup to a JSON file; **Import…** previews a
+Merge or a Replace, downloads what the other computer had that this one lacks,
+and stages the result for Apply. No credential is ever written to that file: a
+private repository asks for a token that lives only for that download.
+
+Things it tells you rather than guesses: a repository with no pyRevit tools is
+deleted again with a message; a button whose extension is disabled, removed, or
+too new for this Revit is marked missing on its row; a repository already
+installed here is reused instead of downloaded twice; a download you cancel
+leaves nothing behind.
