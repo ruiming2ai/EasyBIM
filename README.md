@@ -215,18 +215,26 @@ filters the view only; nothing is deselected by turning it on.
 
 ### When a family is already in the target
 
-Revit asks, the same as loading a family by hand. Its own **Family Already
-Exists** dialog appears, offering to overwrite the existing version, overwrite
-it and its parameter values, or cancel — along with Revit's **"Do this for all
-loading families"** checkbox. Declining skips that family and the run carries
-on; the summary lists it under Skipped rather than Failed. Overwriting keeps
-every placed instance in the model and gives them the new definition.
+You are asked, the same as loading a family by hand. A **Family Already
+Exists** window offers to overwrite the existing version, overwrite it and its
+parameter values, or cancel — with a **"Do this for all loading families"**
+checkbox. Tick it and the rest of the transfer follows that answer without
+asking again. Declining skips that family and the run carries on; the summary
+lists it under Skipped rather than Failed. Overwriting keeps every placed
+instance in the model and gives them the new definition.
 
-Whether that checkbox covers the whole transfer or only one family is Revit's
-own behaviour, and it is not documented anywhere. This tool hands Revit a single
-options object for the entire run, which is the arrangement that would let one
-answer carry across it — but that is untested, so expect either. Where Revit has
-no UI to ask through, the tool overwrites without asking, as it did before.
+Cancel deliberately ignores the checkbox: it means "not this one", so the next
+family that clashes asks again.
+
+You are only asked when Revit itself would be — when the family is already
+there *and* actually different. A family identical to the one in the target
+loads silently.
+
+The window is built from the same widget Revit uses, so it looks like the
+prompt an interactive load shows, but the checkbox is ours. Revit's own version
+of it does not survive a transfer that loads one family at a time, which is why
+this tool asks the question itself. Where the prompt cannot be shown at all,
+the transfer overwrites without asking and reports what it replaced.
 
 The one exception is a family arriving from a Revit link when that link refused
 to hand over a family document. That path copies the element rather than loading
