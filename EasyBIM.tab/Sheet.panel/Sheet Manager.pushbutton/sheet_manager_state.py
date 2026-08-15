@@ -125,6 +125,7 @@ class SheetRowBase(object):
         self.name_state = STATE_NORMAL
         self.is_placeholder = bool(is_placeholder)
         self.tblock_count = int(tblock_count or 0)
+        self.is_missing = False   # sheet deleted in the model since load
         self.original = {}
         self.all_revision_ids = set()
         self.revisions_cloud = set()
@@ -147,6 +148,8 @@ class SheetRowBase(object):
 
 def base_state(row, column):
     """Cell state ignoring staged edits (what a clean cell should show)."""
+    if getattr(row, "is_missing", False):
+        return STATE_LOCKED
     if column.kind == KIND_REVISION:
         if column.revision_id in row.revisions_cloud:
             return STATE_CLOUD
@@ -182,6 +185,22 @@ def refresh_cell_state(row, column):
         row.set_state(column.attr, base)
 
 
+def _normalized_cell_value(row, column, value):
+    """The value a clean cell shows for a model value (shared by populate,
+    late-added columns and model merges)."""
+    if column.kind == KIND_REVISION:
+        return bool(value)
+    if value is None:
+        value = u""
+    cell_state = base_state(row, column)
+    if cell_state == STATE_DUPLICATED:
+        return DUPLICATED_TEXT
+    if column.kind == KIND_TB_PARAM and cell_state == STATE_LOCKED \
+            and (row.is_placeholder or row.tblock_count == 0):
+        return u""
+    return value
+
+
 def populate_row(row, columns, values=None):
     """Set every value attr and its ``_state`` sibling before binding.
 
@@ -196,24 +215,11 @@ def populate_row(row, columns, values=None):
             row.original[column.attr] = getattr(row, column.attr, u"")
             row.set_state(column.attr, STATE_NORMAL)
             continue
-        if column.kind == KIND_REVISION:
-            checked = bool(values.get(column.key, False))
-            setattr(row, column.attr, checked)
-            row.original[column.attr] = checked
-            setattr(row, column.attr + "_state", base_state(row, column))
-            continue
-        value = values.get(column.key, u"")
-        if value is None:
-            value = u""
-        state = base_state(row, column)
-        if state == STATE_DUPLICATED:
-            value = DUPLICATED_TEXT
-        elif column.kind == KIND_TB_PARAM and state == STATE_LOCKED \
-                and (row.is_placeholder or row.tblock_count == 0):
-            value = u""
+        value = _normalized_cell_value(
+            row, column, values.get(column.key, u""))
         setattr(row, column.attr, value)
         row.original[column.attr] = value
-        setattr(row, column.attr + "_state", state)
+        setattr(row, column.attr + "_state", base_state(row, column))
 
 
 def apply_cell_edit(row, column, new_value):
@@ -424,6 +430,8 @@ class StagedChanges(object):
 def compute_staged_changes(rows, columns):
     changes = StagedChanges()
     for row in rows:
+        if getattr(row, "is_missing", False):
+            continue
         if row.is_pending:
             changes.pending_sheets.append(row)
         for column in columns:
@@ -625,17 +633,147 @@ def plan_search_replace(rows, columns, find_text, replace_text,
 
 def populate_new_column(row, column, value):
     """Initialize one late-added text column on an existing row."""
-    cell_state = base_state(row, column)
-    if value is None:
-        value = u""
-    if cell_state == STATE_DUPLICATED:
-        value = DUPLICATED_TEXT
-    elif column.kind == KIND_TB_PARAM and cell_state == STATE_LOCKED \
-            and (row.is_placeholder or row.tblock_count == 0):
-        value = u""
+    value = _normalized_cell_value(row, column, value)
     setattr(row, column.attr, value)
     row.original[column.attr] = value
-    setattr(row, column.attr + "_state", cell_state)
+    setattr(row, column.attr + "_state", base_state(row, column))
+
+
+def merge_row_values(row, columns, values):
+    """Fold fresh model values into ``row`` without discarding staged edits.
+
+    ``values``: column.key -> current model value (bool for revision
+    columns, text otherwise); columns absent from ``values`` are untouched.
+    Clean cell  -> value and original both take the model value.
+    Staged cell (dirty/conflict) -> keeps its value; original moves to the
+    model value; state recomputed, so an edit that now matches the model
+    reverts to normal. Returns (updated_attrs, reverted_attrs, kept_dirty).
+    """
+    updated, reverted, kept = [], [], []
+    for column in columns:
+        if column.kind in (KIND_SELECT, KIND_INDEX):
+            continue
+        if column.key not in values:
+            continue
+        model_value = _normalized_cell_value(row, column, values[column.key])
+        attr = column.attr
+        if row.get_state(attr) in (STATE_DIRTY, STATE_CONFLICT):
+            row.original[attr] = model_value
+            refresh_cell_state(row, column)
+            if row.get_state(attr) == STATE_DIRTY:
+                kept.append(attr)
+            else:
+                reverted.append(attr)
+        else:
+            row.original[attr] = model_value
+            if getattr(row, attr, None) != model_value:
+                row.set_value(attr, model_value)
+                updated.append(attr)
+            refresh_cell_state(row, column)
+    return updated, reverted, kept
+
+
+def mark_row_missing(row, columns):
+    """Sheet deleted in the model: lock every cell, keep values so a Revit
+    undo that brings the sheet back restores the staged edits."""
+    row.is_missing = True
+    for column in columns:
+        if column.kind in (KIND_SELECT, KIND_INDEX):
+            continue
+        row.set_state(column.attr, STATE_LOCKED)
+    row.notify("is_missing")
+
+
+def unmark_row_missing(row, columns):
+    row.is_missing = False
+    for column in columns:
+        if column.kind in (KIND_SELECT, KIND_INDEX):
+            continue
+        refresh_cell_state(row, column)
+    row.notify("is_missing")
+
+
+MISSING = object()   # sentinel: the sheet no longer exists in the model
+
+
+def partition_stale_changes(changes, current_values):
+    """Split staged changes into (clean, stale) against fresh model values.
+
+    ``current_values``: {(sheet_id, attr): model_value | MISSING} for every
+    staged cell of existing sheets. A cell is stale when the model value
+    differs from the snapshot the edit was made against (row.original), or
+    when the sheet is gone. Pending sheets and copy-content ops are always
+    clean. Returns (clean StagedChanges, stale [(row, column, attr,
+    model_value)]).
+    """
+    clean = StagedChanges()
+    stale = []
+    clean.pending_sheets = list(changes.pending_sheets)
+    clean.copy_content_ops = list(changes.copy_content_ops)
+
+    def is_stale(row, attr):
+        if row.is_pending:
+            return False, None
+        model_value = current_values.get((row.sheet_id, attr), None)
+        if model_value is MISSING:
+            return True, MISSING
+        if (row.sheet_id, attr) not in current_values:
+            return False, None
+        if model_value != row.original.get(attr):
+            return True, model_value
+        return False, None
+
+    for row, old, new in changes.renames:
+        stale_flag, model_value = is_stale(row, "number")
+        if stale_flag:
+            stale.append((row, None, "number", model_value))
+        else:
+            clean.renames.append((row, old, new))
+    for row, old, new in changes.name_edits:
+        stale_flag, model_value = is_stale(row, "name")
+        if stale_flag:
+            stale.append((row, None, "name", model_value))
+        else:
+            clean.name_edits.append((row, old, new))
+    for row, column, old, new in changes.param_edits:
+        stale_flag, model_value = is_stale(row, column.attr)
+        if stale_flag:
+            stale.append((row, column, column.attr, model_value))
+        else:
+            clean.param_edits.append((row, column, old, new))
+    for bucket_name in ("revision_adds", "revision_removes",
+                        "cloud_hide_requests", "cloud_unhide_candidates"):
+        for row, column, revision_id in getattr(changes, bucket_name):
+            stale_flag, model_value = is_stale(row, column.attr)
+            if stale_flag:
+                stale.append((row, column, column.attr, model_value))
+            else:
+                getattr(clean, bucket_name).append((row, column, revision_id))
+    return clean, stale
+
+
+def record_stale_changes(results, stale, columns_by_attr=None):
+    """Add one skipped Errors/Warnings line per stale cell."""
+    columns_by_attr = columns_by_attr or {}
+    for row, column, attr, model_value in stale:
+        if column is not None:
+            label = column.header
+        elif attr == "number":
+            label = "Sheet Number"
+        elif attr == "name":
+            label = "Sheet Name"
+        else:
+            label = attr
+        if model_value is MISSING:
+            message = ("Skipped: sheet no longer exists in the model.")
+        else:
+            if isinstance(model_value, bool):
+                shown = u"On" if model_value else u"Off"
+            else:
+                shown = u"{0}".format(model_value)
+            message = (u"Skipped: changed in the model since load "
+                       u"(now '{0}') - review and re-apply.".format(shown))
+        results.add_error(row.number, label, message, status="skipped")
 
 
 def export_columns(columns):
