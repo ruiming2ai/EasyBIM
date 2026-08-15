@@ -26,6 +26,11 @@ X_NAME = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
 HANDLER_ATTRS = ("Click", "TextChanged", "SelectionChanged",
                  "BeginningEdit", "CellEditEnding", "Checked",
                  "Unchecked")
+# lib modules the Sheet Manager owns; opted into the IronPython-2.7 gate.
+LIB_MODULES = [
+    REPO_ROOT / "lib" / "easybim" / "external_events.py",
+    REPO_ROOT / "lib" / "easybim" / "sheet_revisions.py",
+]
 
 
 def _xaml_names(root):
@@ -109,12 +114,50 @@ class SheetManagerBundleTests(unittest.TestCase):
 
     def test_scripts_stay_ironpython27_safe(self):
         # No f-strings; keep the py2-compatible idiom the runtime needs.
-        for path in sorted(COMMAND_DIR.glob("*.py")):
+        for path in sorted(COMMAND_DIR.glob("*.py")) + LIB_MODULES:
             source = path.read_text(encoding="utf-8")
             self.assertFalse(
                 re.search(r"(?<![A-Za-z0-9_])[fF]['\"]", source),
                 "%s appears to contain an f-string" % path.name)
             ast.parse(source)
+
+    def test_script_keeps_the_engine_alive(self):
+        # The modeless window and its ExternalEvent handler are Python
+        # objects that must outlive the command run (AGENTS 2026-08-02:
+        # any event-owning button needs the flag).
+        source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
+        self.assertIn("__persistentengine__ = True", source)
+
+    def test_script_drops_stale_modules_when_idle(self):
+        # A persistent engine keeps sys.modules across a pyRevit reload;
+        # the launcher must drop its own modules while no window is open,
+        # gated by the SAME envvar the window sets.
+        script_source = (COMMAND_DIR / "script.py").read_text(
+            encoding="utf-8")
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        self.assertIn("def _drop_stale_modules", script_source)
+        match_script = re.search(
+            r'ACTIVE_ENVVAR = "([A-Z_]+)"', script_source)
+        match_ui = re.search(r'ACTIVE_ENVVAR = "([A-Z_]+)"', ui_source)
+        self.assertIsNotNone(match_script)
+        self.assertIsNotNone(match_ui)
+        self.assertEqual(match_script.group(1), match_ui.group(1))
+        for name in ("sheet_manager_ui", "sheet_manager_revit",
+                     "sheet_manager_state", "sheet_manager_dialogs",
+                     "sheet_manager_xlsx", "easybim.external_events"):
+            self.assertIn('"%s"' % name, script_source)
+
+    def test_ui_routes_revit_work_through_the_bridge(self):
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        self.assertIn("from easybim import external_events", ui_source)
+        self.assertIn("ExternalEventBridge(", ui_source)
+        self.assertIn("window.Show()", ui_source)
+        # The modal-era workaround must be gone.
+        self.assertNotIn("pending_selection_ids", ui_source)
+        # Selection happens silently: no prompt asking to close.
+        self.assertNotIn("Close and select", ui_source)
 
     def test_revision_template_binds_generated_attrs_only(self):
         source = (COMMAND_DIR / "sheet_manager_ui.py")\
