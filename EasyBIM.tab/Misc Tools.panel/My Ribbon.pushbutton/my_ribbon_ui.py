@@ -1,0 +1,1053 @@
+# -*- coding: utf-8 -*-
+"""WPF windows for the My Ribbon command.
+
+The manager window edits a working copy of the registry in place (move,
+rename, remove, hide-tab) and closes with a ``result`` whenever the script
+has to do host work - download, parse, import, export, apply - after which
+the script reopens it.  Same close-and-reopen loop as Families Transfer.
+"""
+
+from pyrevit import forms
+from pyrevit.framework import Windows
+
+import my_ribbon_state as state
+
+
+TITLE = "My Ribbon"
+
+NEW_TAB_CHOICE = u"— New tab... —"
+NEW_PANEL_CHOICE = u"— New panel... —"
+EASYBIM_TAB = "EasyBIM"
+ARROW = u"  ›  "
+
+
+def _safe_text(value):
+    return state.safe_text(value)
+
+
+def _search_text(textbox):
+    try:
+        return _safe_text(textbox.Text).strip().lower()
+    except Exception:
+        return ""
+
+
+def _add_empty_text(panel, message):
+    text = Windows.Controls.TextBlock()
+    text.Text = message
+    text.Foreground = Windows.Media.Brushes.DimGray
+    text.Margin = Windows.Thickness(8, 8, 8, 8)
+    text.TextWrapping = Windows.TextWrapping.Wrap
+    panel.Children.Add(text)
+
+
+def _text_block(text, bold=False, grey=False, size=None):
+    block = Windows.Controls.TextBlock()
+    block.Text = _safe_text(text)
+    block.TextTrimming = Windows.TextTrimming.CharacterEllipsis
+    if bold:
+        block.FontWeight = Windows.FontWeights.SemiBold
+    if grey:
+        block.Foreground = Windows.Media.Brushes.DimGray
+    if size:
+        block.FontSize = size
+    return block
+
+
+def _one_line(text):
+    return " ".join(_safe_text(text).replace("\\n", " ").split())
+
+
+def _dest_label(dest):
+    return u"{0}{1}{2}".format(dest.get("tab"), ARROW, dest.get("panel"))
+
+
+def _small_icon(path):
+    """A 16-px image for a picker row, or None when the file is unusable."""
+    if not path:
+        return None
+    try:
+        import System
+        bitmap = Windows.Media.Imaging.BitmapImage()
+        bitmap.BeginInit()
+        bitmap.UriSource = System.Uri(path)
+        bitmap.DecodePixelWidth = 16
+        bitmap.CacheOption = Windows.Media.Imaging.BitmapCacheOption.OnLoad
+        bitmap.EndInit()
+        image = Windows.Controls.Image()
+        image.Source = bitmap
+        image.Width = 16
+        image.Height = 16
+        image.Margin = Windows.Thickness(0, 0, 6, 0)
+        return image
+    except Exception:
+        return None
+
+
+# -- manager -------------------------------------------------------------------
+
+
+class MyRibbonWindow(forms.WPFWindow):
+    """Sources on the left, the user's buttons on the right.
+
+    ``working`` is edited in place.  ``result`` tells the script what to do
+    next: ``"apply"``, ``"close"``, ``"add_source"``, ``("add_buttons",
+    source_id)``, ``"import"`` or ``"export"``.
+    """
+
+    def __init__(self, xaml_file_name, working, saved, source_status=None,
+                 placement_issues=None, ribbon_summary=None, open_folder=None,
+                 pending_deletes=None, notice=None):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.working = working
+        self.saved = saved
+        self.source_status = dict(source_status or {})
+        self.placement_issues = dict(placement_issues or {})
+        self.ribbon_summary = list(ribbon_summary or [])
+        self.open_folder = open_folder
+        self.pending_deletes = pending_deletes if pending_deletes is not None else []
+        self.result = None
+        self._source_rows = []
+        self._tree_items = {}
+        self._selected_source_id = None
+        self._selected_node = None
+        self._populate_sources()
+        self._populate_tree()
+        self._refresh_status(notice)
+        self._is_ready = True
+
+    # -- population --
+
+    def _populate_sources(self):
+        self.SourcesList.Items.Clear()
+        self._source_rows = []
+        for source in self.working.get("sources", []):
+            item = Windows.Controls.ListBoxItem()
+            panel = Windows.Controls.StackPanel()
+            panel.Margin = Windows.Thickness(4, 4, 4, 4)
+            panel.Children.Add(_text_block(source.get("label") or source.get("ext_name"), bold=True))
+            detail = self._source_detail(source)
+            panel.Children.Add(_text_block(detail, grey=True, size=11))
+            hide = Windows.Controls.CheckBox()
+            hide.Content = "Hide its own tab ({0})".format(
+                ", ".join(source.get("tab_names") or []) or "no tab found yet")
+            hide.IsChecked = bool(source.get("hide_tab"))
+            hide.Tag = source.get("id")
+            hide.Margin = Windows.Thickness(0, 4, 0, 0)
+            hide.FontSize = 11
+            hide.Click += self.hide_tab_click
+            panel.Children.Add(hide)
+            item.Content = panel
+            item.Tag = source.get("id")
+            self.SourcesList.Items.Add(item)
+            self._source_rows.append(item)
+        count = len(self._source_rows)
+        self.sources_count_tb.Text = "{0} source{1}.".format(count, "" if count == 1 else "s")
+        if not count:
+            item = Windows.Controls.ListBoxItem()
+            item.Content = _text_block("No sources yet. Press Add source... to download a repository, "
+                                       "pick an installed extension, or browse pyRevit's catalogue.",
+                                       grey=True)
+            item.IsEnabled = False
+            self.SourcesList.Items.Add(item)
+
+    def _source_detail(self, source):
+        kind = source.get("kind")
+        if kind == "git":
+            origin = source.get("url") or ""
+            if source.get("branch"):
+                origin += " @ " + source["branch"]
+        elif kind == "catalogue":
+            origin = "pyRevit catalogue: " + _safe_text(source.get("name") or source.get("ext_name"))
+        else:
+            origin = "installed extension: " + _safe_text(source.get("ext_name"))
+        status = self.source_status.get(source.get("id"), "")
+        return "{0}  -  {1}".format(status, origin) if status else origin
+
+    def _populate_tree(self):
+        self.ButtonsTree.Items.Clear()
+        self._tree_items = {}
+        sources = dict((s.get("id"), s) for s in self.working.get("sources", []))
+        for dest in self.working.get("destinations", []):
+            rows = state.placements_in(self.working, dest.get("id"))
+            node = Windows.Controls.TreeViewItem()
+            header = u"{0}   ({1})".format(_dest_label(dest), len(rows))
+            if dest.get("own_tab"):
+                header += "   [my own tab]"
+            node.Header = header
+            node.Tag = ("dest", dest.get("id"))
+            node.IsExpanded = True
+            for placement in rows:
+                leaf = Windows.Controls.TreeViewItem()
+                source = sources.get(placement.get("source"), {})
+                text = u"{0}   - {1}".format(
+                    _one_line(placement.get("title")),
+                    source.get("label") or source.get("ext_name") or "?")
+                if placement.get("kind") in ("pulldown", "splitbutton", "splitpushbutton"):
+                    text += "   [whole drop-down]"
+                issue = self.placement_issues.get(placement.get("id"))
+                if issue:
+                    text += "   ! " + issue
+                leaf.Header = text
+                leaf.Tag = ("placement", placement.get("id"))
+                node.Items.Add(leaf)
+                self._tree_items[placement.get("id")] = leaf
+            self.ButtonsTree.Items.Add(node)
+            self._tree_items[dest.get("id")] = node
+        total = len(self.working.get("placements", []))
+        panels = len(self.working.get("destinations", []))
+        self.buttons_count_tb.Text = "{0} button{1} on {2} panel{3}.".format(
+            total, "" if total == 1 else "s", panels, "" if panels == 1 else "s")
+        if not self.working.get("destinations"):
+            node = Windows.Controls.TreeViewItem()
+            node.Header = "Nothing placed yet. Select a source and press Add buttons from it..."
+            node.IsEnabled = False
+            self.ButtonsTree.Items.Add(node)
+        self._selected_node = None
+        self._refresh_buttons()
+
+    def _refresh_status(self, notice=None):
+        changes = state.count_changes(self.saved, self.working) + len(self.pending_deletes)
+        text = state.status_line(self.working, changes)
+        if notice:
+            text = u"{0}   -   {1}".format(notice, text)
+        self.status_tb.Text = text
+
+    def _refresh_buttons(self):
+        has_source = self._selected_source_id is not None
+        self.remove_source_btn.IsEnabled = has_source
+        self.open_folder_btn.IsEnabled = has_source and self.open_folder is not None
+        self.add_buttons_btn.IsEnabled = has_source
+        node = self._selected_node
+        is_placement = bool(node and node[0] == "placement")
+        is_dest = bool(node and node[0] == "dest")
+        self.move_up_btn.IsEnabled = is_placement
+        self.move_down_btn.IsEnabled = is_placement
+        self.move_to_btn.IsEnabled = is_placement
+        self.rename_btn.IsEnabled = is_dest
+        self.remove_placement_btn.IsEnabled = is_placement or is_dest
+
+    def _rebuild(self, notice=None):
+        self._is_ready = False
+        try:
+            self._populate_sources()
+            self._populate_tree()
+            self._refresh_status(notice)
+        finally:
+            self._is_ready = True
+
+    # -- sources --
+
+    def sources_selection_changed(self, sender, args):
+        del sender, args
+        item = self.SourcesList.SelectedItem
+        self._selected_source_id = getattr(item, "Tag", None) if item is not None else None
+        self._refresh_buttons()
+
+    def hide_tab_click(self, sender, args):
+        del args
+        if not getattr(self, "_is_ready", False):
+            return
+        state.set_hide_tab(self.working, sender.Tag, bool(sender.IsChecked))
+        source = state.find_source_by_id(self.working, sender.Tag)
+        if source and bool(sender.IsChecked) and \
+                any(state.normalize_label(t) == "pyrevit" for t in source.get("tab_names", [])):
+            forms.alert("The pyRevit tab is never hidden: it holds Reload, Update, Settings and "
+                        "Extensions. Other tabs of this source will be hidden.", title=TITLE)
+        self._refresh_status()
+
+    def add_source_click(self, sender, args):
+        del sender, args
+        self.result = "add_source"
+        self.Close()
+
+    def add_buttons_click(self, sender, args):
+        del sender, args
+        if self._selected_source_id is None:
+            return
+        self.result = ("add_buttons", self._selected_source_id)
+        self.Close()
+
+    def remove_source_click(self, sender, args):
+        del sender, args
+        source = state.find_source_by_id(self.working, self._selected_source_id)
+        if source is None:
+            return
+        placements = [p for p in self.working.get("placements", [])
+                      if p.get("source") == source.get("id")]
+        message = "Remove {0} from My Ribbon?".format(source.get("label") or source.get("ext_name"))
+        if placements:
+            message += "\n\n{0} placed button{1} will be removed too.".format(
+                len(placements), "" if len(placements) == 1 else "s")
+        if source.get("installed_by_my_ribbon"):
+            message += ("\n\nMy Ribbon installed this extension, so its folder will be deleted "
+                        "when you press Apply.")
+        else:
+            message += "\n\nThe extension itself stays installed."
+        if not forms.alert(message, title=TITLE, yes=True, no=True):
+            return
+        state.remove_source(self.working, source.get("id"))
+        if source.get("installed_by_my_ribbon"):
+            self.pending_deletes.append(source)
+        self._selected_source_id = None
+        self._rebuild()
+
+    def open_folder_click(self, sender, args):
+        del sender, args
+        source = state.find_source_by_id(self.working, self._selected_source_id)
+        if source is None or self.open_folder is None:
+            return
+        try:
+            if not self.open_folder(source):
+                forms.alert("The folder for this source was not found.", title=TITLE)
+        except Exception as ex:
+            forms.alert("Could not open the folder:\n{0}".format(ex), title=TITLE)
+
+    # -- destinations / placements --
+
+    def tree_selection_changed(self, sender, args):
+        del sender, args
+        item = self.ButtonsTree.SelectedItem
+        self._selected_node = getattr(item, "Tag", None) if item is not None else None
+        self._refresh_buttons()
+
+    def _select_tree_item(self, item_id):
+        item = self._tree_items.get(item_id)
+        if item is not None:
+            try:
+                item.IsSelected = True
+                item.BringIntoView()
+            except Exception:
+                pass
+
+    def new_panel_click(self, sender, args):
+        del sender, args
+        self._create_destination(new_tab=False)
+
+    def new_tab_click(self, sender, args):
+        del sender, args
+        self._create_destination(new_tab=True)
+
+    def _create_destination(self, new_tab):
+        window = DestinationWindow("DestinationWindow.xaml", self.ribbon_summary, self.working,
+                                   mode="create", start_with_new_tab=new_tab)
+        window.ShowDialog()
+        if window.result and window.result != "back":
+            tab, panel, own_tab = window.result
+            dest = state.add_destination(self.working, tab, panel, own_tab)
+            self._rebuild()
+            self._select_tree_item(dest.get("id"))
+
+    def move_up_click(self, sender, args):
+        del sender, args
+        self._move(-1)
+
+    def move_down_click(self, sender, args):
+        del sender, args
+        self._move(1)
+
+    def _move(self, delta):
+        node = self._selected_node
+        if not node or node[0] != "placement":
+            return
+        if state.move_placement(self.working, node[1], delta):
+            self._rebuild()
+            self._select_tree_item(node[1])
+
+    def move_to_click(self, sender, args):
+        del sender, args
+        node = self._selected_node
+        if not node or node[0] != "placement":
+            return
+        placement = state.find_placement_by_id(self.working, node[1])
+        options = []
+        for dest in self.working.get("destinations", []):
+            if dest.get("id") != placement.get("dest"):
+                options.append(_dest_label(dest))
+        if not options:
+            forms.alert("There is no other panel yet. Create one with New panel... or New tab...",
+                        title=TITLE)
+            return
+        picked = forms.SelectFromList.show(options, title="Move to which panel?", button_name="Move",
+                                           multiselect=False)
+        if not picked:
+            return
+        for dest in self.working.get("destinations", []):
+            if _dest_label(dest) == picked:
+                state.move_placement_to(self.working, node[1], dest.get("id"))
+                break
+        self._rebuild()
+        self._select_tree_item(node[1])
+
+    def rename_click(self, sender, args):
+        del sender, args
+        node = self._selected_node
+        if not node or node[0] != "dest":
+            return
+        dest = state.find_destination_by_id(self.working, node[1])
+        if dest is None:
+            return
+        panel = forms.ask_for_string(default=dest.get("panel"), prompt="Panel name:",
+                                     title="Rename panel")
+        if panel is None:
+            return
+        tab = dest.get("tab")
+        if dest.get("own_tab"):
+            tab = forms.ask_for_string(default=dest.get("tab"), prompt="Tab name:",
+                                       title="Rename tab") or dest.get("tab")
+        state.rename_destination(self.working, node[1], tab=tab, panel=panel)
+        self._rebuild()
+        self._select_tree_item(node[1])
+
+    def remove_placement_click(self, sender, args):
+        del sender, args
+        node = self._selected_node
+        if not node:
+            return
+        if node[0] == "placement":
+            state.remove_placement(self.working, node[1])
+        elif node[0] == "dest":
+            dest = state.find_destination_by_id(self.working, node[1])
+            rows = state.placements_in(self.working, node[1])
+            message = u"Remove the panel {0}?".format(_dest_label(dest))
+            if rows:
+                message += "\n\n{0} button{1} on it will be removed from My Ribbon.".format(
+                    len(rows), "" if len(rows) == 1 else "s")
+            if not forms.alert(message, title=TITLE, yes=True, no=True):
+                return
+            state.remove_destination(self.working, node[1])
+        self._rebuild()
+
+    # -- footer --
+
+    def import_click(self, sender, args):
+        del sender, args
+        self.result = "import"
+        self.Close()
+
+    def export_click(self, sender, args):
+        del sender, args
+        self.result = "export"
+        self.Close()
+
+    def apply_click(self, sender, args):
+        del sender, args
+        self.result = "apply"
+        self.Close()
+
+    def close_click(self, sender, args):
+        del sender, args
+        changes = state.count_changes(self.saved, self.working) + len(self.pending_deletes)
+        if changes and not forms.alert(
+                "You have {0} change{1} that {2} not applied.\n\nClose and lose them?".format(
+                    changes, "" if changes == 1 else "s", "is" if changes == 1 else "are"),
+                title=TITLE, yes=True, no=True):
+            return
+        self.result = "close"
+        self.Close()
+
+
+# -- where from? -----------------------------------------------------------------
+
+
+class SourceSelectionWindow(forms.WPFWindow):
+    """Three cards: a git link, installed extensions, pyRevit's catalogue.
+
+    ``result`` is ``("git", link, branch)``, ``("installed", ext)``,
+    ``("catalogue", row)`` or None.
+    """
+
+    def __init__(self, xaml_file_name, installed, catalogue, link_text="", branch_text=""):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.installed = list(installed or [])
+        self.catalogue = list(catalogue or [])
+        self.result = None
+        self.LinkBox.Text = _safe_text(link_text)
+        self.BranchBox.Text = _safe_text(branch_text)
+        self._populate_installed()
+        self._populate_catalogue()
+        self._validate_link()
+        self._is_ready = True
+
+    def _populate_installed(self):
+        self.InstalledList.Items.Clear()
+        for ext in self.installed:
+            item = Windows.Controls.ListBoxItem()
+            panel = Windows.Controls.StackPanel()
+            panel.Children.Add(_text_block(ext.get("name"), bold=True))
+            buttons = len(ext.get("buttons") or [])
+            detail = "tabs: {0}   -   {1} button{2}".format(
+                ", ".join(ext.get("tab_names") or []) or "none",
+                buttons, "" if buttons == 1 else "s")
+            panel.Children.Add(_text_block(detail, grey=True, size=11))
+            item.Content = panel
+            item.Tag = ext
+            self.InstalledList.Items.Add(item)
+        count = len(self.installed)
+        self.installed_count_tb.Text = "{0} extension{1} found on this computer (EasyBIM included).".format(
+            count, "" if count == 1 else "s")
+
+    def _populate_catalogue(self):
+        self.CatalogueList.Items.Clear()
+        needle = _search_text(self.CatalogueSearchBox)
+        shown = 0
+        for row in self.catalogue:
+            haystack = " ".join([row.get("name", ""), row.get("author", ""),
+                                 row.get("description", "")]).lower()
+            if needle and needle not in haystack:
+                continue
+            item = Windows.Controls.ListBoxItem()
+            panel = Windows.Controls.StackPanel()
+            title = row.get("name")
+            if row.get("installed"):
+                title += "   (installed)"
+            panel.Children.Add(_text_block(title, bold=True))
+            detail = row.get("description") or ""
+            if row.get("author"):
+                detail = "{0}  -  {1}".format(row.get("author"), detail) if detail else row.get("author")
+            panel.Children.Add(_text_block(detail, grey=True, size=11))
+            item.Content = panel
+            item.Tag = row
+            self.CatalogueList.Items.Add(item)
+            shown += 1
+        total = len(self.catalogue)
+        self.catalogue_count_tb.Text = "{0} of {1} listed. This is pyRevit's own list of community " \
+                                       "extensions; it needs no internet to browse.".format(shown, total)
+        if not total:
+            self.catalogue_count_tb.Text = "pyRevit's catalogue could not be read on this computer."
+
+    def _validate_link(self):
+        ref, error = state.parse_git_url(self.LinkBox.Text)
+        if ref is None:
+            self.download_btn.IsEnabled = False
+            self.link_hint_tb.Text = error if _safe_text(self.LinkBox.Text).strip() else ""
+            return
+        self.download_btn.IsEnabled = True
+        hint = "Will download {0} from {1}".format(ref.label, ref.host)
+        if ref.branch and not _safe_text(self.BranchBox.Text).strip():
+            self.BranchBox.Text = ref.branch
+        if ref.subpath:
+            hint += " (the link points inside the repository; the whole repository is downloaded)"
+        self.link_hint_tb.Text = hint
+
+    def link_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._validate_link()
+
+    def download_click(self, sender, args):
+        del sender, args
+        ref, error = state.parse_git_url(self.LinkBox.Text)
+        if ref is None:
+            forms.alert(error, title=TITLE)
+            return
+        self.result = ("git", _safe_text(self.LinkBox.Text).strip(),
+                       _safe_text(self.BranchBox.Text).strip())
+        self.Close()
+
+    def installed_selection_changed(self, sender, args):
+        del sender, args
+        self.use_installed_btn.IsEnabled = self.InstalledList.SelectedItem is not None
+
+    def installed_double_click(self, sender, args):
+        del sender, args
+        self.use_installed_click(None, None)
+
+    def use_installed_click(self, sender, args):
+        del sender, args
+        item = self.InstalledList.SelectedItem
+        if item is None:
+            return
+        self.result = ("installed", item.Tag)
+        self.Close()
+
+    def catalogue_search_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._populate_catalogue()
+        self.install_catalogue_btn.IsEnabled = False
+
+    def catalogue_selection_changed(self, sender, args):
+        del sender, args
+        self.install_catalogue_btn.IsEnabled = self.CatalogueList.SelectedItem is not None
+
+    def catalogue_double_click(self, sender, args):
+        del sender, args
+        self.install_catalogue_click(None, None)
+
+    def install_catalogue_click(self, sender, args):
+        del sender, args
+        item = self.CatalogueList.SelectedItem
+        if item is None:
+            return
+        self.result = ("catalogue", item.Tag)
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()
+
+
+# -- which buttons? ---------------------------------------------------------------
+
+
+class ButtonSelectionWindow(forms.WPFWindow):
+    """Tab > Panel groups of check-boxes; a drop-down can be taken whole or
+    by child.  ``result`` is ``"next"`` (see ``selected``), ``"back"`` or None."""
+
+    def __init__(self, xaml_file_name, source_label, described, already_placed=None,
+                 host_version=None, preselected_paths=None):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.described = described or {}
+        self.already_placed = dict(already_placed or {})
+        self.host_version = host_version
+        self.result = None
+        self.selected = []
+        self._checkboxes = []      # (checkbox, button)
+        self._children_of = {}     # pulldown path_key -> [child checkboxes]
+        self._expanders = []
+        self._expanded = {}
+        self._checked = set(preselected_paths or [])
+        self.header_tb.Text = "Which buttons from {0}?".format(source_label)
+        self.Title = "My Ribbon - {0}".format(source_label)
+        count = len([b for b in self.described.get("buttons", []) if state.is_placeable(b)])
+        self.subtitle_tb.Text = "{0} button{1} in {2}. Tick the ones you want on your ribbon.".format(
+            count, "" if count == 1 else "s",
+            ", ".join(self.described.get("tab_names") or []) or "this extension")
+        warnings = []
+        if self.described.get("has_startup"):
+            warnings.append("runs a startup script")
+        if self.described.get("has_hooks"):
+            warnings.append("has event hooks")
+        if warnings:
+            self.warning_tb.Text = ("This extension {0}. Because it is installed as a normal "
+                                    "pyRevit extension, all of that keeps working - only its tab is "
+                                    "hidden if you choose so.").format(" and ".join(warnings))
+            self.warning_border.Visibility = Windows.Visibility.Visible
+        self._populate()
+        self._is_ready = True
+
+    def _populate(self):
+        self.ButtonListPanel.Children.Clear()
+        self._checkboxes = []
+        self._children_of = {}
+        self._expanders = []
+        needle = _search_text(self.SearchBox)
+        shown = 0
+        for tab in self.described.get("tabs", []):
+            for panel in tab.get("panels", []):
+                rows_panel = Windows.Controls.StackPanel()
+                visible = 0
+                for item in panel.get("items", []):
+                    visible += self._add_row(rows_panel, item, needle, indent=0)
+                if not visible:
+                    continue
+                shown += visible
+                expander = Windows.Controls.Expander()
+                key = u"{0}{1}{2}".format(tab.get("title"), ARROW, panel.get("title"))
+                expander.Header = u"{0}   ({1})".format(_one_line(key), visible)
+                expander.IsExpanded = self._expanded.get(key, True)
+                expander.Tag = key
+                expander.Margin = Windows.Thickness(8, 6, 8, 4)
+                expander.Content = rows_panel
+                self.ButtonListPanel.Children.Add(expander)
+                self._expanders.append(expander)
+        if not shown:
+            _add_empty_text(self.ButtonListPanel, "No buttons match the search."
+                            if needle else "This extension has no buttons that can be placed.")
+        self._refresh_status()
+
+    def _add_row(self, panel, item, needle, indent):
+        title = _one_line(item.get("title"))
+        tags = state.button_tags(item, self.host_version)
+        placed_in = self.already_placed.get(state.path_key(item.get("path")))
+        haystack = " ".join([title, _safe_text(item.get("tooltip")), " ".join(tags)]).lower()
+        children = item.get("children") or []
+        matches_self = not needle or needle in haystack
+        child_count = 0
+        child_panel = None
+        child_boxes = []
+        if children:
+            child_panel = Windows.Controls.StackPanel()
+            before = len(self._checkboxes)
+            for child in children:
+                child_count += self._add_row(child_panel, child, needle, indent + 1)
+            child_boxes = [cb for cb, _ in self._checkboxes[before:]]
+        if not matches_self and not child_count:
+            return 0
+
+        checkbox = Windows.Controls.CheckBox()
+        content = Windows.Controls.StackPanel()
+        content.Orientation = Windows.Controls.Orientation.Horizontal
+        icon = _small_icon(item.get("icon"))
+        if icon is not None:
+            content.Children.Add(icon)
+        content.Children.Add(_text_block(title))
+        extras = list(tags)
+        if placed_in:
+            extras.append("already placed in " + placed_in)
+        if extras:
+            content.Children.Add(_text_block("   " + "; ".join(extras), grey=True, size=11))
+        checkbox.Content = content
+        checkbox.Tag = item
+        checkbox.Margin = Windows.Thickness(18 + indent * 22, 4, 8, 4)
+        if item.get("tooltip"):
+            checkbox.ToolTip = item.get("tooltip")
+        placeable = state.is_placeable(item)
+        checkbox.IsEnabled = placeable and not placed_in
+        checkbox.IsChecked = state.path_key(item.get("path")) in self._checked and checkbox.IsEnabled
+        checkbox.Click += self.row_click
+        panel.Children.Add(checkbox)
+        self._checkboxes.append((checkbox, item))
+        if child_panel is not None:
+            panel.Children.Add(child_panel)
+            self._children_of[state.path_key(item.get("path"))] = child_boxes
+            self._apply_container_rule(checkbox)
+        return 1 + child_count
+
+    def _apply_container_rule(self, container_checkbox):
+        """Taking the whole drop-down disables its children (they come along)."""
+        key = state.path_key(container_checkbox.Tag.get("path"))
+        whole = bool(container_checkbox.IsChecked)
+        for child in self._children_of.get(key, []):
+            if whole:
+                child.IsChecked = False
+                self._checked.discard(state.path_key(child.Tag.get("path")))
+            child.IsEnabled = (not whole) and state.is_placeable(child.Tag) and \
+                not self.already_placed.get(state.path_key(child.Tag.get("path")))
+
+    def row_click(self, sender, args):
+        del args
+        item = sender.Tag
+        key = state.path_key(item.get("path"))
+        if sender.IsChecked:
+            self._checked.add(key)
+        else:
+            self._checked.discard(key)
+        if key in self._children_of:
+            self._apply_container_rule(sender)
+        self._refresh_status()
+
+    def _refresh_status(self):
+        count = len(self._checked)
+        self.status_tb.Text = "{0} button{1} ticked.".format(count, "" if count == 1 else "s")
+        self.next_btn.IsEnabled = count > 0
+
+    def _sync_expanders(self):
+        for expander in self._expanders:
+            self._expanded[_safe_text(expander.Tag)] = bool(expander.IsExpanded)
+
+    def search_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._sync_expanders()
+        self._populate()
+
+    def expand_all_click(self, sender, args):
+        del sender, args
+        for expander in self._expanders:
+            expander.IsExpanded = True
+            self._expanded[_safe_text(expander.Tag)] = True
+
+    def collapse_all_click(self, sender, args):
+        del sender, args
+        for expander in self._expanders:
+            expander.IsExpanded = False
+            self._expanded[_safe_text(expander.Tag)] = False
+
+    def select_all_click(self, sender, args):
+        del sender, args
+        for checkbox, item in self._checkboxes:
+            if checkbox.IsEnabled:
+                checkbox.IsChecked = True
+                self._checked.add(state.path_key(item.get("path")))
+        for checkbox, item in self._checkboxes:
+            if state.path_key(item.get("path")) in self._children_of:
+                self._apply_container_rule(checkbox)
+        self._refresh_status()
+
+    def select_none_click(self, sender, args):
+        del sender, args
+        for checkbox, item in self._checkboxes:
+            checkbox.IsChecked = False
+        self._checked = set()
+        for checkbox, item in self._checkboxes:
+            if state.path_key(item.get("path")) in self._children_of:
+                self._apply_container_rule(checkbox)
+        self._refresh_status()
+
+    def _collect_selected(self):
+        by_key = {}
+        for button in self.described.get("buttons", []):
+            by_key[state.path_key(button.get("path"))] = button
+        selected = []
+        for key in self._checked:
+            button = by_key.get(key)
+            if button is not None:
+                selected.append(button)
+        # keep the ribbon's own order
+        order = dict((state.path_key(b.get("path")), i)
+                     for i, b in enumerate(self.described.get("buttons", [])))
+        selected.sort(key=lambda b: order.get(state.path_key(b.get("path")), 0))
+        return selected
+
+    def back_click(self, sender, args):
+        del sender, args
+        self.selected = self._collect_selected()
+        self.result = "back"
+        self.Close()
+
+    def next_click(self, sender, args):
+        del sender, args
+        self.selected = self._collect_selected()
+        if not self.selected:
+            forms.alert("Tick at least one button.", title=TITLE)
+            return
+        self.result = "next"
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()
+
+
+# -- where to? --------------------------------------------------------------------
+
+
+class DestinationWindow(forms.WPFWindow):
+    """Tab + panel choice.  ``ribbon_summary`` is ``easybim.my_ribbon.
+    list_ribbon()``; staged destinations from ``registry`` are offered too.
+    ``result`` is ``(tab, panel, own_tab)``, ``"back"`` or None."""
+
+    def __init__(self, xaml_file_name, ribbon_summary, registry, mode="add",
+                 start_with_new_tab=False, count=0):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.ribbon_summary = list(ribbon_summary or [])
+        self.registry = registry
+        self.mode = mode
+        self.result = None
+        if mode == "create":
+            self.header_tb.Text = "New tab" if start_with_new_tab else "New panel"
+            self.subtitle_tb.Text = "Create the place first; add buttons to it afterwards."
+            self.ok_btn.Content = "Create"
+            self.back_btn.Visibility = Windows.Visibility.Collapsed
+        elif count:
+            self.header_tb.Text = "Where should {0} button{1} go?".format(
+                count, "" if count == 1 else "s")
+        self._tabs = self._tab_choices()
+        for title in self._tabs:
+            self.TabCombo.Items.Add(title)
+        preferred = NEW_TAB_CHOICE if start_with_new_tab else EASYBIM_TAB
+        index = self._tabs.index(preferred) if preferred in self._tabs else 0
+        self.TabCombo.SelectedIndex = index
+        self._fill_panels()
+        self._is_ready = True
+        self._refresh()
+
+    def _own_tab_titles(self):
+        titles = []
+        for dest in self.registry.get("destinations", []):
+            if dest.get("own_tab") and dest.get("tab") not in titles:
+                titles.append(dest.get("tab"))
+        for tab in self.ribbon_summary:
+            if tab.get("is_ours") and tab.get("title") not in titles:
+                titles.append(tab.get("title"))
+        return titles
+
+    def _tab_choices(self):
+        choices = [EASYBIM_TAB]
+        for title in self._own_tab_titles():
+            if title not in choices:
+                choices.append(title)
+        choices.append(NEW_TAB_CHOICE)
+        for tab in self.ribbon_summary:
+            title = tab.get("title")
+            if title and title not in choices and not tab.get("is_ours"):
+                choices.append(title)
+        return choices
+
+    def _panels_for(self, tab_title):
+        panels = []
+        for tab in self.ribbon_summary:
+            if state.normalize_label(tab.get("title")) == state.normalize_label(tab_title):
+                for panel in tab.get("panels", []):
+                    if panel.get("title") and panel.get("title") not in panels:
+                        panels.append(panel.get("title"))
+        for dest in self.registry.get("destinations", []):
+            if state.normalize_label(dest.get("tab")) == state.normalize_label(tab_title) \
+                    and dest.get("panel") not in panels:
+                panels.append(dest.get("panel"))
+        return panels
+
+    def _selected_tab(self):
+        return _safe_text(self.TabCombo.SelectedItem)
+
+    def _fill_panels(self):
+        self.PanelCombo.Items.Clear()
+        tab = self._selected_tab()
+        panels = [] if tab == NEW_TAB_CHOICE else self._panels_for(tab)
+        for title in panels:
+            self.PanelCombo.Items.Add(title)
+        self.PanelCombo.Items.Add(NEW_PANEL_CHOICE)
+        # A brand-new tab needs a new panel; an existing tab defaults to its
+        # first panel of ours, else to a new one.
+        default_index = self.PanelCombo.Items.Count - 1
+        for index, title in enumerate(panels):
+            if any(state.normalize_label(d.get("panel")) == state.normalize_label(title)
+                   and state.normalize_label(d.get("tab")) == state.normalize_label(tab)
+                   for d in self.registry.get("destinations", [])):
+                default_index = index
+                break
+        self.PanelCombo.SelectedIndex = default_index
+
+    def _refresh(self):
+        if not getattr(self, "_is_ready", False):
+            return
+        tab = self._selected_tab()
+        new_tab = tab == NEW_TAB_CHOICE
+        shown = Windows.Visibility.Visible
+        hidden = Windows.Visibility.Collapsed
+        self.new_tab_label.Visibility = shown if new_tab else hidden
+        self.NewTabBox.Visibility = self.new_tab_label.Visibility
+        new_panel = _safe_text(self.PanelCombo.SelectedItem) == NEW_PANEL_CHOICE
+        self.new_panel_label.Visibility = shown if new_panel else hidden
+        self.NewPanelBox.Visibility = self.new_panel_label.Visibility
+        own = new_tab or tab in self._own_tab_titles()
+        if new_tab:
+            hint = "A tab of your own. It is created the moment you press Apply and rebuilt " \
+                   "every session from your settings."
+        elif tab == EASYBIM_TAB:
+            hint = "The EasyBIM tab. New panels are added at its end; existing panels get the " \
+                   "buttons after their own."
+        elif own:
+            hint = "One of your own tabs."
+        else:
+            hint = "Another tab of the ribbon. Panels of other add-ins are left as they are; " \
+                   "only your buttons are added."
+        self.hint_tb.Text = hint
+        tab_name, panel_name = self._names()
+        ok = bool(tab_name and panel_name)
+        self.ok_btn.IsEnabled = ok
+        self.status_tb.Text = "" if ok else "Type a name for the new tab or panel."
+
+    def _names(self):
+        tab = self._selected_tab()
+        if tab == NEW_TAB_CHOICE:
+            tab = _safe_text(self.NewTabBox.Text).strip()
+        panel = _safe_text(self.PanelCombo.SelectedItem)
+        if panel == NEW_PANEL_CHOICE:
+            panel = _safe_text(self.NewPanelBox.Text).strip()
+        return tab, panel
+
+    def tab_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._fill_panels()
+        self._refresh()
+
+    def panel_changed(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def names_changed(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def back_click(self, sender, args):
+        del sender, args
+        self.result = "back"
+        self.Close()
+
+    def ok_click(self, sender, args):
+        del sender, args
+        tab, panel = self._names()
+        if not tab or not panel:
+            forms.alert("Type a name for the new tab or panel.", title=TITLE)
+            return
+        own_tab = self._selected_tab() == NEW_TAB_CHOICE or tab in self._own_tab_titles()
+        if state.normalize_label(tab) == "pyrevit":
+            forms.alert("The pyRevit tab is left alone; choose another tab.", title=TITLE)
+            return
+        self.result = (tab, panel, own_tab)
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()
+
+
+# -- import preview ---------------------------------------------------------------
+
+
+class ImportPreviewWindow(forms.WPFWindow):
+    """``previews`` maps ``"merge"``/``"replace"`` to a list of sentences.
+    ``result`` is the chosen mode or None."""
+
+    def __init__(self, xaml_file_name, file_path, previews):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.previews = dict(previews or {})
+        self.result = None
+        self.file_tb.Text = _safe_text(file_path)
+        self._is_ready = True
+        self._show()
+
+    def _mode(self):
+        return "replace" if bool(self.replace_radio.IsChecked) else "merge"
+
+    def _show(self):
+        self.preview_tb.Text = "\n".join(self.previews.get(self._mode(), []))
+
+    def mode_changed(self, sender, args):
+        del sender, args
+        if not getattr(self, "_is_ready", False):
+            return
+        self._show()
+
+    def import_click(self, sender, args):
+        del sender, args
+        self.result = self._mode()
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()
+
+
+# -- credentials -------------------------------------------------------------------
+
+
+class CredentialsWindow(forms.WPFWindow):
+    """``result`` is ``(user, token)`` or None."""
+
+    def __init__(self, xaml_file_name, message):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.result = None
+        self.message_tb.Text = _safe_text(message)
+
+    def ok_click(self, sender, args):
+        del sender, args
+        user = _safe_text(self.UserBox.Text).strip()
+        token = _safe_text(self.TokenBox.Password)
+        if not user or not token:
+            forms.alert("Both a user name and a token are needed.", title=TITLE)
+            return
+        self.result = (user, token)
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()

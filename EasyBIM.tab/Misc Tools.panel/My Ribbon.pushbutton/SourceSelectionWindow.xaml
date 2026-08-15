@@ -1,0 +1,132 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="My Ribbon - Where from?"
+        Width="820"
+        Height="900"
+        MinWidth="760"
+        MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="500"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Where are the tools?" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock Text="A repository is downloaded and installed as a normal pyRevit extension, so pyRevit's Update button keeps it fresh. Its own tab can stay hidden; you pick the buttons you want."
+                       Margin="0,6,0,0"
+                       FontSize="13"
+                       Foreground="DimGray"
+                       TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+
+        <!-- Every star row carries a MinHeight (see Families Transfer's source page). -->
+        <Grid Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="*" MinHeight="150"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="*" MinHeight="150"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <TextBlock Text="From a GitHub link (or any git link)" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="Paste https://github.com/owner/repository. A link to a branch or folder (.../tree/branch/...) is understood too." Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="140"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Link" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="LinkBox" Grid.Column="1" Height="28" VerticalAlignment="Center" VerticalContentAlignment="Center" TextChanged="link_changed"/>
+                        <TextBlock Grid.Column="2" Text="Branch (optional)" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="12,0,8,0"/>
+                        <TextBox x:Name="BranchBox" Grid.Column="3" Height="28" VerticalAlignment="Center" VerticalContentAlignment="Center"/>
+                    </Grid>
+
+                    <DockPanel Grid.Row="2" Margin="0,8,0,0" LastChildFill="True">
+                        <Button x:Name="download_btn" DockPanel.Dock="Right" Content="Download and continue" Width="170" Height="30" IsEnabled="False" Click="download_click"/>
+                        <TextBlock x:Name="link_hint_tb" VerticalAlignment="Center" FontSize="12" Foreground="DimGray" TextTrimming="CharacterEllipsis" Margin="0,0,8,0"/>
+                    </DockPanel>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*" MinHeight="60"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <TextBlock Text="Already installed on this computer" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="installed_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="1" Margin="0,8,0,8" BorderBrush="#E0E0E0" BorderThickness="1" Padding="4">
+                        <ListBox x:Name="InstalledList" BorderThickness="0" SelectionChanged="installed_selection_changed" MouseDoubleClick="installed_double_click"/>
+                    </Border>
+
+                    <Button x:Name="use_installed_btn" Grid.Row="2" Content="Use selected" Width="120" Height="30" HorizontalAlignment="Right" IsEnabled="False" Click="use_installed_click"/>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="4" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*" MinHeight="60"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <TextBlock Text="pyRevit's catalogue of community extensions" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="catalogue_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+
+                    <DockPanel Grid.Row="1" Margin="0,8,0,6" LastChildFill="True">
+                        <TextBlock DockPanel.Dock="Left" Text="Search" FontSize="11" FontWeight="SemiBold" Foreground="DimGray" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="CatalogueSearchBox" Height="28" VerticalAlignment="Center" TextChanged="catalogue_search_changed"/>
+                    </DockPanel>
+
+                    <Border Grid.Row="2" Margin="0,0,0,8" BorderBrush="#E0E0E0" BorderThickness="1" Padding="4">
+                        <ListBox x:Name="CatalogueList" BorderThickness="0" SelectionChanged="catalogue_selection_changed" MouseDoubleClick="catalogue_double_click"/>
+                    </Border>
+
+                    <Button x:Name="install_catalogue_btn" Grid.Row="3" Content="Install selected and continue" Width="200" Height="30" HorizontalAlignment="Right" IsEnabled="False" Click="install_catalogue_click"/>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancel" Width="100" Height="34" IsCancel="True" Click="cancel_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

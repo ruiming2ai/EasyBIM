@@ -60,6 +60,16 @@ except Exception as ex:
         pass
 
 try:
+    from easybim import my_ribbon
+
+    # Deferred: the user's My Ribbon placements share live buttons of other
+    # extensions, and those extensions may load after EasyBIM.  The first
+    # Idling tick is the first moment every tab is on the ribbon.
+    my_ribbon.queue_startup_apply()
+except Exception:
+    pass
+
+try:
     from easybim import auto_update
 
     # Deferred: the first Idling tick runs the guarded update, so git and

@@ -54,6 +54,11 @@ try:
 except Exception:
     auto_update = None
 
+try:
+    from easybim import my_ribbon
+except Exception:
+    my_ribbon = None
+
 
 #: Mirrors the live delegate and its event source across a pyRevit reload.
 HANDLER_ENVVAR = "EASYBIM_IDLING_HANDLER"
@@ -209,9 +214,27 @@ def _run_auto_update(sender):
         install(sender)
 
 
+def _run_my_ribbon_apply(sender):
+    """Place the user's My Ribbon buttons once per load.
+
+    ``startup.py`` queues this instead of applying directly because it runs
+    while later extensions are still loading, and their tabs are not on the
+    ribbon yet; the first Idling tick is the first moment everything is.  It
+    runs *before* the auto-update on purpose: the update can end in a pyRevit
+    reload, whose own ``startup.py`` queues the apply again, so nothing here
+    ever has to run inside an engine that reload is disposing - and the user
+    sees their ribbon before any network work starts.
+    """
+    del sender
+    if my_ribbon is None or not my_ribbon.has_pending_startup_apply():
+        return
+    my_ribbon.run_pending_startup_apply()
+
+
 def _run_consumers(sender):
     _guarded("StartupJobs", _run_startup_jobs, sender)
     _guarded("TempPhaseCloseRecovery", _run_temp_phase_close, sender)
+    _guarded("MyRibbonApply", _run_my_ribbon_apply, sender)
     _guarded("StartupAutoUpdate", _run_auto_update, sender)
 
 

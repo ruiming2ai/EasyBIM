@@ -314,6 +314,98 @@ class IdlingDispatcherTests(unittest.TestCase):
         self.assertEqual(["sender"], ran)
         self.assertTrue(any("StartupJobs failed" in item for item in self.logs))
 
+    # -- my ribbon --------------------------------------------------------
+
+    def test_my_ribbon_apply_runs_when_pending_and_before_the_auto_update(self):
+        """The apply must run before the auto-update, which can end in a
+        pyRevit reload: the reloaded session queues its own apply, so
+        nothing here ever runs in an engine that reload is disposing."""
+        order = []
+
+        class FakeMyRibbon(object):
+            @staticmethod
+            def has_pending_startup_apply():
+                return True
+
+            @staticmethod
+            def run_pending_startup_apply():
+                order.append("my_ribbon")
+
+        class FakeAutoUpdate(object):
+            @staticmethod
+            def has_pending_startup_auto_update():
+                return True
+
+            @staticmethod
+            def run_pending_startup_auto_update():
+                order.append("auto_update")
+
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+        self.idling.my_ribbon = FakeMyRibbon
+        self.idling.auto_update = FakeAutoUpdate
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling._on_idling(uiapp, None)
+
+        self.assertEqual(["my_ribbon", "auto_update"], order)
+
+    def test_my_ribbon_apply_is_skipped_when_nothing_is_pending(self):
+        calls = []
+
+        class FakeMyRibbon(object):
+            @staticmethod
+            def has_pending_startup_apply():
+                return False
+
+            @staticmethod
+            def run_pending_startup_apply():
+                calls.append(True)
+
+        self.idling.my_ribbon = FakeMyRibbon
+        self.idling.auto_update = None
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling._on_idling("sender", None)
+
+        self.assertEqual([], calls)
+
+    def test_missing_my_ribbon_module_is_tolerated(self):
+        self.idling.my_ribbon = None
+        self.idling.auto_update = None
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling._on_idling("sender", None)
+        self.assertFalse(any("MyRibbonApply failed" in item for item in self.logs))
+
+    def test_a_failing_my_ribbon_apply_does_not_stop_the_auto_update(self):
+        ran = []
+
+        class ExplodingMyRibbon(object):
+            @staticmethod
+            def has_pending_startup_apply():
+                raise RuntimeError("my ribbon exploded")
+
+        class FakeAutoUpdate(object):
+            @staticmethod
+            def has_pending_startup_auto_update():
+                return True
+
+            @staticmethod
+            def run_pending_startup_auto_update():
+                ran.append(True)
+
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+        self.idling.my_ribbon = ExplodingMyRibbon
+        self.idling.auto_update = FakeAutoUpdate
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling._on_idling(uiapp, None)
+
+        self.assertEqual([True], ran)
+        self.assertTrue(any("MyRibbonApply failed" in item for item in self.logs))
+
 
 if __name__ == "__main__":
     unittest.main()
