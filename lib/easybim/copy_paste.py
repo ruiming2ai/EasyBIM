@@ -2,18 +2,29 @@
 """The one place a cross-document ``CopyPasteOptions`` is built.
 
 Revit asks what to do when a copied type's name already exists in the
-destination.  Left unanswered it either raises or puts a modal dialog in the
-middle of a batch, so every copy needs a handler - and the handler has to be
-the same one everywhere, because the two answers mean opposite things:
+destination.  Unanswered, ``SetDuplicateTypeNamesHandler`` documents the
+default as "a modal dialog with options to either copy new types only, or
+cancel the operation" - which would stop a batch dead - so every copy needs a
+handler.
+
+``DuplicateTypeAction`` has exactly two members, verified against the assembly
+metadata for 2021 through 2026:
 
 ``UseDestinationTypes``
-    A type in this model that happens to share a name with one in the source
-    is *this* model's type.  A copy must never redefine it.
+    Proceed, and use the same-named types already in the destination.  A type
+    here that shares a name with one in the source is *this* model's type, and
+    the copy leaves it alone.
 
-``UseOtherTypes``
-    Redefines the destination's type from the source, regenerating every
-    instance that uses it.  There is no case in this repo where that is what
-    the user asked for.
+``Abort``
+    Cancel the whole paste.
+
+**There is no overwrite.**  Nothing in the copy/paste API replaces a
+destination type or family - the only documented route to that is
+``LoadFamily`` with an ``IFamilyLoadOptions``.  (Autodesk did ship
+``GroupLoadOptions.ReplaceDuplicatedGroups`` for groups in 2024; there is
+deliberately no analogue here.)  So ``UseDestinationTypes`` is answered not
+because it beats some redefine option, but because the only alternative is
+cancelling.
 
 Keeping the factory here rather than in a command module is what stops a new
 call site from quietly forgetting the handler.

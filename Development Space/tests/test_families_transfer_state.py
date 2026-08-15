@@ -972,6 +972,28 @@ class FamiliesTransferStateTests(unittest.TestCase):
         # Select None unchecks every visible row, so every one must vanish.
         self.assertTrue(module.needs_repopulate_after_bulk_toggle(False, True))
 
+    def test_the_export_warning_names_the_files_it_would_replace(self):
+        module = _load_state_module()
+
+        text = module.build_export_overwrite_text(["Door.rfa", "Desk.rfa"], 12)
+
+        self.assertIn("2 of 12 file(s) already exist", text)
+        self.assertIn("- Door.rfa", text)
+        self.assertIn("- Desk.rfa", text)
+
+    def test_planned_export_names_match_what_export_would_write(self):
+        # Same sanitising and same _2 suffix the export itself applies, so
+        # the warning cannot name a different set of files than it replaces.
+        module = _load_state_module()
+
+        names = module.planned_export_filenames([
+            module.FamilyOption("Door:Single", "project|1"),
+            module.FamilyOption("Door_Single", "project|2"),
+            module.FamilyOption("Desk", "project|3"),
+        ])
+
+        self.assertEqual(["Door_Single.rfa", "Door_Single_2.rfa", "Desk.rfa"], names)
+
     def test_transferability_does_not_restrict_to_model_categories(self):
         self.assertTrue(REVIT_MODULE_PATH.exists(), "families_transfer_revit.py is missing")
         source = REVIT_MODULE_PATH.read_text()

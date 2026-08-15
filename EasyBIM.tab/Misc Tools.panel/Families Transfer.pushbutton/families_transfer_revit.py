@@ -40,6 +40,13 @@ from families_transfer_state import sort_target_documents
 
 PICK_PROMPT = "Select family instances to include in Families Transfer"
 
+# Guarded: a declined overwrite is reported as InvalidOperationException, but
+# the module must still import where Autodesk.Revit.Exceptions is unreachable.
+try:
+    from Autodesk.Revit.Exceptions import InvalidOperationException as _INVALID_OPERATION
+except Exception:
+    _INVALID_OPERATION = None
+
 get_elementid_value = get_elementid_value_func()
 
 
@@ -708,15 +715,15 @@ class FamilyTransferSelectionFilter(ISelectionFilter):
 
 
 class FamilyTransferLoadOptions(DB.IFamilyLoadOptions):
-    def __init__(self):
-        self.reset()
+    """The UI-less fallback: overwrite without asking.
 
-    def reset(self):
-        self.loaded_existing = False
+    Only used when Revit's own prompt is unreachable - `native_family_load_options`
+    returns None in UI-less mode. When it is reachable the user answers the
+    real dialog instead, so nothing here runs.
+    """
 
     def OnFamilyFound(self, familyInUse, overwriteParameterValues):
         del familyInUse
-        self.loaded_existing = True
         try:
             overwriteParameterValues.Value = True
         except Exception:
@@ -725,7 +732,6 @@ class FamilyTransferLoadOptions(DB.IFamilyLoadOptions):
 
     def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
         del sharedFamily, familyInUse
-        self.loaded_existing = True
         try:
             source.Value = DB.FamilySource.Family
         except Exception:
@@ -814,7 +820,51 @@ def _keep_going(progress, done, total):
         return True
 
 
-def _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary, load_options):
+def native_family_load_options():
+    """Revit's own "Family Already Exists" prompt, or ``None``.
+
+    ``UIDocument.GetRevitUIFamilyLoadOptions`` is a public *static* method
+    returning an ``IFamilyLoadOptions`` that puts Revit's real dialog in front
+    of the user - the same one an interactive load shows. It throws in UI-less
+    mode, and the import itself can fail where ``Autodesk.Revit.UI`` is not
+    reachable, so both are guarded and the caller falls back.
+
+    Note ``RevitUIFamilyLoadOptions``, which the LoadFamily docs name, is not
+    an instantiable type - it is absent from the assembly metadata in every
+    shipped version, and the only implementer of ``IFamilyLoadOptions`` there
+    is a non-public proxy. This accessor is the only way in.
+    """
+    try:
+        from Autodesk.Revit.UI import UIDocument
+    except Exception:
+        return None
+    try:
+        return UIDocument.GetRevitUIFamilyLoadOptions()
+    except Exception:
+        return None
+
+
+def _is_declined_overwrite(ex, family_existed):
+    """Did the user answer "no" to the overwrite prompt?
+
+    A declined load arrives as an exception, not a ``False`` return:
+    ``LoadFamily`` documents ``InvalidOperationException`` for "the load was
+    cancelled due to a conflict and a False return from one of the interface
+    methods".
+
+    The prompt only appears when the family was already in the target, so that
+    is the signal used. The message text is undocumented and is only a
+    secondary check - keying on it alone would misfile real failures.
+    """
+    if not family_existed:
+        return False
+    if _INVALID_OPERATION is not None and isinstance(ex, _INVALID_OPERATION):
+        return True
+    return "cancel" in _safe_text(ex).lower()
+
+
+def _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary,
+                                       load_options, name_cache):
     for target_option in targets:
         target_doc = getattr(target_option, "document", None)
         target_name = _safe_text(getattr(target_option, "display_name", ""))
@@ -825,27 +875,43 @@ def _load_family_document_into_targets(source_doc, family_doc, family_name, targ
             summary.skipped.append(TransferResult(family_name, target_name, "target is the source document"))
             continue
 
+        # Asked before the load, for two reasons: it decides whether the
+        # result is "loaded" or "overwritten" now that Revit's own options
+        # object answers the prompt and cannot report back, and it is what
+        # tells a declined overwrite apart from a real failure.
+        target_names = _target_family_names(target_doc, name_cache)
+        family_existed = family_name.lower() in target_names
+
         try:
-            load_options.reset()
             loaded = family_doc.LoadFamily(target_doc, load_options)
         except Exception as ex:
-            summary.failed.append(TransferResult(family_name, target_name, "LoadFamily failed: {}".format(ex)))
+            if _is_declined_overwrite(ex, family_existed):
+                summary.skipped.append(
+                    TransferResult(family_name, target_name,
+                                   "already in the target; overwrite declined")
+                )
+            else:
+                summary.failed.append(TransferResult(family_name, target_name, "LoadFamily failed: {}".format(ex)))
             continue
 
         if loaded:
-            status = "overwritten" if load_options.loaded_existing else "loaded"
-            summary.loaded.append(TransferResult(family_name, target_name, status))
+            summary.loaded.append(
+                TransferResult(family_name, target_name,
+                               "overwritten" if family_existed else "loaded")
+            )
+            target_names.add(family_name.lower())
         else:
             summary.failed.append(TransferResult(family_name, target_name, "LoadFamily returned false"))
 
 
-def _transfer_open_rfa_family(source_doc, family_option, targets, summary, load_options):
+def _transfer_open_rfa_family(source_doc, family_option, targets, summary, load_options, name_cache):
     family_name = _safe_text(getattr(family_option, "name", ""))
     family_doc = getattr(family_option, "family_document", None)
     if family_doc is None:
         summary.skipped.append(TransferResult(family_name, "Opened .rfa files", "family document is unavailable"))
         return
-    _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary, load_options)
+    _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary,
+                                       load_options, name_cache)
 
 
 def _target_family_names(target_doc, name_cache):
@@ -864,9 +930,11 @@ def _copy_link_family_into_targets(link_doc, family, family_name, targets, summa
     """Fallback when a link will not hand over an editable family document.
 
     ``CopyElements`` reaches into the linked document without opening the
-    file, but the duplicate-type handler answers ``UseDestinationTypes`` - a
-    family already in the target *wins*, silently.  So a name that is already
-    there is refused rather than copied into a no-op.
+    file, but it is not a family *load* and there is no overwrite anywhere on
+    this path: ``DuplicateTypeAction`` offers exactly ``UseDestinationTypes``
+    and ``Abort``, so a family already in the target either wins silently or
+    the whole paste is cancelled.  A name that is already there is therefore
+    refused, with the routes that do work named in the message.
     """
     for target_option in targets:
         target_doc = getattr(target_option, "document", None)
@@ -880,7 +948,9 @@ def _copy_link_family_into_targets(link_doc, family, family_name, targets, summa
                 TransferResult(
                     family_name,
                     target_name,
-                    "already in the target; a copy out of a link cannot overwrite it",
+                    "already in the target. Revit offers no overwrite on the copy "
+                    "path - open the linked file as a target, or use Load More "
+                    "from Recent Project.",
                 )
             )
             continue
@@ -940,7 +1010,8 @@ def _transfer_editable_family(source_doc, family_option, targets, summary, load_
         return
 
     try:
-        _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary, load_options)
+        _load_family_document_into_targets(source_doc, family_doc, family_name, targets, summary,
+                                           load_options, name_cache)
     finally:
         _close_family_doc(family_doc)
 
@@ -948,7 +1019,10 @@ def _transfer_editable_family(source_doc, family_option, targets, summary, load_
 def transfer_families(source_doc, family_options, target_options, progress=None):
     summary = TransferSummary()
     targets = list(target_options or [])
-    load_options = FamilyTransferLoadOptions()
+    # Revit's own dialog when it is reachable, so an overwrite is the user's
+    # decision and they see it happen; our silent-overwrite answers only where
+    # there is no UI to ask through.
+    load_options = native_family_load_options() or FamilyTransferLoadOptions()
     families = list(family_options or [])
     total = len(families)
     index_cache = {}
@@ -964,7 +1038,8 @@ def transfer_families(source_doc, family_options, target_options, progress=None)
             break
 
         if _is_open_rfa_family_option(family_option):
-            _transfer_open_rfa_family(source_doc, family_option, targets, summary, load_options)
+            _transfer_open_rfa_family(source_doc, family_option, targets, summary, load_options,
+                                      name_cache)
         else:
             _transfer_editable_family(
                 source_doc, family_option, targets, summary, load_options,
