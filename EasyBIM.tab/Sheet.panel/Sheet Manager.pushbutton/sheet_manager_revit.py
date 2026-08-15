@@ -77,6 +77,28 @@ def get_sheet_revision_info(sheet):
     return all_ids, all_ids - additional_ids
 
 
+def build_row_for_sheet(sheet, row_factory, tb_map):
+    """One grid row for one sheet (number/name/placeholder/tblock count +
+    revision membership incl. cloud-driven ids)."""
+    sheet_id = eid_to_int(sheet.Id)
+    is_placeholder = False
+    try:
+        is_placeholder = bool(sheet.IsPlaceholder)
+    except Exception:
+        pass
+    row = row_factory(
+        sheet_id,
+        getattr(sheet, "SheetNumber", u"") or u"",
+        getattr(sheet, "Name", u"") or u"",
+        is_placeholder,
+        len(tb_map.get(sheet_id, [])),
+    )
+    all_ids, cloud_ids = get_sheet_revision_info(sheet)
+    row.all_revision_ids = all_ids
+    row.revisions_cloud = cloud_ids
+    return row
+
+
 def build_rows(doc, row_factory):
     """Build grid rows for every sheet.
 
@@ -88,25 +110,128 @@ def build_rows(doc, row_factory):
     rows = []
     sheets_by_id = {}
     for sheet in collect_sheets(doc):
+        sheets_by_id[eid_to_int(sheet.Id)] = sheet
+        rows.append(build_row_for_sheet(sheet, row_factory, tb_map))
+    return rows, tb_map, sheets_by_id
+
+
+def read_light_snapshot(doc, known_ids):
+    """Cheap re-read for the focus-return sync.
+
+    -> {"sheets": {sheet_id: {"sheet", "number", "name", "tblock_count",
+                              "additional_ids"}},
+        "new_sheets": [ViewSheet not in known_ids],
+        "tb_map": fresh title block map,
+        "revision_count": number of Revision elements}
+    Deliberately avoids GetAllRevisionIds (cloud walk), cloud inventory and
+    parameter reads - those belong to the Refresh button.
+    """
+    tb_map = collect_titleblock_map(doc)
+    known = set(known_ids)
+    sheets = {}
+    new_sheets = []
+    for sheet in collect_sheets(doc):
         sheet_id = eid_to_int(sheet.Id)
-        sheets_by_id[sheet_id] = sheet
-        is_placeholder = False
+        additional = set()
         try:
-            is_placeholder = bool(sheet.IsPlaceholder)
+            for rev_id in sheet.GetAdditionalRevisionIds():
+                additional.add(eid_to_int(rev_id))
         except Exception:
             pass
-        row = row_factory(
-            sheet_id,
-            getattr(sheet, "SheetNumber", u"") or u"",
-            getattr(sheet, "Name", u"") or u"",
-            is_placeholder,
-            len(tb_map.get(sheet_id, [])),
-        )
-        all_ids, cloud_ids = get_sheet_revision_info(sheet)
-        row.all_revision_ids = all_ids
-        row.revisions_cloud = cloud_ids
-        rows.append(row)
-    return rows, tb_map, sheets_by_id
+        sheets[sheet_id] = {
+            "sheet": sheet,
+            "number": getattr(sheet, "SheetNumber", u"") or u"",
+            "name": getattr(sheet, "Name", u"") or u"",
+            "tblock_count": len(tb_map.get(sheet_id, [])),
+            "additional_ids": additional,
+        }
+        if sheet_id not in known:
+            new_sheets.append(sheet)
+    try:
+        revision_count = DB.FilteredElementCollector(doc)\
+            .OfClass(framework.get_type(DB.Revision))\
+            .GetElementCount()
+    except Exception:
+        revision_count = None
+    return {
+        "sheets": sheets,
+        "new_sheets": new_sheets,
+        "tb_map": tb_map,
+        "revision_count": revision_count,
+    }
+
+
+def read_param_values(rows, columns, sheets_by_id, tb_map):
+    """{(sheet_id, column.key): text} for every param column x row."""
+    values = {}
+    for row in rows:
+        for column in columns:
+            if column.kind not in (state.KIND_SHEET_PARAM,
+                                   state.KIND_TB_PARAM):
+                continue
+            element = param_target_for_row(row, column, sheets_by_id, tb_map)
+            values[(row.sheet_id, column.key)] = \
+                read_parameter_value(element, column.param_name)
+    return values
+
+
+def read_staged_cell_values(doc, changes, sheets_by_id, tb_map):
+    """Current model value of every staged cell -> {(sheet_id, attr): value}
+    (state.MISSING when the sheet is gone). Runs in the same Execute as
+    the write so nothing can change between check and write."""
+    del doc
+    current = {}
+
+    def sheet_for(row):
+        sheet = sheets_by_id.get(row.sheet_id)
+        if sheet is None:
+            return None
+        try:
+            if not bool(getattr(sheet, "IsValidObject", True)):
+                return None
+        except Exception:
+            return None
+        return sheet
+
+    def mark_missing(row, attr):
+        current[(row.sheet_id, attr)] = state.MISSING
+
+    for row, old, new in changes.renames:
+        sheet = sheet_for(row)
+        if sheet is None:
+            mark_missing(row, "number")
+        else:
+            current[(row.sheet_id, "number")] = \
+                getattr(sheet, "SheetNumber", u"") or u""
+    for row, old, new in changes.name_edits:
+        sheet = sheet_for(row)
+        if sheet is None:
+            mark_missing(row, "name")
+        else:
+            current[(row.sheet_id, "name")] = \
+                getattr(sheet, "Name", u"") or u""
+    for row, column, old, new in changes.param_edits:
+        sheet = sheet_for(row)
+        if sheet is None:
+            mark_missing(row, column.attr)
+            continue
+        element = param_target_for_row(row, column, sheets_by_id, tb_map)
+        current[(row.sheet_id, column.attr)] = \
+            read_parameter_value(element, column.param_name)
+    membership_cache = {}
+    for bucket_name in ("revision_adds", "revision_removes",
+                        "cloud_hide_requests", "cloud_unhide_candidates"):
+        for row, column, revision_id in getattr(changes, bucket_name):
+            sheet = sheet_for(row)
+            if sheet is None:
+                mark_missing(row, column.attr)
+                continue
+            if row.sheet_id not in membership_cache:
+                all_ids, _ = get_sheet_revision_info(sheet)
+                membership_cache[row.sheet_id] = all_ids
+            current[(row.sheet_id, column.attr)] = \
+                revision_id in membership_cache[row.sheet_id]
+    return current
 
 
 def attach_hidden_cloud_info(doc, rows, sheets_by_id):

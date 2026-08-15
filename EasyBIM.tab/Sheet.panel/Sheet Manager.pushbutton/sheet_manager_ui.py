@@ -9,6 +9,8 @@ interactivity is wired at grid level or on programmatically built headers.
 
 from __future__ import print_function
 
+import time
+
 import clr
 
 clr.AddReference("PresentationFramework")
@@ -216,14 +218,17 @@ class SheetManagerWindow(forms.WPFWindow):
         self._sheet_param_info = None
         self._tb_param_info = None
         self._filter_extra_cache = {}
+        self._last_sync = time.time()
+        self._editing_row = None
         self._revit_buttons = [
             self.loadsheetlist_b, self.loadprintset_b, self.filterparam_b,
             self.addtbparam_b, self.addsheetparam_b, self.saveprintset_b,
-            self.selecttblocks_b, self.apply_b,
+            self.selecttblocks_b, self.apply_b, self.refresh_b,
         ]
         if self._bridge is not None:
             self._bridge.on_error = self._on_bridge_error
             self._bridge.on_idle = self._on_bridge_idle
+            self.Activated += self._on_activated
         self.Closed += self._on_closed
 
         self._load_model()
@@ -558,9 +563,12 @@ class SheetManagerWindow(forms.WPFWindow):
             return
         if not state.can_edit_cell(row, spec):
             args.Cancel = True
+            return
+        self._editing_row = row  # a focus-return sync skips this row
 
     def grid_cell_edit_ending(self, sender, args):
         del sender
+        self._editing_row = None
         if not getattr(self, "_is_ready", False):
             return
         try:
@@ -649,7 +657,12 @@ class SheetManagerWindow(forms.WPFWindow):
 
     # ---------------------------------------------------------- refresh
 
-    def _refresh_visible_rows(self):
+    def _refresh_visible_rows(self, preserve_selection=False):
+        selected_ids = None
+        if preserve_selection:
+            selected_ids = set(
+                id(item) for item in self.sheets_dg.SelectedItems
+                if isinstance(item, SheetRow))
         rows = self._all_rows
         if self._source_order is not None:
             by_id = {}
@@ -674,9 +687,211 @@ class SheetManagerWindow(forms.WPFWindow):
         self._visible_rows = rows
         self.sheets_dg.ItemsSource = None
         self.sheets_dg.ItemsSource = rows
+        if selected_ids:
+            try:
+                for row in rows:
+                    if id(row) in selected_ids:
+                        self.sheets_dg.SelectedItems.Add(row)
+            except Exception:
+                pass
         self._update_selectall_state()
         self._update_filter_labels()
         self._update_status()
+
+    # ------------------------------------------------------- freshness
+
+    SYNC_MIN_INTERVAL_S = 2.0
+
+    def _on_activated(self, sender, args):
+        """Light sync when the user clicks back into the window: sheet
+        numbers/names/additional revisions/title block counts, new and
+        deleted sheets. Throttled; skipped while Revit work is pending."""
+        del sender, args
+        if not getattr(self, "_is_ready", False) or self._closing:
+            return
+        if self._bridge is None or self._bridge.is_busy():
+            return
+        if time.time() - self._last_sync < self.SYNC_MIN_INTERVAL_S:
+            return
+        self._last_sync = time.time()
+        self._run_in_revit("Sync with model", self._sync_work,
+                           self._sync_done, quiet=True)
+
+    def _sync_work(self, uiapp):
+        started = time.time()
+        self._require_doc(uiapp, must_be_active=False)
+        snapshot = smrevit.read_light_snapshot(
+            self._doc, set(self._sheets_by_id))
+        new_rows = []
+        for sheet in snapshot["new_sheets"]:
+            new_rows.append(smrevit.build_row_for_sheet(
+                sheet, SheetRow, snapshot["tb_map"]))
+        if new_rows:
+            new_by_id = {}
+            for row in new_rows:
+                new_by_id[row.sheet_id] = \
+                    snapshot["sheets"][row.sheet_id]["sheet"]
+            try:
+                smrevit.attach_hidden_cloud_info(
+                    self._doc, new_rows, new_by_id)
+            except Exception:
+                pass
+            for row in new_rows:
+                values = {}
+                for column in self._columns:
+                    if column.kind == state.KIND_REVISION:
+                        values[column.key] = \
+                            column.revision_id in row.all_revision_ids
+                state.populate_row(row, self._columns, values)
+            param_values = smrevit.read_param_values(
+                new_rows, self._columns, new_by_id, snapshot["tb_map"])
+            for row in new_rows:
+                for column in self._columns:
+                    key = (row.sheet_id, column.key)
+                    if key in param_values:
+                        state.populate_new_column(
+                            row, column, param_values[key])
+        snapshot["new_rows"] = new_rows
+        snapshot["elapsed"] = time.time() - started
+        return snapshot
+
+    def _sync_done(self, snapshot):
+        LOGGER.debug("Sheet Manager sync: %.0f ms",
+                     snapshot.get("elapsed", 0) * 1000.0)
+        self._tb_map = snapshot["tb_map"]
+        membership_changed = False
+        for row in self._all_rows:
+            if row.is_pending or row is self._editing_row:
+                continue
+            info = snapshot["sheets"].get(row.sheet_id)
+            if info is None:
+                if not row.is_missing:
+                    state.mark_row_missing(row, self._columns)
+                    membership_changed = True
+                self._sheets_by_id.pop(row.sheet_id, None)
+                continue
+            if row.is_missing:
+                state.unmark_row_missing(row, self._columns)
+                membership_changed = True
+            self._sheets_by_id[row.sheet_id] = info["sheet"]
+            row.tblock_count = info["tblock_count"]
+            row.all_revision_ids = row.revisions_cloud | info["additional_ids"]
+            values = {"number": info["number"], "name": info["name"]}
+            for column in self._columns:
+                if column.kind == state.KIND_REVISION:
+                    values[column.key] = \
+                        column.revision_id in row.all_revision_ids
+            state.merge_row_values(row, self._columns, values)
+        for row in snapshot["new_rows"]:
+            self._all_rows.append(row)
+            self._sheets_by_id[row.sheet_id] = \
+                snapshot["sheets"][row.sheet_id]["sheet"]
+            membership_changed = True
+        self._refresh_number_conflicts()
+        if membership_changed:
+            self._refresh_visible_rows(preserve_selection=True)
+        else:
+            self._update_status()
+        revision_count = snapshot.get("revision_count")
+        if revision_count is not None \
+                and revision_count != len(self._revision_rows):
+            self.status_tb.Text += \
+                "  |  Revisions changed in the model - click Refresh"
+
+    def refresh_clicked(self, sender, args):
+        """Full reload merged into the grid: revisions (incl. new columns),
+        clouds, title blocks, every parameter column. Staged edits kept."""
+        del sender, args
+        self._commit_pending_edit()
+        self._run_in_revit("Refresh", self._refresh_work, self._refresh_done)
+
+    def _refresh_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
+        doc = self._doc
+        revision_rows = print_sets.collect_revision_rows(doc, DB, framework)
+        rows, tb_map, sheets_by_id = smrevit.build_rows(doc, SheetRow)
+        try:
+            smrevit.attach_hidden_cloud_info(doc, rows, sheets_by_id)
+        except Exception as err:
+            LOGGER.debug("Cloud inventory unavailable: %s", err)
+        param_columns = [column for column in self._columns
+                         if column.kind in (state.KIND_SHEET_PARAM,
+                                            state.KIND_TB_PARAM)]
+        param_values = smrevit.read_param_values(
+            rows, param_columns, sheets_by_id, tb_map)
+        return {
+            "revision_rows": revision_rows,
+            "rows": rows,
+            "tb_map": tb_map,
+            "sheets_by_id": sheets_by_id,
+            "param_values": param_values,
+        }
+
+    def _refresh_done(self, payload):
+        fresh_rows = payload["rows"]
+        self._tb_map = payload["tb_map"]
+        self._sheets_by_id = payload["sheets_by_id"]
+        # Revision columns follow the model (new/deleted revisions).
+        self._revision_rows = payload["revision_rows"]
+        self._all_revision_ids = set(
+            revision.get("id") for revision in self._revision_rows)
+        non_revision = [column for column in self._columns
+                        if column.kind != state.KIND_REVISION]
+        self._columns = non_revision + \
+            state.build_revision_columns(self._revision_rows)
+        existing = {}
+        for row in self._all_rows:
+            if not row.is_pending:
+                existing[row.sheet_id] = row
+        merged = []
+        param_values = payload["param_values"]
+        for fresh in fresh_rows:
+            row = existing.pop(fresh.sheet_id, None)
+            values = {"number": fresh.number, "name": fresh.name}
+            for column in self._columns:
+                if column.kind == state.KIND_REVISION:
+                    values[column.key] = \
+                        column.revision_id in fresh.all_revision_ids
+                elif column.kind in (state.KIND_SHEET_PARAM,
+                                     state.KIND_TB_PARAM):
+                    key = (fresh.sheet_id, column.key)
+                    if key in param_values:
+                        values[column.key] = param_values[key]
+            if row is None:
+                row = fresh
+                state.populate_row(row, self._columns, values)
+                for column in self._columns:
+                    if column.kind in (state.KIND_SHEET_PARAM,
+                                       state.KIND_TB_PARAM,
+                                       state.KIND_SCHEDULE_TEXT) \
+                            and not hasattr(row, column.attr):
+                        state.populate_new_column(
+                            row, column, values.get(column.key, u""))
+            else:
+                if row.is_missing:
+                    state.unmark_row_missing(row, self._columns)
+                row.tblock_count = fresh.tblock_count
+                row.is_placeholder = fresh.is_placeholder
+                row.all_revision_ids = fresh.all_revision_ids
+                row.revisions_cloud = fresh.revisions_cloud
+                row.hidden_cloud_revs = fresh.hidden_cloud_revs
+                for column in self._columns:
+                    if not hasattr(row, column.attr):
+                        # a revision column added by the model
+                        state.populate_new_column(
+                            row, column, values.get(column.key, False))
+                state.merge_row_values(row, self._columns, values)
+            merged.append(row)
+        # existing rows not in the model any more are purged (Refresh is
+        # the explicit "make the grid match the model" action)
+        merged += [row for row in self._all_rows if row.is_pending]
+        self._all_rows = merged
+        self._filter_extra_cache = {}
+        self._prefetch_filter_values()
+        self._build_columns_ui()
+        self._refresh_number_conflicts()
+        self._refresh_visible_rows(preserve_selection=True)
+        self._last_sync = time.time()
 
     def _extra_filter_lookup(self, row, column_key):
         """Values for filter rules on params that are not table columns.
@@ -1433,7 +1648,8 @@ class SheetManagerWindow(forms.WPFWindow):
                         title="Sheet Manager")
             return
         sheet_ids = [row.sheet_id for row in rows
-                     if not row.is_pending and row.sheet_id is not None]
+                     if not row.is_pending and not row.is_missing
+                     and row.sheet_id is not None]
         sheet_count = len(sheet_ids)
 
         def work(uiapp):
@@ -1498,7 +1714,7 @@ class SheetManagerWindow(forms.WPFWindow):
                 decisions["unhide_mode"] = "add"
         return decisions
 
-    def _post_apply_refresh(self, results):
+    def _post_apply_refresh(self, results, stale=None):
         columns_by_attr = {}
         for column in self._columns:
             columns_by_attr[column.attr] = column
@@ -1515,10 +1731,23 @@ class SheetManagerWindow(forms.WPFWindow):
             column = columns_by_attr.get(attr)
             if column is not None:
                 state.refresh_cell_state(row, column)
+        # Stale cells: baseline moves to the model value; the staged value
+        # stays displayed (red) or reverts to normal when it now matches.
+        for row, column, attr, model_value in (stale or []):
+            if model_value is state.MISSING:
+                if not row.is_missing:
+                    state.mark_row_missing(row, self._columns)
+                continue
+            column = column or columns_by_attr.get(attr)
+            if column is None:
+                continue
+            state.merge_row_values(row, [column], {column.key: model_value})
         self._copy_content_ops = []
         self._filter_extra_cache = {}
+        self._prefetch_filter_values()
         self._refresh_number_conflicts()
-        self._refresh_visible_rows()
+        self._refresh_visible_rows(preserve_selection=True)
+        self._last_sync = time.time()
 
     def apply_changes(self, sender, args):
         del sender, args
@@ -1551,12 +1780,21 @@ class SheetManagerWindow(forms.WPFWindow):
 
         def work(uiapp):
             self._require_doc(uiapp, must_be_active=True)
-            return smrevit.apply_staged_changes(
-                self._doc, changes, self._sheets_by_id, self._tb_map,
+            # Re-read every staged cell in the SAME Execute as the write:
+            # a cell changed in the model since load is skipped (reported,
+            # kept red against the new baseline), never overwritten blind.
+            current = smrevit.read_staged_cell_values(
+                self._doc, changes, self._sheets_by_id, self._tb_map)
+            clean, stale = state.partition_stale_changes(changes, current)
+            results = smrevit.apply_staged_changes(
+                self._doc, clean, self._sheets_by_id, self._tb_map,
                 decisions)
+            state.record_stale_changes(results, stale)
+            return results, stale
 
-        def done(results):
-            self._post_apply_refresh(results)
+        def done(payload):
+            results, stale = payload
+            self._post_apply_refresh(results, stale)
             self._show_dialog(dialogs.ApplyResultsWindow(
                 "ApplyResultsDialog.xaml", results))
             # Still inside Execute: the per-link reload transactions need

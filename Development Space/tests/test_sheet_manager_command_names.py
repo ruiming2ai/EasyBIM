@@ -90,7 +90,7 @@ class SheetManagerBundleTests(unittest.TestCase):
             "addtbparam_b", "addsheetparam_b",
             "export_b", "import_b", "copysheetinfo_b",
             "searchreplace_b", "saveprintset_b", "selecttblocks_b",
-            "apply_b",
+            "apply_b", "refresh_b",
         }
         missing = required - names
         self.assertFalse(missing, "missing x:Name(s): %s" % missing)
