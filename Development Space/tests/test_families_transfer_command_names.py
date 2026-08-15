@@ -23,7 +23,17 @@ SCRIPT_MODULE = COMMAND_DIR / "script.py"
 UI_MODULE = COMMAND_DIR / "families_transfer_ui.py"
 STATE_MODULE = COMMAND_DIR / "families_transfer_state.py"
 REVIT_MODULE = COMMAND_DIR / "families_transfer_revit.py"
-COPY_PASTE_MODULE = REPO_ROOT / "lib" / "easybim" / "copy_paste.py"
+LIB_DIR = REPO_ROOT / "lib" / "easybim"
+UI_DIR = LIB_DIR / "ui"
+COPY_PASTE_MODULE = LIB_DIR / "copy_paste.py"
+# The family-selection pages, collectors and link cascade are shared with
+# Families Downgrade and live in lib; the checks below cover them from here
+# because this bundle is where they were built and where their tests live.
+SELECTION_STATE_MODULE = LIB_DIR / "family_selection_state.py"
+SELECTION_UI_MODULE = LIB_DIR / "family_selection_ui.py"
+SELECTION_REVIT_MODULE = LIB_DIR / "family_selection_revit.py"
+SELECTION_MODULES = (SELECTION_STATE_MODULE, SELECTION_UI_MODULE,
+                     SELECTION_REVIT_MODULE)
 LINKED_SHEETS_REVIT = (REPO_ROOT / "EasyBIM.tab" / "Sheet.panel"
                        / "Linked Sheets Copy.pushbutton"
                        / "linked_sheets_copy_revit.py")
@@ -32,13 +42,29 @@ X_NAME = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
 HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",
                  "TextChanged", "PreviewKeyDown", "CellEditEnding")
 
+# Bundle-owned windows keep their XAML next to script.py.
 WINDOW_CLASSES = {
-    "SourceSelectionWindow.xaml": "SourceSelectionWindow",
-    "FamilySelectionWindow.xaml": "FamilySelectionWindow",
-    "LinkSelectionWindow.xaml": "LinkSelectionWindow",
     "TargetSelectionWindow.xaml": "TargetSelectionWindow",
     "ActionWindow.xaml": "ActionWindow",
 }
+
+# The shared pages: (XAML path, module that defines the class, class name).
+SHARED_WINDOWS = (
+    (UI_DIR / "family_selection_source.xaml", SELECTION_UI_MODULE,
+     "SourceSelectionWindow"),
+    (UI_DIR / "family_selection_families.xaml", SELECTION_UI_MODULE,
+     "FamilySelectionWindow"),
+    (UI_DIR / "family_selection_links.xaml", SELECTION_UI_MODULE,
+     "LinkSelectionWindow"),
+)
+
+
+def _all_windows():
+    """Every window this command opens: (XAML path, module path, class)."""
+    windows = [(COMMAND_DIR / name, UI_MODULE, class_name)
+               for name, class_name in sorted(WINDOW_CLASSES.items())]
+    windows.extend(SHARED_WINDOWS)
+    return windows
 
 EXPECTED_MODULES = (
     "script.py",
@@ -56,8 +82,10 @@ WINDOW_MEMBERS = frozenset([
 ])
 
 
-def _xaml_root(name):
-    return ET.parse(str(COMMAND_DIR / name)).getroot()
+def _xaml_root(path):
+    if not isinstance(path, pathlib.Path):
+        path = COMMAND_DIR / path
+    return ET.parse(str(path)).getroot()
 
 
 def _xaml_names(root):
@@ -179,32 +207,52 @@ class FamiliesTransferBundleTests(unittest.TestCase):
 
 class FamiliesTransferXamlTests(unittest.TestCase):
     def test_every_window_xaml_parses(self):
-        for name in WINDOW_CLASSES:
-            _xaml_root(name)
+        for xaml_path, _module, _class_name in _all_windows():
+            _xaml_root(xaml_path)
 
     def test_no_stray_xaml_files(self):
         found = set(path.name for path in COMMAND_DIR.glob("*.xaml"))
         self.assertEqual(set(WINDOW_CLASSES), found)
+        for xaml_path, _module, class_name in SHARED_WINDOWS:
+            self.assertTrue(xaml_path.is_file(), class_name)
+
+    def test_the_selection_pages_live_in_lib(self):
+        # Shared with Families Downgrade: the pages moved to lib/easybim and the
+        # bundle must not grow a second copy of them.
+        for old_name in ("SourceSelectionWindow.xaml",
+                         "FamilySelectionWindow.xaml",
+                         "LinkSelectionWindow.xaml"):
+            self.assertFalse((COMMAND_DIR / old_name).exists(), old_name)
+        for path in SELECTION_MODULES:
+            self.assertTrue(path.is_file(), path.name)
+        script = SCRIPT_MODULE.read_text(encoding="utf-8")
+        for name in ("easybim.family_selection_revit",
+                     "easybim.family_selection_state",
+                     "easybim.family_selection_ui"):
+            self.assertIn(name, script)
+        for class_name in ("SourceSelectionWindow", "FamilySelectionWindow",
+                           "LinkSelectionWindow"):
+            self.assertIsNone(_class_node(UI_MODULE, class_name), class_name)
 
     def test_every_handler_resolves_on_its_own_window_class(self):
-        for xaml_name, class_name in sorted(WINDOW_CLASSES.items()):
-            members = _class_members(UI_MODULE, class_name)
+        for xaml_path, module_path, class_name in _all_windows():
+            members = _class_members(module_path, class_name)
             self.assertIsNotNone(members, class_name)
-            for handler in sorted(_xaml_handlers(_xaml_root(xaml_name))):
+            for handler in sorted(_xaml_handlers(_xaml_root(xaml_path))):
                 self.assertIn(
                     handler, members,
                     "%s references %s but %s has no such method"
-                    % (xaml_name, handler, class_name))
+                    % (xaml_path.name, handler, class_name))
 
     def test_every_lowercase_control_has_a_matching_x_name(self):
         # CONTROL_ATTRIBUTE only matches ^[A-Z], so the snake_case controls
         # this tool uses for its TextBlocks and CheckBoxes are invisible to
         # the check below. A typo in one of those fails only inside Revit.
         lowercase = re.compile(r"^[a-z][a-z0-9_]*_(tb|cb|btn|box|panel)$")
-        for xaml_name, class_name in sorted(WINDOW_CLASSES.items()):
-            names = _xaml_names(_xaml_root(xaml_name))
-            members = _class_members(UI_MODULE, class_name) or set()
-            node = _class_node(UI_MODULE, class_name)
+        for xaml_path, module_path, class_name in _all_windows():
+            names = _xaml_names(_xaml_root(xaml_path))
+            members = _class_members(module_path, class_name) or set()
+            node = _class_node(module_path, class_name)
             self.assertIsNotNone(node, class_name)
             for child in ast.walk(node):
                 if not isinstance(child, ast.Attribute):
@@ -217,20 +265,20 @@ class FamiliesTransferXamlTests(unittest.TestCase):
                 self.assertIn(
                     child.attr, names,
                     "%s uses self.%s but %s has no such x:Name"
-                    % (class_name, child.attr, xaml_name))
+                    % (class_name, child.attr, xaml_path.name))
 
     def test_every_control_attribute_has_a_matching_x_name(self):
-        for xaml_name, class_name in sorted(WINDOW_CLASSES.items()):
-            names = _xaml_names(_xaml_root(xaml_name))
-            members = _class_members(UI_MODULE, class_name) or set()
+        for xaml_path, module_path, class_name in _all_windows():
+            names = _xaml_names(_xaml_root(xaml_path))
+            members = _class_members(module_path, class_name) or set()
             for attribute in sorted(
-                    _class_control_attributes(UI_MODULE, class_name)):
+                    _class_control_attributes(module_path, class_name)):
                 if attribute in members:
                     continue
                 self.assertIn(
                     attribute, names,
                     "%s uses self.%s but %s has no such x:Name"
-                    % (class_name, attribute, xaml_name))
+                    % (class_name, attribute, xaml_path.name))
 
 
 class FamiliesTransferContractTests(unittest.TestCase):
@@ -240,9 +288,10 @@ class FamiliesTransferContractTests(unittest.TestCase):
         # "Fixing" a refusal by opening the file would silently upgrade an
         # older model to the running Revit version, which is why Load
         # Parameters reads headers with BasicFileInfo instead.
-        source = REVIT_MODULE.read_text(encoding="utf-8")
-        self.assertNotIn("OpenDocumentFile", source)
-        self.assertNotIn("OpenAndActivateDocument", source)
+        for path in (REVIT_MODULE, SELECTION_REVIT_MODULE):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("OpenDocumentFile", source, path.name)
+            self.assertNotIn("OpenAndActivateDocument", source, path.name)
 
     def test_no_link_document_is_ever_closed(self):
         # "Transfer & Close All .rfa" walks a list of documents and closes
@@ -253,7 +302,7 @@ class FamiliesTransferContractTests(unittest.TestCase):
     def test_link_families_are_edited_from_their_own_document(self):
         # A Family element belongs to the document that holds it; calling
         # EditFamily on the active project with a link's Family throws.
-        body = _function_source(REVIT_MODULE, "resolve_family")
+        body = _function_source(SELECTION_REVIT_MODULE, "resolve_family")
         self.assertIn("source_document", body)
 
     def test_transfer_and_export_can_be_cancelled(self):
@@ -335,15 +384,17 @@ class FamiliesTransferContractTests(unittest.TestCase):
         self.assertIn("build_export_overwrite_text", source)
 
     def test_the_link_source_never_stages_a_file_on_disk(self):
-        source = REVIT_MODULE.read_text(encoding="utf-8")
-        for forbidden in ("import tempfile", "import shutil"):
-            self.assertNotIn(forbidden, source)
+        for path in (REVIT_MODULE, SELECTION_REVIT_MODULE):
+            source = path.read_text(encoding="utf-8")
+            for forbidden in ("import tempfile", "import shutil"):
+                self.assertNotIn(forbidden, source, path.name)
 
 
 class FamiliesTransferIronPythonTests(unittest.TestCase):
     def test_command_scripts_avoid_python3_only_constructs(self):
         failures = []
-        paths = sorted(COMMAND_DIR.glob("*.py")) + [COPY_PASTE_MODULE]
+        paths = (sorted(COMMAND_DIR.glob("*.py")) + [COPY_PASTE_MODULE]
+                 + list(SELECTION_MODULES))
         for path in paths:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(path))
@@ -385,20 +436,22 @@ class FamiliesTransferIronPythonTests(unittest.TestCase):
     def test_none_is_never_read_as_an_attribute(self):
         # DB.StorageType.None is a syntax error in Python; getattr is the only
         # way to reach it, and it is easy to reintroduce by hand.
-        for path in sorted(COMMAND_DIR.glob("*.py")):
+        for path in sorted(COMMAND_DIR.glob("*.py")) + list(SELECTION_MODULES):
             source = path.read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"\.None\b", source), path.name)
 
     def test_state_module_stays_free_of_revit_imports(self):
-        # The state module is what the test suite loads standalone.
-        source = STATE_MODULE.read_text(encoding="utf-8")
-        for forbidden in ("import clr", "from pyrevit", "Autodesk.Revit"):
-            self.assertNotIn(forbidden, source)
+        # The state modules are what the test suite loads standalone.
+        for path in (STATE_MODULE, SELECTION_STATE_MODULE):
+            source = path.read_text(encoding="utf-8")
+            for forbidden in ("import clr", "from pyrevit", "Autodesk.Revit"):
+                self.assertNotIn(forbidden, source, path.name)
 
     def test_ui_module_stays_free_of_revit_api_imports(self):
-        source = UI_MODULE.read_text(encoding="utf-8")
-        self.assertNotIn("Autodesk.Revit", source)
-        self.assertNotIn("import clr", source)
+        for path in (UI_MODULE, SELECTION_UI_MODULE):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("Autodesk.Revit", source, path.name)
+            self.assertNotIn("import clr", source, path.name)
 
 
 if __name__ == "__main__":

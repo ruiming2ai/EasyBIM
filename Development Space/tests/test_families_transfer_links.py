@@ -13,19 +13,23 @@ afterwards so the stubs cannot leak into the rest of the suite.
 """
 
 import importlib.util
-import os
 import pathlib
 import sys
 import types
 import unittest
 
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 COMMAND_DIR = (
-    pathlib.Path(__file__).resolve().parents[2]
+    REPO_ROOT
     / "EasyBIM.tab"
     / "Misc Tools.panel"
     / "Families Transfer.pushbutton"
 )
+# The collectors, the element-to-family walk and the link cascade are shared
+# with Families Downgrade and live in lib; the bundle module keeps transfer,
+# export and close.
+LIB_DIR = REPO_ROOT / "lib" / "easybim"
 
 
 # --------------------------------------------------------------------------
@@ -264,14 +268,32 @@ STUBS = {
 }
 
 state = None
+selection = None
 ft_revit = None
+fs_revit = None
 _saved_modules = {}
 _saved_path = None
 
 
+def _load_as(dotted_name, path):
+    """Load a module file under a dotted name, registered before it runs.
+
+    The lib modules import each other by their ``easybim.`` names, and the
+    stubbed ``easybim`` parent is a bare module with no ``__path__`` - so each
+    one is pre-registered in ``sys.modules`` under its dotted name, which is
+    all a ``from easybim.x import y`` needs.
+    """
+    _saved_modules.setdefault(dotted_name, sys.modules.get(dotted_name))
+    spec = importlib.util.spec_from_file_location(dotted_name, str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[dotted_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def setUpModule():
-    """Install the stubs, load both modules, then put sys.modules back."""
-    global state, ft_revit, _saved_path
+    """Install the stubs, load the modules, then put sys.modules back."""
+    global state, selection, ft_revit, fs_revit, _saved_path
     _saved_path = list(sys.path)
 
     for name, attrs in STUBS.items():
@@ -282,16 +304,15 @@ def setUpModule():
         sys.modules[name] = module
 
     sys.path.insert(0, str(COMMAND_DIR))
-    for name in ("families_transfer_state", "families_transfer_revit"):
-        _saved_modules.setdefault(name, sys.modules.get(name))
-        spec = importlib.util.spec_from_file_location(
-            name, str(COMMAND_DIR / (name + ".py")))
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-
-    state = sys.modules["families_transfer_state"]
-    ft_revit = sys.modules["families_transfer_revit"]
+    # Order matters: each module imports the ones before it.
+    selection = _load_as("easybim.family_selection_state",
+                         LIB_DIR / "family_selection_state.py")
+    fs_revit = _load_as("easybim.family_selection_revit",
+                        LIB_DIR / "family_selection_revit.py")
+    state = _load_as("families_transfer_state",
+                     COMMAND_DIR / "families_transfer_state.py")
+    ft_revit = _load_as("families_transfer_revit",
+                        COMMAND_DIR / "families_transfer_revit.py")
 
 
 def tearDownModule():
@@ -361,10 +382,10 @@ def build_world(edit_error=None, arch_also_open=False, target_has_door=True,
 
 
 def checked_links(world):
-    links = ft_revit.get_link_document_options(world.host)
+    links = fs_revit.get_link_document_options(world.host)
     for link in links:
         link.is_selected = bool(link.is_loaded)
-    ft_revit.prepare_link_documents(world.uiapp, world.host, links)
+    fs_revit.prepare_link_documents(world.uiapp, world.host, links)
     return links
 
 
@@ -379,7 +400,7 @@ def target_options(world):
 
 class LinkListingTests(unittest.TestCase):
     def test_two_instances_of_one_link_produce_one_row(self):
-        links = ft_revit.get_link_document_options(build_world().host)
+        links = fs_revit.get_link_document_options(build_world().host)
 
         self.assertEqual(
             ["Arch.rvt", "Missing.rvt", "Struct.rvt"],
@@ -387,7 +408,7 @@ class LinkListingTests(unittest.TestCase):
 
     def test_an_unloaded_link_is_listed_but_marked_not_loaded(self):
         # Hiding it would read as "the tool cannot see my link".
-        links = ft_revit.get_link_document_options(build_world().host)
+        links = fs_revit.get_link_document_options(build_world().host)
         by_name = dict((link.display_name, link) for link in links)
 
         self.assertFalse(by_name["Missing.rvt"].is_loaded)
@@ -395,7 +416,7 @@ class LinkListingTests(unittest.TestCase):
         self.assertTrue(by_name["Arch.rvt"].is_loaded)
 
     def test_a_link_is_keyed_by_its_path(self):
-        links = ft_revit.get_link_document_options(
+        links = fs_revit.get_link_document_options(
             build_world().host, {"path|" + ARCH_PATH.lower()})
         by_name = dict((link.display_name, link) for link in links)
 
@@ -405,7 +426,7 @@ class LinkListingTests(unittest.TestCase):
 
 class LinkFamilyCollectionTests(unittest.TestCase):
     def test_in_place_families_are_never_offered(self):
-        families = ft_revit.get_link_family_options(checked_links(build_world()))
+        families = fs_revit.get_link_family_options(checked_links(build_world()))
 
         self.assertNotIn("InPlace_Mass", [family.name for family in families])
         self.assertEqual(
@@ -413,34 +434,34 @@ class LinkFamilyCollectionTests(unittest.TestCase):
             sorted(family.name for family in families))
 
     def test_the_same_element_id_in_two_links_stays_two_families(self):
-        families = ft_revit.get_link_family_options(checked_links(build_world()))
+        families = fs_revit.get_link_family_options(checked_links(build_world()))
         keys = [f.family_key for f in families if f.name in ("Door_Single", "Column_W")]
 
         self.assertEqual(2, len(set(keys)))
         for key in keys:
-            self.assertTrue(state.is_link_family_key(key))
+            self.assertTrue(selection.is_link_family_key(key))
 
     def test_every_row_names_the_link_it_came_from(self):
-        families = ft_revit.get_link_family_options(checked_links(build_world()))
+        families = fs_revit.get_link_family_options(checked_links(build_world()))
         by_name = dict((family.name, family) for family in families)
 
         self.assertEqual("Arch.rvt", by_name["Door_Single"].source_label)
         self.assertEqual("Struct.rvt", by_name["Column_W"].source_label)
-        self.assertEqual(state.SOURCE_LINK, by_name["Door_Single"].source_kind)
+        self.assertEqual(selection.SOURCE_LINK, by_name["Door_Single"].source_kind)
 
     def test_unchecked_links_are_not_read_at_all(self):
         world = build_world()
-        links = ft_revit.get_link_document_options(world.host)
+        links = fs_revit.get_link_document_options(world.host)
 
-        self.assertEqual([], ft_revit.get_link_family_options(links))
+        self.assertEqual([], fs_revit.get_link_family_options(links))
 
     def test_a_link_is_read_once_and_then_cached(self):
         world = build_world()
         links = checked_links(world)
         cache = {}
 
-        first = ft_revit.get_link_family_options(links, cache=cache)
-        second = ft_revit.get_link_family_options(links, cache=cache)
+        first = fs_revit.get_link_family_options(links, cache=cache)
+        second = fs_revit.get_link_family_options(links, cache=cache)
 
         self.assertEqual(len(first), len(second))
         self.assertEqual(2, len(cache))
@@ -480,7 +501,7 @@ class ProbeTests(unittest.TestCase):
         links = checked_links(world)
         arch = [link for link in links if link.display_name == "Arch.rvt"][0]
 
-        ft_revit.prepare_link_documents(world.uiapp, world.host, links)
+        fs_revit.prepare_link_documents(world.uiapp, world.host, links)
 
         self.assertEqual(1, len(arch.document.edited))
 
@@ -488,7 +509,7 @@ class ProbeTests(unittest.TestCase):
 class TransferTests(unittest.TestCase):
     def _transfer(self, world, progress=None):
         links = checked_links(world)
-        families = ft_revit.get_link_family_options(links)
+        families = fs_revit.get_link_family_options(links)
         for family in families:
             family.is_selected = True
         summary = ft_revit.transfer_families(
@@ -575,7 +596,7 @@ class TransferTests(unittest.TestCase):
 
     def test_a_project_family_still_transfers_unchanged(self):
         world = build_world()
-        families = ft_revit.get_source_family_options(world.host)
+        families = fs_revit.get_source_family_options(world.host)
         for family in families:
             family.is_selected = True
 
@@ -608,7 +629,7 @@ class OverwritePromptTests(unittest.TestCase):
 
     def _transfer(self, world, ask=True):
         links = checked_links(world)
-        families = ft_revit.get_link_family_options(links)
+        families = fs_revit.get_link_family_options(links)
         for family in families:
             family.is_selected = True
         return ft_revit.transfer_families(
@@ -721,7 +742,7 @@ class OverwritePromptTests(unittest.TestCase):
 class ExportTests(unittest.TestCase):
     def test_an_editable_link_exports_one_rfa_per_family(self):
         world = build_world()
-        families = ft_revit.get_link_family_options(checked_links(world))
+        families = fs_revit.get_link_family_options(checked_links(world))
 
         summary = ft_revit.export_families(world.host, families, "C:/out")
 
@@ -733,7 +754,7 @@ class ExportTests(unittest.TestCase):
         # Writing an .rfa needs a family document, which is the thing the
         # link refused; there is no copy-based route to a file.
         world = build_world(edit_error="The document is read-only.")
-        families = ft_revit.get_link_family_options(checked_links(world))
+        families = fs_revit.get_link_family_options(checked_links(world))
 
         summary = ft_revit.export_families(world.host, families, "C:/out")
 
@@ -745,7 +766,7 @@ class ExportTests(unittest.TestCase):
     def test_two_links_holding_one_name_export_to_two_files(self):
         world = build_world(target_has_door=False)
         links = checked_links(world)
-        families = ft_revit.get_link_family_options(links)
+        families = fs_revit.get_link_family_options(links)
         families = [f for f in families if f.name in ("Door_Single", "Column_W")]
         families[0].name = "Door_Single"
         families[1].name = "Door_Single"
@@ -762,8 +783,8 @@ class CloseGuardTests(unittest.TestCase):
         plain = FakeDocument("Desk", "C:/jobs/Desk.rfa")
 
         summary = ft_revit.close_open_family_documents([
-            state.OpenFamilyDocumentOption("Arch.rvt", "k1", document=linked),
-            state.OpenFamilyDocumentOption("Desk.rfa", "k2", document=plain),
+            selection.OpenFamilyDocumentOption("Arch.rvt", "k1", document=linked),
+            selection.OpenFamilyDocumentOption("Desk.rfa", "k2", document=plain),
         ])
 
         self.assertFalse(linked.closed)
@@ -790,7 +811,7 @@ class ElementToFamilyTests(unittest.TestCase):
     def test_a_family_instance_resolves_through_its_symbol(self):
         instance = types.SimpleNamespace(Symbol=self.symbol)
 
-        self.assertIs(self.family, ft_revit._family_from_element(instance))
+        self.assertIs(self.family, fs_revit.family_from_element(instance))
 
     def test_a_tag_resolves_through_its_type_id(self):
         # IndependentTag derives from Element and has no Symbol at all.
@@ -799,7 +820,7 @@ class ElementToFamilyTests(unittest.TestCase):
             Document=FakeTypeHost(self.symbol),
         )
 
-        self.assertIs(self.family, ft_revit._family_from_element(tag))
+        self.assertIs(self.family, fs_revit.family_from_element(tag))
 
     def test_a_spatial_tag_resolves_the_same_way(self):
         room_tag = types.SimpleNamespace(
@@ -807,7 +828,7 @@ class ElementToFamilyTests(unittest.TestCase):
             Document=FakeTypeHost(self.symbol),
         )
 
-        self.assertIs(self.family, ft_revit._family_from_element(room_tag))
+        self.assertIs(self.family, fs_revit.family_from_element(room_tag))
 
     def test_a_text_note_is_not_mistaken_for_a_family(self):
         # TextElement.Symbol succeeds and returns the wrong kind of object.
@@ -817,7 +838,7 @@ class ElementToFamilyTests(unittest.TestCase):
             Document=FakeTypeHost(FakeTextElementType()),
         )
 
-        self.assertIsNone(ft_revit._family_from_element(text_note))
+        self.assertIsNone(fs_revit.family_from_element(text_note))
 
     def test_a_matchline_yields_nothing_because_it_has_no_type(self):
         # A matchline is a sketched system element: no Family, no
@@ -827,14 +848,14 @@ class ElementToFamilyTests(unittest.TestCase):
             Document=FakeTypeHost(None),
         )
 
-        self.assertIsNone(ft_revit._family_from_element(matchline))
+        self.assertIsNone(fs_revit.family_from_element(matchline))
 
     def test_a_family_element_passes_straight_through(self):
-        self.assertIs(self.family, ft_revit._family_from_element(self.family))
+        self.assertIs(self.family, fs_revit.family_from_element(self.family))
 
     def test_none_and_junk_are_survived(self):
-        self.assertIsNone(ft_revit._family_from_element(None))
-        self.assertIsNone(ft_revit._family_from_element(object()))
+        self.assertIsNone(fs_revit.family_from_element(None))
+        self.assertIsNone(fs_revit.family_from_element(object()))
 
     def test_the_selection_filter_accepts_a_tag(self):
         tag = types.SimpleNamespace(
@@ -842,7 +863,7 @@ class ElementToFamilyTests(unittest.TestCase):
             Document=FakeTypeHost(self.symbol),
         )
 
-        self.assertTrue(ft_revit.FamilyTransferSelectionFilter().AllowElement(tag))
+        self.assertTrue(fs_revit.FamilySelectionFilter().AllowElement(tag))
 
     def test_the_selection_filter_rejects_a_matchline(self):
         matchline = types.SimpleNamespace(
@@ -850,31 +871,31 @@ class ElementToFamilyTests(unittest.TestCase):
             Document=FakeTypeHost(None),
         )
 
-        self.assertFalse(ft_revit.FamilyTransferSelectionFilter().AllowElement(matchline))
+        self.assertFalse(fs_revit.FamilySelectionFilter().AllowElement(matchline))
 
 
 class ResolveTests(unittest.TestCase):
     def test_a_link_family_resolves_against_its_own_document(self):
         world = build_world()
-        families = ft_revit.get_link_family_options(checked_links(world))
+        families = fs_revit.get_link_family_options(checked_links(world))
         door = [f for f in families if f.name == "Door_Single"][0]
         door.family = None
 
-        resolved = ft_revit.resolve_family(world.host, door)
+        resolved = fs_revit.resolve_family(world.host, door)
 
         self.assertIsNotNone(resolved)
         self.assertEqual("Door_Single", resolved.Name)
 
     def test_the_fallback_scan_runs_once_per_document_not_once_per_family(self):
         world = build_world()
-        families = ft_revit.get_link_family_options(checked_links(world))
+        families = fs_revit.get_link_family_options(checked_links(world))
         for family in families:
             family.family = None
             family.element_id = None
 
         index_cache = {}
         resolved = [
-            ft_revit.resolve_family(world.host, family, index_cache)
+            fs_revit.resolve_family(world.host, family, index_cache)
             for family in families
         ]
 
