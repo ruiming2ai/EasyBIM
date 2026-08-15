@@ -130,12 +130,33 @@ def clr_id_list_factory():
     return factory
 
 
-def select_elements(element_ids):
-    """Set the Revit UI selection to the given ElementIds."""
+def select_elements(element_ids, uidoc=None):
+    """Set the Revit UI selection to the given ElementIds.
+
+    Pass the UIDocument from an ExternalEvent's ``uiapp`` when called
+    from a modeless window; ``revit.uidoc`` is the in-context fallback.
+    """
     id_list = clr_id_list_factory()()
     for element_id in element_ids:
         id_list.Add(element_id)
-    revit.uidoc.Selection.SetElementIds(id_list)
+    target = uidoc if uidoc is not None else revit.uidoc
+    target.Selection.SetElementIds(id_list)
+
+
+def collect_titleblock_ids(doc, sheet_ids):
+    """ElementIds of the title blocks on the given sheets (fresh read)."""
+    wanted = set(sheet_ids)
+    result = []
+    for tblock in DB.FilteredElementCollector(doc)\
+            .OfCategory(DB.BuiltInCategory.OST_TitleBlocks)\
+            .WhereElementIsNotElementType()\
+            .ToElements():
+        try:
+            if eid_to_int(tblock.OwnerViewId) in wanted:
+                result.append(tblock.Id)
+        except Exception:
+            continue
+    return result
 
 
 def write_parameter(element, param_name, value_text):
@@ -288,7 +309,12 @@ def param_target_for_row(row, column, sheets_by_id, tb_map):
 
 def collect_sheet_list_schedules(doc):
     """Sheet-list ViewSchedules, cheaply (no text exports)."""
-    sheet_category = revit.query.get_category(DB.BuiltInCategory.OST_Sheets)
+    try:
+        sheet_category = revit.query.get_category(
+            DB.BuiltInCategory.OST_Sheets, doc=doc)
+    except TypeError:
+        sheet_category = revit.query.get_category(
+            DB.BuiltInCategory.OST_Sheets)
     sheet_category_id = sheet_category.Id if sheet_category else None
     schedules = DB.FilteredElementCollector(doc)\
         .OfClass(framework.get_type(DB.ViewSchedule))\

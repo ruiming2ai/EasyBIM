@@ -46,6 +46,7 @@ from pyrevit import script
 
 from easybim import excel_print_sets
 from easybim import excel_workbook
+from easybim import external_events
 from easybim import link_reload
 from easybim import print_sets
 from easybim.compat import eid_to_int
@@ -57,6 +58,20 @@ import sheet_manager_xlsx as smxlsx
 
 
 LOGGER = script.get_logger()
+
+# Mirrored to pyRevit envvars: a persistent engine may be re-imported by a
+# pyRevit reload while Revit keeps the live window (Clash Detection pattern).
+ACTIVE_ENVVAR = "EASYBIM_SHEET_MANAGER_ACTIVE"
+WINDOW_ENVVAR = "EASYBIM_SHEET_MANAGER_WINDOW"
+_WINDOW = None
+
+
+class DocumentGone(Exception):
+    """The document this window was opened for is no longer valid."""
+
+
+class WrongActiveDocument(Exception):
+    """A write/selection was requested while another document is active."""
 
 _XNS = ('xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" '
         'xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"')
@@ -121,6 +136,21 @@ def _parse_fragment(fragment, attr):
     return XamlReader.Parse(fragment.format(ns=_XNS, attr=attr))
 
 
+def _same_doc(doc_a, doc_b):
+    if doc_a is None or doc_b is None:
+        return False
+    try:
+        return bool(doc_a.Equals(doc_b))
+    except Exception:
+        pass
+    try:
+        return (getattr(doc_a, "Title", None) == getattr(doc_b, "Title", None)
+                and getattr(doc_a, "PathName", None)
+                == getattr(doc_b, "PathName", None))
+    except Exception:
+        return False
+
+
 def _find_parent_cell(element):
     current = element
     while current is not None:
@@ -153,9 +183,20 @@ class SheetRow(forms.Reactive, state.SheetRowBase):
 
 
 class SheetManagerWindow(forms.WPFWindow):
-    def __init__(self, xaml_file_name):
+    def __init__(self, xaml_file_name, bridge=None, uiapp=None):
         self._is_ready = False
-        forms.WPFWindow.__init__(self, xaml_file_name)
+        try:
+            # Escape must not close a modeless editor holding staged edits;
+            # the DataGrid then handles Escape as cancel-edit natively.
+            forms.WPFWindow.__init__(self, xaml_file_name, handle_esc=False)
+        except TypeError:
+            forms.WPFWindow.__init__(self, xaml_file_name)
+        self._bridge = bridge
+        self._uiapp = uiapp
+        self._doc = revit.doc  # bound in API context at launch
+        self._doc_title = getattr(self._doc, "Title", u"") or u""
+        self._busy = False
+        self._closing = False
         self._all_rows = []
         self._visible_rows = []
         self._columns = []
@@ -175,6 +216,15 @@ class SheetManagerWindow(forms.WPFWindow):
         self._sheet_param_info = None
         self._tb_param_info = None
         self._filter_extra_cache = {}
+        self._revit_buttons = [
+            self.loadsheetlist_b, self.loadprintset_b, self.filterparam_b,
+            self.addtbparam_b, self.addsheetparam_b, self.saveprintset_b,
+            self.selecttblocks_b, self.apply_b,
+        ]
+        if self._bridge is not None:
+            self._bridge.on_error = self._on_bridge_error
+            self._bridge.on_idle = self._on_bridge_idle
+        self.Closed += self._on_closed
 
         self._load_model()
         self._build_columns_ui()
@@ -195,8 +245,130 @@ class SheetManagerWindow(forms.WPFWindow):
 
     # ------------------------------------------------------------- model
 
+    # ------------------------------------------------- revit bridge plumbing
+
+    def _run_in_revit(self, label, work, on_done=None, quiet=False):
+        """Run ``work(uiapp)`` then ``on_done(result)`` in Revit API context.
+
+        Both run inside the ExternalEvent's Execute (Revit's main thread,
+        which is also this window's thread). Without a bridge (modal
+        fallback) they run synchronously - we already are in context.
+        """
+        if self._bridge is None:
+            try:
+                result = work(self._uiapp)
+            except Exception as err:
+                self._on_bridge_error(label, err)
+                return False
+            if on_done is not None:
+                on_done(result)
+            return True
+        if not quiet:
+            self._set_busy(True, label)
+        if not self._bridge.run(work, on_done=on_done, label=label):
+            self._set_busy(False)
+            self._alert(
+                "Revit could not take the request right now (it may be "
+                "inside another command). Finish what Revit is doing and "
+                "try again.", title="Sheet Manager")
+            return False
+        return True
+
+    def _set_busy(self, busy, label=""):
+        self._busy = bool(busy)
+        for button in self._revit_buttons:
+            try:
+                button.IsEnabled = not self._busy
+            except Exception:
+                pass
+        if self._busy:
+            self.status_tb.Text = "Waiting for Revit - {0}...".format(label)
+        else:
+            self._update_status()
+
+    def _on_bridge_idle(self):
+        if not self._closing:
+            self._set_busy(False)
+
+    def _require_doc(self, uiapp, must_be_active):
+        """Guard bridged work: bound doc still valid (and active for
+        writes/selection). Returns the UIDocument (may be None for reads)."""
+        try:
+            valid = bool(getattr(self._doc, "IsValidObject", True))
+        except Exception:
+            valid = False
+        if not valid:
+            raise DocumentGone()
+        uidoc = getattr(uiapp, "ActiveUIDocument", None) if uiapp else None
+        if uidoc is None:
+            try:
+                uidoc = revit.uidoc
+            except Exception:
+                uidoc = None
+        if must_be_active:
+            active = getattr(uidoc, "Document", None)
+            if active is None or not _same_doc(active, self._doc):
+                raise WrongActiveDocument(self._doc_title)
+        return uidoc
+
+    def _on_bridge_error(self, label, error):
+        if isinstance(error, DocumentGone):
+            self._alert(
+                "The document this Sheet Manager was opened for has been "
+                "closed. Sheet Manager will close.", title="Sheet Manager")
+            self._closing = True
+            try:
+                self.Close()
+            except Exception:
+                pass
+            return
+        if isinstance(error, WrongActiveDocument):
+            self._alert(
+                u"Switch back to '{0}' in Revit, then try again.".format(
+                    self._doc_title), title="Sheet Manager")
+            return
+        LOGGER.debug("%s failed: %s", label, error)
+        self._alert("{0} failed.".format(label), expanded=str(error),
+                    title="Sheet Manager")
+
+    def _alert(self, *args, **kwargs):
+        """forms.alert with this window disabled while the TaskDialog is up
+        (a nested message pump could otherwise re-enter a click handler)."""
+        try:
+            self.IsEnabled = False
+        except Exception:
+            pass
+        try:
+            return forms.alert(*args, **kwargs)
+        finally:
+            try:
+                self.IsEnabled = True
+            except Exception:
+                pass
+
+    def _show_dialog(self, dialog):
+        """ShowDialog with this window as owner so it stays on top of us."""
+        try:
+            dialog.Owner = self
+        except Exception:
+            pass
+        dialog.ShowDialog()
+        return dialog
+
+    def _on_closed(self, sender, args):
+        del sender, args
+        self._closing = True
+        if self._bridge is not None:
+            try:
+                self._bridge.dispose()
+            except Exception:
+                pass
+        _forget_window(self)
+
+    # ------------------------------------------------------------- model
+
     def _load_model(self):
-        doc = revit.doc
+        doc = self._doc
         self._revision_rows = print_sets.collect_revision_rows(
             doc, DB, framework)
         self._all_revision_ids = set(
@@ -207,7 +379,7 @@ class SheetManagerWindow(forms.WPFWindow):
         try:
             smrevit.attach_hidden_cloud_info(doc, rows, sheets_by_id)
         except Exception as err:
-            LOGGER.warning("Cloud inventory unavailable: %s", err)
+            LOGGER.debug("Cloud inventory unavailable: %s", err)
         self._columns = state.fixed_columns() + \
             state.build_revision_columns(self._revision_rows)
         for row in rows:
@@ -345,6 +517,9 @@ class SheetManagerWindow(forms.WPFWindow):
         resolved = self._resolve_grid_checkbox(args.OriginalSource)
         if resolved is None:
             return
+        if self._busy:
+            args.Handled = True
+            return
         checkbox, spec, row = resolved
         if spec.kind not in (state.KIND_SELECT, state.KIND_REVISION):
             return
@@ -360,6 +535,8 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def grid_checkbox_click(self, sender, args):
         del sender
+        if self._busy:
+            return
         resolved = self._resolve_grid_checkbox(args.OriginalSource)
         if resolved is None:
             return
@@ -371,6 +548,9 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def grid_beginning_edit(self, sender, args):
         del sender
+        if self._busy:
+            args.Cancel = True
+            return
         spec = self._spec_by_column.get(args.Column)
         row = args.Row.Item if args.Row is not None else None
         if spec is None or not isinstance(row, SheetRow):
@@ -398,7 +578,7 @@ class SheetManagerWindow(forms.WPFWindow):
         if spec.kind == state.KIND_NUMBER:
             error = self._validate_number_edit(row, new_text)
             if error:
-                forms.alert(error, title="Sheet Manager")
+                self._alert(error, title="Sheet Manager")
                 args.Cancel = True
                 return
         state.apply_cell_edit(row, spec, new_text)
@@ -499,21 +679,38 @@ class SheetManagerWindow(forms.WPFWindow):
         self._update_status()
 
     def _extra_filter_lookup(self, row, column_key):
-        """Values for filter rules on params that are not table columns."""
-        cache_key = (row.sheet_id, column_key)
-        if cache_key in self._filter_extra_cache:
-            return self._filter_extra_cache[cache_key]
-        value = None
-        if column_key.startswith("p:") or column_key.startswith("tb:"):
-            param_name = column_key.split(":", 1)[1]
-            if column_key.startswith("p:"):
-                element = self._sheets_by_id.get(row.sheet_id)
-            else:
-                tblocks = self._tb_map.get(row.sheet_id) or []
-                element = tblocks[0] if len(tblocks) == 1 else None
-            value = smrevit.read_parameter_value(element, param_name)
-        self._filter_extra_cache[cache_key] = value
-        return value
+        """Values for filter rules on params that are not table columns.
+
+        Pure dict lookup: the cache is filled by ``_prefetch_filter_values``
+        inside a bridged (API-context) call, so filtering while typing never
+        touches Revit."""
+        return self._filter_extra_cache.get((row.sheet_id, column_key))
+
+    def _prefetch_filter_values(self, rules=None, rows=None):
+        """Read (in API context) every rule parameter that is not a table
+        column, for the given rows (default all)."""
+        rules = self._param_rules if rules is None else rules
+        column_keys = set(column.key for column in self._columns)
+        wanted = []
+        for column_key, _, _ in rules:
+            if column_key in column_keys or column_key in wanted:
+                continue
+            if column_key.startswith("p:") or column_key.startswith("tb:"):
+                wanted.append(column_key)
+        if not wanted:
+            return
+        for row in (rows if rows is not None else self._all_rows):
+            if row.is_pending:
+                continue
+            for column_key in wanted:
+                param_name = column_key.split(":", 1)[1]
+                if column_key.startswith("p:"):
+                    element = self._sheets_by_id.get(row.sheet_id)
+                else:
+                    tblocks = self._tb_map.get(row.sheet_id) or []
+                    element = tblocks[0] if len(tblocks) == 1 else None
+                self._filter_extra_cache[(row.sheet_id, column_key)] = \
+                    smrevit.read_parameter_value(element, param_name)
 
     def _update_filter_labels(self):
         if self._revision_filter_ids:
@@ -570,7 +767,7 @@ class SheetManagerWindow(forms.WPFWindow):
         for row in rows:
             lines.append(u"{0} - {1} ({2} title blocks)".format(
                 row.number, row.name, row.tblock_count))
-        forms.alert(
+        self._alert(
             "{0} sheet(s) have more than one title block instance.\n\n"
             "Title block parameter cells for these sheets will show as "
             "'duplicated' and cannot be edited here.".format(len(rows)),
@@ -580,7 +777,7 @@ class SheetManagerWindow(forms.WPFWindow):
     # ---------------------------------------------------- button stubs
 
     def _not_available(self, feature):
-        forms.alert(
+        self._alert(
             "{0} is not available yet in this build.".format(feature),
             title="Sheet Manager")
 
@@ -596,16 +793,21 @@ class SheetManagerWindow(forms.WPFWindow):
     def load_sheet_list(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        doc = revit.doc
+        self._run_in_revit("Load Sheet List", self._load_sheet_list_work)
+
+    def _load_sheet_list_work(self, uiapp):
+        """Whole flow in API context: schedules -> dialog -> ordering
+        (ViewSchedule.Export) -> optional columns -> grid refresh."""
+        self._require_doc(uiapp, must_be_active=False)
+        doc = self._doc
         schedules = smrevit.collect_sheet_list_schedules(doc)
         if not schedules:
-            forms.alert("No Sheet List schedules were found in the model.",
+            self._alert("No Sheet List schedules were found in the model.",
                         title="Sheet Manager")
             return
         names = [getattr(s, "Name", u"") or u"" for s in schedules]
-        dialog = dialogs.LoadFromSourceWindow(
-            "LoadFromSourceDialog.xaml", "schedule", names)
-        dialog.ShowDialog()
+        dialog = self._show_dialog(dialogs.LoadFromSourceWindow(
+            "LoadFromSourceDialog.xaml", "schedule", names))
         if not dialog.result:
             return
         name, numbers_only = dialog.result
@@ -613,7 +815,7 @@ class SheetManagerWindow(forms.WPFWindow):
         try:
             ordered = smrevit.get_ordered_sheets_for_schedule(doc, schedule)
         except Exception as err:
-            forms.alert("Could not read the sheet list order.",
+            self._alert("Could not read the sheet list order.",
                         expanded=str(err), title="Sheet Manager")
             return
         self._source_order = [eid_to_int(sheet.Id) for sheet in ordered]
@@ -622,11 +824,12 @@ class SheetManagerWindow(forms.WPFWindow):
             try:
                 self._load_schedule_columns(doc, schedule, ordered)
             except Exception as err:
-                LOGGER.warning("Sheet list columns unavailable: %s", err)
-                forms.alert(
+                LOGGER.debug("Sheet list columns unavailable: %s", err)
+                self._alert(
                     "Loaded sheet order, but the sheet list's columns "
                     "could not be read; showing numbers & names only.",
                     expanded=str(err), title="Sheet Manager")
+        self._prefetch_filter_values()
         self._refresh_visible_rows()
 
     def _load_schedule_columns(self, doc, schedule, ordered_sheets):
@@ -702,20 +905,23 @@ class SheetManagerWindow(forms.WPFWindow):
     def load_print_set(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        names = print_sets.collect_print_set_names(revit.doc, DB, framework)
+        self._run_in_revit("Load Print Set", self._load_print_set_work)
+
+    def _load_print_set_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
+        names = print_sets.collect_print_set_names(self._doc, DB, framework)
         if not names:
-            forms.alert("No print sets were found in the model.",
+            self._alert("No print sets were found in the model.",
                         title="Sheet Manager")
             return
-        dialog = dialogs.LoadFromSourceWindow(
-            "LoadFromSourceDialog.xaml", "printset", names)
-        dialog.ShowDialog()
+        dialog = self._show_dialog(dialogs.LoadFromSourceWindow(
+            "LoadFromSourceDialog.xaml", "printset", names))
         if not dialog.result:
             return
         name = dialog.result[0]
-        sheets = smrevit.get_print_set_sheets(revit.doc, name)
+        sheets = smrevit.get_print_set_sheets(self._doc, name)
         if not sheets:
-            forms.alert(
+            self._alert(
                 u"Print set '{0}' contains no sheets.".format(name),
                 title="Sheet Manager")
             return
@@ -726,13 +932,12 @@ class SheetManagerWindow(forms.WPFWindow):
     def filter_by_revision(self, sender, args):
         del sender, args
         if not self._revision_rows:
-            forms.alert("No revisions were found in the model.",
+            self._alert("No revisions were found in the model.",
                         title="Sheet Manager")
             return
-        dialog = dialogs.FilterByRevisionWindow(
+        dialog = self._show_dialog(dialogs.FilterByRevisionWindow(
             "FilterByRevisionDialog.xaml", self._revision_rows,
-            self._revision_filter_ids)
-        dialog.ShowDialog()
+            self._revision_filter_ids))
         if dialog.result is None:
             return
         if dialog.result >= self._all_revision_ids:
@@ -771,11 +976,15 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def filter_by_parameter(self, sender, args):
         del sender, args
+        self._run_in_revit("Filter By Parameter",
+                           self._filter_by_parameter_work)
+
+    def _filter_by_parameter_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
         self._ensure_param_info()
-        dialog = dialogs.FilterByParameterWindow(
+        dialog = self._show_dialog(dialogs.FilterByParameterWindow(
             "FilterByParameterDialog.xaml", self._filter_field_options(),
-            self._param_rules, False)
-        dialog.ShowDialog()
+            self._param_rules, False))
         if dialog.result is None:
             return
         rules, add_params = dialog.result
@@ -783,6 +992,7 @@ class SheetManagerWindow(forms.WPFWindow):
         self._filter_extra_cache = {}
         if add_params:
             self._add_rule_param_columns(rules)
+        self._prefetch_filter_values(rules)
         self._refresh_visible_rows()
 
     def _add_rule_param_columns(self, rules):
@@ -806,9 +1016,8 @@ class SheetManagerWindow(forms.WPFWindow):
         field_options = [(column.key, column.header)
                          for column in self._columns
                          if column.is_text_value]
-        dialog = dialogs.SortWindow(
-            "SortDialog.xaml", field_options, self._sort_levels)
-        dialog.ShowDialog()
+        dialog = self._show_dialog(dialogs.SortWindow(
+            "SortDialog.xaml", field_options, self._sort_levels))
         if dialog.result is None:
             return
         self._sort_levels = dialog.result
@@ -864,53 +1073,57 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def add_titleblock_parameter(self, sender, args):
         del sender, args
-        self._ensure_param_info()
-        existing = set(column.param_name for column in self._columns
-                       if column.kind == state.KIND_TB_PARAM)
-        names = sorted(param_name for param_name in self._tb_param_info
-                       if param_name not in existing)
-        if not names:
-            forms.alert("No more title block parameters to add.",
-                        title="Sheet Manager")
-            return
-        chosen = forms.SelectFromList.show(
-            names, multiselect=True, title="Add Title Block Parameter",
-            button_name="Add Columns")
-        if not chosen:
-            return
-        self._add_param_columns(state.KIND_TB_PARAM, chosen)
+        self._run_in_revit(
+            "Add Title Block Parameter",
+            lambda uiapp: self._add_parameter_work(
+                uiapp, state.KIND_TB_PARAM))
 
     def add_sheet_parameter(self, sender, args):
         del sender, args
+        self._run_in_revit(
+            "Add Sheet Parameter",
+            lambda uiapp: self._add_parameter_work(
+                uiapp, state.KIND_SHEET_PARAM))
+
+    def _add_parameter_work(self, uiapp, kind):
+        self._require_doc(uiapp, must_be_active=False)
         self._ensure_param_info()
+        if kind == state.KIND_TB_PARAM:
+            info_map = self._tb_param_info
+            label = "Add Title Block Parameter"
+            noun = "title block parameters"
+        else:
+            info_map = self._sheet_param_info
+            label = "Add Sheet Parameter"
+            noun = "sheet parameters"
         existing = set(column.param_name for column in self._columns
-                       if column.kind == state.KIND_SHEET_PARAM)
-        names = sorted(param_name for param_name in self._sheet_param_info
+                       if column.kind == kind)
+        names = sorted(param_name for param_name in info_map
                        if param_name not in existing)
         if not names:
-            forms.alert("No more sheet parameters to add.",
+            self._alert("No more {0} to add.".format(noun),
                         title="Sheet Manager")
             return
         chosen = forms.SelectFromList.show(
-            names, multiselect=True, title="Add Sheet Parameter",
+            names, multiselect=True, title=label,
             button_name="Add Columns")
         if not chosen:
             return
-        self._add_param_columns(state.KIND_SHEET_PARAM, chosen)
+        self._add_param_columns(kind, chosen)
 
     def export_to_excel(self, sender, args):
         del sender, args
         self._commit_pending_edit()
         if not smxlsx.XLSXWRITER_AVAILABLE:
-            forms.alert(
+            self._alert(
                 "The 'xlsxwriter' module is not available in this "
                 "pyRevit installation.", title="Sheet Manager")
             return
         if not self._visible_rows:
-            forms.alert("There are no rows to export.",
+            self._alert("There are no rows to export.",
                         title="Sheet Manager")
             return
-        doc_title = getattr(revit.doc, "Title", u"") or u""
+        doc_title = self._doc_title
         default_name = smxlsx.build_export_filename(doc_title)
         file_path = forms.save_file(file_ext="xlsx",
                                     default_name=default_name)
@@ -922,10 +1135,10 @@ class SheetManagerWindow(forms.WPFWindow):
                 doc_title, self._columns, self._visible_rows, file_path,
                 time.strftime("%Y-%m-%d %H:%M:%S"))
         except Exception as err:
-            forms.alert("Export failed.", expanded=str(err),
+            self._alert("Export failed.", expanded=str(err),
                         title="Sheet Manager")
             return
-        forms.alert(
+        self._alert(
             "Exported {0} sheet row(s) (all visible columns, staged "
             "values) to:\n{1}".format(count, file_path),
             title="Export to Excel")
@@ -943,12 +1156,12 @@ class SheetManagerWindow(forms.WPFWindow):
                 file_path, [smxlsx.EXPORT_SHEET_NAME,
                             smxlsx.METADATA_SHEET_NAME])
         except excel_workbook.UnsupportedWorkbook as err:
-            forms.alert("Could not read the workbook.",
+            self._alert("Could not read the workbook.",
                         expanded=str(err), title="Import from Excel")
             return
         export_data = sheets.get(smxlsx.EXPORT_SHEET_NAME)
         if export_data is None or not export_data.rows:
-            forms.alert(
+            self._alert(
                 "Worksheet '{0}' was not found or is empty. Export from "
                 "Sheet Manager first, edit, then import that "
                 "workbook.".format(smxlsx.EXPORT_SHEET_NAME),
@@ -960,7 +1173,7 @@ class SheetManagerWindow(forms.WPFWindow):
             self._all_rows, self._columns,
             normalize=excel_print_sets.normalize_key)
         if plan.is_empty() and not plan.skipped_rows:
-            forms.alert("No differences were found - nothing to stage.",
+            self._alert("No differences were found - nothing to stage.",
                         title="Import from Excel")
             return
         staged = 0
@@ -1027,7 +1240,7 @@ class SheetManagerWindow(forms.WPFWindow):
                                for label, reason in plan.skipped_rows]
         message.append(
             "\nNothing is written until you click Apply Changes.")
-        forms.alert(u"\n".join(message),
+        self._alert(u"\n".join(message),
                     expanded=u"\n".join(expanded_lines) or None,
                     title="Import from Excel")
 
@@ -1037,16 +1250,15 @@ class SheetManagerWindow(forms.WPFWindow):
         targets = [item for item in self.sheets_dg.SelectedItems
                    if isinstance(item, SheetRow)]
         if not targets:
-            forms.alert(
+            self._alert(
                 "Select the target sheets in the table first "
                 "(shift-click or drag).", title="Copy Sheet Info")
             return
         source_options = [
             (row.sheet_id, u"{0} - {1}".format(row.number, row.name))
             for row in self._all_rows if not row.is_pending]
-        dialog = dialogs.CopySheetInfoWindow(
-            "CopySheetInfoDialog.xaml", source_options, len(targets))
-        dialog.ShowDialog()
+        dialog = self._show_dialog(dialogs.CopySheetInfoWindow(
+            "CopySheetInfoDialog.xaml", source_options, len(targets)))
         if dialog.result is None:
             return
         source_id, dup_sheet, dup_tb, dup_detailing, dup_views = \
@@ -1060,7 +1272,7 @@ class SheetManagerWindow(forms.WPFWindow):
             return
         targets = [row for row in targets if row is not source_row]
         if not targets:
-            forms.alert("Pick target sheets different from the source.",
+            self._alert("Pick target sheets different from the source.",
                         title="Copy Sheet Info")
             return
         staged = 0
@@ -1101,7 +1313,7 @@ class SheetManagerWindow(forms.WPFWindow):
         if dup_detailing or dup_views:
             message.append(
                 "Detailing/views will be copied when you Apply Changes.")
-        forms.alert("\n".join(message), title="Copy Sheet Info")
+        self._alert("\n".join(message), title="Copy Sheet Info")
         self._update_status()
 
     def search_replace(self, sender, args):
@@ -1113,9 +1325,8 @@ class SheetManagerWindow(forms.WPFWindow):
                 self._visible_rows, self._columns, find_text,
                 replace_text, match_case)
 
-        dialog = dialogs.SearchReplaceWindow(
-            "SearchReplaceDialog.xaml", plan_provider)
-        dialog.ShowDialog()
+        dialog = self._show_dialog(dialogs.SearchReplaceWindow(
+            "SearchReplaceDialog.xaml", plan_provider))
         if not dialog.result:
             return
         applied = 0
@@ -1144,7 +1355,7 @@ class SheetManagerWindow(forms.WPFWindow):
                 message.append(
                     "Skipped {0} invalid sheet-number "
                     "replacement(s).".format(len(skipped_invalid)))
-            forms.alert(u"\n".join(message),
+            self._alert(u"\n".join(message),
                         expanded=u"\n".join(skipped_invalid) or None,
                         title="Search & Replace")
 
@@ -1152,20 +1363,25 @@ class SheetManagerWindow(forms.WPFWindow):
         del sender, args
         self._commit_pending_edit()
         if not print_sets.supports_ordered_print_sets(HOST_APP):
-            forms.alert("Save Print Set requires Revit 2023 or newer.",
+            self._alert("Save Print Set requires Revit 2023 or newer.",
                         title="Sheet Manager")
             return
         checked = [row for row in self._visible_rows
                    if row.is_selected and not row.is_pending]
         if not checked:
-            forms.alert(
+            self._alert(
                 "Check at least one sheet row first (checkbox column).",
                 title="Save Print Set")
             return
-        names = print_sets.collect_print_set_names(revit.doc, DB, framework)
-        dialog = dialogs.SavePrintSetWindow(
-            "SavePrintSetDialog.xaml", names, len(checked))
-        dialog.ShowDialog()
+        self._run_in_revit(
+            "Save Print Set",
+            lambda uiapp: self._save_print_set_work(uiapp, checked))
+
+    def _save_print_set_work(self, uiapp, checked):
+        self._require_doc(uiapp, must_be_active=True)
+        names = print_sets.collect_print_set_names(self._doc, DB, framework)
+        dialog = self._show_dialog(dialogs.SavePrintSetWindow(
+            "SavePrintSetDialog.xaml", names, len(checked)))
         if not dialog.result:
             return
         sheets = [self._sheets_by_id[row.sheet_id] for row in checked
@@ -1173,21 +1389,21 @@ class SheetManagerWindow(forms.WPFWindow):
         rows = print_sets.build_sheet_rows(sheets)
         printable, skipped = print_sets.split_printable_rows(rows)
         if not printable:
-            forms.alert(
+            self._alert(
                 "None of the checked sheets are printable "
                 "(placeholder sheets cannot join a print set).",
                 title="Save Print Set")
             return
         try:
             print_sets.save_ordered_print_set(
-                revit.doc, dialog.result, printable, DB, framework,
+                self._doc, dialog.result, printable, DB, framework,
                 revit, HOST_APP)
         except print_sets.UnsupportedRevitVersion as version_err:
-            forms.alert(str(version_err), title="Save Print Set")
+            self._alert(str(version_err), title="Save Print Set")
             return
         except Exception as err:
-            LOGGER.critical("Failed to save print set: %s", err)
-            forms.alert("Failed to create or update the print set.",
+            LOGGER.debug("Failed to save print set: %s", err)
+            self._alert("Failed to create or update the print set.",
                         expanded=str(err), title="Save Print Set")
             return
         message = ["Print set saved: {0}".format(dialog.result),
@@ -1195,7 +1411,7 @@ class SheetManagerWindow(forms.WPFWindow):
         if skipped:
             message.append(
                 "Skipped non-printable rows: {0}".format(skipped))
-        forms.alert("\n".join(message), title="Save Print Set")
+        self._alert("\n".join(message), title="Save Print Set")
 
     def _target_rows_for_selection(self):
         """Checked rows first (the persistent marking), else the rows
@@ -1207,42 +1423,39 @@ class SheetManagerWindow(forms.WPFWindow):
                 if isinstance(item, SheetRow)]
 
     def select_title_blocks(self, sender, args):
+        """Silently select the title blocks of the checked/highlighted
+        sheets in Revit; the window stays open (modeless)."""
         del sender, args
         self._commit_pending_edit()
         rows = self._target_rows_for_selection()
         if not rows:
-            forms.alert("Check or highlight at least one sheet first.",
+            self._alert("Check or highlight at least one sheet first.",
                         title="Sheet Manager")
             return
-        tblock_ids = []
-        for row in rows:
-            for tblock in self._tb_map.get(row.sheet_id, []):
-                tblock_ids.append(tblock.Id)
-        if not tblock_ids:
-            forms.alert("The selected sheets have no title blocks.",
-                        title="Sheet Manager")
-            return
-        # Revit does not reliably honor a selection set from inside a
-        # modal dialog, so remember it and re-apply after the window
-        # closes (show_sheet_manager). The immediate attempt is kept for
-        # hosts that do repaint it.
-        self.pending_selection_ids = list(tblock_ids)
-        try:
-            smrevit.select_elements(tblock_ids)
-        except Exception:
-            pass
-        choice = forms.alert(
-            "{0} title block(s) on {1} sheet(s) will be selected in "
-            "Revit.\n\nClose Sheet Manager now to work with the "
-            "selection?".format(len(tblock_ids), len(rows)),
-            title="Select Title Blocks",
-            options=["Close and select", "Keep window open"])
-        if choice == "Close and select":
-            self.Close()
-            return
-        self.status_tb.Text = \
-            "{0} title block(s) queued for selection - applied when " \
-            "this window closes.".format(len(tblock_ids))
+        sheet_ids = [row.sheet_id for row in rows
+                     if not row.is_pending and row.sheet_id is not None]
+        sheet_count = len(sheet_ids)
+
+        def work(uiapp):
+            uidoc = self._require_doc(uiapp, must_be_active=True)
+            # Fresh collector rather than the cached _tb_map: title blocks
+            # may have been added/removed while the window was open.
+            tblock_ids = smrevit.collect_titleblock_ids(
+                self._doc, sheet_ids)
+            if tblock_ids:
+                smrevit.select_elements(tblock_ids, uidoc)
+            return len(tblock_ids)
+
+        def done(count):
+            if count:
+                self.status_tb.Text = (
+                    "{0} title block(s) on {1} sheet(s) selected in "
+                    "Revit.".format(count, sheet_count))
+            else:
+                self.status_tb.Text = \
+                    "The selected sheets have no title blocks."
+
+        self._run_in_revit("Select Title Blocks", work, done)
 
     def _confirm_cloud_operations(self, changes):
         """Consolidated hide/unhide confirmations. None = cancel apply."""
@@ -1251,7 +1464,7 @@ class SheetManagerWindow(forms.WPFWindow):
             lines = []
             for row, column, revision_id in changes.cloud_hide_requests:
                 lines.append(u"{0} - {1}".format(row.number, column.header))
-            choice = forms.alert(
+            choice = self._alert(
                 "{0} unchecked revision(s) are on their sheets via VISIBLE "
                 "revision clouds and cannot be removed directly.\n\n"
                 "Hide those clouds instead? (Hiding removes the revision "
@@ -1267,7 +1480,7 @@ class SheetManagerWindow(forms.WPFWindow):
             lines = []
             for row, column, revision_id in changes.cloud_unhide_candidates:
                 lines.append(u"{0} - {1}".format(row.number, column.header))
-            choice = forms.alert(
+            choice = self._alert(
                 "{0} checked revision(s) have HIDDEN revision clouds on "
                 "their sheets.\n\n"
                 "Unhide those clouds, or add the revisions to the sheets "
@@ -1313,7 +1526,7 @@ class SheetManagerWindow(forms.WPFWindow):
         changes = state.compute_staged_changes(self._all_rows, self._columns)
         changes.copy_content_ops = list(self._copy_content_ops)
         if changes.is_empty():
-            forms.alert("No staged changes to apply.", title="Sheet Manager")
+            self._alert("No staged changes to apply.", title="Sheet Manager")
             return
         empty_rows, duplicate_groups = \
             state.find_number_problems(self._all_rows)
@@ -1325,7 +1538,7 @@ class SheetManagerWindow(forms.WPFWindow):
                 names = u", ".join(r.name for r in group)
                 lines.append(u"{0} - {1}".format(number, names))
             self._refresh_number_conflicts()
-            forms.alert(
+            self._alert(
                 "Sheet numbers must be unique and non-empty before "
                 "applying. Conflicting number cells are highlighted "
                 "orange - finish the swap or pick unique numbers for "
@@ -1335,27 +1548,115 @@ class SheetManagerWindow(forms.WPFWindow):
         decisions = self._confirm_cloud_operations(changes)
         if decisions is None:
             return
-        try:
-            results = smrevit.apply_staged_changes(
-                revit.doc, changes, self._sheets_by_id, self._tb_map,
+
+        def work(uiapp):
+            self._require_doc(uiapp, must_be_active=True)
+            return smrevit.apply_staged_changes(
+                self._doc, changes, self._sheets_by_id, self._tb_map,
                 decisions)
-        except Exception as err:
-            LOGGER.critical("Apply Changes failed: %s", err)
-            forms.alert("Apply Changes failed.", expanded=str(err),
-                        title="Sheet Manager")
-            return
-        self._post_apply_refresh(results)
-        dialogs.show_apply_results(results)
-        link_reload.ask_and_reload_loaded_links(
-            revit.doc, title="Sheet Manager")
+
+        def done(results):
+            self._post_apply_refresh(results)
+            self._show_dialog(dialogs.ApplyResultsWindow(
+                "ApplyResultsDialog.xaml", results))
+            # Still inside Execute: the per-link reload transactions need
+            # the API context too.
+            link_reload.ask_and_reload_loaded_links(
+                self._doc, title="Sheet Manager",
+                confirm_func=self._confirm_link_reload)
+
+        self._run_in_revit("Apply Changes", work, done)
+
+    def _confirm_link_reload(self, title):
+        choice = self._alert(
+            link_reload.RELOAD_PROMPT, title=title,
+            options=["Reload links", "Skip"])
+        return choice == "Reload links"
 
 
-def show_sheet_manager():
-    window = SheetManagerWindow("SheetManagerWindow.xaml")
-    window.ShowDialog()
-    pending = getattr(window, "pending_selection_ids", None)
-    if pending:
+# ------------------------------------------------------------ launcher
+
+def _live_window():
+    window = _WINDOW
+    if window is None:
         try:
-            smrevit.select_elements(pending)
-        except Exception as err:
-            LOGGER.warning("Could not select title blocks: %s", err)
+            window = script.get_envvar(WINDOW_ENVVAR)
+        except Exception:
+            window = None
+    try:
+        if window is not None and window.IsVisible:
+            return window
+    except Exception:
+        pass
+    return None
+
+
+def activate_open_window():
+    """Single instance: bring an already-open Sheet Manager to the front.
+    Returns True when one was found (the caller must not open another)."""
+    window = _live_window()
+    if window is None:
+        _forget_window()  # stale envvar after a crash -> allow a new one
+        return False
+    try:
+        from System.Windows import WindowState
+        if window.WindowState == WindowState.Minimized:
+            window.WindowState = WindowState.Normal
+        window.Activate()
+    except Exception:
+        pass
+    return True
+
+
+def _remember_window(window):
+    global _WINDOW
+    _WINDOW = window
+    try:
+        script.set_envvar(WINDOW_ENVVAR, window)
+        script.set_envvar(ACTIVE_ENVVAR, True)
+    except Exception:
+        pass
+
+
+def _forget_window(window=None):
+    global _WINDOW
+    if window is not None and _WINDOW is not None and _WINDOW is not window:
+        return  # a different (newer) window owns the registry
+    _WINDOW = None
+    try:
+        script.set_envvar(WINDOW_ENVVAR, None)
+        script.set_envvar(ACTIVE_ENVVAR, False)
+    except Exception:
+        pass
+
+
+def _own_by_revit(window):
+    """Keep the modeless window above Revit's main window (repo pattern)."""
+    try:
+        clr.AddReference("AdWindows")
+        import Autodesk.Windows as autodesk_windows
+        from System.Windows.Interop import WindowInteropHelper
+        WindowInteropHelper(window).Owner = \
+            autodesk_windows.ComponentManager.ApplicationWindow
+    except Exception:
+        pass
+
+
+def show_sheet_manager(uiapp=None):
+    """Open Sheet Manager modeless; falls back to modal when the
+    ExternalEvent cannot be created (tool degrades, never dies)."""
+    bridge = external_events.ExternalEventBridge("EasyBIM Sheet Manager")
+    ready = bridge.create()  # in-context: we are inside the command run
+    if not ready:
+        LOGGER.debug("ExternalEvent unavailable; running Sheet Manager "
+                     "modally.")
+        window = SheetManagerWindow("SheetManagerWindow.xaml",
+                                    bridge=None, uiapp=uiapp)
+        window.ShowDialog()
+        return window
+    window = SheetManagerWindow("SheetManagerWindow.xaml",
+                                bridge=bridge, uiapp=uiapp)
+    _remember_window(window)
+    _own_by_revit(window)
+    window.Show()
+    return window
