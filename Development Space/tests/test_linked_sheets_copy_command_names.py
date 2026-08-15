@@ -289,10 +289,15 @@ class LinkedSheetsCopyContractTests(unittest.TestCase):
         self.assertIn('hasattr(DB, "RevitLinkGraphicsSettings")', source)
 
     def test_a_name_clash_always_resolves_in_favour_of_this_model(self):
+        # DuplicateTypeAction has exactly two members - UseDestinationTypes
+        # and Abort - verified against the assembly metadata for 2021-2026.
+        # There is no overwrite on the copy path, so the only thing worth
+        # asserting is that the handler never aborts: returning Abort would
+        # cancel the whole paste mid-batch.
         source = COPY_PASTE_MODULE.read_text(encoding="utf-8")
         self.assertIn("IDuplicateTypeNamesHandler", source)
         self.assertIn("DuplicateTypeAction.UseDestinationTypes", source)
-        self.assertNotIn("DuplicateTypeAction.UseOtherTypes", source)
+        self.assertNotIn("DuplicateTypeAction.Abort", source)
 
     def test_every_cross_document_copy_carries_that_handler(self):
         # The factory moved to lib/ once a second tool needed it; one call
