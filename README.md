@@ -216,16 +216,17 @@ filters the view only; nothing is deselected by turning it on.
 ### When a family is already in the target
 
 Revit asks, the same as loading a family by hand. Its own **Family Already
-Exists** dialog appears once per clashing family, offering to overwrite the
-existing version, overwrite it and its parameter values, or not overwrite.
-Declining skips that family and the run carries on; the summary lists it under
-Skipped rather than Failed. Overwriting keeps every placed instance in the
-model and gives them the new definition.
+Exists** dialog appears, offering to overwrite the existing version, overwrite
+it and its parameter values, or cancel — along with Revit's **"Do this for all
+loading families"** checkbox. Declining skips that family and the run carries
+on; the summary lists it under Skipped rather than Failed. Overwriting keeps
+every placed instance in the model and gives them the new definition.
 
-There is no "apply to all" — the Revit API's callback is per family and offers
-no way to remember an answer, so a batch with twelve clashes asks twelve times.
-Where Revit has no UI to ask through, the tool overwrites without asking, as it
-did before.
+Whether that checkbox covers the whole transfer or only one family is Revit's
+own behaviour, and it is not documented anywhere. This tool hands Revit a single
+options object for the entire run, which is the arrangement that would let one
+answer carry across it — but that is untested, so expect either. Where Revit has
+no UI to ask through, the tool overwrites without asking, as it did before.
 
 The one exception is a family arriving from a Revit link when that link refused
 to hand over a family document. That path copies the element rather than loading
