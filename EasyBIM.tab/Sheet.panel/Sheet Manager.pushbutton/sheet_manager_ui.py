@@ -20,6 +20,8 @@ from System.Windows import HorizontalAlignment
 from System.Windows import RoutedEventHandler
 from System.Windows import TextTrimming
 from System.Windows import Thickness
+from System.Windows import UIElement
+from System.Windows.Input import MouseButtonEventHandler
 from System.Windows.Controls import CheckBox
 from System.Windows.Controls import DataGridCell
 from System.Windows.Controls import DataGridEditAction
@@ -179,6 +181,14 @@ class SheetManagerWindow(forms.WPFWindow):
         self.sheets_dg.AddHandler(
             ButtonBase.ClickEvent,
             RoutedEventHandler(self.grid_checkbox_click))
+        # Clicking a checkbox in a FullRow-selection grid would collapse a
+        # drag/shift multi-selection to that one row BEFORE Click fires;
+        # intercept the mouse-down on checkboxes inside highlighted rows
+        # so the highlight (and therefore the propagation) survives.
+        self.sheets_dg.AddHandler(
+            UIElement.PreviewMouseLeftButtonDownEvent,
+            MouseButtonEventHandler(self.grid_preview_mouse_down),
+            True)
         self._refresh_visible_rows()
         self._is_ready = True
         self._warn_multi_titleblocks()
@@ -283,31 +293,81 @@ class SheetManagerWindow(forms.WPFWindow):
 
     # ----------------------------------------------------------- events
 
-    def grid_checkbox_click(self, sender, args):
-        del sender
-        source = args.OriginalSource
-        if not isinstance(source, CheckBox):
-            return
-        cell = _find_parent_cell(source)
+    def _resolve_grid_checkbox(self, source):
+        """-> (checkbox, spec, row) for a click on a grid checkbox, or
+        None when the source is not one of our cell checkboxes."""
+        checkbox = source
+        while checkbox is not None and not isinstance(checkbox, CheckBox):
+            if isinstance(checkbox, DataGridCell):
+                return None
+            try:
+                checkbox = VisualTreeHelper.GetParent(checkbox)
+            except Exception:
+                return None
+        if checkbox is None:
+            return None
+        cell = _find_parent_cell(checkbox)
         if cell is None:
-            return
+            return None
         spec = self._spec_by_column.get(cell.Column)
         if spec is None:
-            return
-        row = source.DataContext
+            return None
+        row = checkbox.DataContext
         if not isinstance(row, SheetRow):
-            return
+            return None
+        return checkbox, spec, row
+
+    def _apply_checkbox_change(self, spec, row, checked, selected):
+        """Stage a checkbox value on ``row`` and, when the row is part of
+        a multi-row highlight, on every highlighted row."""
+        multi = len(selected) > 1 and row in selected
         if spec.kind == state.KIND_REVISION:
-            checked = bool(source.IsChecked)
             state.apply_revision_toggle(row, spec, checked)
-            selected = [item for item in self.sheets_dg.SelectedItems
-                        if isinstance(item, SheetRow)]
-            if len(selected) > 1 and row in selected:
+            if multi:
                 state.propagate_revision_toggle(
                     selected, spec, checked, skip_row=row)
             self._update_status()
         elif spec.kind == state.KIND_SELECT:
+            row.set_value("is_selected", checked)
+            if multi:
+                # One click marks every highlighted (drag/shift-selected)
+                # row, matching how the revision checkboxes propagate.
+                for other in selected:
+                    if other is not row:
+                        other.set_value("is_selected", checked)
             self._update_selectall_state()
+
+    def grid_preview_mouse_down(self, sender, args):
+        """Keep a multi-row highlight alive when a checkbox inside one of
+        the highlighted rows is clicked (the DataGrid would otherwise
+        collapse the selection to that row before Click fires)."""
+        del sender
+        resolved = self._resolve_grid_checkbox(args.OriginalSource)
+        if resolved is None:
+            return
+        checkbox, spec, row = resolved
+        if spec.kind not in (state.KIND_SELECT, state.KIND_REVISION):
+            return
+        if not checkbox.IsEnabled:
+            return
+        selected = [item for item in self.sheets_dg.SelectedItems
+                    if isinstance(item, SheetRow)]
+        if len(selected) < 2 or row not in selected:
+            return  # single row: let the normal Click path handle it
+        checked = not bool(checkbox.IsChecked)
+        self._apply_checkbox_change(spec, row, checked, selected)
+        args.Handled = True
+
+    def grid_checkbox_click(self, sender, args):
+        del sender
+        resolved = self._resolve_grid_checkbox(args.OriginalSource)
+        if resolved is None:
+            return
+        checkbox, spec, row = resolved
+        selected = [item for item in self.sheets_dg.SelectedItems
+                    if isinstance(item, SheetRow)]
+        self._apply_checkbox_change(
+            spec, row, bool(checkbox.IsChecked), selected)
 
     def grid_beginning_edit(self, sender, args):
         del sender
@@ -1137,15 +1197,21 @@ class SheetManagerWindow(forms.WPFWindow):
                 "Skipped non-printable rows: {0}".format(skipped))
         forms.alert("\n".join(message), title="Save Print Set")
 
+    def _target_rows_for_selection(self):
+        """Checked rows first (the persistent marking), else the rows
+        currently highlighted in the grid."""
+        checked = [row for row in self._visible_rows if row.is_selected]
+        if checked:
+            return checked
+        return [item for item in self.sheets_dg.SelectedItems
+                if isinstance(item, SheetRow)]
+
     def select_title_blocks(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        rows = [item for item in self.sheets_dg.SelectedItems
-                if isinstance(item, SheetRow)]
+        rows = self._target_rows_for_selection()
         if not rows:
-            rows = [row for row in self._visible_rows if row.is_selected]
-        if not rows:
-            forms.alert("Select or check at least one sheet first.",
+            forms.alert("Check or highlight at least one sheet first.",
                         title="Sheet Manager")
             return
         tblock_ids = []
@@ -1156,15 +1222,27 @@ class SheetManagerWindow(forms.WPFWindow):
             forms.alert("The selected sheets have no title blocks.",
                         title="Sheet Manager")
             return
+        # Revit does not reliably honor a selection set from inside a
+        # modal dialog, so remember it and re-apply after the window
+        # closes (show_sheet_manager). The immediate attempt is kept for
+        # hosts that do repaint it.
+        self.pending_selection_ids = list(tblock_ids)
         try:
             smrevit.select_elements(tblock_ids)
-        except Exception as err:
-            forms.alert("Could not set the Revit selection.",
-                        expanded=str(err), title="Sheet Manager")
+        except Exception:
+            pass
+        choice = forms.alert(
+            "{0} title block(s) on {1} sheet(s) will be selected in "
+            "Revit.\n\nClose Sheet Manager now to work with the "
+            "selection?".format(len(tblock_ids), len(rows)),
+            title="Select Title Blocks",
+            options=["Close and select", "Keep window open"])
+        if choice == "Close and select":
+            self.Close()
             return
         self.status_tb.Text = \
-            "{0} title block(s) selected in Revit (visible after " \
-            "closing this window).".format(len(tblock_ids))
+            "{0} title block(s) queued for selection - applied when " \
+            "this window closes.".format(len(tblock_ids))
 
     def _confirm_cloud_operations(self, changes):
         """Consolidated hide/unhide confirmations. None = cancel apply."""
@@ -1275,3 +1353,9 @@ class SheetManagerWindow(forms.WPFWindow):
 def show_sheet_manager():
     window = SheetManagerWindow("SheetManagerWindow.xaml")
     window.ShowDialog()
+    pending = getattr(window, "pending_selection_ids", None)
+    if pending:
+        try:
+            smrevit.select_elements(pending)
+        except Exception as err:
+            LOGGER.warning("Could not select title blocks: %s", err)
