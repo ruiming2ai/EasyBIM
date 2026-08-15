@@ -1,0 +1,51 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Families Downgrade"
+        Width="760"
+        Height="520"
+        MinWidth="680"
+        MinHeight="460"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="200"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Families Downgrade" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock x:Name="host_tb" Margin="0,6,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                    <TextBlock Text="A Revit family cannot be saved for an older release. Families Downgrade rebuilds one instead: this Revit writes a downgrade package per family (its geometry as SAT plus everything else as data), and the same button in the older Revit rebuilds native .rfa files of that release from the packages. Rebuilt solids are static - the parametric geometry does not survive - and everything a family loses on the way is listed in the report."
+                               FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                    <RadioButton x:Name="export_rb" GroupName="mode" IsChecked="True" Margin="0,4,0,2" Checked="mode_changed">
+                        <TextBlock Text="Export downgrade packages" FontSize="15" FontWeight="SemiBold"/>
+                    </RadioButton>
+                    <TextBlock x:Name="export_hint_tb" Margin="22,0,0,10" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"
+                               Text="Pick families from this project, opened .rfa files and Revit links, and write one package per family into a folder. Run this in the newer Revit."/>
+
+                    <RadioButton x:Name="rebuild_rb" GroupName="mode" Margin="0,4,0,2" Checked="mode_changed">
+                        <TextBlock Text="Rebuild families from downgrade packages" FontSize="15" FontWeight="SemiBold"/>
+                    </RadioButton>
+                    <TextBlock Margin="22,0,0,10" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"
+                               Text="Read a folder of packages and write .rfa files of this Revit's version into a folder you choose. Run this in the older Revit - or in the same one, to check what a round trip keeps."/>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Next" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="next_click"/>
+                <Button Content="Cancel" Width="100" Height="34" IsCancel="True" Click="cancel_click"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

@@ -16,8 +16,9 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
-            <TextBlock Text="Families Transfer" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Collect families from this project, from opened .rfa files, and from Revit links."
+            <TextBlock x:Name="header_tb" Text="Families Transfer" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock x:Name="subtitle_tb"
+                       Text="Collect families from this project, from opened .rfa files, and from Revit links."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
