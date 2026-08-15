@@ -34,11 +34,13 @@ from families_transfer_revit import pick_export_folder
 from families_transfer_revit import pick_more_family_options
 from families_transfer_revit import prepare_link_documents
 from families_transfer_revit import transfer_families
+from families_transfer_state import build_export_overwrite_text
 from families_transfer_state import build_transfer_summary_text
 from families_transfer_state import get_selected_family_keys
 from families_transfer_state import get_selected_source_family_options
 from families_transfer_state import merge_source_family_options
 from families_transfer_state import merge_transferable_family_options
+from families_transfer_state import planned_export_filenames
 from families_transfer_state import prune_link_families_to_checked_links
 from families_transfer_state import restore_family_selection
 from families_transfer_state import split_selected_family_keys
@@ -109,6 +111,35 @@ def _with_progress(title, work):
             return not progress_bar.cancelled
 
         return work(_tick)
+
+
+def _pick_export_folder_confirming_overwrites(selected_families):
+    """Pick a folder, warning once if it already holds any of these names.
+
+    Export writes with ``OverwriteExistingFile = True``, so without this a
+    run silently replaces whatever is there. Asked once for the whole batch
+    rather than once per file.
+    """
+    planned = planned_export_filenames(selected_families)
+    while True:
+        folder_path = pick_export_folder()
+        if not folder_path:
+            return None
+
+        existing = [name for name in planned
+                    if os.path.isfile(os.path.join(folder_path, name))]
+        if not existing:
+            return folder_path
+
+        choice = forms.alert(
+            build_export_overwrite_text(existing, len(planned)),
+            title=__title__,
+            options=["Replace them", "Choose a different folder"],
+        )
+        if choice == "Replace them":
+            return folder_path
+        if choice != "Choose a different folder":
+            return None
 
 
 def _note_link_refusals(summary, link_document_options):
@@ -458,7 +489,7 @@ def _run():
             action_window.ShowDialog()
 
             if action_window.result == "export":
-                folder_path = pick_export_folder()
+                folder_path = _pick_export_folder_confirming_overwrites(selected_families)
                 if not folder_path:
                     return
                 summary = _with_progress(
