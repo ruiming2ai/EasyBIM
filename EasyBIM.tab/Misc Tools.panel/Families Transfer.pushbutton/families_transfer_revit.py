@@ -1023,12 +1023,26 @@ def transfer_families(source_doc, family_options, target_options, progress=None)
     # decision and they see it happen; our silent-overwrite answers only where
     # there is no UI to ask through.
     #
-    # Fetched ONCE, outside the loop, and that placement is load-bearing: the
-    # dialog carries a "Do this for all loading families" checkbox, and if
-    # Revit stores that answer on the options object then one instance for the
-    # whole batch is the only thing that could let it span more than a single
-    # family. Moving this inside the loop would silently bring back a dialog
-    # per family. Pinned by test_the_load_options_are_fetched_once_per_batch.
+    # Fetched ONCE, outside the loop, and held for the whole batch. Two
+    # reasons, both established by disassembling RevitAPI.dll rather than
+    # guessed - the API docs say nothing about either.
+    #
+    # 1. The dialog carries a "Do this for all loading families" checkbox.
+    #    GetRevitUIFamilyLoadOptions hands back a *fresh* managed wrapper on
+    #    every call, but that wrapper is stateless (one field, the native
+    #    pointer), and passing it back into LoadFamily unwraps it to the very
+    #    same native object each time. So holding one instance is what gives
+    #    Revit one identical native handler across the run - the only route by
+    #    which a ticked checkbox could span more than a single family. Whether
+    #    Revit's native side actually keeps the flag there is unknown and
+    #    needs a real Revit; this is the arrangement that makes it possible.
+    #
+    # 2. That wrapper is IDisposable *with a finalizer* that disposes the
+    #    native object. Fetching a new one per family would leave each
+    #    previous one collectable mid-loop, tearing down a native handler
+    #    while the batch is still running.
+    #
+    # Pinned by test_the_load_options_are_fetched_once_per_batch.
     load_options = native_family_load_options() or FamilyTransferLoadOptions()
     families = list(family_options or [])
     total = len(families)
