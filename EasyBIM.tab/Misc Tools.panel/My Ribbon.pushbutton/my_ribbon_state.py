@@ -243,6 +243,11 @@ def source_key(source):
             base += "@" + branch
         elif ref is not None and branch and not ref.branch:
             base += "@" + branch
+        # One repository can hold several extensions (a monorepo): each is
+        # its own source, told apart by the extension it names.
+        ext_name = normalize_label(source.get("ext_name"))
+        if ext_name:
+            base += "#" + ext_name
         return "git:" + base
     if kind == "catalogue":
         return "cat:" + normalize_label(source.get("name") or source.get("ext_name"))
@@ -604,7 +609,12 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
             source_map[source.get("id")] = existing.get("id")
             plan["sources_reused"].append(existing.get("label") or existing.get("ext_name"))
             continue
-        entry = add_source(result, dict(source, id=None))
+        # Never trust the file about what *this* computer installed: only a
+        # download made here may set installed_by_my_ribbon (it decides what
+        # Remove is allowed to delete), and a colleague's registered root path
+        # means nothing on this machine.
+        entry = add_source(result, dict(source, id=None, installed_by_my_ribbon=False,
+                                        extra_root=None))
         source_map[source.get("id")] = entry["id"]
         plan["sources_added"].append(entry.get("label") or entry.get("ext_name"))
     for source in result.get("sources", []):

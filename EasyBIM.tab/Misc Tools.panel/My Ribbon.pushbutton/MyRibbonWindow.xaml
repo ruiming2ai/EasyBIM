@@ -111,7 +111,7 @@
                     <Button Content="Import..." Width="100" Height="34" Margin="0,0,8,0" Click="import_click"/>
                     <Button Content="Export..." Width="100" Height="34" Margin="0,0,20,0" Click="export_click"/>
                     <Button x:Name="apply_btn" Content="Apply" Width="110" Height="34" Margin="0,0,8,0" IsDefault="True" Click="apply_click"/>
-                    <Button Content="Close" Width="100" Height="34" IsCancel="True" Click="close_click"/>
+                    <Button Content="Close" Width="100" Height="34" Click="close_click"/>
                 </StackPanel>
             </Grid>
         </Border>

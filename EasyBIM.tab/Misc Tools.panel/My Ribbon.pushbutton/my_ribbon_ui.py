@@ -115,7 +115,26 @@ class MyRibbonWindow(forms.WPFWindow):
         self._populate_sources()
         self._populate_tree()
         self._refresh_status(notice)
+        # Esc, the title-bar X and the Close button all end here; the prompt
+        # about unapplied changes lives in one place so none of them can skip it.
+        self.Closing += self._on_closing
         self._is_ready = True
+
+    def _unapplied_changes(self):
+        return state.count_changes(self.saved, self.working) + len(self.pending_deletes)
+
+    def _on_closing(self, sender, args):
+        del sender
+        if self.result is not None:
+            return
+        changes = self._unapplied_changes()
+        if changes and not forms.alert(
+                "You have {0} change{1} that {2} not applied.\n\nClose and lose them?".format(
+                    changes, "" if changes == 1 else "s", "is" if changes == 1 else "are"),
+                title=TITLE, yes=True, no=True):
+            args.Cancel = True
+            return
+        self.result = "close"
 
     # -- population --
 
@@ -438,13 +457,7 @@ class MyRibbonWindow(forms.WPFWindow):
 
     def close_click(self, sender, args):
         del sender, args
-        changes = state.count_changes(self.saved, self.working) + len(self.pending_deletes)
-        if changes and not forms.alert(
-                "You have {0} change{1} that {2} not applied.\n\nClose and lose them?".format(
-                    changes, "" if changes == 1 else "s", "is" if changes == 1 else "are"),
-                title=TITLE, yes=True, no=True):
-            return
-        self.result = "close"
+        # result stays None so _on_closing asks about unapplied changes
         self.Close()
 
 

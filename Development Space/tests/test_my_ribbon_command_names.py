@@ -48,7 +48,7 @@ EXPECTED_MODULES = (
 CONTROL_ATTRIBUTE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 
 WINDOW_MEMBERS = frozenset([
-    "Activate", "Close", "Content", "Cursor", "DialogResult", "Focus",
+    "Activate", "Close", "Closing", "Content", "Cursor", "DialogResult", "Focus",
     "Height", "Hide", "Icon", "IsEnabled", "Left", "Owner", "Show",
     "ShowDialog", "Tag", "Title", "Top", "Topmost", "Width", "WindowState",
 ])
@@ -318,7 +318,7 @@ class MyRibbonContractTests(unittest.TestCase):
         body = _function_source(HOST_MODULE, "remove_installed_source")
         self.assertIn("installed_by_my_ribbon", body)
         self.assertLess(body.index("installed_by_my_ribbon"), body.index("remove_tree("))
-        self.assertIn("_is_inside(target, root)", body)
+        self.assertIn("_is_strictly_inside(target, root)", body)
         host = _code_without_prose(HOST_MODULE)
         self.assertEqual(host.count("shutil.rmtree("), 1)
         for path in (SCRIPT_MODULE, UI_MODULE, STATE_MODULE, LIB_MODULE):
@@ -351,6 +351,27 @@ class MyRibbonContractTests(unittest.TestCase):
         # the credentials window hands them back and nothing stores them
         self.assertNotIn("credentials", _function_source(STATE_MODULE, "export_document"))
         self.assertNotIn("password", STATE_MODULE.read_text(encoding="utf-8"))
+
+    def test_closing_the_manager_always_asks_about_unapplied_changes(self):
+        # A Close button with IsCancel closes the dialog even when the handler
+        # returned early; Esc and the title-bar X never reach the handler at
+        # all. The prompt therefore lives in Window.Closing.
+        root = _xaml_root("MyRibbonWindow.xaml")
+        for element in root.iter():
+            if element.attrib.get("Content") == "Close":
+                self.assertNotIn("IsCancel", element.attrib)
+        ui = _code_without_prose(UI_MODULE)
+        self.assertIn("self.Closing += self._on_closing", ui)
+        body = _function_source(UI_MODULE, "_on_closing")
+        self.assertIn("args.Cancel = True", body)
+        self.assertNotIn("count_changes", _function_source(UI_MODULE, "close_click"))
+
+    def test_a_removed_source_is_unregistered_before_its_folder_goes(self):
+        # pyRevit's config drops paths that no longer exist, so unregistering
+        # after the delete would be a no-op
+        body = _function_source(SCRIPT_MODULE, "_apply")
+        self.assertLess(body.index("unregister_extension_root"), body.index("remove_installed_source"))
+        self.assertIn("still_used", body)
 
     def test_the_manager_stages_and_apply_saves(self):
         apply_body = _function_source(SCRIPT_MODULE, "_apply")
