@@ -1,0 +1,69 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="My Ribbon - Where to?"
+        Width="600"
+        Height="470"
+        MinWidth="520"
+        MinHeight="420"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="200"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock x:Name="header_tb" Text="Where should they go?" FontSize="30" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="subtitle_tb" Text="Any panel on the EasyBIM tab, a new panel there, a tab of your own, or a panel on another tab." Margin="0,6,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*" MinHeight="10"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Tab" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <ComboBox x:Name="TabCombo" Grid.Row="0" Grid.Column="1" Height="30" VerticalContentAlignment="Center" SelectionChanged="tab_changed"/>
+
+                <TextBlock x:Name="new_tab_label" Grid.Row="1" Grid.Column="0" Text="New tab name" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,10,12,0" Visibility="Collapsed"/>
+                <TextBox x:Name="NewTabBox" Grid.Row="1" Grid.Column="1" Height="30" VerticalContentAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed" TextChanged="names_changed"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Panel" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,14,12,0"/>
+                <ComboBox x:Name="PanelCombo" Grid.Row="2" Grid.Column="1" Height="30" VerticalContentAlignment="Center" Margin="0,14,0,0" SelectionChanged="panel_changed"/>
+
+                <TextBlock x:Name="new_panel_label" Grid.Row="3" Grid.Column="0" Text="New panel name" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,10,12,0" Visibility="Collapsed"/>
+                <TextBox x:Name="NewPanelBox" Grid.Row="3" Grid.Column="1" Height="30" VerticalContentAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed" TextChanged="names_changed"/>
+
+                <TextBlock x:Name="hint_tb" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,14,0,0" FontSize="12" Foreground="DimGray" TextWrapping="Wrap"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="back_btn" Content="Back" Width="100" Height="34" Margin="0,0,8,0" Click="back_click"/>
+                    <Button x:Name="ok_btn" Content="Add" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="ok_click"/>
+                    <Button Content="Cancel" Width="100" Height="34" IsCancel="True" Click="cancel_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
