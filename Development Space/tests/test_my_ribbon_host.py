@@ -119,7 +119,9 @@ class _FakeLibGit(object):
                     total = len(outer.steps)
                     for step in outer.steps:
                         if options.OnTransferProgress(_FakeTransfer(step, total)) is False:
-                            raise RuntimeError("The operation was cancelled by the user")
+                            # LibGit2Sharp's UserCancelledException carries
+                            # libgit2's last error text, never the word "cancel"
+                            raise RuntimeError("transfer_progress callback returned -7")
                 return dest
 
             @staticmethod
@@ -278,6 +280,16 @@ class CloneTests(unittest.TestCase):
             self.host.clone_into_temp_then_move("https://x/y.git", self.final, self.temp_root,
                                                 libgit=_FakeLibGit())
 
+    def test_move_into_place_refuses_an_existing_target(self):
+        src = os.path.join(self.tmp, "src")
+        _touch(os.path.join(src, "a.txt"), "a")
+        dst = os.path.join(self.tmp, "existing")
+        os.makedirs(dst)
+        with self.assertRaises(RuntimeError):
+            self.host.move_into_place(src, dst)
+        self.assertTrue(os.path.isfile(os.path.join(src, "a.txt")))
+        self.assertEqual(os.listdir(dst), [])
+
     def test_move_into_place_creates_the_parent_and_moves(self):
         src = os.path.join(self.tmp, "src")
         _touch(os.path.join(src, "a.txt"), "a")
@@ -393,10 +405,12 @@ class ParserAdapterTests(unittest.TestCase):
         self.assertEqual(by_name["A"]["path"][-2:], [{"name": "Tools", "title": "Tools"},
                                                       {"name": "A", "title": "A"}])
         self.assertFalse(by_name["H"]["in_layout"])
-        # stack children sit flat: no stack level in the path
+        # stack children sit flat: no stack level in the path, and the panel's
+        # layout (which names the stack, not its children) does not hide them
         self.assertEqual(by_name["One"]["path"], [{"name": "Foo", "title": "Foo"},
                                                   {"name": "Bar", "title": "Bar Panel"},
                                                   {"name": "One", "title": "One"}])
+        self.assertTrue(by_name["One"]["in_layout"])
         self.assertFalse(by_name["Secret"]["in_layout"])
         self.assertEqual(by_name["Corner"]["kind"], "panelbutton")
         # the tree mirrors the ribbon: panel items exclude the flattened stack
@@ -480,6 +494,18 @@ class RemovalAndRootsTests(unittest.TestCase):
             allowed_roots=[self.ext_root, self.repos])
         self.assertTrue(ok, message)
         self.assertFalse(os.path.exists(repo))
+
+    def test_a_root_itself_is_never_deleted(self):
+        _touch(os.path.join(self.repos, "keep", "file"))
+        _touch(os.path.join(self.ext_root, "Other.extension", "x"))
+        for extra_root in (self.repos, self.repos + os.sep, os.path.join(self.repos, ".."),
+                           self.ext_root, os.path.join(self.tmp, "elsewhere", "extensions")):
+            ok, message = self.host.remove_installed_source(
+                {"kind": "git", "ext_name": "A", "installed_by_my_ribbon": True,
+                 "extra_root": extra_root},
+                allowed_roots=[self.ext_root, self.repos])
+            self.assertTrue(os.path.isdir(os.path.join(self.repos, "keep")), extra_root)
+            self.assertTrue(os.path.isdir(os.path.join(self.ext_root, "Other.extension")), extra_root)
 
     def test_missing_folder_is_fine(self):
         ok, message = self.host.remove_installed_source(

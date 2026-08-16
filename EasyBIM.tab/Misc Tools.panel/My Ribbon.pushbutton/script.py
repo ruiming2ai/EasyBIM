@@ -143,7 +143,12 @@ def _download_git(link, branch):
 
     existing_name, existing_dir = _find_already_installed(ref)
     if existing_dir:
-        described = _describe_installed_dir(existing_dir, existing_name)
+        try:
+            described = _describe_installed_dir(existing_dir, existing_name)
+        except Exception as ex:
+            forms.alert("{0} is already installed here as {1}, but it could not be read:\n{2}"
+                        .format(ref.label, existing_name, ex), title=__title__)
+            return [], {}
         source = {"kind": "git", "url": ref.web_url, "branch": branch, "ext_name": existing_name,
                   "label": ref.label, "tab_names": described["tab_names"],
                   "installed_by_my_ribbon": False, "hide_tab": False}
@@ -192,6 +197,16 @@ def _download_git(link, branch):
         host.cleanup_temp_root()
         forms.alert(plan["message"], title=__title__)
         return [], {}
+    if os.path.isdir(plan["final_dir"]):
+        if plan["kind"] == "repository":
+            # a clone left behind by an earlier removal that could not delete
+            # it: replace it, never nest the new download inside it
+            host.remove_tree(plan["final_dir"])
+        if os.path.isdir(plan["final_dir"]):
+            host.cleanup_temp_root()
+            forms.alert("A folder already exists where the download would go:\n{0}\n\nRemove or "
+                        "rename it and try again.".format(plan["final_dir"]), title=__title__)
+            return [], {}
     try:
         host.move_into_place(temp_dir, plan["final_dir"])
     except Exception as ex:
@@ -237,15 +252,26 @@ def _install_from_catalogue(row):
         installed_dir = None
     freshly_installed = False
     if not installed_dir:
-        with forms.ProgressBar(title="Installing {0}...".format(row.get("name")), indeterminate=True):
-            installed_dir = host.install_catalogue_package(package)
+        try:
+            with forms.ProgressBar(title="Installing {0}...".format(row.get("name")),
+                                   indeterminate=True):
+                installed_dir = host.install_catalogue_package(package)
+        except Exception as ex:
+            forms.alert("{0} could not be installed:\n{1}".format(row.get("name"), ex),
+                        title=__title__)
+            return None, None
         freshly_installed = True
     if not installed_dir or not os.path.isdir(installed_dir):
         forms.alert("{0} could not be installed. pyRevit's own Extensions window may say why."
                     .format(row.get("name")), title=__title__)
         return None, None
     name = _ext_name_of(installed_dir)
-    described = _describe_installed_dir(installed_dir, name)
+    try:
+        described = _describe_installed_dir(installed_dir, name)
+    except Exception as ex:
+        forms.alert("{0} was installed but could not be read:\n{1}".format(row.get("name"), ex),
+                    title=__title__)
+        return None, None
     source = {"kind": "catalogue", "name": row.get("name"), "url": row.get("url"),
               "ext_name": name, "label": row.get("name"), "tab_names": described["tab_names"],
               "installed_by_my_ribbon": freshly_installed, "hide_tab": freshly_installed}
@@ -289,7 +315,18 @@ def _pick_and_place(working, source, described):
         return True
 
 
-def _add_source_flow(working):
+def _forget_pending_delete(pending_deletes, source):
+    """A source added back in the same session must not be deleted by the
+    Remove that came before it."""
+    key = state.normalize_label(source.get("ext_name"))
+    keep = [s for s in pending_deletes
+            if state.normalize_label(s.get("ext_name")) != key
+            and not (s.get("extra_root") and s.get("extra_root") == source.get("extra_root"))]
+    del pending_deletes[:]
+    pending_deletes.extend(keep)
+
+
+def _add_source_flow(working, pending_deletes):
     """Where from? -> download/parse -> Which buttons? -> Where to?"""
     link_text, branch_text = "", ""
     installed = None
@@ -322,6 +359,7 @@ def _add_source_flow(working):
             first = None
             for index, source in enumerate(sources):
                 entry = state.add_source(working, source)
+                _forget_pending_delete(pending_deletes, entry)
                 if first is None:
                     first = (entry, described_by_index.get(index))
             entry, described = first
@@ -343,6 +381,7 @@ def _add_source_flow(working):
             if source is None:
                 continue
             entry = state.add_source(working, source)
+            _forget_pending_delete(pending_deletes, entry)
             notice = None
             if source.get("installed_by_my_ribbon"):
                 notice = "Installed {0}. Its buttons appear on the ribbon after a pyRevit " \
@@ -431,9 +470,10 @@ def _import(working):
         if source.get("kind") == "git" and source.get("url"):
             fresh, _ = _download_git(source.get("url"), source.get("branch"))
             if fresh:
+                # what a download made *here* says wins over the file, and
+                # a stale extra_root from the file must not survive
                 for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
-                    if fresh[0].get(field) is not None:
-                        source[field] = fresh[0][field]
+                    source[field] = fresh[0].get(field)
                 downloaded += 1
         elif source.get("kind") == "catalogue":
             try:
@@ -468,12 +508,18 @@ def _apply(working, pending_deletes):
         forms.alert("The settings could not be saved:\n{0}".format(error), title=__title__)
         return None, None, None, False
     problems = []
+    still_used = set(s.get("extra_root") for s in working.get("sources", []) if s.get("extra_root"))
     for source in pending_deletes:
+        if source.get("extra_root") and source["extra_root"] in still_used:
+            # another source still lives in that repository clone
+            continue
+        if source.get("extra_root"):
+            # first, while pyRevit's config still lists the path (it drops
+            # paths that no longer exist)
+            host.unregister_extension_root(source["extra_root"])
         removed_ok, message = host.remove_installed_source(source)
         if not removed_ok and message:
             problems.append(message)
-        if source.get("extra_root"):
-            host.unregister_extension_root(source["extra_root"])
     report = my_ribbon.apply(working)
     saved = copy.deepcopy(working)
     status = _source_status(working, my_ribbon.list_ribbon())
@@ -522,7 +568,7 @@ def _run():
         if result in (None, "close"):
             return
         if result == "add_source":
-            notice = _add_source_flow(working)
+            notice = _add_source_flow(working, pending_deletes)
             continue
         if isinstance(result, tuple) and result[0] == "add_buttons":
             _add_buttons_flow(working, result[1])

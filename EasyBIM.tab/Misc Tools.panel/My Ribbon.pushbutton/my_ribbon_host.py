@@ -190,8 +190,9 @@ def clone_repository(clone_url, dest_dir, branch=None, username=None, password=N
             fetch = getattr(options, "FetchOptions", None)
             if fetch is not None:
                 _try_set(fetch, "CredentialsProvider", handler)
+    cancel_flag = {"cancelled": False}
     if progress is not None:
-        handler = _transfer_handler(libgit, progress)
+        handler = _transfer_handler(libgit, progress, cancel_flag)
         if not _try_set(options, "OnTransferProgress", handler):
             fetch = getattr(options, "FetchOptions", None)
             if fetch is not None:
@@ -201,7 +202,10 @@ def clone_repository(clone_url, dest_dir, branch=None, username=None, password=N
     except Exception as ex:
         message = _short_error(ex)
         lowered = message.lower()
-        if "cancel" in lowered:
+        # LibGit2Sharp's UserCancelledException carries libgit2's last error
+        # text, not the word "cancel", so the callback's own flag decides.
+        if cancel_flag["cancelled"] or "cancel" in lowered \
+                or type(ex).__name__ == "UserCancelledException":
             raise CloneCancelled(message)
         if "401" in lowered or "403" in lowered or "authentication" in lowered \
                 or "credential" in lowered or "too many redirects or authentication" in lowered:
@@ -222,7 +226,7 @@ def _credentials_handler(libgit, username, password):
         return _handler
 
 
-def _transfer_handler(libgit, progress):
+def _transfer_handler(libgit, progress, cancel_flag=None):
     def _handler(transfer):
         try:
             received = int(getattr(transfer, "ReceivedObjects", 0))
@@ -233,6 +237,8 @@ def _transfer_handler(libgit, progress):
             keep_going = progress(received, total)
         except Exception:
             keep_going = True
+        if keep_going is False and cancel_flag is not None:
+            cancel_flag["cancelled"] = True
         return keep_going is not False
     try:
         return libgit.Handlers.TransferProgressHandler(_handler)
@@ -265,6 +271,9 @@ def move_into_place(source_dir, final_dir):
     """Rename ``source_dir`` to ``final_dir``; falls back to a copy-and-delete
     move when the two live on different volumes (``%APPDATA%`` and
     ``%LOCALAPPDATA%`` can)."""
+    if os.path.exists(final_dir):
+        # shutil.move would nest the download *inside* an existing folder
+        raise RuntimeError("The folder already exists: {0}".format(final_dir))
     parent = os.path.dirname(final_dir)
     if parent and not os.path.isdir(parent):
         os.makedirs(parent)
@@ -505,8 +514,9 @@ def _collect_items(container, path, shown, items, flat):
         kind = type_id.lstrip(".")
         if kind == "stack":
             # Stacks have no ribbon object of their own: their buttons sit
-            # flat on the panel, so the path skips this level.
-            _collect_items(component, path, shown, items, flat)
+            # flat on the panel, so the path skips this level.  A stack's
+            # own layout (rare) decides which of its children show.
+            _collect_items(component, path, _shown_names(component), items, flat)
             continue
         level = _level(component)
         entry = {
@@ -711,8 +721,9 @@ def remove_installed_source(source, allowed_roots=None):
         target = find_installed_extension_dir(source.get("ext_name"), roots[:1])
     if not target or not os.path.isdir(target):
         return True, ""
-    if not any(_is_inside(target, root) for root in roots):
-        return False, "Refusing to delete {0}: it is outside My Ribbon's folders.".format(target)
+    if not any(_is_strictly_inside(target, root) for root in roots):
+        return False, "Refusing to delete {0}: it is not a folder inside My Ribbon's own " \
+                      "folders.".format(target)
     try:
         remove_tree(target)
     except Exception as ex:
@@ -723,22 +734,30 @@ def remove_installed_source(source, allowed_roots=None):
 
 
 def _repo_dir_for(source, roots):
+    """The clone folder directly under a root that holds ``extra_root``; None
+    when ``extra_root`` *is* a root or lies outside every root."""
     extra = source.get("extra_root") or ""
     for root in roots:
-        if _is_inside(extra, root):
-            relative = os.path.relpath(extra, root)
-            first = relative.split(os.sep)[0]
-            return os.path.join(root, first)
+        if not _is_strictly_inside(extra, root):
+            continue
+        relative = os.path.relpath(extra, root)
+        first = relative.replace("/", os.sep).split(os.sep)[0]
+        if first in ("", ".", ".."):
+            continue
+        return os.path.join(root, first)
     return None
 
 
-def _is_inside(path, root):
+def _is_strictly_inside(path, root):
+    """True when ``path`` is a folder *below* ``root`` - never root itself."""
+    if not path or not root:
+        return False
     try:
         path = os.path.normcase(os.path.abspath(path))
         root = os.path.normcase(os.path.abspath(root))
     except Exception:
         return False
-    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+    return path != root and path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 # -- reload / explorer ---------------------------------------------------------

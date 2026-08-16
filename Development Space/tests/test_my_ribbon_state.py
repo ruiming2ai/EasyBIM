@@ -163,6 +163,18 @@ class StagedRegistryTests(unittest.TestCase):
         self.assertIs(self.state.add_source(self.registry, {"kind": "installed", "ext_name": "easybim"}),
                       installed)
 
+    def test_two_extensions_of_one_repository_are_two_sources(self):
+        # a monorepo: same URL, different extension folders
+        a = self.state.add_source(self.registry, self._source(ext_name="A", label="o/r (A)",
+                                                              extra_root="C:/repos/o__r/extensions"))
+        b = self.state.add_source(self.registry, self._source(ext_name="B", label="o/r (B)",
+                                                              extra_root="C:/repos/o__r/extensions"))
+        self.assertIsNot(a, b)
+        self.assertEqual(a["ext_name"], "A")
+        self.assertEqual(b["ext_name"], "B")
+        # ...while the same extension of the same repository is still one source
+        self.assertIs(self.state.add_source(self.registry, self._source(ext_name="a", label="x")), a)
+
     def test_add_source_refreshes_tab_names_of_an_existing_source(self):
         first = self.state.add_source(self.registry, self._source())
         self.state.add_source(self.registry, self._source(tab_names=["Foo", "Foo Extra"]))
@@ -309,6 +321,23 @@ class ImportExportTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         d1 = self.state.find_destination(result, "EasyBIM", "My Tools")
         self.assertEqual([p["order"] for p in self.state.placements_in(result, d1["id"])], [0, 1])
+
+    def test_import_never_trusts_the_file_about_what_this_computer_installed(self):
+        # installed_by_my_ribbon decides what Remove may delete; a colleague's
+        # extra_root path means nothing here
+        for source in self.incoming["sources"]:
+            source["installed_by_my_ribbon"] = True
+            source["extra_root"] = "C:/Users/colleague/repos/x/extensions"
+        plan = self.state.plan_import(self.current, self.incoming, "merge")
+        added = [s for s in plan["result"]["sources"] if s.get("label") in ("x/y", "pyRevitTools")]
+        self.assertEqual(len(added), 2)
+        for source in added:
+            self.assertFalse(source["installed_by_my_ribbon"])
+            self.assertIsNone(source["extra_root"])
+        # the reused existing source keeps its own facts
+        existing = self.state.find_source(plan["result"], {"kind": "git", "url": "https://github.com/o/r",
+                                                            "ext_name": "r"})
+        self.assertTrue(existing["installed_by_my_ribbon"])
 
     def test_replace_starts_from_the_file(self):
         plan = self.state.plan_import(self.current, self.incoming, "replace",

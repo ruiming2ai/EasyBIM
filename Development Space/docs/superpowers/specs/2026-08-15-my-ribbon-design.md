@@ -197,3 +197,21 @@ Nothing here has run inside Revit. In order of risk:
    → root registered in pyRevit's settings and updated by pyRevit ▸ Update.
 10. The hidden-tab flash after a reload is brief; created tabs and panels
     disappear again after Remove + Apply.
+11. Which LibGit2Sharp pyRevit ships: `CloneOptions.OnTransferProgress` /
+    `CredentialsProvider` directly (0.26) or under `CloneOptions.FetchOptions`
+    (0.27+). The code tries both, but if neither takes, progress, Cancel and
+    the sign-in are silently dropped - watch the progress bar move.
+12. A shared item still renders and enables normally while its home tab has
+    `IsVisible = False`, and an item added to a *native* Revit panel behaves.
+
+Reviewed before commit (adversarial read of the whole bundle): the Close
+button no longer carries `IsCancel` and the unapplied-changes prompt lives in
+`Window.Closing`, so Esc and the title-bar X ask too; Import never trusts a
+file's `installed_by_my_ribbon`/`extra_root` (only a download made here sets
+them, so Remove can never delete a folder the user installed); one repository
+holding several extensions is several sources (git key carries the extension
+name) and its shared clone is deleted only when no source uses it any more;
+`remove_installed_source` refuses a root itself; a cancelled download is told
+apart by the callback's own flag (LibGit2Sharp's cancel exception does not say
+"cancel"); an orphaned `repos\o__r` folder is replaced rather than nested
+into; host failures inside the flows alert instead of ending the command.
