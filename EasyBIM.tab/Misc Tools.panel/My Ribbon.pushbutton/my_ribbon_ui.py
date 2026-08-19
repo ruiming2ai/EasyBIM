@@ -20,6 +20,13 @@ NEW_PANEL_CHOICE = u"— New panel... —"
 EASYBIM_TAB = "EasyBIM"
 ARROW = u"  ›  "
 
+#: Tabs the Show/Hide window keeps ticked and disabled (the engine refuses
+#: to hide them too): EasyBIM holds the My Ribbon button, Modify is Revit's
+#: contextual editing tab.
+FROZEN_TABS = ("easybim", "modify")
+PYREVIT_TAB_NOTE = ("pyRevit's Reload, Update, Settings and Extensions live here. You can turn "
+                    "it back on in My Ribbon at any time.")
+
 
 def _safe_text(value):
     return state.safe_text(value)
@@ -62,18 +69,21 @@ def _dest_label(dest):
     return u"{0}{1}{2}".format(dest.get("tab"), ARROW, dest.get("panel"))
 
 
-def _small_icon(path):
-    """A 16-px image for a picker row, or None when the file is unusable."""
-    if not path:
-        return None
+def _small_icon(path, source=None):
+    """A 16-px image for a picker row - from a file path or from a live
+    ribbon item's ImageSource - or None when neither is usable."""
     try:
-        import System
-        bitmap = Windows.Media.Imaging.BitmapImage()
-        bitmap.BeginInit()
-        bitmap.UriSource = System.Uri(path)
-        bitmap.DecodePixelWidth = 16
-        bitmap.CacheOption = Windows.Media.Imaging.BitmapCacheOption.OnLoad
-        bitmap.EndInit()
+        bitmap = source
+        if bitmap is None:
+            if not path:
+                return None
+            import System
+            bitmap = Windows.Media.Imaging.BitmapImage()
+            bitmap.BeginInit()
+            bitmap.UriSource = System.Uri(path)
+            bitmap.DecodePixelWidth = 16
+            bitmap.CacheOption = Windows.Media.Imaging.BitmapCacheOption.OnLoad
+            bitmap.EndInit()
         image = Windows.Controls.Image()
         image.Source = bitmap
         image.Width = 16
@@ -148,15 +158,19 @@ class MyRibbonWindow(forms.WPFWindow):
             panel.Children.Add(_text_block(source.get("label") or source.get("ext_name"), bold=True))
             detail = self._source_detail(source)
             panel.Children.Add(_text_block(detail, grey=True, size=11))
-            hide = Windows.Controls.CheckBox()
-            hide.Content = "Hide its own tab ({0})".format(
-                ", ".join(source.get("tab_names") or []) or "no tab found yet")
-            hide.IsChecked = bool(source.get("hide_tab"))
-            hide.Tag = source.get("id")
-            hide.Margin = Windows.Thickness(0, 4, 0, 0)
-            hide.FontSize = 11
-            hide.Click += self.hide_tab_click
-            panel.Children.Add(hide)
+            if source.get("kind") != "dynamo":
+                hide = Windows.Controls.CheckBox()
+                if source.get("kind") == "ribbon":
+                    hide.Content = "Hide this tab"
+                else:
+                    hide.Content = "Hide its own tab ({0})".format(
+                        ", ".join(source.get("tab_names") or []) or "no tab found yet")
+                hide.IsChecked = bool(source.get("hide_tab"))
+                hide.Tag = source.get("id")
+                hide.Margin = Windows.Thickness(0, 4, 0, 0)
+                hide.FontSize = 11
+                hide.Click += self.hide_tab_click
+                panel.Children.Add(hide)
             item.Content = panel
             item.Tag = source.get("id")
             self.SourcesList.Items.Add(item)
@@ -179,6 +193,10 @@ class MyRibbonWindow(forms.WPFWindow):
                 origin += " @ " + source["branch"]
         elif kind == "catalogue":
             origin = "pyRevit catalogue: " + _safe_text(source.get("name") or source.get("ext_name"))
+        elif kind == "ribbon":
+            origin = "tab on the ribbon: " + _safe_text(source.get("ext_name"))
+        elif kind == "dynamo":
+            origin = "Dynamo graph: " + _safe_text(source.get("path"))
         else:
             origin = "installed extension: " + _safe_text(source.get("ext_name"))
         status = self.source_status.get(source.get("id"), "")
@@ -234,9 +252,20 @@ class MyRibbonWindow(forms.WPFWindow):
         self.status_tb.Text = text
 
     def _refresh_buttons(self):
-        has_source = self._selected_source_id is not None
+        source = state.find_source_by_id(self.working, self._selected_source_id) \
+            if self._selected_source_id is not None else None
+        has_source = source is not None
+        kind = source.get("kind") if has_source else None
         self.remove_source_btn.IsEnabled = has_source
-        self.open_folder_btn.IsEnabled = has_source and self.open_folder is not None
+        self.uninstall_btn.IsEnabled = bool(has_source and source.get("installed_by_my_ribbon"))
+        self.uninstall_btn.ToolTip = (
+            "Remove it and delete the files My Ribbon installed for it (on Apply)."
+            if self.uninstall_btn.IsEnabled else
+            "Only what My Ribbon installed itself can be uninstalled here.")
+        self.open_folder_btn.IsEnabled = has_source and self.open_folder is not None \
+            and kind != "ribbon"
+        self.locate_btn.Visibility = Windows.Visibility.Visible if kind == "dynamo" \
+            else Windows.Visibility.Collapsed
         self.add_buttons_btn.IsEnabled = has_source
         node = self._selected_node
         is_placement = bool(node and node[0] == "placement")
@@ -271,9 +300,12 @@ class MyRibbonWindow(forms.WPFWindow):
         state.set_hide_tab(self.working, sender.Tag, bool(sender.IsChecked))
         source = state.find_source_by_id(self.working, sender.Tag)
         if source and bool(sender.IsChecked) and \
+                any(state.normalize_label(t) in FROZEN_TABS for t in source.get("tab_names", [])):
+            forms.alert("EasyBIM and Modify always stay visible; other tabs of this source will "
+                        "be hidden.", title=TITLE)
+        elif source and bool(sender.IsChecked) and \
                 any(state.normalize_label(t) == "pyrevit" for t in source.get("tab_names", [])):
-            forms.alert("The pyRevit tab is never hidden: it holds Reload, Update, Settings and "
-                        "Extensions. Other tabs of this source will be hidden.", title=TITLE)
+            forms.alert(PYREVIT_TAB_NOTE, title=TITLE, warn_icon=False)
         self._refresh_status()
 
     def add_source_click(self, sender, args):
@@ -288,28 +320,83 @@ class MyRibbonWindow(forms.WPFWindow):
         self.result = ("add_buttons", self._selected_source_id)
         self.Close()
 
+    def _placed_count_text(self, source):
+        placements = [p for p in self.working.get("placements", [])
+                      if p.get("source") == source.get("id")]
+        if not placements:
+            return ""
+        return "\n\n{0} placed button{1} will be removed too.".format(
+            len(placements), "" if len(placements) == 1 else "s")
+
     def remove_source_click(self, sender, args):
         del sender, args
         source = state.find_source_by_id(self.working, self._selected_source_id)
         if source is None:
             return
-        placements = [p for p in self.working.get("placements", [])
-                      if p.get("source") == source.get("id")]
         message = "Remove {0} from My Ribbon?".format(source.get("label") or source.get("ext_name"))
-        if placements:
-            message += "\n\n{0} placed button{1} will be removed too.".format(
-                len(placements), "" if len(placements) == 1 else "s")
-        if source.get("installed_by_my_ribbon"):
-            message += ("\n\nMy Ribbon installed this extension, so its folder will be deleted "
-                        "when you press Apply.")
+        message += self._placed_count_text(source)
+        if source.get("kind") == "dynamo":
+            message += "\n\nThe graph file stays where it is; the button itself is deleted."
+        elif source.get("kind") == "ribbon":
+            message += "\n\nThe tab itself is not touched."
         else:
-            message += "\n\nThe extension itself stays installed."
+            message += "\n\nThe extension stays installed (use Uninstall to delete it)."
         if not forms.alert(message, title=TITLE, yes=True, no=True):
             return
         state.remove_source(self.working, source.get("id"))
-        if source.get("installed_by_my_ribbon"):
+        if source.get("kind") == "dynamo" and source.get("installed_by_my_ribbon"):
+            # a Dynamo button is nothing but the bundle My Ribbon wrote
             self.pending_deletes.append(source)
         self._selected_source_id = None
+        self._rebuild()
+
+    def uninstall_source_click(self, sender, args):
+        del sender, args
+        source = state.find_source_by_id(self.working, self._selected_source_id)
+        if source is None or not source.get("installed_by_my_ribbon"):
+            return
+        message = "Uninstall {0}?".format(source.get("label") or source.get("ext_name"))
+        message += self._placed_count_text(source)
+        if source.get("kind") == "dynamo":
+            message += "\n\nThe button My Ribbon created is deleted when you press Apply; the graph " \
+                       "file stays where it is."
+        elif source.get("extra_root"):
+            message += "\n\nThe downloaded repository folder is deleted when you press Apply " \
+                       "(unless another source still uses it)."
+        else:
+            message += "\n\nThe extension folder My Ribbon downloaded is deleted when you press " \
+                       "Apply. pyRevit needs a reload afterwards."
+        if not forms.alert(message, title=TITLE, yes=True, no=True):
+            return
+        state.remove_source(self.working, source.get("id"))
+        self.pending_deletes.append(source)
+        self._selected_source_id = None
+        self._rebuild()
+
+    def locate_click(self, sender, args):
+        del sender, args
+        source = state.find_source_by_id(self.working, self._selected_source_id)
+        if source is None or source.get("kind") != "dynamo":
+            return
+        path = forms.pick_file(file_ext="dyn", title="Where is the graph now?")
+        if not path:
+            return
+        source["path"] = path
+        self._rebuild(notice="Graph path updated; press Apply.")
+
+    def show_hide_tabs_click(self, sender, args):
+        del sender, args
+        window = TabVisibilityWindow("TabVisibilityWindow.xaml", self.ribbon_summary,
+                                     state.hidden_tabs(self.working))
+        window.ShowDialog()
+        if window.result is None:
+            return
+        # tabs hidden in the registry but not on the ribbon right now (an
+        # add-in that did not load today) were not listed: keep them hidden
+        listed = set(state.normalize_label(t) for t in window.listed_titles)
+        unseen = [n for n in state.hidden_tabs(self.working)
+                  if state.normalize_label(n) not in listed]
+        state.replace_hidden_tabs(self.working, list(window.result) + unseen)
         self._rebuild()
 
     def open_folder_click(self, sender, args):
@@ -471,10 +558,13 @@ class SourceSelectionWindow(forms.WPFWindow):
     ``("catalogue", row)`` or None.
     """
 
-    def __init__(self, xaml_file_name, installed, catalogue, link_text="", branch_text=""):
+    def __init__(self, xaml_file_name, installed, catalogue, link_text="", branch_text="",
+                 ribbon_tabs=None, linked_names=None):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.installed = list(installed or [])
+        self.ribbon_tabs = list(ribbon_tabs or [])
+        self.linked_names = set(state.normalize_label(n) for n in (linked_names or []))
         self.catalogue = list(catalogue or [])
         self.result = None
         self.LinkBox.Text = _safe_text(link_text)
@@ -484,23 +574,52 @@ class SourceSelectionWindow(forms.WPFWindow):
         self._validate_link()
         self._is_ready = True
 
+    def _group_header(self, text):
+        item = Windows.Controls.ListBoxItem()
+        item.Content = _text_block(text, bold=True, grey=True, size=11)
+        item.IsEnabled = False
+        item.Margin = Windows.Thickness(0, 6, 0, 2)
+        self.InstalledList.Items.Add(item)
+
     def _populate_installed(self):
         self.InstalledList.Items.Clear()
+        self._group_header("pyRevit extensions")
         for ext in self.installed:
             item = Windows.Controls.ListBoxItem()
             panel = Windows.Controls.StackPanel()
-            panel.Children.Add(_text_block(ext.get("name"), bold=True))
+            title = _safe_text(ext.get("name"))
+            if state.normalize_label(title) in self.linked_names:
+                title += "   (already a source)"
+            panel.Children.Add(_text_block(title, bold=True))
             buttons = len(ext.get("buttons") or [])
             detail = "tabs: {0}   -   {1} button{2}".format(
                 ", ".join(ext.get("tab_names") or []) or "none",
                 buttons, "" if buttons == 1 else "s")
             panel.Children.Add(_text_block(detail, grey=True, size=11))
             item.Content = panel
-            item.Tag = ext
+            item.Tag = {"kind": "installed", "ext": ext}
+            self.InstalledList.Items.Add(item)
+        if self.ribbon_tabs:
+            self._group_header("Other tabs on the ribbon (Revit's own and other add-ins)")
+        for tab in self.ribbon_tabs:
+            item = Windows.Controls.ListBoxItem()
+            panel = Windows.Controls.StackPanel()
+            title = _safe_text(tab.get("title"))
+            if state.normalize_label(title) in self.linked_names:
+                title += "   (already a source)"
+            panel.Children.Add(_text_block(title, bold=True))
+            panels = [p.get("title") for p in tab.get("panels") or [] if p.get("title")]
+            detail = "panels: {0}".format(", ".join(panels) or "none")
+            panel.Children.Add(_text_block(detail, grey=True, size=11))
+            item.Content = panel
+            item.Tag = {"kind": "ribbon", "tab": tab}
             self.InstalledList.Items.Add(item)
         count = len(self.installed)
-        self.installed_count_tb.Text = "{0} extension{1} found on this computer (EasyBIM included).".format(
-            count, "" if count == 1 else "s")
+        self.installed_count_tb.Text = (
+            "{0} pyRevit extension{1} (EasyBIM included) and {2} other tab{3}. Buttons of Revit's own "
+            "tabs and other add-ins can be placed too; only Remove applies to them.".format(
+                count, "" if count == 1 else "s", len(self.ribbon_tabs),
+                "" if len(self.ribbon_tabs) == 1 else "s"))
 
     def _populate_catalogue(self):
         self.CatalogueList.Items.Clear()
@@ -563,7 +682,9 @@ class SourceSelectionWindow(forms.WPFWindow):
 
     def installed_selection_changed(self, sender, args):
         del sender, args
-        self.use_installed_btn.IsEnabled = self.InstalledList.SelectedItem is not None
+        item = self.InstalledList.SelectedItem
+        self.use_installed_btn.IsEnabled = item is not None and \
+            isinstance(getattr(item, "Tag", None), dict)
 
     def installed_double_click(self, sender, args):
         del sender, args
@@ -572,9 +693,24 @@ class SourceSelectionWindow(forms.WPFWindow):
     def use_installed_click(self, sender, args):
         del sender, args
         item = self.InstalledList.SelectedItem
-        if item is None:
+        if item is None or not isinstance(getattr(item, "Tag", None), dict):
             return
-        self.result = ("installed", item.Tag)
+        tag = item.Tag
+        if tag.get("kind") == "ribbon":
+            self.result = ("ribbon", tag.get("tab"))
+        else:
+            self.result = ("installed", tag.get("ext"))
+        self.Close()
+
+    def add_dynamo_click(self, sender, args):
+        del sender, args
+        picked = forms.pick_file(file_ext="dyn", multi_file=True,
+                                 title="Choose Dynamo graphs (.dyn)")
+        if not picked:
+            return
+        if isinstance(picked, type(u"")) or isinstance(picked, str):
+            picked = [picked]
+        self.result = ("dynamo", list(picked))
         self.Close()
 
     def catalogue_search_changed(self, sender, args):
@@ -698,7 +834,7 @@ class ButtonSelectionWindow(forms.WPFWindow):
         checkbox = Windows.Controls.CheckBox()
         content = Windows.Controls.StackPanel()
         content.Orientation = Windows.Controls.Orientation.Horizontal
-        icon = _small_icon(item.get("icon"))
+        icon = _small_icon(item.get("icon"), item.get("icon_source"))
         if icon is not None:
             content.Children.Add(icon)
         content.Children.Add(_text_block(title))
@@ -1064,3 +1200,195 @@ class CredentialsWindow(forms.WPFWindow):
         del sender, args
         self.result = None
         self.Close()
+
+
+# -- show / hide tabs -----------------------------------------------------------
+
+
+class TabVisibilityWindow(forms.WPFWindow):
+    """Every ribbon tab with a checkbox (ticked = shown).  EasyBIM and Modify
+    are ticked and frozen; pyRevit carries a note; tabs that are invisible for
+    some other reason (contextual, hidden by another add-in) are shown
+    unticked and disabled.  ``result`` is the list of tab titles to hide, or
+    None on Cancel."""
+
+    def __init__(self, xaml_file_name, ribbon_summary, hidden_names):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.result = None
+        self._rows = []
+        self.listed_titles = []
+        hidden = set(state.normalize_label(n) for n in (hidden_names or []))
+        for tab in ribbon_summary or []:
+            title = _safe_text(tab.get("title"))
+            if not title or tab.get("is_contextual"):
+                continue
+            key = state.normalize_label(title)
+            if key == state.normalize_label(state.DYNAMO_LIBRARY_TAB):
+                # My Ribbon's own library tab is never meant to be seen
+                continue
+            checkbox = Windows.Controls.CheckBox()
+            checkbox.Margin = Windows.Thickness(8, 5, 8, 5)
+            checkbox.Tag = title
+            note = ""
+            frozen = key in FROZEN_TABS
+            ours_hidden = key in hidden
+            if frozen:
+                checkbox.IsChecked = True
+                checkbox.IsEnabled = False
+                note = "always shown" + (" - My Ribbon lives here" if key == "easybim"
+                                         else " - Revit's editing tab")
+            elif not ours_hidden and tab.get("is_visible") is False:
+                checkbox.IsChecked = False
+                checkbox.IsEnabled = False
+                note = "hidden by Revit or another add-in"
+            else:
+                checkbox.IsChecked = not ours_hidden
+                if key == "pyrevit":
+                    note = PYREVIT_TAB_NOTE
+                elif tab.get("is_ours"):
+                    note = "one of your own tabs"
+            content = Windows.Controls.StackPanel()
+            content.Orientation = Windows.Controls.Orientation.Horizontal
+            content.Children.Add(_text_block(title))
+            if note:
+                content.Children.Add(_text_block("   " + note, grey=True, size=11))
+            checkbox.Content = content
+            checkbox.Click += self.row_click
+            self.TabListPanel.Children.Add(checkbox)
+            self._rows.append(checkbox)
+            self.listed_titles.append(title)
+        if not self._rows:
+            _add_empty_text(self.TabListPanel, "No tabs were found on the ribbon.")
+        self._is_ready = True
+        self._refresh()
+
+    def _hidden_titles(self):
+        return [_safe_text(row.Tag) for row in self._rows if not bool(row.IsChecked)
+                and row.IsEnabled]
+
+    def _refresh(self):
+        hidden = self._hidden_titles()
+        self.count_tb.Text = "{0} of {1} tabs hidden.".format(len(hidden), len(self._rows))
+        self.status_tb.Text = "Hidden: " + ", ".join(hidden) if hidden else "Every tab is shown."
+
+    def row_click(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def select_all_click(self, sender, args):
+        del sender, args
+        for row in self._rows:
+            if row.IsEnabled:
+                row.IsChecked = True
+        self._refresh()
+
+    def select_none_click(self, sender, args):
+        del sender, args
+        for row in self._rows:
+            if row.IsEnabled:
+                row.IsChecked = False
+        self._refresh()
+
+    def confirm_click(self, sender, args):
+        del sender, args
+        hidden = self._hidden_titles()
+        if any(state.normalize_label(t) == "pyrevit" for t in hidden):
+            if not forms.alert("Hide the pyRevit tab?\n\n" + PYREVIT_TAB_NOTE,
+                               title=TITLE, yes=True, no=True):
+                return
+        self.result = hidden
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()
+
+
+# -- new Dynamo button -------------------------------------------------------------
+
+
+class DynamoButtonWindow(forms.WPFWindow):
+    """Title and icon for one picked graph.  ``result`` is
+    ``{"title", "icon"}`` (icon = PNG path or None), ``"skip"`` or None."""
+
+    def __init__(self, xaml_file_name, path, facts, default_title, remaining=0):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.path = path
+        self.result = None
+        self.icon_path = None
+        self.path_tb.Text = _safe_text(path)
+        self.TitleBox.Text = _safe_text(default_title)
+        tags = state.dynamo_tags(facts or {})
+        fmt = (facts or {}).get("format")
+        lines = []
+        if fmt == "2.x":
+            lines.append("Dynamo 2.x graph" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
+        elif fmt == "1.x":
+            lines.append("Dynamo 1.x graph" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
+        for tag in tags:
+            if not tag.startswith("Dynamo 1.x"):
+                lines.append(tag[0].upper() + tag[1:])
+        if not lines:
+            lines.append("Nothing special was read from the file.")
+        self.facts_tb.Text = "\n".join(lines)
+        if remaining:
+            self.status_tb.Text = "{0} more graph{1} to go.".format(remaining, "" if remaining == 1 else "s")
+        self._is_ready = True
+        self._refresh()
+
+    def _refresh(self):
+        if not getattr(self, "_is_ready", False):
+            return
+        custom = bool(self.custom_icon_radio.IsChecked)
+        self.choose_icon_btn.IsEnabled = custom
+        self.icon_path_tb.Text = _safe_text(self.icon_path) if custom else ""
+        title_ok = bool(_safe_text(self.TitleBox.Text).strip())
+        icon_ok = (not custom) or bool(self.icon_path)
+        self.ok_btn.IsEnabled = title_ok and icon_ok
+        if not title_ok:
+            self.status_tb.Text = "Type a title for the button."
+        elif not icon_ok:
+            self.status_tb.Text = "Choose a PNG file, or keep Dynamo's own look."
+
+    def title_changed(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def icon_choice_changed(self, sender, args):
+        del sender, args
+        self._refresh()
+
+    def choose_icon_click(self, sender, args):
+        del sender, args
+        path = forms.pick_file(file_ext="png", title="Choose an icon (PNG, ideally 96 x 96)")
+        if path:
+            self.icon_path = path
+            self.custom_icon_radio.IsChecked = True
+        self._refresh()
+
+    def ok_click(self, sender, args):
+        del sender, args
+        title = _safe_text(self.TitleBox.Text).strip()
+        if not title:
+            forms.alert("Type a title for the button.", title=TITLE)
+            return
+        custom = bool(self.custom_icon_radio.IsChecked)
+        if custom and not self.icon_path:
+            forms.alert("Choose a PNG file, or keep Dynamo's own look.", title=TITLE)
+            return
+        self.result = {"title": title, "icon": self.icon_path if custom else None}
+        self.Close()
+
+    def skip_click(self, sender, args):
+        del sender, args
+        self.result = "skip"
+        self.Close()
+
+    def cancel_click(self, sender, args):
+        del sender, args
+        self.result = None
+        self.Close()
+

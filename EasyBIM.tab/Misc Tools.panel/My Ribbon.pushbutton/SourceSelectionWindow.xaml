@@ -2,9 +2,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="My Ribbon - Where from?"
         Width="820"
-        Height="900"
+        Height="960"
         MinWidth="760"
-        MinHeight="700"
+        MinHeight="740"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
         ResizeMode="CanResizeWithGrip">
@@ -17,7 +17,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Where are the tools?" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="A repository is downloaded and installed as a normal pyRevit extension, so pyRevit's Update button keeps it fresh. Its own tab can stay hidden; you pick the buttons you want."
+            <TextBlock Text="A repository is downloaded and installed as a normal pyRevit extension (pyRevit's Update keeps it fresh). Installed extensions, Revit's own tabs, other add-ins and Dynamo graphs can be used as they are."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -29,9 +29,11 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="12"/>
-                <RowDefinition Height="*" MinHeight="150"/>
+                <RowDefinition Height="*" MinHeight="110"/>
                 <RowDefinition Height="12"/>
-                <RowDefinition Height="*" MinHeight="150"/>
+                <RowDefinition Height="*" MinHeight="110"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
@@ -76,7 +78,7 @@
                     </Grid.RowDefinitions>
 
                     <StackPanel Grid.Row="0">
-                        <TextBlock Text="Already installed on this computer" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="Already on this computer: pyRevit extensions, Revit's own tabs, other add-ins" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
                         <TextBlock x:Name="installed_count_tb" Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
 
@@ -113,6 +115,16 @@
 
                     <Button x:Name="install_catalogue_btn" Grid.Row="3" Content="Install selected and continue" Width="200" Height="30" HorizontalAlignment="Right" IsEnabled="False" Click="install_catalogue_click"/>
                 </Grid>
+            </Border>
+
+            <Border Grid.Row="6" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
+                <DockPanel LastChildFill="True">
+                    <Button x:Name="add_dynamo_btn" DockPanel.Dock="Right" Content="Add Dynamo graph..." Width="170" Height="30" Margin="8,0,0,0" VerticalAlignment="Top" Click="add_dynamo_click"/>
+                    <StackPanel>
+                        <TextBlock Text="Dynamo graphs" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="Pick one or more .dyn files. Each becomes a button that runs the graph where it lives (edits count next time); the icon is Dynamo's own unless you choose a PNG. Needs one pyRevit reload." Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </DockPanel>
             </Border>
         </Grid>
 

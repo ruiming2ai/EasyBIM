@@ -519,13 +519,14 @@ list are.
 
 ## My Ribbon (Misc Tools)
 
-My Ribbon puts buttons from **other pyRevit extensions** on panels of your own.
-Paste a GitHub link, or pick an extension already installed on the computer, or
-browse pyRevit's catalogue of community extensions; tick the buttons you want;
-say where they go — any panel on the EasyBIM tab, a new panel there, a tab of
-your own, or a panel on another tab. Press **Apply** and they are there. No
-reload is needed to re-arrange; only a newly downloaded extension needs one, and
-My Ribbon offers it.
+My Ribbon puts buttons from **other pyRevit extensions, Revit's own tabs, other
+add-ins and Dynamo graphs** on panels of your own. Paste a GitHub link, or pick
+an extension or tab already on the computer, or browse pyRevit's catalogue of
+community extensions, or choose `.dyn` files; tick the buttons you want; say
+where they go — any panel on the EasyBIM tab, a new panel there, a tab of your
+own, or a panel on another tab. Press **Apply** and they are there. No reload is
+needed to re-arrange; only a newly downloaded extension or a new Dynamo graph
+needs one, and My Ribbon offers it.
 
 Two things make it safe to lean on:
 
@@ -541,7 +542,7 @@ Two things make it safe to lean on:
   tab. It runs the same command, greys out in the same situations, and shows the
   same icon and tooltip. Nothing is copied to disk. (Because it is the same
   object, a placed button keeps its own title; renaming copies is not in this
-  version.)
+  version.) The same goes for buttons of Revit's own tabs and other add-ins.
 
 The window has your **Sources** on the left and your **buttons** on the right as
 a tree of tab › panel. Every session, on the first idle moment after pyRevit has
@@ -557,6 +558,36 @@ deleted again with a message; a button whose extension is disabled, removed, or
 too new for this Revit is marked missing on its row; a repository already
 installed here is reused instead of downloaded twice; a download you cancel
 leaves nothing behind.
+
+### Tabs, Uninstall, Revit's own buttons, Dynamo graphs
+
+**Show/Hide tabs...** (on the My buttons side) lists every ribbon tab with a
+tick. EasyBIM stays on (this button lives there, so there is always a way back)
+and so does Modify, Revit's editing tab; everything else - other add-ins,
+Revit's own tabs, even the pyRevit tab (with a note: its Reload and Update live
+there) - can be hidden. Confirm stages, **Apply** makes it real and closes the
+window.
+
+On the Sources side, **Remove** forgets a source and its placed buttons and
+leaves every file alone. **Uninstall** also deletes what My Ribbon installed for
+it - a downloaded repository, a Dynamo button - and is greyed for everything
+that was already on the computer. Both happen on Apply.
+
+The Installed card also lists **Revit's own tabs and other add-ins' tabs**.
+Their buttons can be placed exactly like pyRevit's (it is the same live button
+object); galleries and drop-down lists that only work on their own panel are
+greyed with the reason. They can only ever be Removed.
+
+**Add Dynamo graph...** makes a button out of a `.dyn` file. The button runs
+the graph from where the file is, so later edits count the next time you click
+(Ctrl+click opens it in Dynamo instead); its icon is Revit's own Dynamo icon
+unless you pick a PNG; the title is yours. My Ribbon keeps a copy of the graph
+in its own folder as a fallback and refreshes it on Apply, so a moved or deleted
+file still runs its last version - the row says so, and **Locate graph...**
+points it at the file again. A new graph needs one pyRevit reload, which Apply
+offers. Custom nodes (`.dyf`) and Python-node scripts (`.py`) are refused with a
+plain message; the window tells you whether the graph is Dynamo 1.x or 2.x,
+which Python engines its nodes use and which packages it depends on.
 
 ## Family Types (Misc Tools)
 

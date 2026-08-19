@@ -9,6 +9,7 @@ runs and is tested on desktop Python.  The registry it edits is the plain dict
 from __future__ import print_function
 
 import copy
+import json
 import re
 
 
@@ -21,6 +22,15 @@ NOT_PLACEABLE = {
     "panelbutton": "is the panel's small corner button",
     "combobox": "is a drop-down list bound to its own panel",
     "combo": "is a drop-down list bound to its own panel",
+}
+#: Live ribbon items of a type My Ribbon does not share (galleries, lists,
+#: text boxes, sliders...) come through as kind ``ribbon-<typename>``.
+LIVE_REFUSED_PREFIX = "ribbon-"
+
+#: Fields a source may carry beyond the common ones, per kind.
+SOURCE_EXTRA_FIELDS = {
+    "catalogue": ("name",),
+    "dynamo": ("path", "title", "bundle", "icon"),
 }
 
 _WINDOWS_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -251,7 +261,19 @@ def source_key(source):
         return "git:" + base
     if kind == "catalogue":
         return "cat:" + normalize_label(source.get("name") or source.get("ext_name"))
+    if kind == "ribbon":
+        return "rib:" + normalize_label(source.get("ext_name"))
+    if kind == "dynamo":
+        return "dyn:" + normalize_path(source.get("path"))
     return "ext:" + normalize_label(source.get("ext_name"))
+
+
+def normalize_path(path):
+    """Case- and separator-insensitive key for a Windows file path."""
+    text = safe_text(path).strip().replace("/", "\\")
+    while "\\\\" in text[2:]:
+        text = text[:2] + text[2:].replace("\\\\", "\\")
+    return text.rstrip("\\").lower()
 
 
 def path_key(path):
@@ -317,27 +339,114 @@ def add_source(registry, source):
         "hide_tab": bool(source.get("hide_tab", False)),
         "extra_root": source.get("extra_root") or None,
     }
+    for field in SOURCE_EXTRA_FIELDS.get(entry["kind"], ()):
+        entry[field] = source.get(field)
     if entry["kind"] == "catalogue":
         entry["name"] = safe_text(source.get("name")) or entry["ext_name"]
+    if entry["kind"] == "dynamo":
+        entry["title"] = safe_text(source.get("title")) or safe_text(source.get("label")) \
+            or entry["ext_name"]
+        if not safe_text(source.get("label")):
+            entry["label"] = entry["title"]
+        # the bundle is nothing but what My Ribbon writes
+        entry["installed_by_my_ribbon"] = True
     registry.setdefault("sources", []).append(entry)
+    if entry.get("hide_tab"):
+        set_tabs_hidden(registry, entry.get("tab_names") or [], True)
     return entry
 
 
 def remove_source(registry, source_id):
-    """Drop a source and every placement that came from it."""
+    """Drop a source and every placement that came from it.  Tabs that were
+    hidden *because of* this source become visible again unless another
+    source still hides them."""
+    source = find_source_by_id(registry, source_id)
     removed = [p for p in registry.get("placements", []) if p.get("source") == source_id]
     registry["placements"] = [p for p in registry.get("placements", [])
                               if p.get("source") != source_id]
     registry["sources"] = [s for s in registry.get("sources", []) if s.get("id") != source_id]
+    if source is not None and source.get("hide_tab"):
+        still_hidden = set()
+        for other in registry.get("sources", []):
+            if other.get("hide_tab"):
+                for name in other.get("tab_names") or []:
+                    still_hidden.add(normalize_label(name))
+        to_show = [n for n in (source.get("tab_names") or [])
+                   if normalize_label(n) not in still_hidden]
+        set_tabs_hidden(registry, to_show, False)
     renumber(registry)
     return removed
 
 
 def set_hide_tab(registry, source_id, value):
+    """The per-source shortcut: hide/show every tab the source owns.  Showing
+    leaves alone a tab that another source still hides."""
     source = find_source_by_id(registry, source_id)
-    if source is not None:
-        source["hide_tab"] = bool(value)
+    if source is None:
+        return None
+    source["hide_tab"] = bool(value)
+    names = list(source.get("tab_names") or [])
+    if not value:
+        names = [n for n in names if not _hidden_by_another(registry, source_id, n)]
+    set_tabs_hidden(registry, names, bool(value))
     return source
+
+
+def _hidden_by_another(registry, source_id, tab_name):
+    key = normalize_label(tab_name)
+    for other in registry.get("sources", []):
+        if other.get("id") == source_id or not other.get("hide_tab"):
+            continue
+        if any(normalize_label(n) == key for n in other.get("tab_names") or []):
+            return True
+    return False
+
+
+# -- tab visibility -----------------------------------------------------------
+
+
+def hidden_tabs(registry):
+    return list(registry.get("hidden_tabs") or [])
+
+
+def is_tab_hidden(registry, tab_name):
+    key = normalize_label(tab_name)
+    return any(normalize_label(n) == key for n in registry.get("hidden_tabs") or [])
+
+
+def set_tabs_hidden(registry, tab_names, hidden):
+    """Add (or remove) tab names on the registry's hidden list, keeping
+    order and ignoring case; returns the list."""
+    current = list(registry.get("hidden_tabs") or [])
+    for name in tab_names or []:
+        name = safe_text(name).strip()
+        if not name:
+            continue
+        key = normalize_label(name)
+        present = [n for n in current if normalize_label(n) == key]
+        if hidden and not present:
+            current.append(name)
+        elif not hidden and present:
+            current = [n for n in current if normalize_label(n) != key]
+    registry["hidden_tabs"] = current
+    return current
+
+
+def replace_hidden_tabs(registry, tab_names):
+    """The Show/Hide window's result: the complete hidden list.  Per-source
+    ``hide_tab`` flags are re-derived so the two views never disagree."""
+    registry["hidden_tabs"] = []
+    set_tabs_hidden(registry, tab_names or [], True)
+    sync_source_hide_flags(registry)
+    return registry["hidden_tabs"]
+
+
+def sync_source_hide_flags(registry):
+    """``hide_tab`` is true when every tab the source owns is hidden."""
+    for source in registry.get("sources", []):
+        names = source.get("tab_names") or []
+        source["hide_tab"] = bool(names) and all(is_tab_hidden(registry, n) for n in names)
+    return registry
 
 
 def find_destination(registry, tab, panel):
@@ -497,6 +606,9 @@ def count_changes(saved, working):
         for key in set(before) | set(after):
             if before.get(key) != after.get(key):
                 changes += 1
+    before_tabs = set(normalize_label(n) for n in saved.get("hidden_tabs") or [])
+    after_tabs = set(normalize_label(n) for n in working.get("hidden_tabs") or [])
+    changes += len(before_tabs ^ after_tabs)
     return changes
 
 
@@ -520,6 +632,9 @@ def button_tags(button, host_version=None):
     kind = safe_text(button.get("kind")).lower()
     if kind in NOT_PLACEABLE:
         tags.append("cannot be placed: " + NOT_PLACEABLE[kind])
+    elif kind.startswith(LIVE_REFUSED_PREFIX):
+        tags.append("cannot be placed: a {0} only works on its own panel".format(
+            kind[len(LIVE_REFUSED_PREFIX):].replace("ribbon", "") or "control"))
     elif kind in ("pulldown", "splitbutton", "splitpushbutton"):
         tags.append("whole drop-down")
     version_tag = revit_version_tag(button.get("min_revit"), button.get("max_revit"), host_version)
@@ -548,7 +663,8 @@ def revit_version_tag(min_version, max_version, host_version=None):
 
 
 def is_placeable(button):
-    return safe_text(button.get("kind")).lower() not in NOT_PLACEABLE
+    kind = safe_text(button.get("kind")).lower()
+    return kind not in NOT_PLACEABLE and not kind.startswith(LIVE_REFUSED_PREFIX)
 
 
 def _int_or_none(value):
@@ -570,6 +686,7 @@ def export_document(registry):
         "sources": copy.deepcopy(registry.get("sources", [])),
         "destinations": copy.deepcopy(registry.get("destinations", [])),
         "placements": copy.deepcopy(registry.get("placements", [])),
+        "hidden_tabs": list(registry.get("hidden_tabs") or []),
     }
     return document
 
@@ -595,12 +712,16 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
         "destinations_added": [],
         "placements_added": [],
         "placements_skipped": [],
+        "tabs_hidden": [],
     }
     if mode == "replace":
         result = {"format": current.get("format", 1), "sources": [],
-                  "destinations": [], "placements": []}
+                  "destinations": [], "placements": [], "hidden_tabs": []}
     else:
         result = copy.deepcopy(current)
+        result.setdefault("hidden_tabs", [])
+    before_hidden = set(normalize_label(n) for n in result.get("hidden_tabs") or [])
+    set_tabs_hidden(result, incoming.get("hidden_tabs") or [], True)
 
     source_map = {}
     for source in incoming.get("sources", []):
@@ -613,15 +734,19 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
         # download made here may set installed_by_my_ribbon (it decides what
         # Remove is allowed to delete), and a colleague's registered root path
         # means nothing on this machine.
-        entry = add_source(result, dict(source, id=None, installed_by_my_ribbon=False,
-                                        extra_root=None))
+        entry = add_source(result, dict(source, id=None, extra_root=None,
+                                        installed_by_my_ribbon=(source.get("kind") == "dynamo")))
         source_map[source.get("id")] = entry["id"]
         plan["sources_added"].append(entry.get("label") or entry.get("ext_name"))
     for source in result.get("sources", []):
         name = normalize_label(source.get("ext_name"))
-        if source.get("kind") == "installed":
-            if name and name not in installed:
+        kind = source.get("kind")
+        if kind in ("installed", "ribbon"):
+            if name and name not in installed and kind == "installed":
                 plan["sources_not_here"].append(source.get("label") or source.get("ext_name"))
+        elif kind == "dynamo":
+            # the graph path is checked by the host; nothing to install
+            continue
         elif name not in installed:
             plan["sources_to_install"].append(source.get("label") or source.get("ext_name"))
 
@@ -649,6 +774,9 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
         entry = add_placement(result, source_id, dest_id, placement)
         plan["placements_added"].append(entry.get("title"))
     renumber(result)
+    sync_source_hide_flags(result)
+    # reported last: sources added above may hide their own tabs too
+    plan["tabs_hidden"] = [n for n in result["hidden_tabs"] if normalize_label(n) not in before_hidden]
     plan["result"] = result
     return plan
 
@@ -678,6 +806,9 @@ def format_import_preview(plan):
     lines.append("Buttons: {0} to add{1}.".format(len(placed), _listing(placed)))
     if skipped:
         lines.append("Skipped: {0}.".format("; ".join(skipped)))
+    tabs = plan.get("tabs_hidden", [])
+    if tabs:
+        lines.append("Tabs to hide: {0}.".format(", ".join(tabs)))
     return lines
 
 
@@ -690,3 +821,172 @@ def _listing(items, limit=6):
     if more > 0:
         text += ", and {0} more".format(more)
     return " ({0})".format(text)
+
+
+# -- Dynamo graphs ----------------------------------------------------------------
+
+
+def dynamo_facts_from_text(text, file_name=""):
+    """What a picked file is, read from its content: ``format`` (``"2.x"``
+    JSON, ``"1.x"`` XML or ``"unknown"``), ``is_custom_node``, ``name``,
+    ``python_engines`` (e.g. ``["CPython3"]``), ``packages`` (names from the
+    2.x dependency list) and ``problem`` (a sentence when the file is not a
+    runnable graph).  Never raises."""
+    facts = {"format": "unknown", "is_custom_node": False, "name": "",
+             "python_engines": [], "packages": [], "problem": ""}
+    lowered = safe_text(file_name).lower()
+    if lowered.endswith(".dyf"):
+        facts["is_custom_node"] = True
+        facts["problem"] = "This is a Dynamo custom node (.dyf), not a graph that can run on its own."
+    elif lowered.endswith(".py"):
+        facts["problem"] = "This is a Python script. A Dynamo button needs a graph (.dyn); " \
+                           "put the script inside a Python node of a graph."
+    raw = safe_text(text).strip()
+    if raw.startswith(u"\ufeff"):
+        raw = raw[1:]
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            facts["format"] = "2.x"
+            facts["name"] = safe_text(data.get("Name")).strip()
+            if data.get("IsCustomNode"):
+                facts["is_custom_node"] = True
+                if not facts["problem"]:
+                    facts["problem"] = "This graph is saved as a custom node; it cannot run on its own."
+            engines = []
+            for node in data.get("Nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                concrete = safe_text(node.get("ConcreteType"))
+                if "Python" in concrete:
+                    engine = safe_text(node.get("Engine")).strip() or "IronPython2"
+                    if engine not in engines:
+                        engines.append(engine)
+            facts["python_engines"] = engines
+            packages = []
+            for dep in data.get("NodeLibraryDependencies") or []:
+                if isinstance(dep, dict):
+                    name = safe_text(dep.get("Name")).strip()
+                    if name and name not in packages:
+                        packages.append(name)
+            facts["packages"] = packages
+    elif raw.startswith("<"):
+        if "<Workspace" in raw[:2000]:
+            facts["format"] = "1.x"
+            match = re.search(r'<Workspace[^>]*\sName="([^"]*)"', raw[:4000])
+            if match:
+                facts["name"] = match.group(1)
+            if "PythonNode" in raw:
+                facts["python_engines"] = ["IronPython2"]
+    if facts["format"] == "unknown" and not facts["problem"]:
+        facts["problem"] = "This file does not look like a Dynamo graph (.dyn)."
+    return facts
+
+
+def dynamo_tags(facts):
+    """Short labels for the picker/confirmation from ``dynamo_facts_from_text``."""
+    tags = []
+    if facts.get("format") == "1.x":
+        tags.append("Dynamo 1.x graph")
+    if facts.get("python_engines"):
+        tags.append("contains Python nodes ({0})".format(", ".join(facts["python_engines"])))
+    if facts.get("packages"):
+        tags.append("uses packages: {0}".format(", ".join(facts["packages"])))
+    return tags
+
+
+def dynamo_bundle_name(title, existing_names):
+    """``<Title>.pushbutton`` with a Windows-safe, unique folder name."""
+    base = sanitize_folder_name(title, fallback="Graph")
+    taken = set(normalize_label(n) for n in (existing_names or []))
+    candidate = base + ".pushbutton"
+    counter = 2
+    while normalize_label(candidate) in taken:
+        candidate = "{0} {1}.pushbutton".format(base, counter)
+        counter += 1
+    return candidate
+
+
+def render_dynamo_bundle_yaml(title, tooltip, dynamo_path):
+    """The bundle.yaml of a Dynamo button.  Strings are JSON-quoted, which
+    YAML reads as double-quoted scalars, so quotes, backslashes and newlines
+    in titles or paths are safe.  ``dynamo_path`` is pyRevit's own key: the
+    Dynamo engine runs that file instead of the bundle's script.dyn - so it is
+    left out when the original is gone, and the copy really does run."""
+    lines = [
+        "title: " + json.dumps(safe_text(title), ensure_ascii=False),
+        "tooltip: " + json.dumps(safe_text(tooltip), ensure_ascii=False),
+        "author: \"EasyBIM My Ribbon\"",
+        "engine:",
+        "  automate: true",
+    ]
+    if safe_text(dynamo_path):
+        lines.append("  dynamo_path: " + json.dumps(safe_text(dynamo_path), ensure_ascii=False))
+    return "\n".join(lines) + "\n"
+
+
+def is_bundle_folder_name(name):
+    """One plain ``<Name>.pushbutton`` folder name: no separators, no drive
+    letter, not dots-only (same rule as ``easybim.my_ribbon``)."""
+    name = safe_text(name)
+    if not name or name != name.strip() or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or ":" in name:
+        return False
+    return name.lower().endswith(".pushbutton") and len(name) > len(".pushbutton")
+
+
+def unique_dynamo_bundles(registry, disk_names):
+    """Give every Dynamo source a valid bundle name that no other source of
+    the registry uses (an earlier source keeps its name; a clash, an invalid
+    or missing name gets a fresh one that is also not on disk).  A renamed
+    source has its placements' last path level and control id rewritten, since
+    they embed the folder name.  Returns the list of (old, new) renames."""
+    renames = []
+    seen = set()
+    disk = set(normalize_label(n) for n in (disk_names or []))
+    for source in registry.get("sources", []):
+        if source.get("kind") != "dynamo":
+            continue
+        name = safe_text(source.get("bundle"))
+        if is_bundle_folder_name(name) and normalize_label(name) not in seen:
+            seen.add(normalize_label(name))
+            continue
+        fresh = dynamo_bundle_name(source.get("title") or source.get("label"), list(seen | disk))
+        seen.add(normalize_label(fresh))
+        new_stem = strip_pushbutton(fresh)
+        source["bundle"] = fresh
+        for placement in registry.get("placements", []):
+            if placement.get("source") != source.get("id"):
+                continue
+            path = placement.get("path") or []
+            if path:
+                path[-1]["name"] = new_stem
+            placement["control_id"] = "CustomCtrl_%CustomCtrl_%{0}%{1}%{2}".format(
+                DYNAMO_LIBRARY_TAB, DYNAMO_LIBRARY_PANEL, new_stem)
+        renames.append((name, fresh))
+    return renames
+
+
+def strip_pushbutton(bundle_name):
+    text = safe_text(bundle_name)
+    if text.lower().endswith(".pushbutton"):
+        return text[:-len(".pushbutton")]
+    return text
+
+
+#: Mirrors ``easybim.my_ribbon.LIBRARY_TAB`` / ``LIBRARY_DYNAMO_PANEL`` (pinned by a test).
+DYNAMO_LIBRARY_TAB = "My Ribbon Library"
+DYNAMO_LIBRARY_PANEL = "Dynamo"
+
+
+def dynamo_tooltip(path, facts=None):
+    parts = ["Dynamo graph: {0}".format(safe_text(path))]
+    for tag in dynamo_tags(facts or {}):
+        parts.append(tag[0].upper() + tag[1:])
+    parts.append("Ctrl+click opens it in Dynamo.")
+    return "\n".join(parts)
+
