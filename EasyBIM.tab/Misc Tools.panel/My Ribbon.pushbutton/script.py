@@ -22,6 +22,7 @@ from my_ribbon_ui import (  # noqa: E402
     ButtonSelectionWindow,
     CredentialsWindow,
     DestinationWindow,
+    DynamoButtonWindow,
     ImportPreviewWindow,
     MyRibbonWindow,
     SourceSelectionWindow,
@@ -33,12 +34,21 @@ LOGGER = script.get_logger()
 STATUS_LOADED = "loaded"
 STATUS_NEEDS_RELOAD = "needs pyRevit reload"
 STATUS_NOT_INSTALLED = "not installed here"
+STATUS_NEEDS_APPLY = "needs Apply"
+STATUS_MISSING_TAB = "tab is not on the ribbon"
+STATUS_GRAPH_MISSING = "graph file missing (last copy kept)"
 
 
 # -- helpers ----------------------------------------------------------------------
 
 
 def _source_dir(source):
+    kind = source.get("kind")
+    if kind == "dynamo":
+        folder = os.path.dirname(state.safe_text(source.get("path")))
+        return folder if folder and os.path.isdir(folder) else None
+    if kind == "ribbon":
+        return None
     if source.get("extra_root"):
         return source["extra_root"] if os.path.isdir(source["extra_root"]) else None
     return host.find_installed_extension_dir(source.get("ext_name"))
@@ -53,7 +63,21 @@ def _ribbon_has_tab(summary, tab_names):
 def _source_status(working, summary):
     status = {}
     for source in working.get("sources", []):
-        if _source_dir(source) is None:
+        kind = source.get("kind")
+        if kind == "ribbon":
+            status[source["id"]] = STATUS_LOADED if _ribbon_has_tab(summary, source.get("tab_names")) \
+                else STATUS_MISSING_TAB
+        elif kind == "dynamo":
+            graph = host.dynamo_graph_status(source)
+            if graph == "no-bundle":
+                status[source["id"]] = STATUS_NEEDS_APPLY
+            elif graph == "missing":
+                status[source["id"]] = STATUS_GRAPH_MISSING
+            elif not _ribbon_has_tab(summary, [my_ribbon.LIBRARY_TAB]):
+                status[source["id"]] = STATUS_NEEDS_RELOAD
+            else:
+                status[source["id"]] = STATUS_LOADED
+        elif _source_dir(source) is None:
             status[source["id"]] = STATUS_NOT_INSTALLED
         elif source.get("tab_names") and not _ribbon_has_tab(summary, source.get("tab_names")):
             status[source["id"]] = STATUS_NEEDS_RELOAD
@@ -84,6 +108,48 @@ def _describe_installed_dir(ext_dir, label):
 
 def _ext_name_of(ext_dir):
     return state.strip_extension_suffix(os.path.basename(ext_dir.rstrip("\\/")))
+
+
+def _dynamo_described(source):
+    """A one-button 'extension' for the picker and the placement path."""
+    name = state.strip_extension_suffix(state.safe_text(source.get("bundle")))
+    if name.lower().endswith(".pushbutton"):
+        name = name[:-len(".pushbutton")]
+    title = source.get("title") or source.get("label") or name
+    button = {
+        "kind": "button", "name": name, "title": title,
+        "tooltip": "Dynamo graph: {0}".format(source.get("path")),
+        "icon": source.get("icon") or host.DEFAULT_DYNAMO_ICON,
+        "control_id": "CustomCtrl_%CustomCtrl_%{0}%{1}%{2}".format(
+            my_ribbon.LIBRARY_TAB, my_ribbon.LIBRARY_DYNAMO_PANEL, name),
+        "path": [{"name": my_ribbon.LIBRARY_TAB, "title": my_ribbon.LIBRARY_TAB},
+                 {"name": my_ribbon.LIBRARY_DYNAMO_PANEL, "title": my_ribbon.LIBRARY_DYNAMO_PANEL},
+                 {"name": name, "title": title}],
+        "min_revit": None, "max_revit": None, "in_layout": True, "children": [],
+    }
+    return {"name": title, "dir": "", "tab_names": [my_ribbon.LIBRARY_TAB],
+            "tabs": [{"name": my_ribbon.LIBRARY_TAB, "title": my_ribbon.LIBRARY_TAB,
+                      "panels": [{"name": my_ribbon.LIBRARY_DYNAMO_PANEL,
+                                  "title": my_ribbon.LIBRARY_DYNAMO_PANEL, "items": [button]}]}],
+            "buttons": [button], "has_startup": False, "has_hooks": False}
+
+
+def _other_ribbon_tabs(summary, installed):
+    """Tabs that are neither a pyRevit extension's, nor ours, nor contextual."""
+    taken = set()
+    for ext in installed or []:
+        for name in ext.get("tab_names") or []:
+            taken.add(state.normalize_label(name))
+    taken.add(state.normalize_label(my_ribbon.LIBRARY_TAB))
+    others = []
+    for tab in summary:
+        key = state.normalize_label(tab.get("title"))
+        if key in taken or tab.get("is_ours") or tab.get("is_contextual"):
+            continue
+        if state.normalize_label(tab.get("id")) in taken:
+            continue
+        others.append(tab)
+    return others
 
 
 # -- downloading -----------------------------------------------------------------------
@@ -345,12 +411,33 @@ def _add_source_flow(working, pending_deletes):
             except Exception as ex:
                 LOGGER.debug("catalogue failed: %s", ex)
                 catalogue = []
+        summary = my_ribbon.list_ribbon()
+        linked = [s.get("ext_name") for s in working.get("sources", [])] + \
+                 [s.get("label") for s in working.get("sources", [])]
         page = SourceSelectionWindow("SourceSelectionWindow.xaml", installed, catalogue,
-                                     link_text=link_text, branch_text=branch_text)
+                                     link_text=link_text, branch_text=branch_text,
+                                     ribbon_tabs=_other_ribbon_tabs(summary, installed),
+                                     linked_names=linked)
         page.ShowDialog()
         if not page.result:
             return None
         kind = page.result[0]
+        if kind == "ribbon":
+            tab = page.result[1]
+            described = my_ribbon.describe_tab_by_title(tab.get("title"))
+            if not described or not described.get("buttons"):
+                forms.alert("No buttons could be read from the tab '{0}'.".format(tab.get("title")),
+                            title=__title__)
+                continue
+            entry = state.add_source(working, {
+                "kind": "ribbon", "ext_name": tab.get("title"),
+                "label": "{0} ({1})".format(tab.get("title"), "add-in" if tab.get("id", "").startswith(
+                    "CustomCtrl") else "Revit"),
+                "tab_names": [tab.get("title")], "installed_by_my_ribbon": False, "hide_tab": False})
+            _pick_and_place(working, entry, described)
+            return None
+        if kind == "dynamo":
+            return _add_dynamo_flow(working, page.result[1])
         if kind == "git":
             link_text, branch_text = page.result[1], page.result[2]
             sources, described_by_index = _download_git(link_text, branch_text)
@@ -390,9 +477,70 @@ def _add_source_flow(working, pending_deletes):
             return notice
 
 
+def _add_dynamo_flow(working, paths):
+    """One window per graph (title, icon), then one Where-to for all of them."""
+    added = []
+    remaining = list(paths or [])
+    existing_bundles = host.existing_dynamo_bundle_names() + \
+        [s.get("bundle") for s in working.get("sources", []) if s.get("kind") == "dynamo"]
+    while remaining:
+        path = remaining.pop(0)
+        facts = host.read_dynamo_facts(path)
+        if facts.get("problem"):
+            forms.alert("{0}\n\n{1}".format(os.path.basename(path), facts["problem"]), title=__title__)
+            continue
+        already = state.find_source(working, {"kind": "dynamo", "path": path})
+        if already is not None:
+            forms.alert("{0} is already a source ({1}).".format(os.path.basename(path),
+                                                                already.get("title")), title=__title__)
+            continue
+        default_title = facts.get("name") or os.path.splitext(os.path.basename(path))[0]
+        window = DynamoButtonWindow("DynamoButtonWindow.xaml", path, facts, default_title,
+                                    remaining=len(remaining))
+        window.ShowDialog()
+        if window.result is None:
+            break
+        if window.result == "skip":
+            continue
+        title = window.result["title"]
+        bundle = state.dynamo_bundle_name(title, existing_bundles)
+        existing_bundles.append(bundle)
+        entry = state.add_source(working, {
+            "kind": "dynamo", "path": path, "title": title, "label": title, "bundle": bundle,
+            "icon": window.result.get("icon"), "ext_name": my_ribbon.LIBRARY_EXTENSION_NAME,
+            "tab_names": [my_ribbon.LIBRARY_TAB], "installed_by_my_ribbon": True, "hide_tab": False})
+        added.append(entry)
+    if not added:
+        return None
+    # the library tab is never meant to be seen
+    state.set_tabs_hidden(working, [my_ribbon.LIBRARY_TAB], True)
+    chooser = DestinationWindow("DestinationWindow.xaml", my_ribbon.list_ribbon(), working,
+                                mode="add", count=len(added))
+    chooser.ShowDialog()
+    if chooser.result and chooser.result != "back":
+        tab, panel, own_tab = chooser.result
+        dest = state.add_destination(working, tab, panel, own_tab)
+        for entry in added:
+            button = _dynamo_described(entry)["buttons"][0]
+            state.add_placement(working, entry["id"], dest["id"], button)
+    return "Added {0} Dynamo graph{1}. Press Apply; the button{1} appear after a pyRevit " \
+           "reload.".format(len(added), "" if len(added) == 1 else "s")
+
+
 def _add_buttons_flow(working, source_id):
     source = state.find_source_by_id(working, source_id)
     if source is None:
+        return
+    if source.get("kind") == "dynamo":
+        _pick_and_place(working, source, _dynamo_described(source))
+        return
+    if source.get("kind") == "ribbon":
+        described = my_ribbon.describe_tab_by_title(source.get("ext_name"))
+        if not described:
+            forms.alert("The tab '{0}' is not on the ribbon right now.".format(source.get("ext_name")),
+                        title=__title__)
+            return
+        _pick_and_place(working, source, described)
         return
     ext_dir = _source_dir(source)
     if source.get("extra_root"):
@@ -508,8 +656,14 @@ def _apply(working, pending_deletes):
         forms.alert("The settings could not be saved:\n{0}".format(error), title=__title__)
         return None, None, None, False
     problems = []
+    # Dynamo buttons are bundles My Ribbon writes itself: create what is
+    # missing, refresh stale copies, delete the bundles of removed graphs
+    sync = host.sync_dynamo_bundles(working, pending_deletes)
+    problems.extend(sync.get("errors", []))
     still_used = set(s.get("extra_root") for s in working.get("sources", []) if s.get("extra_root"))
     for source in pending_deletes:
+        if source.get("kind") == "dynamo":
+            continue  # handled by sync_dynamo_bundles
         if source.get("extra_root") and source["extra_root"] in still_used:
             # another source still lives in that repository clone
             continue
@@ -523,7 +677,8 @@ def _apply(working, pending_deletes):
     report = my_ribbon.apply(working)
     saved = copy.deepcopy(working)
     status = _source_status(working, my_ribbon.list_ribbon())
-    needs_reload = bool(pending_deletes) or STATUS_NEEDS_RELOAD in status.values()
+    needs_reload = bool(pending_deletes) or STATUS_NEEDS_RELOAD in status.values() \
+        or bool(sync.get("written")) or bool(sync.get("deleted"))
     parts = ["Applied: {0} placed".format(len(report.get("added", [])))]
     if report.get("missing"):
         parts.append("{0} missing".format(len(report["missing"])))
@@ -534,6 +689,11 @@ def _apply(working, pending_deletes):
     if report.get("errors"):
         parts.append("; ".join(report["errors"]))
     notice = ", ".join(parts) + "."
+    if report.get("missing") or problems or report.get("errors"):
+        # the window closes after Apply, so anything off is said now
+        details = [u"{0}: {1}".format(m.get("title"), m.get("reason")) for m in report.get("missing", [])]
+        details += problems + list(report.get("errors", []))
+        forms.alert(notice, title=__title__, expanded="\n".join(details), warn_icon=bool(problems))
     reloading = False
     if needs_reload:
         if forms.alert("Some tools need a pyRevit reload before they appear (or disappear). "
@@ -581,13 +741,13 @@ def _run():
             continue
         if result == "apply":
             new_saved, notice, report, reloading = _apply(working, pending_deletes)
-            if new_saved is not None:
-                saved = new_saved
-                pending_deletes = []
+            if new_saved is None:
+                # the save failed; the window comes back with everything staged
+                continue
             if reloading:
                 host.reload_pyrevit()
-                return
-            continue
+            # Apply closes the window: the ribbon itself shows the result
+            return
 
 
 try:
