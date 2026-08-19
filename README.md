@@ -186,7 +186,7 @@ that ended up blank all show up here. A circuit is listed if *any* of the
 parameters you ticked reads zero or nothing. That makes the report the list of
 what is left to do — when it is empty it says so.
 
-## Families Transfer (Misc Tools)
+## Families Transfer (Family)
 
 Collect loadable families from wherever they happen to be, then push them into
 the other project files you have open — or write them out as `.rfa`.
@@ -298,7 +298,7 @@ Two instances of one link are one row, not two. Unloaded links are listed but
 greyed, so a missing link looks missing rather than absent. Links nested
 inside a link are not reachable through the API and are not listed.
 
-## Families Downgrade (Misc Tools, Revit 2021+)
+## Families Downgrade (Family, Revit 2021+)
 
 Rebuild loadable families for an older Revit. A family saved by a newer
 release cannot be opened by an older one, and there is no "save as older
@@ -517,7 +517,7 @@ Families nested inside another family are not updated; only the families in the
 list are.
 
 
-## My Ribbon (Misc Tools)
+## My Ribbon (its own panel)
 
 My Ribbon puts buttons from **other pyRevit extensions, Revit's own tabs, other
 add-ins and Dynamo graphs** on panels of your own. Paste a GitHub link, or pick
@@ -589,7 +589,7 @@ offers. Custom nodes (`.dyf`) and Python-node scripts (`.py`) are refused with a
 plain message; the window tells you whether the graph is Dynamo 1.x or 2.x,
 which Python engines its nodes use and which packages it depends on.
 
-## Family Types (Misc Tools)
+## Family Types (Family)
 
 What Revit's type catalogue puts in a `.txt` file, shown as a table you can
 actually read: one row per family type, one column per parameter, every value

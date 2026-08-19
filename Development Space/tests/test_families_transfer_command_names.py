@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel"
+PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "Family.panel"
 COMMAND_DIR = PANEL_DIR / "Families Transfer.pushbutton"
 SCRIPT_MODULE = COMMAND_DIR / "script.py"
 UI_MODULE = COMMAND_DIR / "families_transfer_ui.py"
@@ -187,7 +187,7 @@ def _function_source(path, function_name):
 
 
 class FamiliesTransferBundleTests(unittest.TestCase):
-    def test_command_folder_sits_in_the_misc_tools_panel(self):
+    def test_command_folder_sits_in_the_family_panel(self):
         self.assertTrue(COMMAND_DIR.is_dir())
 
     def test_bundle_yaml_carries_the_ribbon_title(self):
