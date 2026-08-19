@@ -517,7 +517,7 @@ Families nested inside another family are not updated; only the families in the
 list are.
 
 
-## My Ribbon (its own panel)
+## My Ribbon (General)
 
 My Ribbon puts buttons from **other pyRevit extensions, Revit's own tabs, other
 add-ins and Dynamo graphs** on panels of your own. Paste a GitHub link, or pick
