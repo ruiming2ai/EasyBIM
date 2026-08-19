@@ -1,4 +1,4 @@
-"""The decisions Linked Sheets Copy makes before it touches the model.
+"""The decisions Linked Sheets Transfer makes before it touches the model.
 
 Everything here is what the confirmation window shows and the executor obeys,
 so a change that alters one without the other fails here first.
@@ -11,11 +11,11 @@ import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 COMMAND_DIR = (REPO_ROOT / "EasyBIM.tab" / "Sheet.panel" /
-               "Linked Sheets Copy.pushbutton")
+               "Linked Sheets Transfer.pushbutton")
 if str(COMMAND_DIR) not in sys.path:
     sys.path.insert(0, str(COMMAND_DIR))
 
-import linked_sheets_copy_state as state
+import linked_sheets_transfer_state as state
 
 
 def view_row(name=u"Level 1", level_key=10, supported=True, scale=100,

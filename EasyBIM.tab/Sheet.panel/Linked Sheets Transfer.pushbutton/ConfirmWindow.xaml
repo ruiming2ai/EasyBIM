@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Linked Sheets Copy - Confirm"
+        Title="Linked Sheets Transfer - Confirm"
         Width="820"
         Height="660"
         MinWidth="640"

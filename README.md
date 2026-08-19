@@ -374,9 +374,9 @@ that carries their exported origin; the API puts a connector at the centre of
 its face, so a connector that shared a big face with others reports how far
 it landed from where it was.
 
-## Linked Sheets Copy (Sheet, Revit 2024+)
+## Linked Sheets Transfer (Sheet, Revit 2024+)
 
-Linked Sheets Copy reuses a Revit link's sheets. Pick a loaded link, tick its
+Linked Sheets Transfer reuses a Revit link's sheets. Pick a loaded link, tick its
 sheets, and each one is recreated here: same title block in the same place on
 the page, and one new plan view per viewport, cropped and scaled exactly like
 the linked view and showing that link **By Linked View**.

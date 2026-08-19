@@ -2,7 +2,7 @@
 """Where a model point lands on a sheet, given the viewport it is seen through.
 
 This is the one piece of maths behind both `View Align` (move an existing
-viewport until a model point matches a reference) and `Linked Sheets Copy`
+viewport until a model point matches a reference) and `Linked Sheets Transfer`
 (place a brand new viewport so a model point matches a linked sheet).  Keeping
 two copies of it would guarantee that "align" and "copy and align" eventually
 disagree, which is the exact drift `AGENTS.md` asks to avoid.
