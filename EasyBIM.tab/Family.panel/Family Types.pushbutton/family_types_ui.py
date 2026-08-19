@@ -20,11 +20,30 @@ import os
 from pyrevit import forms
 from pyrevit import script
 
+from System import Double as ClrDouble
+from System.Windows import HorizontalAlignment
+from System.Windows import RoutedEventHandler
+from System.Windows import Thickness
+from System.Windows import UIElement
+from System.Windows.Controls import Border
+from System.Windows.Controls import Canvas
+from System.Windows.Controls import CheckBox
+from System.Windows.Controls import DataGridCell
 from System.Windows.Controls import DataGridLength
+from System.Windows.Controls import DataGridTemplateColumn
 from System.Windows.Controls import DataGridTextColumn
+from System.Windows.Controls import ScrollViewer
+from System.Windows.Controls import ScrollChangedEventHandler
+from System.Windows.Controls import TextBlock
+from System.Windows.Controls.Primitives import ButtonBase
 from System.Windows.Data import Binding
 from System.Windows.Data import BindingMode
+from System.Windows.Input import MouseButtonEventHandler
 from System.Windows.Markup import XamlReader
+from System.Windows import FontWeights
+from System.Windows import TextTrimming
+from System.Windows.Media import Brushes
+from System.Windows.Media import VisualTreeHelper
 
 from easybim import excel_workbook
 
@@ -72,8 +91,53 @@ _CELL_STYLE = (
     '</Style>')
 
 
+# A yes/no parameter is a checkbox, not typed text. The fragment carries NO
+# event attribute - a loose fragment has no code-behind to bind one to, and
+# the repo pins that rule with a test; the click is caught at grid level.
+_CHECKBOX_CELL_TEMPLATE = (
+    '<DataTemplate {ns}>'
+    '<CheckBox x:Name="cell_cb" HorizontalAlignment="Center"'
+    ' VerticalAlignment="Center"'
+    ' IsChecked="{{Binding {attr}, Mode=TwoWay,'
+    ' UpdateSourceTrigger=PropertyChanged}}"/>'
+    '<DataTemplate.Triggers>'
+    '<DataTrigger Binding="{{Binding {attr}_state}}" Value="locked">'
+    '<Setter TargetName="cell_cb" Property="IsEnabled" Value="False"/>'
+    '</DataTrigger>'
+    '<DataTrigger Binding="{{Binding is_marked_deleted}}" Value="True">'
+    '<Setter TargetName="cell_cb" Property="IsEnabled" Value="False"/>'
+    '</DataTrigger>'
+    '</DataTemplate.Triggers>'
+    '</DataTemplate>')
+
+_CHECK_CELL_STYLE = (
+    '<Style {ns} TargetType="{{x:Type DataGridCell}}">'
+    '<Style.Triggers>'
+    '<DataTrigger Binding="{{Binding {attr}_state}}" Value="dirty">'
+    '<Setter Property="Background" Value="#F8D7D7"/>'
+    '</DataTrigger>'
+    '</Style.Triggers>'
+    '</Style>')
+
+#: The two bands drawn above the column headers.
+GROUP_TYPE = "Type Parameters"
+GROUP_INSTANCE = "Instance Parameters"
+
+
 def _parse_fragment(fragment, attr):
     return XamlReader.Parse(fragment.format(ns=_XNS, attr=attr))
+
+
+def _find_parent_cell(element):
+    current = element
+    while current is not None:
+        if isinstance(current, DataGridCell):
+            return current
+        try:
+            current = VisualTreeHelper.GetParent(current)
+        except Exception:
+            return None
+    return None
 
 
 class TypeRow(forms.Reactive, state.TypeRowBase):
@@ -218,6 +282,28 @@ class FamilyTypesWindow(forms.WPFWindow):
         self._family_name = family_name
         self._hidden_empty = False
         self._search_text = u""
+        self._selection_snapshot = (None, [])
+        self._band_signature = None
+        self._band_cheap_signature = None
+        self._scroll_offset = 0.0
+
+        # Checkbox clicks are caught at grid level: the cell templates are
+        # loose XAML fragments and cannot carry a handler of their own.
+        # AddHandler demands the delegate type the event declares.
+        self.types_dg.AddHandler(
+            ButtonBase.ClickEvent,
+            RoutedEventHandler(self.grid_checkbox_click))
+        self.types_dg.AddHandler(
+            UIElement.PreviewMouseLeftButtonDownEvent,
+            MouseButtonEventHandler(self.grid_preview_mouse_down),
+            True)
+        try:
+            self.types_dg.AddHandler(
+                ScrollViewer.ScrollChangedEvent,
+                ScrollChangedEventHandler(self.grid_scrolled))
+            self.types_dg.LayoutUpdated += self.grid_layout_updated
+        except Exception as err:
+            LOGGER.debug("Group band not wired: %s", err)
 
         self.family_tb.Text = u"{0}  -  {1}".format(family_name, context_text)
         self._build_columns_ui()
@@ -232,6 +318,9 @@ class FamilyTypesWindow(forms.WPFWindow):
     # ---------------------------------------------------------- columns
 
     def _build_columns_ui(self):
+        # The band spans these columns, so it has to be recomputed with them.
+        self._band_signature = None
+        self._band_cheap_signature = None
         self.types_dg.Columns.Clear()
         self._spec_by_column = {}
         for spec in self._columns:
@@ -242,6 +331,14 @@ class FamilyTypesWindow(forms.WPFWindow):
             self.types_dg.Columns.Add(column)
 
     def _make_grid_column(self, spec):
+        if getattr(spec, "is_yes_no", False):
+            column = DataGridTemplateColumn()
+            column.Header = spec.header
+            column.CellTemplate = _parse_fragment(
+                _CHECKBOX_CELL_TEMPLATE, spec.attr)
+            column.CellStyle = _parse_fragment(_CHECK_CELL_STYLE, spec.attr)
+            column.Width = DataGridLength(float(min(spec.width, 90)))
+            return column
         column = DataGridTextColumn()
         column.Header = spec.header
         binding = Binding(spec.attr)
@@ -251,6 +348,112 @@ class FamilyTypesWindow(forms.WPFWindow):
         column.IsReadOnly = bool(spec.is_read_only)
         column.Width = DataGridLength(float(spec.width))
         return column
+
+    # ------------------------------------------------- cell multi-select
+
+    def _selected_cell_rows(self, spec):
+        """Rows whose cell in ``spec``'s column is part of the selection.
+
+        ``SelectionUnit="CellOrRowHeader"`` means the selection is a set of
+        cells, so a bulk edit is "every selected cell in this column" rather
+        than "every selected row". Grid order is preserved.
+        """
+        wanted = []
+        try:
+            cells = list(self.types_dg.SelectedCells)
+        except Exception:
+            return wanted
+        seen = []
+        for cell in cells:
+            try:
+                if self._spec_by_column.get(cell.Column) is not spec:
+                    continue
+                item = cell.Item
+            except Exception:
+                continue
+            if item is None or not isinstance(item, TypeRow):
+                continue
+            if any(item is other for other in seen):
+                continue
+            seen.append(item)
+        for row in self._all_rows:
+            if any(row is other for other in seen):
+                wanted.append(row)
+        return wanted
+
+    def _snapshot_selection(self, spec):
+        """Remember the selected cells before WPF can collapse them.
+
+        Load-bearing: clicking into a cell - a checkbox especially - collapses
+        a drag/shift selection on mouse-down, BEFORE the edit or the click is
+        reported. Sheet Manager hits the same wall and answers it the same
+        way, with a tunnelling preview handler.
+        """
+        self._selection_snapshot = (spec, self._selected_cell_rows(spec))
+        return self._selection_snapshot[1]
+
+    def _snapshot_for(self, spec):
+        snapshot_spec, rows = self._selection_snapshot
+        if snapshot_spec is not spec:
+            return []
+        return rows
+
+    def grid_preview_mouse_down(self, sender, args):
+        del sender
+        resolved = self._resolve_grid_checkbox(
+            getattr(args, "OriginalSource", None))
+        if resolved is None:
+            return
+        checkbox, spec, row = resolved
+        selected = self._selected_cell_rows(spec)
+        if len(selected) < 2 or not any(row is other for other in selected):
+            # One cell: let WPF handle it and the Click handler stage it.
+            return
+        # Several cells in this column are highlighted; WPF is about to throw
+        # that away. Do the whole toggle here and stop the event.
+        self._selection_snapshot = (spec, selected)
+        checked = not bool(checkbox.IsChecked)
+        state.apply_cell_edit(row, spec, checked)
+        state.propagate_cell_edit(selected, spec, checked, skip_row=row)
+        self._refresh_status()
+        args.Handled = True
+
+    def grid_checkbox_click(self, sender, args):
+        del sender
+        resolved = self._resolve_grid_checkbox(
+            getattr(args, "OriginalSource", None))
+        if resolved is None:
+            return
+        checkbox, spec, row = resolved
+        checked = bool(checkbox.IsChecked)
+        state.apply_cell_edit(row, spec, checked)
+        selected = self._snapshot_for(spec)
+        if len(selected) > 1 and any(row is other for other in selected):
+            state.propagate_cell_edit(selected, spec, checked, skip_row=row)
+        self._refresh_status()
+
+    def _resolve_grid_checkbox(self, source):
+        """-> (checkbox, spec, row) for one of our cell checkboxes, or None."""
+        checkbox = source
+        while checkbox is not None and not isinstance(checkbox, CheckBox):
+            if isinstance(checkbox, DataGridCell):
+                return None
+            try:
+                checkbox = VisualTreeHelper.GetParent(checkbox)
+            except Exception:
+                return None
+        if checkbox is None:
+            return None
+        cell = _find_parent_cell(checkbox)
+        if cell is None:
+            return None
+        spec = self._spec_by_column.get(cell.Column)
+        if spec is None:
+            return None
+        row = checkbox.DataContext
+        if not isinstance(row, TypeRow):
+            return None
+        return checkbox, spec, row
 
     # ------------------------------------------------------------- grid
 
@@ -273,10 +476,30 @@ class FamilyTypesWindow(forms.WPFWindow):
         return problems
 
     def _selected_rows(self):
-        selected = self.types_dg.SelectedItems
-        if selected is None:
-            return []
-        return [row for row in selected]
+        """Rows touched by the selection, in grid order.
+
+        The grid selects cells, not rows, so a row counts as selected when any
+        of its cells is - which is more forgiving than the old full-row rule,
+        and still exactly what clicking a row header gives.
+        """
+        rows = []
+        try:
+            cells = list(self.types_dg.SelectedCells)
+        except Exception:
+            cells = []
+        picked = []
+        for cell in cells:
+            try:
+                item = cell.Item
+            except Exception:
+                continue
+            if isinstance(item, TypeRow) \
+                    and not any(item is other for other in picked):
+                picked.append(item)
+        for row in self._all_rows:
+            if any(row is other for other in picked):
+                rows.append(row)
+        return rows
 
     def _alert(self, message, expanded=None, warn_icon=True):
         forms.alert(message, title=TITLE, expanded=expanded,
@@ -308,6 +531,9 @@ class FamilyTypesWindow(forms.WPFWindow):
             return
         if not state.can_edit_cell(item, spec):
             args.Cancel = True
+            return
+        # Taken now, because committing the edit collapses the selection.
+        self._snapshot_selection(spec)
 
     def grid_cell_edit_ending(self, sender, args):
         del sender
@@ -321,6 +547,15 @@ class FamilyTypesWindow(forms.WPFWindow):
         if text is None:
             return
         state.apply_cell_edit(item, spec, text)
+        selected = self._snapshot_for(spec)
+        if len(selected) > 1 and any(item is other for other in selected):
+            changed = state.propagate_cell_edit(
+                selected, spec, text, skip_row=item)
+            if changed:
+                self.status_tb.Text = u"Set {0} cell(s) in {1}.".format(
+                    len(changed) + 1, spec.param_name or spec.header)
+                self._refresh_status()
+                return
         self._refresh_status()
 
     def _add_row_from(self, name, source=None):
@@ -389,6 +624,174 @@ class FamilyTypesWindow(forms.WPFWindow):
         self._refresh_status()
         if refusals:
             self._alert(refusals[0])
+
+    def fill_down_clicked(self, sender, args):
+        """Push the topmost selected cell's value down the rest of the column.
+
+        The same thing typing into one cell of a multi-cell selection does -
+        offered as a button because that gesture is not discoverable.
+        """
+        del sender, args
+        self._commit_pending_edit()
+        spec, rows = self._pick_fill_column()
+        if spec is None:
+            self._alert(
+                "Select two or more cells in one column first, then Fill "
+                "Down copies the top cell's value to the rest.")
+            return
+        source = rows[0]
+        value = getattr(source, spec.attr, u"")
+        changed = state.propagate_cell_edit(rows, spec, value,
+                                            skip_row=source)
+        self._refresh_status()
+        if not changed:
+            self._alert(
+                "Nothing to fill - the other selected cells are read-only "
+                "or already hold that value.", warn_icon=False)
+            return
+        self.status_tb.Text = u"Filled {0} cell(s) in {1}.".format(
+            len(changed), spec.param_name or spec.header)
+
+    def _pick_fill_column(self):
+        """-> (spec, rows) for a selection inside one column, else (None, [])."""
+        try:
+            cells = list(self.types_dg.SelectedCells)
+        except Exception:
+            return None, []
+        specs = []
+        for cell in cells:
+            try:
+                spec = self._spec_by_column.get(cell.Column)
+            except Exception:
+                continue
+            if spec is None or spec.kind == state.KIND_TYPE_NAME:
+                continue
+            if not any(spec is other for other in specs):
+                specs.append(spec)
+        if len(specs) != 1:
+            return None, []
+        rows = self._selected_cell_rows(specs[0])
+        if len(rows) < 2:
+            return None, []
+        return specs[0], rows
+
+    # -------------------------------------------------------- group band
+
+    def grid_scrolled(self, sender, args):
+        del sender
+        # The DataGrid's ScrollViewer is inside its template; the event that
+        # reports the scroll also carries the offset, so there is nothing to
+        # dig out of the visual tree.
+        try:
+            self._scroll_offset = float(args.HorizontalOffset or 0.0)
+        except Exception:
+            pass
+        self._sync_group_band()
+
+    def grid_layout_updated(self, sender, args):
+        del sender, args
+        # This fires on every render pass, so do the cheapest possible check
+        # before walking the columns. Its job is only to catch the first
+        # layout after a rebuild, when column widths are still 0; scrolling
+        # and column drags both come through ScrollChanged instead.
+        try:
+            cheap = (float(self.types_dg.ActualWidth or 0.0),
+                     int(self.types_dg.Columns.Count))
+        except Exception:
+            return
+        if cheap == getattr(self, "_band_cheap_signature", None):
+            return
+        self._band_cheap_signature = cheap
+        self._sync_group_band()
+
+    def _sync_group_band(self):
+        """Draw the TYPE / INSTANCE bands over their columns.
+
+        There is no such thing as a merged DataGrid header, so the band is
+        drawn on a Canvas above the grid and kept in step with the columns by
+        hand.  Every step is guarded and the whole band hides itself on any
+        failure: a band that cannot line up must never take the grid with it.
+        """
+        try:
+            self._draw_group_band()
+        except Exception as err:
+            LOGGER.debug("Group band hidden: %s", err)
+            try:
+                self.groupband_cv.Children.Clear()
+            except Exception:
+                pass
+
+    def _band_segments(self):
+        """-> [(label, left, width)] in grid coordinates, before scrolling."""
+        offset = 0.0
+        spans = []
+        for column in self.types_dg.Columns:
+            spec = self._spec_by_column.get(column)
+            width = float(column.ActualWidth or 0.0)
+            if spec is None or width <= 0.0:
+                offset += width
+                continue
+            if spec.kind == state.KIND_TYPE_NAME:
+                offset += width
+                continue
+            label = GROUP_INSTANCE if spec.is_instance else GROUP_TYPE
+            if spans and spans[-1][0] == label:
+                spans[-1][2] += width
+            else:
+                spans.append([label, offset, width])
+            offset += width
+        return spans
+
+    def _horizontal_offset(self):
+        return float(getattr(self, "_scroll_offset", 0.0) or 0.0)
+
+    def _draw_group_band(self):
+        canvas = self.groupband_cv
+        spans = self._band_segments()
+        # The first column is frozen, so it never scrolls out from under the
+        # band; everything after it moves by the scroll offset.
+        frozen = 0.0
+        for column in self.types_dg.Columns:
+            spec = self._spec_by_column.get(column)
+            if spec is not None and spec.kind == state.KIND_TYPE_NAME:
+                frozen = float(column.ActualWidth or 0.0)
+                break
+        shift = self._horizontal_offset()
+        signature = (tuple(tuple(span) for span in spans), shift, frozen,
+                     float(canvas.ActualWidth or 0.0))
+        if signature == self._band_signature:
+            return
+        self._band_signature = signature
+
+        canvas.Children.Clear()
+        viewport = float(canvas.ActualWidth or 0.0)
+        for label, left, width in spans:
+            start = left - shift
+            end = start + width
+            # Clip to the scrollable region so a band never slides under the
+            # frozen type-name column.
+            start = max(start, frozen)
+            end = min(end, viewport) if viewport > 0 else end
+            if end - start < 2.0:
+                continue
+            border = Border()
+            border.Width = ClrDouble(end - start)
+            border.Height = ClrDouble(float(canvas.Height or 20.0))
+            border.Background = Brushes.WhiteSmoke
+            border.BorderBrush = Brushes.Silver
+            border.BorderThickness = Thickness(1, 1, 1, 0)
+            text = TextBlock()
+            text.Text = label
+            text.FontSize = 11.0
+            text.FontWeight = FontWeights.SemiBold
+            text.Foreground = Brushes.DimGray
+            text.HorizontalAlignment = HorizontalAlignment.Center
+            text.Margin = Thickness(4, 2, 4, 0)
+            text.TextTrimming = TextTrimming.CharacterEllipsis
+            border.Child = text
+            Canvas.SetLeft(border, ClrDouble(start))
+            Canvas.SetTop(border, ClrDouble(0.0))
+            canvas.Children.Add(border)
 
     def hide_empty_clicked(self, sender, args):
         del sender, args
