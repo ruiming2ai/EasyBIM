@@ -4,12 +4,9 @@ import unittest
 from unittest import mock
 
 
-MODULE_PATH = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "lib"
-    / "easybim"
-    / "auto_update.py"
-)
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+MODULE_PATH = REPO_ROOT / "lib" / "easybim" / "auto_update.py"
+COMMAND_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel" / "Auto Update.pushbutton"
 
 
 def _load_module():
@@ -438,6 +435,17 @@ class AutoUpdateTests(unittest.TestCase):
 
         self.assertNotIn("subprocess", source)
         self.assertNotIn("shutil", source)
+
+
+class AutoUpdateBundleTests(unittest.TestCase):
+    def test_command_folder_sits_in_the_misc_tools_panel(self):
+        self.assertTrue(COMMAND_DIR.is_dir())
+
+    def test_the_button_stays_live_with_no_document_open(self):
+        # Updating the extensions touches no document, and the natural moment
+        # to run it is Revit's start page before any model is open.
+        bundle = (COMMAND_DIR / "bundle.yaml").read_text(encoding="utf-8")
+        self.assertIn("context: zero-doc", bundle)
 
 
 if __name__ == "__main__":
