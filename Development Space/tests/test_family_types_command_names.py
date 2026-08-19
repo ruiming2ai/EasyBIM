@@ -109,6 +109,16 @@ def _class_control_attributes(path, class_name):
     return attributes
 
 
+def _function_source(path, name):
+    """Source of one function, so a test can pin what is inside it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    lines = path.read_text(encoding="utf-8").split("\n")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return "\n".join(lines[node.lineno - 1:node.end_lineno])
+    raise AssertionError("no function %s in %s" % (name, path.name))
+
+
 def _module_functions(path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     return set(node.name for node in ast.walk(tree)
@@ -179,7 +189,9 @@ class WindowWiringTests(unittest.TestCase):
         style = source[source.index("_CELL_STYLE"):source.index(
             "def _parse_fragment")]
         for attr in HANDLER_ATTRS:
-            self.assertNotIn('%s="' % attr, style)
+            # Leading space, so IsChecked="{Binding ...}" - which is a
+            # binding, not a handler - does not read as Checked=".
+            self.assertNotIn(' %s="' % attr, style)
 
 
 class DesignDecisionTests(unittest.TestCase):
@@ -254,7 +266,57 @@ class DesignDecisionTests(unittest.TestCase):
         body = _code_without_prose(STATE_MODULE)
         self.assertIn("is_determined_by_formula", body)
         self.assertIn("is_reporting", body)
-        self.assertIn("user_modifiable", body)
+
+    def test_parameter_read_only_flags_never_gate_an_edit_again(self):
+        # THE regression test for the bug that made most of the table
+        # read-only. FamilyParameter inherits IsReadOnly and UserModifiable
+        # from Parameter, where they describe whether Parameter.Set() would
+        # work - but a family parameter is written through FamilyManager.Set,
+        # a different door. Gating on them locked nearly every column.
+        revit_body = _code_without_prose(REVIT_MODULE)
+        self.assertNotIn("IsReadOnly", revit_body)
+        self.assertNotIn("UserModifiable", revit_body)
+        state_body = _code_without_prose(STATE_MODULE)
+        self.assertNotIn("user_modifiable", state_body)
+        self.assertNotIn('info.get("is_read_only")', state_body)
+
+    def test_yes_no_cells_are_checkboxes_bound_to_a_bool(self):
+        state_body = _code_without_prose(STATE_MODULE)
+        self.assertIn("def cell_value", state_body)
+        self.assertIn("def display_text", state_body)
+        ui_body = _code_without_prose(UI_MODULE)
+        self.assertIn("_CHECKBOX_CELL_TEMPLATE", ui_body)
+        self.assertIn("DataGridTemplateColumn", ui_body)
+
+    def test_a_multi_cell_selection_can_be_edited_at_once(self):
+        state_body = _code_without_prose(STATE_MODULE)
+        self.assertIn("def propagate_cell_edit", state_body)
+        ui_body = _code_without_prose(UI_MODULE)
+        self.assertIn("propagate_cell_edit", ui_body)
+        # WPF collapses a multi-selection on mouse-down, before the click or
+        # the edit is reported; without this guard every bulk gesture would
+        # silently touch one cell.
+        self.assertIn("PreviewMouseLeftButtonDownEvent", ui_body)
+        self.assertIn("_snapshot_selection", ui_body)
+
+    def test_the_grid_selects_cells_and_keeps_a_row_handle(self):
+        xaml = MAIN_XAML.read_text(encoding="utf-8")
+        self.assertIn('SelectionUnit="CellOrRowHeader"', xaml)
+        self.assertIn('SelectionMode="Extended"', xaml)
+        # Row headers are how a whole row is still selectable once the grid
+        # selects cells; the type buttons read that selection.
+        self.assertNotIn('RowHeaderWidth="0"', xaml)
+        self.assertIn("SelectedCells", _code_without_prose(UI_MODULE))
+
+    def test_the_group_band_can_never_break_the_grid(self):
+        # There is no such thing as a merged DataGrid header, so the band is
+        # drawn by hand - and hides itself rather than taking the grid down.
+        body = _code_without_prose(UI_MODULE)
+        self.assertIn("def _sync_group_band", body)
+        self.assertIn("groupband_cv", body)
+        sync = _function_source(UI_MODULE, "_sync_group_band")
+        self.assertIn("except Exception", sync)
+        self.assertIn("Children.Clear()", sync)
 
     def test_the_reload_asks_the_user_rather_than_deciding_for_them(self):
         # Load Parameters fixes overwriteParameterValues to False because its
