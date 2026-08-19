@@ -1,0 +1,74 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="My Ribbon - New Dynamo button"
+        Width="620"
+        Height="470"
+        MinWidth="520"
+        MinHeight="420"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="220"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="New Dynamo button" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock x:Name="path_tb" Margin="0,6,0,0" FontSize="13" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*" MinHeight="10"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Button title" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <TextBox x:Name="TitleBox" Grid.Row="0" Grid.Column="1" Height="30" VerticalContentAlignment="Center" TextChanged="title_changed"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="About the graph" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Top" Margin="0,14,12,0"/>
+                <TextBlock x:Name="facts_tb" Grid.Row="1" Grid.Column="1" Margin="0,14,0,0" FontSize="12" Foreground="DimGray" TextWrapping="Wrap"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Icon" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Top" Margin="0,14,12,0"/>
+                <StackPanel Grid.Row="2" Grid.Column="1" Margin="0,14,0,0">
+                    <RadioButton x:Name="default_icon_radio" Content="Dynamo's own look (Revit's Dynamo icon)" IsChecked="True" Checked="icon_choice_changed"/>
+                    <DockPanel Margin="0,8,0,0" LastChildFill="True">
+                        <RadioButton x:Name="custom_icon_radio" DockPanel.Dock="Left" Content="My own PNG:" VerticalAlignment="Center" Checked="icon_choice_changed"/>
+                        <Button x:Name="choose_icon_btn" DockPanel.Dock="Right" Content="Choose PNG..." Width="110" Height="28" Margin="8,0,0,0" Click="choose_icon_click"/>
+                        <TextBlock x:Name="icon_path_tb" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                </StackPanel>
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,14,0,0" FontSize="12" Foreground="DimGray" TextWrapping="Wrap"
+                           Text="The button runs the graph from where the file is, so later edits count the next time you click. Ctrl+click opens the graph in Dynamo instead. The button appears after one pyRevit reload."/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="ok_btn" Content="Add" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="ok_click"/>
+                    <Button Content="Skip this one" Width="110" Height="34" Margin="0,0,8,0" Click="skip_click"/>
+                    <Button Content="Cancel" Width="100" Height="34" IsCancel="True" Click="cancel_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
