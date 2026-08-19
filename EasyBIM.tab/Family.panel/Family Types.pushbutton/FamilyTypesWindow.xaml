@@ -13,6 +13,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -69,6 +70,10 @@
                     Content="Delete Type"
                     ToolTip="Mark the selected type(s) for deletion. Click again to undo."
                     Click="delete_type_clicked"/>
+            <Button x:Name="filldown_b"
+                    Content="Fill Down"
+                    ToolTip="Copy the top selected cell's value to the rest of the selection in that column. Typing into one cell of a multi-cell selection does the same thing."
+                    Click="fill_down_clicked"/>
             <Button x:Name="hideempty_b"
                     Content="Hide Empty Columns"
                     ToolTip="Hide parameters that no type has a value for."
@@ -79,16 +84,22 @@
                     Click="reload_clicked"/>
         </WrapPanel>
 
+        <Canvas x:Name="groupband_cv"
+                Grid.Row="3"
+                Height="20"
+                ClipToBounds="True"
+                Background="Transparent"/>
+
         <DataGrid x:Name="types_dg"
-                  Grid.Row="3"
+                  Grid.Row="4"
                   AutoGenerateColumns="False"
                   SelectionMode="Extended"
-                  SelectionUnit="FullRow"
+                  SelectionUnit="CellOrRowHeader"
                   CanUserAddRows="False"
                   CanUserDeleteRows="False"
                   CanUserSortColumns="False"
                   CanUserReorderColumns="False"
-                  RowHeaderWidth="0"
+                  RowHeaderWidth="22"
                   FrozenColumnCount="1"
                   BorderThickness="1"
                   HorizontalGridLinesBrush="#dedede"
@@ -100,19 +111,19 @@
                   BeginningEdit="grid_beginning_edit"
                   CellEditEnding="grid_cell_edit_ending"/>
 
-        <DockPanel Grid.Row="4" Margin="0,6,0,6">
+        <DockPanel Grid.Row="5" Margin="0,6,0,6">
             <TextBlock x:Name="legend_tb"
                        DockPanel.Dock="Left"
                        Foreground="DimGray"
                        VerticalAlignment="Center"
-                       Text="Grey cells are read-only. Instance parameters are marked (default). Red cells are staged and not yet written."/>
+                       Text="Drag or shift-select cells down a column, then edit one to set them all. Grey cells are read-only. Red cells are staged, not yet written."/>
             <TextBlock x:Name="status_tb"
                        HorizontalAlignment="Right"
                        VerticalAlignment="Center"
                        FontWeight="SemiBold"/>
         </DockPanel>
 
-        <DockPanel Grid.Row="5">
+        <DockPanel Grid.Row="6">
             <DockPanel.Resources>
                 <Style TargetType="{x:Type Button}">
                     <Setter Property="Height" Value="30"/>

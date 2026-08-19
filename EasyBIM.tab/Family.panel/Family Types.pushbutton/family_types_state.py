@@ -46,9 +46,7 @@ DEFAULT_TYPE_LABEL = u"(default)"
 INSTANCE_SUFFIX = u" (default)"
 
 LOCK_FORMULA = "formula"
-LOCK_READ_ONLY = "read-only"
 LOCK_REPORTING = "reporting"
-LOCK_NOT_MODIFIABLE = "not user-modifiable"
 LOCK_ELEMENT_REF = "element reference"
 
 IMPORT_NEW = "New"
@@ -165,15 +163,30 @@ def _column_sort_key(info):
 
 
 def lock_reason_for(info):
-    """Why this parameter cannot be edited, or "" when it can be."""
+    """Why this parameter cannot be edited, or "" when it can be.
+
+    Only three things lock a cell, and each is something that genuinely cannot
+    be written rather than something the API merely calls read-only:
+
+    ``Parameter.IsReadOnly`` and ``Parameter.UserModifiable`` are deliberately
+    NOT consulted. ``FamilyParameter`` derives from ``Parameter`` and inherits
+    both, but they describe whether the base class's ``Parameter.Set()`` would
+    succeed - and a family parameter is never written that way. It is written
+    through ``FamilyManager.Set(familyParameter, value)``, a different door
+    entirely. Gating on them locked most of the table on a real family, which
+    is the bug this replaced. ``families_downgrade_export._parameter_record``
+    reads the same two flags, but only to *describe* a parameter in a
+    manifest; that meaning does not transfer to "can the user edit this".
+
+    Anything not locked here is offered for editing. If Revit still refuses a
+    particular write, ``family_types_revit._set_value`` records the reason and
+    the rest of the transaction still commits, so the cost of being wrong in
+    this direction is one reported line - not a column the user cannot reach.
+    """
     if info.get("is_determined_by_formula"):
         return LOCK_FORMULA
-    if info.get("is_read_only"):
-        return LOCK_READ_ONLY
     if info.get("is_reporting"):
         return LOCK_REPORTING
-    if not info.get("user_modifiable", True):
-        return LOCK_NOT_MODIFIABLE
     # A material is the one ElementId parameter a name in a text cell can
     # resolve: materials are unique by name inside a family document. A family
     # type or image reference has no such lookup, so it is shown and locked.
@@ -291,6 +304,30 @@ def refresh_cell_state(row, column):
                   STATE_DIRTY if current != original else base)
 
 
+def cell_value(column, value):
+    """The value a column stores for ``value``, whatever form it arrives in.
+
+    A yes/no column stores a **bool** so a CheckBox can bind straight to the
+    attribute; every other column stores text. Import hands us text, Revit
+    hands us a bool, and the grid hands us either - this is the one place that
+    decides, so the three never disagree.
+    """
+    if column.kind == KIND_TYPE_NAME:
+        return safe_text(value)
+    if getattr(column, "is_yes_no", False):
+        if isinstance(value, bool):
+            return value
+        return bool(parse_bool_cell(value, fallback=False))
+    return safe_text(value)
+
+
+def display_text(column, value):
+    """What a cell's value reads as - for search, export and messages."""
+    if getattr(column, "is_yes_no", False):
+        return YES_TEXT if value else NO_TEXT
+    return safe_text(value)
+
+
 def populate_row(row, columns, values=None):
     """Set every value attr, its ``original`` snapshot and its ``_state``."""
     values = values or {}
@@ -299,7 +336,10 @@ def populate_row(row, columns, values=None):
             row.original[column.attr] = row.type_name
             row.set_state(column.attr, base_state(row, column))
             continue
-        value = safe_text(values.get(column.key, u""))
+        has_value = column.key in values
+        value = cell_value(column, values.get(column.key, u""))
+        if not has_value and getattr(column, "is_yes_no", False):
+            value = False
         setattr(row, column.attr, value)
         row.original[column.attr] = value
         setattr(row, column.attr + "_state", base_state(row, column))
@@ -310,13 +350,29 @@ def apply_cell_edit(row, column, new_value):
     """Stage one cell edit. Returns True when the edit was accepted."""
     if not can_edit_cell(row, column):
         return False
-    text = safe_text(new_value)
     if column.kind == KIND_TYPE_NAME:
-        row.set_value("type_name", text)
+        row.set_value("type_name", safe_text(new_value))
     else:
-        row.set_value(column.attr, text)
+        row.set_value(column.attr, cell_value(column, new_value))
     refresh_cell_state(row, column)
     return True
+
+
+def propagate_cell_edit(rows, column, new_value, skip_row=None):
+    """Bulk-apply one value down a column. Returns the rows it changed.
+
+    The multi-cell gesture: select cells down a column, set one, and every
+    other selected cell in that column follows. Locked cells refuse
+    individually rather than failing the batch (same shape as
+    ``sheet_manager_state.propagate_edit``).
+    """
+    changed = []
+    for row in rows:
+        if row is skip_row:
+            continue
+        if apply_cell_edit(row, column, new_value):
+            changed.append(row)
+    return changed
 
 
 def mark_row_new(row, columns):
@@ -410,7 +466,8 @@ def row_matches_search(row, columns, text):
     if needle in safe_text(row.type_name).lower():
         return True
     for column in param_columns(columns):
-        if needle in safe_text(getattr(row, column.attr, u"")).lower():
+        value = display_text(column, getattr(row, column.attr, u""))
+        if needle in value.lower():
             return True
         if needle in safe_text(column.header).lower():
             return True
@@ -568,7 +625,8 @@ def build_export_matrix(columns, rows):
             continue
         cells = [safe_text(row.type_name)]
         for column in cols:
-            cells.append(safe_text(getattr(row, column.attr, u"")))
+            cells.append(display_text(column,
+                                      getattr(row, column.attr, u"")))
         data_rows.append(cells)
     return header_cells, metadata_rows, data_rows, lock_flags
 
@@ -712,18 +770,21 @@ def plan_import(export_rows, metadata_rows, rows, columns):
             if position == 0 or column is None or position >= len(cells):
                 continue
             text = safe_text(cells[position])
+            wanted = cell_value(column, text)
             if column.is_read_only:
                 current = u"" if target is None \
-                    else safe_text(getattr(target, column.attr, u""))
+                    else display_text(column,
+                                      getattr(target, column.attr, u""))
                 if text != current:
                     skipped += 1
                 continue
             if target is None:
                 if text:
-                    edits.append((column, text))
+                    edits.append((column, wanted))
                 continue
-            if text != safe_text(getattr(target, column.attr, u"")):
-                edits.append((column, text))
+            if wanted != cell_value(
+                    column, getattr(target, column.attr, u"")):
+                edits.append((column, wanted))
         plan.skipped_locked += skipped
 
         if target is None:

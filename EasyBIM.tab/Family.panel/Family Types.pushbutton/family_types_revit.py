@@ -150,10 +150,12 @@ def parameter_infos(family_doc, manager, family_types):
             "is_yes_no": (storage == state.STORAGE_INTEGER
                           and _is_yes_no(definition, parameter)),
             "is_material": is_material,
-            "is_read_only": bool(_catch(lambda: parameter.IsReadOnly, False)),
+            # IsReadOnly and UserModifiable are deliberately not read here.
+            # FamilyParameter inherits them from Parameter, where they mean
+            # "would Parameter.Set() work" - and a family parameter is written
+            # through FamilyManager.Set instead. Reading them locked most of
+            # the table on a real family. See state.lock_reason_for.
             "is_reporting": bool(_catch(lambda: parameter.IsReporting, False)),
-            "user_modifiable": bool(
-                _catch(lambda: parameter.UserModifiable, True)),
             "is_determined_by_formula": bool(
                 _catch(lambda: parameter.IsDeterminedByFormula, False)),
             "formula": safe_text(_catch(lambda: parameter.Formula)),
@@ -180,7 +182,8 @@ def _cell_text(family_doc, family_type, parameter, column):
         if value is None:
             return u""
         if column.is_yes_no:
-            return state.YES_TEXT if int(value) else state.NO_TEXT
+            # A bool, not text: the grid binds a CheckBox straight to it.
+            return bool(int(value))
         return safe_text(int(value))
     if storage == state.STORAGE_STRING:
         return safe_text(_catch(lambda: family_type.AsString(parameter)))
@@ -294,7 +297,11 @@ def _find_material(family_doc, name):
 
 def _set_value(manager, family_doc, parameter, column, text, result,
                type_name):
-    """Write one cell. Returns True when the value actually changed."""
+    """Write one cell. Returns True when the value actually changed.
+
+    ``text`` is whatever the column stores - text for most columns, a bool for
+    a yes/no one; only the Integer branch below is ever handed the bool.
+    """
     storage = column.storage_type
     if storage == state.STORAGE_DOUBLE:
         if not text.strip():
@@ -318,12 +325,16 @@ def _set_value(manager, family_doc, parameter, column, text, result,
             return False
     if storage == state.STORAGE_INTEGER:
         if column.is_yes_no:
-            parsed = state.parse_bool_cell(text)
-            if parsed is None:
-                result.note(type_name, column.param_name,
-                            u"'{0}' is not Yes or No".format(text))
-                return False
-            value = 1 if parsed else 0
+            # The grid stores a bool; only an import can still hand over text.
+            if isinstance(text, bool):
+                value = 1 if text else 0
+            else:
+                parsed = state.parse_bool_cell(text)
+                if parsed is None:
+                    result.note(type_name, column.param_name,
+                                u"'{0}' is not Yes or No".format(text))
+                    return False
+                value = 1 if parsed else 0
         else:
             if not text.strip():
                 result.note(type_name, column.param_name,

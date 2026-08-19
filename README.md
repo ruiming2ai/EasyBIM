@@ -620,15 +620,30 @@ marker, in the grid and in the export.
 
 ### What can and cannot be edited
 
-Lengths, numbers, text, yes/no and materials are editable. A material is matched
-by name within the family — materials are unique by name there, so a name in a
-cell resolves to exactly one, and a name the family does not have is reported
-rather than silently skipped.
+Lengths, numbers, text and materials are editable, and **yes/no parameters are
+checkboxes**. A material is matched by name within the family — materials are
+unique by name there, so a name in a cell resolves to exactly one, and a name
+the family does not have is reported rather than silently skipped.
 
-Greyed cells are read-only, and the tooltip says which of these it is:
-formula-driven (the formula is in the tooltip), reporting, read-only, not
-user-modifiable, or an element reference other than a material — a family type
-or image reference has no name lookup a text cell could resolve.
+Only three things grey a cell out, and the tooltip says which: formula-driven
+(the formula is in the tooltip), reporting (Revit drives it from geometry), or
+an element reference other than a material — a family type or image reference
+has no name lookup a text cell could resolve. Everything else is offered for
+editing; if Revit still refuses a particular write, it is reported as a line in
+the Apply summary rather than pre-emptively locked.
+
+### Editing many cells at once
+
+Drag or shift-select cells down a column, then edit one of them — every selected
+cell in that column takes the value. The same goes for ticking a checkbox. **Fill
+Down** does it from a button instead: it copies the topmost selected cell's value
+to the rest of the selection.
+
+Row headers down the left select a whole row, which is what the New / Duplicate /
+Delete Type buttons work from.
+
+A band above the column headers marks where the type parameters end and the
+instance parameters begin.
 
 Two things Revit itself will not do: a family can never be left with no types at
 all, so the last surviving type refuses to be deleted; and there is no way to

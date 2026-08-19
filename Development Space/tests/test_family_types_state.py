@@ -118,16 +118,28 @@ class LockingTests(unittest.TestCase):
         self.assertEqual(st.LOCK_ELEMENT_REF,
                          column_for(build_columns(), "Head Family").lock_reason)
 
-    def test_read_only_reporting_and_unmodifiable_all_lock(self):
-        cases = [
-            ({"is_read_only": True}, st.LOCK_READ_ONLY),
-            ({"is_reporting": True}, st.LOCK_REPORTING),
-            ({"user_modifiable": False}, st.LOCK_NOT_MODIFIABLE),
-        ]
-        for extra, expected in cases:
+    def test_a_reporting_parameter_locks(self):
+        # Revit drives it from geometry; a write would be refused.
+        self.assertEqual(st.LOCK_REPORTING, st.lock_reason_for(
+            {"name": "P", "storage_type": "Double", "is_reporting": True}))
+
+    def test_the_parameter_read_only_flags_do_not_lock_anything(self):
+        # The regression test for the bug that made most of the table
+        # read-only. FamilyParameter inherits IsReadOnly and UserModifiable
+        # from Parameter, where they describe whether Parameter.Set() would
+        # work - but a family parameter is written through FamilyManager.Set,
+        # a different door, so neither says anything about editability here.
+        for extra in ({"is_read_only": True},
+                      {"user_modifiable": False},
+                      {"is_read_only": True, "user_modifiable": False}):
             info = {"name": "P", "storage_type": "Double"}
             info.update(extra)
-            self.assertEqual(expected, st.lock_reason_for(info), extra)
+            self.assertEqual(u"", st.lock_reason_for(info), extra)
+
+    def test_an_ordinary_parameter_is_editable(self):
+        columns = build_columns()
+        for name in ("Width", "Comments", "Load Bearing", "Finish"):
+            self.assertEqual(u"", column_for(columns, name).lock_reason, name)
 
     def test_a_locked_cell_refuses_an_edit(self):
         columns, rows = sample_grid()
@@ -267,6 +279,73 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(1, len(st.search_rows(rows, columns, "narrow")))
         self.assertEqual(2, len(st.search_rows(rows, columns, "comments")))
         self.assertEqual(2, len(st.search_rows(rows, columns, "")))
+
+
+class YesNoValueTests(unittest.TestCase):
+    def test_a_yes_no_cell_is_stored_as_a_bool(self):
+        columns, rows = sample_grid()
+        column = column_for(columns, "Load Bearing")
+        self.assertIs(True, getattr(rows[0], column.attr))
+
+    def test_text_from_a_workbook_coerces_to_the_bool(self):
+        columns = build_columns()
+        column = column_for(columns, "Load Bearing")
+        self.assertIs(True, st.cell_value(column, "Yes"))
+        self.assertIs(False, st.cell_value(column, "No"))
+        self.assertIs(True, st.cell_value(column, True))
+
+    def test_a_missing_yes_no_value_is_false_not_blank(self):
+        columns = build_columns()
+        row = make_row(columns, "T")
+        self.assertIs(False, getattr(row, column_for(
+            columns, "Load Bearing").attr))
+
+    def test_a_bool_still_reads_as_yes_or_no(self):
+        column = column_for(build_columns(), "Load Bearing")
+        self.assertEqual(u"Yes", st.display_text(column, True))
+        self.assertEqual(u"No", st.display_text(column, False))
+
+    def test_toggling_a_checkbox_stages_the_cell(self):
+        columns, rows = sample_grid()
+        column = column_for(columns, "Load Bearing")
+        self.assertTrue(st.apply_cell_edit(rows[0], column, False))
+        self.assertIs(False, getattr(rows[0], column.attr))
+        self.assertEqual(st.STATE_DIRTY, rows[0].get_state(column.attr))
+
+
+class PropagateTests(unittest.TestCase):
+    def test_a_value_fills_every_other_row_in_the_column(self):
+        columns, rows = sample_grid()
+        column = column_for(columns, "Comments")
+        changed = st.propagate_cell_edit(rows, column, u"same")
+        self.assertEqual(rows, changed)
+        for row in rows:
+            self.assertEqual(u"same", getattr(row, column.attr))
+
+    def test_the_source_row_is_skipped(self):
+        columns, rows = sample_grid()
+        column = column_for(columns, "Comments")
+        changed = st.propagate_cell_edit(rows, column, u"same",
+                                         skip_row=rows[0])
+        self.assertEqual([rows[1]], changed)
+        self.assertEqual(u"narrow", getattr(rows[0], column.attr))
+
+    def test_a_locked_cell_refuses_without_failing_the_batch(self):
+        columns, rows = sample_grid()
+        extra = make_row(columns, "1200mm")
+        rows.append(extra)
+        formula = column_for(columns, "Volume")
+        self.assertEqual([], st.propagate_cell_edit(rows, formula, u"9"))
+        # ...and an editable column in the same batch still goes through.
+        good = column_for(columns, "Comments")
+        self.assertEqual(3, len(st.propagate_cell_edit(rows, good, u"x")))
+
+    def test_checkboxes_propagate_as_bools(self):
+        columns, rows = sample_grid()
+        column = column_for(columns, "Load Bearing")
+        st.propagate_cell_edit(rows, column, True)
+        for row in rows:
+            self.assertIs(True, getattr(row, column.attr))
 
 
 class YesNoTests(unittest.TestCase):
