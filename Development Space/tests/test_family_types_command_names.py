@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-COMMAND_DIR = (REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel"
+COMMAND_DIR = (REPO_ROOT / "EasyBIM.tab" / "Family.panel"
                / "Family Types.pushbutton")
 SCRIPT_MODULE = COMMAND_DIR / "script.py"
 STATE_MODULE = COMMAND_DIR / "family_types_state.py"
@@ -129,7 +129,7 @@ def _code_without_prose(path):
 
 
 class BundleLayoutTests(unittest.TestCase):
-    def test_the_button_lives_in_misc_tools_with_everything_it_needs(self):
+    def test_the_button_lives_in_the_family_panel_with_everything_it_needs(self):
         self.assertTrue(COMMAND_DIR.is_dir(), COMMAND_DIR)
         for name in EXPECTED_FILES:
             self.assertTrue((COMMAND_DIR / name).is_file(),

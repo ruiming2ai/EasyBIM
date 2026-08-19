@@ -14,7 +14,7 @@ import unittest
 COMMAND_DIR = (
     pathlib.Path(__file__).resolve().parents[2]
     / "EasyBIM.tab"
-    / "Misc Tools.panel"
+    / "My Ribbon.panel"
     / "My Ribbon.pushbutton"
 )
 
