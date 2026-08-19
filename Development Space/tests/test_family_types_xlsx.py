@@ -16,7 +16,7 @@ import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-COMMAND_DIR = (REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel"
+COMMAND_DIR = (REPO_ROOT / "EasyBIM.tab" / "Family.panel"
                / "Family Types.pushbutton")
 LIB_DIR = REPO_ROOT / "lib" / "easybim"
 
