@@ -174,9 +174,26 @@ def _clean_source(raw):
     if kind == "dynamo":
         source["path"] = _text(raw.get("path"))
         source["title"] = _text(raw.get("title")) or source["label"]
-        source["bundle"] = _text(raw.get("bundle"))
+        # a bundle is one plain "<Name>.pushbutton" folder name; anything else
+        # (a path, a drive letter, dots) is dropped so the sync names it afresh
+        bundle = _text(raw.get("bundle"))
+        source["bundle"] = bundle if is_bundle_folder_name(bundle) else ""
         source["icon"] = _text(raw.get("icon")) or None
+        # the bundle is nothing but what My Ribbon wrote, whoever's file the
+        # registry came from
+        source["installed_by_my_ribbon"] = True
     return source
+
+
+def is_bundle_folder_name(name):
+    """One plain ``<Name>.pushbutton`` folder name: no separators, no drive
+    letter, not dots-only.  Shared rule with the host (pinned by a test)."""
+    name = _text(name)
+    if not name or name != name.strip() or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or ":" in name:
+        return False
+    return name.lower().endswith(".pushbutton") and len(name) > len(".pushbutton")
 
 
 def _clean_destination(raw):
@@ -545,8 +562,9 @@ def describe_tab_by_title(title, ribbon=None):
 
 def _collect_live_items(items, path, out, flat):
     for item in _safe_iter(items):
-        type_name = _type_name(item)
-        if type_name in _RIBBON_SKIP_TYPES:
+        chain = _type_chain(item)
+        type_name = chain[0] if chain else ""
+        if any(name in _RIBBON_SKIP_TYPES for name in chain):
             continue
         if _is_stack(item):
             # a row panel is a stack: its buttons sit flat on the panel
@@ -556,11 +574,17 @@ def _collect_live_items(items, path, out, flat):
         title = _item_title(item)
         if not item_id and not title:
             continue
-        if type_name in _RIBBON_GROUP_TYPES:
-            kind = "pulldown"
-        elif type_name in _RIBBON_BUTTON_TYPES:
-            kind = "button"
-        else:
+        # a Revit/add-in subclass of RibbonButton is still a button: the
+        # base types decide, nearest first
+        kind = None
+        for name in chain:
+            if name in _RIBBON_GROUP_TYPES:
+                kind = "pulldown"
+                break
+            if name in _RIBBON_BUTTON_TYPES:
+                kind = "button"
+                break
+        if kind is None:
             kind = "ribbon-" + (type_name.lower() or "item")
         level = {"name": item_id or title, "title": title or item_id}
         entry = {
@@ -585,13 +609,28 @@ def _collect_live_items(items, path, out, flat):
 
 
 def _type_name(obj):
+    chain = _type_chain(obj)
+    return chain[0] if chain else ""
+
+
+def _type_chain(obj):
+    """The object's type name followed by its base type names (CLR), or the
+    Python class and its bases for fakes."""
+    names = []
     get_type = _getattr_safe(obj, "GetType")
     if callable(get_type):
         try:
-            return _safe_text(_getattr_safe(get_type(), "Name"))
+            current = get_type()
+            while current is not None and len(names) < 12:
+                names.append(_safe_text(_getattr_safe(current, "Name")))
+                current = _getattr_safe(current, "BaseType")
+            return [n for n in names if n]
         except Exception:
-            pass
-    return obj.__class__.__name__
+            names = []
+    try:
+        return [klass.__name__ for klass in type(obj).__mro__ if klass is not object]
+    except Exception:
+        return [obj.__class__.__name__]
 
 
 def _item_title(item):
@@ -621,21 +660,33 @@ def _item_tooltip_text(item):
 # -- the native Dynamo look for Dynamo buttons ----------------------------------
 
 
-def find_native_dynamo_button(ribbon):
+def find_native_dynamo_button(ribbon, exclude=None):
     """Revit's own Dynamo button (Manage > Visual Programming > Dynamo), or
-    None when Dynamo is not installed.  Items on My Ribbon's own panels and on
-    the library tab are skipped so a placed Dynamo graph never matches."""
+    None when Dynamo is not installed.  Dynamo's own "Visual Programming"
+    panel wins; a plain title match elsewhere is the fallback.  Items on My
+    Ribbon's own panels, on the library tab, and anything in ``exclude`` (the
+    items just placed) never match, so a graph titled "Dynamo" cannot pass
+    for Revit's button."""
+    exclude = list(exclude or [])
+    fallback = None
     for tab in _safe_iter(getattr(ribbon, "Tabs", [])):
         if _is_ours(tab) or _normalize_label(_tab_title(tab)) == _normalize_label(LIBRARY_TAB):
             continue
         for panel in _tab_panels(tab):
             if _is_ours(_panel_source(panel)):
                 continue
+            on_dynamo_panel = _normalize_label(_panel_title(panel)) == "visual programming"
             for item in _safe_iter(_panel_items(panel)):
-                if _normalize_label(_item_title(item)) == "dynamo" \
-                        or _normalize_label(_id_tail(_getattr_safe(item, "Id"))) == "dynamo":
+                if any(item is skip for skip in exclude):
+                    continue
+                if _normalize_label(_item_title(item)) != "dynamo" \
+                        and _normalize_label(_id_tail(_getattr_safe(item, "Id"))) != "dynamo":
+                    continue
+                if on_dynamo_panel:
                     return item
-    return None
+                if fallback is None:
+                    fallback = item
+    return fallback
 
 
 def _apply_dynamo_icons(ribbon, placements, placed_items, sources, report, logger):
@@ -652,7 +703,7 @@ def _apply_dynamo_icons(ribbon, placements, placed_items, sources, report, logge
             wanted.append((placement, item))
     if not wanted:
         return
-    native = find_native_dynamo_button(ribbon)
+    native = find_native_dynamo_button(ribbon, exclude=list(placed_items.values()))
     if native is None:
         return
     large = _getattr_safe(native, "LargeImage")
@@ -1042,7 +1093,12 @@ def _child_items(item):
             children.extend(list(_safe_iter(get_items())))
         except Exception:
             pass
-    return children
+    # a type that exposes both Items and GetItems() would list each child twice
+    unique = []
+    for child in children:
+        if not any(child is seen for seen in unique):
+            unique.append(child)
+    return unique
 
 
 def _collection_contains(collection, item):

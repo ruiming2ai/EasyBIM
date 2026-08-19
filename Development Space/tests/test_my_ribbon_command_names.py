@@ -330,7 +330,11 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn('facts.get("problem")', _function_source(SCRIPT_MODULE, "_add_dynamo_flow"))
         self.assertIn("LIBRARY_TAB], True", _function_source(SCRIPT_MODULE, "_add_dynamo_flow"))
         self.assertIn("delete_dynamo_bundle", _function_source(HOST_MODULE, "remove_installed_source"))
-        self.assertIn("_is_bundle_folder_name", _function_source(HOST_MODULE, "delete_dynamo_bundle"))
+        self.assertIn("is_bundle_folder_name", _function_source(HOST_MODULE, "dynamo_bundle_dir"))
+        self.assertIn("bundle is None", _function_source(HOST_MODULE, "delete_dynamo_bundle"))
+        # the sync (which may rename bundles and their placements) runs before the save
+        self.assertLess(apply_body.index("sync_dynamo_bundles"), apply_body.index("save_registry"))
+        self.assertIn("is_bundle_folder_name", _function_source(LIB_MODULE, "_clean_source"))
 
     def test_live_ribbon_tabs_are_read_not_parsed(self):
         self.assertIn("describe_tab_by_title", _function_source(SCRIPT_MODULE, "_add_source_flow"))

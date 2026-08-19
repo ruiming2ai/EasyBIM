@@ -19,10 +19,12 @@ from my_ribbon_state import (
     dynamo_facts_from_text,
     dynamo_tooltip,
     extension_dir_name,
+    is_bundle_folder_name,
     normalize_label,
     render_dynamo_bundle_yaml,
     safe_text,
     strip_extension_suffix,
+    unique_dynamo_bundles,
 )
 
 try:
@@ -806,7 +808,12 @@ def ensure_library_extension(root=None):
 
 
 def dynamo_bundle_dir(source, root=None):
-    return os.path.join(library_dynamo_panel_dir(root), safe_text(source.get("bundle")))
+    """The bundle folder - only ever a plain name under the library panel; an
+    invalid name maps to nothing rather than somewhere else on the disk."""
+    name = safe_text(source.get("bundle"))
+    if not is_bundle_folder_name(name):
+        return None
+    return os.path.join(library_dynamo_panel_dir(root), name)
 
 
 def existing_dynamo_bundle_names(root=None):
@@ -838,24 +845,46 @@ def write_dynamo_bundle(source, facts=None, icon_png=None, root=None):
     of the graph - the fallback), ``bundle.yaml`` (title, tooltip and pyRevit's
     ``dynamo_path`` pointing at the original), and the icons (the user's PNG
     for both themes, else the drawn look-alikes).  Returns the bundle folder."""
-    ensure_library_extension(root)
     bundle = dynamo_bundle_dir(source, root)
+    if bundle is None:
+        raise ValueError("Not a bundle folder name: {0!r}".format(source.get("bundle")))
+    ensure_library_extension(root)
     if not os.path.isdir(bundle):
         os.makedirs(bundle)
-    path = safe_text(source.get("path"))
     refresh_dynamo_copy(source, root=root)
-    tooltip = dynamo_tooltip(path, facts or {})
-    yaml_text = render_dynamo_bundle_yaml(source.get("title") or source.get("label"), tooltip, path)
+    yaml_text = desired_dynamo_yaml(source, facts)
     with io.open(os.path.join(bundle, "bundle.yaml"), "w", encoding="utf-8") as handle:
         handle.write(yaml_text if isinstance(yaml_text, type(u"")) else yaml_text.decode("utf-8"))
     write_dynamo_icons(source, icon_png=icon_png, root=root)
     return bundle
 
 
+def desired_dynamo_yaml(source, facts=None):
+    """What bundle.yaml must say for this source now.  ``dynamo_path`` names
+    the original only while it exists; when the graph is gone the key is left
+    out so pyRevit runs the copy (with it set, pyRevit would try the missing
+    file)."""
+    path = safe_text(source.get("path"))
+    graph_exists = bool(path) and os.path.isfile(path)
+    tooltip = dynamo_tooltip(path, facts or {})
+    if not graph_exists:
+        tooltip += "\n(The original file is missing - the last copy runs.)"
+    return render_dynamo_bundle_yaml(source.get("title") or source.get("label"), tooltip,
+                                     path if graph_exists else None)
+
+
+def _read_text(path):
+    try:
+        with io.open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except Exception:
+        return None
+
+
 def write_dynamo_icons(source, icon_png=None, root=None):
     """The user's PNG (both themes) or the shipped look-alikes."""
     bundle = dynamo_bundle_dir(source, root)
-    if not os.path.isdir(bundle):
+    if bundle is None or not os.path.isdir(bundle):
         return False
     icon_png = icon_png or source.get("icon")
     if icon_png and os.path.isfile(icon_png):
@@ -875,7 +904,7 @@ def refresh_dynamo_copy(source, root=None):
     ``"copied"``, ``"current"`` (copy up to date), ``"missing"`` (original
     gone - the last copy stays) or ``"no-bundle"``."""
     bundle = dynamo_bundle_dir(source, root)
-    if not os.path.isdir(bundle):
+    if bundle is None or not os.path.isdir(bundle):
         return "no-bundle"
     path = safe_text(source.get("path"))
     target = os.path.join(bundle, "script.dyn")
@@ -897,11 +926,11 @@ def refresh_dynamo_copy(source, root=None):
 
 def delete_dynamo_bundle(source, root=None):
     """Delete a Dynamo bundle - only ever a folder inside the library panel."""
-    name = safe_text(source.get("bundle"))
     bundle = dynamo_bundle_dir(source, root)
     panel_dir = library_dynamo_panel_dir(root)
-    if not _is_bundle_folder_name(name) or not _is_strictly_inside(bundle, panel_dir):
-        return False, "Refusing to delete {0}: not a My Ribbon Dynamo bundle.".format(bundle)
+    if bundle is None or not _is_strictly_inside(bundle, panel_dir):
+        return False, "Refusing to delete {0}: not a My Ribbon Dynamo bundle.".format(
+            bundle or source.get("bundle"))
     if not os.path.isdir(bundle):
         return True, ""
     try:
@@ -913,45 +942,57 @@ def delete_dynamo_bundle(source, root=None):
     return True, ""
 
 
-def _is_bundle_folder_name(name):
-    """One plain ``<Name>.pushbutton`` folder name - no separators, no dots-only."""
-    name = safe_text(name)
-    if not name or "/" in name or "\\" in name or name in (".", ".."):
-        return False
-    return name.lower().endswith(".pushbutton")
-
-
 def sync_dynamo_bundles(registry, pending_deletes=(), root=None):
-    """Make the library match the registry: write bundles that are missing,
-    refresh stale copies, delete the bundles of removed sources.  Returns a
-    report dict; never raises."""
+    """Make the library match the registry: give every Dynamo source a unique
+    valid bundle name (renaming its placements along), delete the bundles of
+    removed sources, write bundles that are missing, rewrite a bundle.yaml
+    that no longer says what the source says (a located graph, a missing one),
+    refresh stale copies.  Mutates the registry; returns a report dict; never
+    raises."""
     report = {"written": [], "refreshed": [], "current": [], "missing_graph": [],
-              "deleted": [], "errors": []}
+              "deleted": [], "renamed": [], "errors": []}
+    try:
+        for old, new in unique_dynamo_bundles(registry, existing_dynamo_bundle_names(root)):
+            report["renamed"].append((old, new))
+    except Exception as ex:
+        report["errors"].append("bundle names: {0}".format(_short_error(ex)))
     for source in pending_deletes or []:
         if source.get("kind") != "dynamo":
             continue
+        bundle = dynamo_bundle_dir(source, root)
+        existed = bool(bundle) and os.path.isdir(bundle)
         ok, message = delete_dynamo_bundle(source, root=root)
-        if ok:
+        if ok and existed:
             report["deleted"].append(source.get("label") or source.get("title"))
-        else:
+        elif not ok:
             report["errors"].append(message)
     for source in registry.get("sources", []):
         if source.get("kind") != "dynamo":
             continue
         try:
-            if not source.get("bundle"):
-                source["bundle"] = new_dynamo_bundle_name(source.get("title") or source.get("label"), root)
             bundle = dynamo_bundle_dir(source, root)
+            if bundle is None:
+                report["errors"].append("{0}: no bundle name".format(source.get("title")))
+                continue
             graph_exists = bool(source.get("path")) and os.path.isfile(source.get("path"))
-            if not os.path.isdir(bundle) or not os.path.isfile(os.path.join(bundle, "bundle.yaml")):
-                if not graph_exists and not os.path.isfile(os.path.join(bundle, "script.dyn")):
-                    # no graph and no earlier copy: a bundle without script.dyn
-                    # would only make pyRevit log an error
-                    report["missing_graph"].append(source.get("id"))
-                    continue
-                facts = read_dynamo_facts(source.get("path")) if graph_exists else {}
+            has_copy = os.path.isfile(os.path.join(bundle, "script.dyn"))
+            if not graph_exists and not has_copy:
+                # no graph and no earlier copy: a bundle without script.dyn
+                # would only make pyRevit log an error
+                report["missing_graph"].append(source.get("id"))
+                continue
+            facts = read_dynamo_facts(source.get("path")) if graph_exists else {}
+            yaml_path = os.path.join(bundle, "bundle.yaml")
+            if not os.path.isdir(bundle) or not os.path.isfile(yaml_path):
                 write_dynamo_bundle(source, facts=facts, root=root)
                 report["written"].append(source.get("title") or source.get("label"))
+            elif _read_text(yaml_path) != desired_dynamo_yaml(source, facts):
+                # the graph was located elsewhere, renamed, or went missing
+                write_dynamo_bundle(source, facts=facts, root=root)
+                report["written"].append(source.get("title") or source.get("label"))
+            else:
+                if not os.path.isfile(os.path.join(bundle, "icon.png")):
+                    write_dynamo_icons(source, root=root)
             status = refresh_dynamo_copy(source, root=root)
             if status == "copied":
                 report["refreshed"].append(source.get("title") or source.get("label"))
@@ -966,12 +1007,14 @@ def sync_dynamo_bundles(registry, pending_deletes=(), root=None):
 
 
 def dynamo_graph_status(source, root=None):
-    """``"ok"``, ``"missing"`` (original gone) or ``"no-bundle"`` (needs Apply)."""
+    """``"missing"`` (original gone - Locate it), ``"no-bundle"`` (needs Apply)
+    or ``"ok"``."""
     path = safe_text(source.get("path"))
-    if not source.get("bundle") or not os.path.isdir(dynamo_bundle_dir(source, root)):
-        return "no-bundle"
     if not path or not os.path.isfile(path):
         return "missing"
+    bundle = dynamo_bundle_dir(source, root)
+    if bundle is None or not os.path.isdir(bundle):
+        return "no-bundle"
     return "ok"
 
 

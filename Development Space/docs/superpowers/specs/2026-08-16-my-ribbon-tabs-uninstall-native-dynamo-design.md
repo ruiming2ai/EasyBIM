@@ -111,6 +111,25 @@ pyRevit never sees a bundle without `script.dyn`. Remove deletes the bundle
 Export carries the path, title, icon path and bundle name; on another computer
 a path that does not exist shows as missing until Locate fixes it.
 
+## Reviewed before commit
+
+An adversarial read of the round found and fixed: Locate... changed the path
+but the bundle's `dynamo_path` was never rewritten (the sync now rewrites
+`bundle.yaml` whenever it no longer says what the source says, and drops
+`dynamo_path` while the original is missing so the copy really runs); two
+sources could share one bundle folder (every Apply now makes bundle names
+unique across the registry and the disk, renaming placements along, and runs
+before the save); a crafted bundle name from an import file could write
+outside the library (bundle names are validated on read and on write - one
+plain `<Name>.pushbutton`); imported Dynamo sources could never be deleted
+(their bundle is always ours); Show/Hide ▸ Confirm dropped hidden tabs that
+were not on the ribbon at that moment (kept; the library tab is not listed);
+un-ticking one source's tab un-hid a tab another source still hides; a never-
+written bundle counted as deleted and asked for a reload; a placed graph
+titled "Dynamo" could pass for Revit's Dynamo button (Dynamo's own panel wins
+and placed items are excluded); live items are classified by their base types,
+so an add-in subclass of `RibbonButton` is still a button.
+
 ## What was verified by reading, what needs Revit
 
 Read: `DynamoBIMEngine.cs` takes `dynPath` from `ExecEngineConfigs.dynamo_path`

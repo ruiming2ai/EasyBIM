@@ -645,6 +645,64 @@ class DynamoBundleTests(unittest.TestCase):
         self.assertEqual(report["missing_graph"], ["s2"])
         self.assertEqual(report["current"], ["Renumber Sheets"])
 
+    def test_sync_rewrites_yaml_when_the_graph_is_located_elsewhere_or_goes_missing(self):
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        moved = os.path.join(self.tmp, "moved", "Renumber Sheets.dyn")
+        _touch(moved, DYN_JSON)
+        self.source["path"] = moved
+        report = self.host.sync_dynamo_bundles({"sources": [self.source]}, root=self.root)
+        self.assertEqual(report["written"], ["Renumber Sheets"])
+        with open(os.path.join(self._bundle(), "bundle.yaml"), encoding="utf-8") as handle:
+            yaml = handle.read()
+        self.assertIn(__import__("json").dumps(moved), yaml)
+        # unchanged -> nothing rewritten
+        report = self.host.sync_dynamo_bundles({"sources": [self.source]}, root=self.root)
+        self.assertEqual(report["written"], [])
+        self.assertEqual(report["current"], ["Renumber Sheets"])
+        # the original vanishes: the yaml drops dynamo_path so the copy really runs
+        os.remove(moved)
+        report = self.host.sync_dynamo_bundles({"sources": [self.source]}, root=self.root)
+        self.assertEqual(report["written"], ["Renumber Sheets"])
+        self.assertEqual(report["missing_graph"], ["s1"])
+        with open(os.path.join(self._bundle(), "bundle.yaml"), encoding="utf-8") as handle:
+            yaml = handle.read()
+        self.assertNotIn("dynamo_path", yaml)
+        self.assertIn("last copy runs", yaml)
+        self.assertTrue(os.path.isfile(os.path.join(self._bundle(), "script.dyn")))
+        self.assertEqual(self.host.dynamo_graph_status(self.source, root=self.root), "missing")
+
+    def test_sync_makes_bundle_names_unique_and_reports_real_deletes_only(self):
+        other = dict(self.source, id="s2", path=os.path.join(self.tmp, "graphs", "Other.dyn"),
+                     title="Other", label="Other", bundle="Renumber Sheets.pushbutton")  # clash
+        _touch(other["path"], DYN_JSON)
+        registry = {"sources": [self.source, other], "placements": [
+            {"id": "p2", "source": "s2", "dest": "d1", "order": 0, "kind": "button", "title": "Other",
+             "control_id": "x", "path": [{"name": "My Ribbon Library", "title": "My Ribbon Library"},
+                                         {"name": "Dynamo", "title": "Dynamo"},
+                                         {"name": "Renumber Sheets", "title": "Other"}]}]}
+        never_written = dict(self.source, id="s9", bundle="Ghost.pushbutton", title="Ghost", label="Ghost")
+        report = self.host.sync_dynamo_bundles(registry, pending_deletes=[never_written], root=self.root)
+        self.assertEqual(other["bundle"], "Other.pushbutton")
+        self.assertEqual(report["renamed"], [("Renumber Sheets.pushbutton", "Other.pushbutton")])
+        self.assertEqual(registry["placements"][0]["path"][-1]["name"], "Other")
+        self.assertEqual(registry["placements"][0]["control_id"],
+                         "CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Other")
+        self.assertEqual(sorted(report["written"]), ["Other", "Renumber Sheets"])
+        self.assertEqual(report["deleted"], [])   # Ghost never existed: no reload for nothing
+        self.assertEqual(report["errors"], [])
+
+    def test_a_crafted_bundle_name_cannot_write_or_delete_outside_the_library(self):
+        evil = dict(self.source, bundle="C:evil.pushbutton")
+        self.assertIsNone(self.host.dynamo_bundle_dir(evil, root=self.root))
+        with self.assertRaises(ValueError):
+            self.host.write_dynamo_bundle(evil, root=self.root)
+        ok, message = self.host.delete_dynamo_bundle(evil, root=self.root)
+        self.assertFalse(ok)
+        report = self.host.sync_dynamo_bundles({"sources": [evil]}, root=self.root)
+        # the sync renamed it to something valid instead
+        self.assertEqual(evil["bundle"], "Renumber Sheets.pushbutton")
+        self.assertEqual(report["written"], ["Renumber Sheets"])
+
     def test_sync_never_writes_a_bundle_without_a_graph(self):
         ghost = dict(self.source, id="s9", bundle="Ghost.pushbutton", title="Ghost", label="Ghost",
                      path=os.path.join(self.tmp, "nope.dyn"))

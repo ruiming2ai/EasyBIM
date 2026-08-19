@@ -282,6 +282,16 @@ class TabVisibilityStateTests(unittest.TestCase):
         self.assertIn("Y", self.registry["hidden_tabs"])
         self.assertTrue(other["hide_tab"])
 
+    def test_unticking_one_source_keeps_a_tab_another_source_still_hides(self):
+        a = self.state.add_source(self.registry, self._source(hide_tab=True))
+        b = self.state.add_source(self.registry, self._source(url="https://github.com/x/y", ext_name="y",
+                                                              tab_names=["Foo Extra", "Y"], hide_tab=True))
+        self.state.set_hide_tab(self.registry, a["id"], False)
+        self.assertFalse(a["hide_tab"])
+        self.assertEqual(self.registry["hidden_tabs"], ["Foo Extra", "Y"])
+        self.state.set_hide_tab(self.registry, b["id"], False)
+        self.assertEqual(self.registry["hidden_tabs"], [])
+
     def test_removing_a_source_unhides_tabs_it_hid_unless_another_still_does(self):
         a = self.state.add_source(self.registry, self._source(hide_tab=True))
         b = self.state.add_source(self.registry, self._source(url="https://github.com/x/y", ext_name="y",
@@ -311,6 +321,19 @@ class NewSourceKindTests(unittest.TestCase):
         self.assertEqual(self.state.source_key({"kind": "dynamo", "path": "p:\\dyn\\graph.DYN\\"}),
                          "dyn:p:\\dyn\\graph.dyn")
         self.assertEqual(self.state.normalize_path("\\\\server\\share\\x.dyn"), "\\\\server\\share\\x.dyn")
+
+    def test_imported_dynamo_sources_stay_deletable(self):
+        current = {"format": 1, "sources": [], "destinations": [], "placements": [], "hidden_tabs": []}
+        incoming = {"format": 1, "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "title": "G",
+                                              "bundle": "G.pushbutton", "label": "G", "ext_name": "EasyBIM_MyRibbon",
+                                              "tab_names": ["My Ribbon Library"], "installed_by_my_ribbon": False},
+                                             {"id": "s2", "kind": "git", "url": "https://github.com/o/r",
+                                              "ext_name": "r", "label": "o/r", "installed_by_my_ribbon": True}],
+                    "destinations": [], "placements": [], "hidden_tabs": []}
+        plan = self.state.plan_import(current, incoming, "merge")
+        kinds = dict((s["kind"], s) for s in plan["result"]["sources"])
+        self.assertTrue(kinds["dynamo"]["installed_by_my_ribbon"])
+        self.assertFalse(kinds["git"]["installed_by_my_ribbon"])
 
     def test_dynamo_source_keeps_its_fields_and_dedupes_by_path(self):
         one = self.state.add_source(self.registry, {"kind": "dynamo", "path": "P:/a.dyn", "title": "A",
@@ -379,6 +402,47 @@ class DynamoHelperTests(unittest.TestCase):
         custom = self.state.dynamo_facts_from_text(DYN_2X.replace('"IsCustomNode": false', '"IsCustomNode": true'), "x.dyn")
         self.assertTrue(custom["is_custom_node"])
         self.assertIn("custom node", custom["problem"])
+
+    def test_bundle_folder_names_are_one_plain_component(self):
+        ok = self.state.is_bundle_folder_name
+        self.assertTrue(ok("Renumber Sheets.pushbutton"))
+        for bad in ("", "x", ".pushbutton", "a/b.pushbutton", "a\\b.pushbutton", "C:x.pushbutton",
+                    "..", " a.pushbutton", "a.pushbutton "):
+            self.assertFalse(ok(bad), bad)
+
+    def test_unique_bundles_rename_clashes_and_their_placements(self):
+        registry = {"format": 1, "sources": [], "destinations": [{"id": "d1", "tab": "T", "panel": "P"}],
+                    "placements": [], "hidden_tabs": []}
+        a = self.state.add_source(registry, {"kind": "dynamo", "path": "P:/a.dyn", "title": "A",
+                                             "bundle": "A.pushbutton"})
+        b = self.state.add_source(registry, {"kind": "dynamo", "path": "P:/b.dyn", "title": "A",
+                                             "bundle": "A.pushbutton"})          # clash
+        c = self.state.add_source(registry, {"kind": "dynamo", "path": "P:/c.dyn", "title": "C",
+                                             "bundle": "C:evil.pushbutton"})     # invalid
+        d = self.state.add_source(registry, {"kind": "dynamo", "path": "P:/d.dyn", "title": "D",
+                                             "bundle": ""})                      # unnamed
+        for source in (a, b, c, d):
+            self.state.add_placement(registry, source["id"], "d1", {
+                "kind": "button", "title": source["title"], "control_id": "old",
+                "path": [{"name": "My Ribbon Library", "title": "My Ribbon Library"},
+                         {"name": "Dynamo", "title": "Dynamo"},
+                         {"name": self.state.strip_pushbutton(source["bundle"]) or "x", "title": source["title"]}]})
+        renames = self.state.unique_dynamo_bundles(registry, ["D.pushbutton", "a 2.pushbutton"])
+        self.assertEqual(a["bundle"], "A.pushbutton")
+        self.assertEqual(b["bundle"], "A 3.pushbutton")       # A and "a 2" are taken
+        self.assertEqual(c["bundle"], "C.pushbutton")
+        self.assertEqual(d["bundle"], "D 2.pushbutton")       # D.pushbutton is on disk
+        self.assertEqual([old for old, new in renames], ["A.pushbutton", "C:evil.pushbutton", ""])
+        placement_b = self.state.find_placement(registry, b["id"], registry["placements"][1]["path"])
+        self.assertEqual(placement_b["path"][-1]["name"], "A 3")
+        self.assertEqual(placement_b["control_id"], "CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%A 3")
+        # a second pass changes nothing
+        self.assertEqual(self.state.unique_dynamo_bundles(registry, ["D.pushbutton"]), [])
+
+    def test_yaml_without_an_original_leaves_dynamo_path_out(self):
+        yaml = self.state.render_dynamo_bundle_yaml("T", "tip", None)
+        self.assertNotIn("dynamo_path", yaml)
+        self.assertIn("automate: true", yaml)
 
     def test_bundle_name_and_yaml(self):
         self.assertEqual(self.state.dynamo_bundle_name("Renumber: Sheets?", []), "Renumber_ Sheets_.pushbutton")

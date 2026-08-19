@@ -391,7 +391,12 @@ class MyRibbonWindow(forms.WPFWindow):
         window.ShowDialog()
         if window.result is None:
             return
-        state.replace_hidden_tabs(self.working, window.result)
+        # tabs hidden in the registry but not on the ribbon right now (an
+        # add-in that did not load today) were not listed: keep them hidden
+        listed = set(state.normalize_label(t) for t in window.listed_titles)
+        unseen = [n for n in state.hidden_tabs(self.working)
+                  if state.normalize_label(n) not in listed]
+        state.replace_hidden_tabs(self.working, list(window.result) + unseen)
         self._rebuild()
 
     def open_folder_click(self, sender, args):
@@ -1212,12 +1217,16 @@ class TabVisibilityWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.result = None
         self._rows = []
+        self.listed_titles = []
         hidden = set(state.normalize_label(n) for n in (hidden_names or []))
         for tab in ribbon_summary or []:
             title = _safe_text(tab.get("title"))
             if not title or tab.get("is_contextual"):
                 continue
             key = state.normalize_label(title)
+            if key == state.normalize_label(state.DYNAMO_LIBRARY_TAB):
+                # My Ribbon's own library tab is never meant to be seen
+                continue
             checkbox = Windows.Controls.CheckBox()
             checkbox.Margin = Windows.Thickness(8, 5, 8, 5)
             checkbox.Tag = title
@@ -1248,6 +1257,7 @@ class TabVisibilityWindow(forms.WPFWindow):
             checkbox.Click += self.row_click
             self.TabListPanel.Children.Add(checkbox)
             self._rows.append(checkbox)
+            self.listed_titles.append(title)
         if not self._rows:
             _add_empty_text(self.TabListPanel, "No tabs were found on the ribbon.")
         self._is_ready = True

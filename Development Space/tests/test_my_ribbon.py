@@ -283,6 +283,19 @@ class MyRibbonRegistryTests(unittest.TestCase):
         self.assertEqual(registry["sources"][1]["kind"], "ribbon")
         self.assertEqual(registry["sources"][2]["kind"], "git")
 
+    def test_dynamo_sources_are_always_ours_and_bad_bundle_names_are_dropped(self):
+        registry = self.mod.read_registry({
+            "format": 1,
+            "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "bundle": "C:evil.pushbutton",
+                         "installed_by_my_ribbon": False},
+                        {"id": "s2", "kind": "dynamo", "path": "P:/h.dyn", "bundle": "H.pushbutton"}]})
+        self.assertEqual(registry["sources"][0]["bundle"], "")
+        self.assertTrue(registry["sources"][0]["installed_by_my_ribbon"])
+        self.assertEqual(registry["sources"][1]["bundle"], "H.pushbutton")
+        self.assertTrue(self.mod.is_bundle_folder_name("A b.pushbutton"))
+        for bad in ("a/b.pushbutton", "C:x.pushbutton", "..", "x"):
+            self.assertFalse(self.mod.is_bundle_folder_name(bad), bad)
+
     def test_catalogue_sources_keep_their_catalogue_name(self):
         registry = self.mod.read_registry({
             "format": 1,
@@ -632,11 +645,39 @@ class LiveTabTests(unittest.TestCase):
         self.assertTrue(summary["Manage"]["is_contextual"])
         self.assertFalse(summary["Foo"]["is_contextual"])
 
-    def test_find_native_dynamo_button_skips_dynamo_player_and_our_panels(self):
+    def test_find_native_dynamo_button_skips_dynamo_player_our_panels_and_placed_graphs(self):
         native = self.mod.find_native_dynamo_button(self.ribbon)
         self.assertIs(native, self.parts["native_dynamo"])
+        # a placed graph titled "Dynamo" on an ordinary panel is never mistaken for Revit's button
+        impostor = _FakeItem("CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Dynamo", "Dynamo")
+        self.parts["easybim_misc"].Source.Items.insert(0, impostor)
+        self.assertIs(self.mod.find_native_dynamo_button(self.ribbon, exclude=[impostor]),
+                      self.parts["native_dynamo"])
+        # Dynamo's own panel wins over a title match elsewhere even without the exclusion
+        self.assertIs(self.mod.find_native_dynamo_button(self.ribbon), self.parts["native_dynamo"])
         self.parts["manage_tab"].Panels.clear()
-        self.assertIsNone(self.mod.find_native_dynamo_button(self.ribbon))
+        self.assertIsNone(self.mod.find_native_dynamo_button(self.ribbon, exclude=[impostor]))
+
+    def test_live_items_are_classified_by_their_base_types_and_children_are_not_doubled(self):
+        class RibbonButton(_FakeItem):
+            pass
+
+        class MySpecialButton(RibbonButton):
+            pass
+
+        class RibbonSplitButton(_FakeItem):
+            def GetItems(self):
+                return list(self.Items)
+
+        special = MySpecialButton("ID_SPECIAL", "Special")
+        child = RibbonButton("ID_CHILD", "Child")
+        split = RibbonSplitButton("ID_SPLIT", "Split", children=[child])
+        panel = _FakePanel("T%P", "P")
+        panel.Source.Items.extend([special, split])
+        described = self.mod.describe_ribbon_tab(_FakeTab("T", panels=[panel]))
+        by_name = dict((b["name"], b) for b in described["buttons"])
+        self.assertEqual(by_name["ID_SPECIAL"]["kind"], "button")
+        self.assertEqual([c["name"] for c in by_name["ID_SPLIT"]["children"]], ["ID_CHILD"])
 
 
 class DynamoIconTests(unittest.TestCase):

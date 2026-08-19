@@ -348,6 +348,8 @@ def add_source(registry, source):
             or entry["ext_name"]
         if not safe_text(source.get("label")):
             entry["label"] = entry["title"]
+        # the bundle is nothing but what My Ribbon writes
+        entry["installed_by_my_ribbon"] = True
     registry.setdefault("sources", []).append(entry)
     if entry.get("hide_tab"):
         set_tabs_hidden(registry, entry.get("tab_names") or [], True)
@@ -377,12 +379,27 @@ def remove_source(registry, source_id):
 
 
 def set_hide_tab(registry, source_id, value):
-    """The per-source shortcut: hide/show every tab the source owns."""
+    """The per-source shortcut: hide/show every tab the source owns.  Showing
+    leaves alone a tab that another source still hides."""
     source = find_source_by_id(registry, source_id)
-    if source is not None:
-        source["hide_tab"] = bool(value)
-        set_tabs_hidden(registry, source.get("tab_names") or [], bool(value))
+    if source is None:
+        return None
+    source["hide_tab"] = bool(value)
+    names = list(source.get("tab_names") or [])
+    if not value:
+        names = [n for n in names if not _hidden_by_another(registry, source_id, n)]
+    set_tabs_hidden(registry, names, bool(value))
     return source
+
+
+def _hidden_by_another(registry, source_id, tab_name):
+    key = normalize_label(tab_name)
+    for other in registry.get("sources", []):
+        if other.get("id") == source_id or not other.get("hide_tab"):
+            continue
+        if any(normalize_label(n) == key for n in other.get("tab_names") or []):
+            return True
+    return False
 
 
 # -- tab visibility -----------------------------------------------------------
@@ -717,8 +734,8 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
         # download made here may set installed_by_my_ribbon (it decides what
         # Remove is allowed to delete), and a colleague's registered root path
         # means nothing on this machine.
-        entry = add_source(result, dict(source, id=None, installed_by_my_ribbon=False,
-                                        extra_root=None))
+        entry = add_source(result, dict(source, id=None, extra_root=None,
+                                        installed_by_my_ribbon=(source.get("kind") == "dynamo")))
         source_map[source.get("id")] = entry["id"]
         plan["sources_added"].append(entry.get("label") or entry.get("ext_name"))
     for source in result.get("sources", []):
@@ -897,16 +914,73 @@ def render_dynamo_bundle_yaml(title, tooltip, dynamo_path):
     """The bundle.yaml of a Dynamo button.  Strings are JSON-quoted, which
     YAML reads as double-quoted scalars, so quotes, backslashes and newlines
     in titles or paths are safe.  ``dynamo_path`` is pyRevit's own key: the
-    Dynamo engine runs that file instead of the bundle's script.dyn."""
+    Dynamo engine runs that file instead of the bundle's script.dyn - so it is
+    left out when the original is gone, and the copy really does run."""
     lines = [
         "title: " + json.dumps(safe_text(title), ensure_ascii=False),
         "tooltip: " + json.dumps(safe_text(tooltip), ensure_ascii=False),
         "author: \"EasyBIM My Ribbon\"",
         "engine:",
         "  automate: true",
-        "  dynamo_path: " + json.dumps(safe_text(dynamo_path), ensure_ascii=False),
     ]
+    if safe_text(dynamo_path):
+        lines.append("  dynamo_path: " + json.dumps(safe_text(dynamo_path), ensure_ascii=False))
     return "\n".join(lines) + "\n"
+
+
+def is_bundle_folder_name(name):
+    """One plain ``<Name>.pushbutton`` folder name: no separators, no drive
+    letter, not dots-only (same rule as ``easybim.my_ribbon``)."""
+    name = safe_text(name)
+    if not name or name != name.strip() or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or ":" in name:
+        return False
+    return name.lower().endswith(".pushbutton") and len(name) > len(".pushbutton")
+
+
+def unique_dynamo_bundles(registry, disk_names):
+    """Give every Dynamo source a valid bundle name that no other source of
+    the registry uses (an earlier source keeps its name; a clash, an invalid
+    or missing name gets a fresh one that is also not on disk).  A renamed
+    source has its placements' last path level and control id rewritten, since
+    they embed the folder name.  Returns the list of (old, new) renames."""
+    renames = []
+    seen = set()
+    disk = set(normalize_label(n) for n in (disk_names or []))
+    for source in registry.get("sources", []):
+        if source.get("kind") != "dynamo":
+            continue
+        name = safe_text(source.get("bundle"))
+        if is_bundle_folder_name(name) and normalize_label(name) not in seen:
+            seen.add(normalize_label(name))
+            continue
+        fresh = dynamo_bundle_name(source.get("title") or source.get("label"), list(seen | disk))
+        seen.add(normalize_label(fresh))
+        new_stem = strip_pushbutton(fresh)
+        source["bundle"] = fresh
+        for placement in registry.get("placements", []):
+            if placement.get("source") != source.get("id"):
+                continue
+            path = placement.get("path") or []
+            if path:
+                path[-1]["name"] = new_stem
+            placement["control_id"] = "CustomCtrl_%CustomCtrl_%{0}%{1}%{2}".format(
+                DYNAMO_LIBRARY_TAB, DYNAMO_LIBRARY_PANEL, new_stem)
+        renames.append((name, fresh))
+    return renames
+
+
+def strip_pushbutton(bundle_name):
+    text = safe_text(bundle_name)
+    if text.lower().endswith(".pushbutton"):
+        return text[:-len(".pushbutton")]
+    return text
+
+
+#: Mirrors ``easybim.my_ribbon.LIBRARY_TAB`` / ``LIBRARY_DYNAMO_PANEL`` (pinned by a test).
+DYNAMO_LIBRARY_TAB = "My Ribbon Library"
+DYNAMO_LIBRARY_PANEL = "Dynamo"
 
 
 def dynamo_tooltip(path, facts=None):

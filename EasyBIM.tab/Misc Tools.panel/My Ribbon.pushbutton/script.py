@@ -430,9 +430,7 @@ def _add_source_flow(working, pending_deletes):
                             title=__title__)
                 continue
             entry = state.add_source(working, {
-                "kind": "ribbon", "ext_name": tab.get("title"),
-                "label": "{0} ({1})".format(tab.get("title"), "add-in" if tab.get("id", "").startswith(
-                    "CustomCtrl") else "Revit"),
+                "kind": "ribbon", "ext_name": tab.get("title"), "label": "{0} (tab)".format(tab.get("title")),
                 "tab_names": [tab.get("title")], "installed_by_my_ribbon": False, "hide_tab": False})
             _pick_and_place(working, entry, described)
             return None
@@ -651,15 +649,17 @@ def _import(working):
 def _apply(working, pending_deletes):
     """Save, delete what was removed, apply, and offer a reload when needed.
     Returns ``(saved, notice, report, reloading)``."""
+    problems = []
+    # Dynamo buttons are bundles My Ribbon writes itself: name them uniquely
+    # (this can rename a source's bundle and placements, so it runs before the
+    # save), create what is missing, rewrite what changed, refresh stale
+    # copies, delete the bundles of removed graphs
+    sync = host.sync_dynamo_bundles(working, pending_deletes)
+    problems.extend(sync.get("errors", []))
     ok, error = my_ribbon.save_registry(working)
     if not ok:
         forms.alert("The settings could not be saved:\n{0}".format(error), title=__title__)
         return None, None, None, False
-    problems = []
-    # Dynamo buttons are bundles My Ribbon writes itself: create what is
-    # missing, refresh stale copies, delete the bundles of removed graphs
-    sync = host.sync_dynamo_bundles(working, pending_deletes)
-    problems.extend(sync.get("errors", []))
     still_used = set(s.get("extra_root") for s in working.get("sources", []) if s.get("extra_root"))
     for source in pending_deletes:
         if source.get("kind") == "dynamo":
