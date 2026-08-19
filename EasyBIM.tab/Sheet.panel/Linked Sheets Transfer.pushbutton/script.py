@@ -17,17 +17,17 @@ if SCRIPT_DIR not in sys.path:
 
 from easybim.compat import exception_text
 
-import linked_sheets_copy_revit as lsc_revit
-import linked_sheets_copy_state as state
-import linked_sheets_copy_ui as ui
+import linked_sheets_transfer_revit as lst_revit
+import linked_sheets_transfer_state as state
+import linked_sheets_transfer_ui as ui
 
 
-__title__ = "Linked Sheets\nCopy"
+__title__ = "Linked Sheets\nTransfer"
 
 LOGGER = script.get_logger()
-TITLE = "Linked Sheets Copy"
+TITLE = "Linked Sheets Transfer"
 
-MAIN_XAML = "LinkedSheetsCopyWindow.xaml"
+MAIN_XAML = "LinkedSheetsTransferWindow.xaml"
 CONFIRM_XAML = "ConfirmWindow.xaml"
 REPORT_XAML = "ReportWindow.xaml"
 
@@ -48,33 +48,33 @@ class LinkData(object):
 class Context(object):
     """Everything the window needs from Revit, injected as plain callables.
 
-    Keeps ``linked_sheets_copy_ui`` free of Revit imports, which is what lets
+    Keeps ``linked_sheets_transfer_ui`` free of Revit imports, which is what lets
     the test suite parse and check the window classes off Revit.
     """
 
     def __init__(self, doc, uidoc):
         self.doc = doc
         self.uidoc = uidoc
-        self.link_options = lsc_revit.collect_link_options(doc)
+        self.link_options = lst_revit.collect_link_options(doc)
 
     # -- reading ----------------------------------------------------------
 
     def load_link(self, option):
-        sheet_rows = lsc_revit.collect_linked_sheets(option.doc)
-        linked_levels = lsc_revit.collect_linked_levels(option.doc,
+        sheet_rows = lst_revit.collect_linked_sheets(option.doc)
+        linked_levels = lst_revit.collect_linked_levels(option.doc,
                                                         option.transform)
-        host_levels = lsc_revit.collect_host_levels(self.doc)
-        monitored = lsc_revit.monitored_level_pairs(self.doc,
+        host_levels = lst_revit.collect_host_levels(self.doc)
+        monitored = lst_revit.monitored_level_pairs(self.doc,
                                                     option.instance_key)
         level_rows = state.resolve_level_map(linked_levels, host_levels,
                                              monitored)
         return LinkData(option, sheet_rows, linked_levels, host_levels,
-                        level_rows, lsc_revit.collect_host_facts(self.doc))
+                        level_rows, lst_revit.collect_host_facts(self.doc))
 
     def refresh_host_facts(self, link_data):
         """A run creates sheets and views, so the collision set has moved on."""
         if link_data is not None:
-            link_data.host_facts = lsc_revit.collect_host_facts(self.doc)
+            link_data.host_facts = lst_revit.collect_host_facts(self.doc)
         return link_data
 
     # -- running ----------------------------------------------------------
@@ -96,18 +96,18 @@ class Context(object):
         if not self._confirm(plan, options):
             return None
 
-        level_lookup = lsc_revit.build_level_lookup(
+        level_lookup = lst_revit.build_level_lookup(
             window.level_rows, link_data.linked_levels, link_data.host_levels)
 
         with forms.ProgressBar(
-                title="Linked Sheets Copy: {value} of {max_value}",
+                title="Linked Sheets Transfer: {value} of {max_value}",
                 cancellable=True) as progress_bar:
 
             def _tick(index, total):
                 progress_bar.update_progress(index + 1, max(total, 1))
                 return not progress_bar.cancelled
 
-            summary = lsc_revit.run_copy(self.doc, window.link_option, plan,
+            summary = lst_revit.run_copy(self.doc, window.link_option, plan,
                                          level_lookup, progress=_tick)
 
         self._report(summary)
@@ -134,12 +134,12 @@ class Context(object):
         # Opened only now: Revit refuses to change the active view while a
         # modal dialog is open.
         if report.open_requested and summary.first_sheet_key is not None:
-            lsc_revit.open_sheet_by_key(self.uidoc, summary.first_sheet_key)
+            lst_revit.open_sheet_by_key(self.uidoc, summary.first_sheet_key)
 
 
 def _run():
     doc = revit.doc
-    blocker = lsc_revit.document_blocker(doc)
+    blocker = lst_revit.document_blocker(doc)
     if blocker:
         forms.alert(blocker, title=TITLE)
         return
@@ -161,13 +161,13 @@ def _run():
             title=TITLE)
         return
 
-    window = ui.LinkedSheetsCopyWindow(MAIN_XAML, context)
+    window = ui.LinkedSheetsTransferWindow(MAIN_XAML, context)
     window.ShowDialog()
 
 
 try:
     _run()
 except Exception as run_error:
-    LOGGER.exception("Linked Sheets Copy failed.")
-    forms.alert("Linked Sheets Copy failed:\n{0}".format(
+    LOGGER.exception("Linked Sheets Transfer failed.")
+    forms.alert("Linked Sheets Transfer failed:\n{0}".format(
         exception_text(run_error)), title=TITLE)

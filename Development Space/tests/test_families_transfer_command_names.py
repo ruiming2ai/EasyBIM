@@ -1,6 +1,6 @@
 """Bundle, XAML and IronPython wiring checks for Families Transfer.
 
-Modelled on ``test_linked_sheets_copy_command_names.py``.  These catch the
+Modelled on ``test_linked_sheets_transfer_command_names.py``.  These catch the
 drift a syntax check cannot: a handler renamed in the code but not the XAML, a
 control renamed in the XAML but not the code, a Python-3-only construct
 IronPython 2.7 will refuse at runtime, and the design decisions that would be
@@ -36,8 +36,8 @@ SELECTION_REVIT_MODULE = LIB_DIR / "family_selection_revit.py"
 SELECTION_MODULES = (SELECTION_STATE_MODULE, SELECTION_UI_MODULE,
                      SELECTION_REVIT_MODULE)
 LINKED_SHEETS_REVIT = (REPO_ROOT / "EasyBIM.tab" / "Sheet.panel"
-                       / "Linked Sheets Copy.pushbutton"
-                       / "linked_sheets_copy_revit.py")
+                       / "Linked Sheets Transfer.pushbutton"
+                       / "linked_sheets_transfer_revit.py")
 
 X_NAME = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
 HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",

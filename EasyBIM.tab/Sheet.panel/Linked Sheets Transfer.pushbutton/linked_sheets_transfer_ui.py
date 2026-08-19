@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""WPF windows for Linked Sheets Copy.
+"""WPF windows for Linked Sheets Transfer.
 
 Free of Revit API imports: everything Revit-facing arrives through the
 callables the launcher hangs on the context object, which is what lets the
@@ -18,7 +18,7 @@ from pyrevit import forms
 from pyrevit import script
 from pyrevit.framework import Windows
 
-import linked_sheets_copy_state as state
+import linked_sheets_transfer_state as state
 
 
 LOGGER = script.get_logger()
@@ -189,7 +189,7 @@ class LevelGridRow(_Row):
 # the main window
 # ---------------------------------------------------------------------------
 
-class LinkedSheetsCopyWindow(forms.WPFWindow):
+class LinkedSheetsTransferWindow(forms.WPFWindow):
     """Pick a link, pick sheets, map the levels, press Copy Sheets."""
 
     def __init__(self, xaml_file_name, context):
@@ -415,9 +415,9 @@ class LinkedSheetsCopyWindow(forms.WPFWindow):
         try:
             self.context.run(self)
         except Exception as run_error:
-            LOGGER.exception("Linked Sheets Copy failed.")
-            forms.alert(u"Linked Sheets Copy failed:\n{0}".format(run_error),
-                        title=u"Linked Sheets Copy")
+            LOGGER.exception("Linked Sheets Transfer failed.")
+            forms.alert(u"Linked Sheets Transfer failed:\n{0}".format(run_error),
+                        title=u"Linked Sheets Transfer")
         self._reload_after_run()
 
     def _reload_after_run(self):
