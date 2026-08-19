@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Every Revit API call Linked Sheets Copy makes.
+"""Every Revit API call Linked Sheets Transfer makes.
 
 Two rules govern this module.
 
@@ -28,7 +28,7 @@ from easybim.compat import element_id_factory
 from easybim.compat import exception_text
 from easybim.compat import safe_text
 
-import linked_sheets_copy_state as state
+import linked_sheets_transfer_state as state
 
 
 EPS = 1e-9
@@ -96,13 +96,13 @@ def document_blocker(doc):
     if doc is None:
         return u"Open a project first."
     if getattr(doc, "IsFamilyDocument", False):
-        return u"Linked Sheets Copy works on a project, not a family."
+        return u"Linked Sheets Transfer works on a project, not a family."
     if getattr(doc, "IsLinked", False):
         return u"The active document is a link and cannot be written to."
     if getattr(doc, "IsReadOnly", False):
         return u"This model is read-only."
     if not links_api_available():
-        return (u"Linked Sheets Copy needs Revit 2024 or newer: setting a "
+        return (u"Linked Sheets Transfer needs Revit 2024 or newer: setting a "
                 u"link to 'By Linked View' has no API before that.")
     return u""
 
@@ -1759,7 +1759,7 @@ def run_copy(doc, link_option, plan, level_lookup, progress=None):
     link_doc = link_option.doc
     transform = link_option.transform
 
-    group = DB.TransactionGroup(doc, u"Linked Sheets Copy")
+    group = DB.TransactionGroup(doc, u"Linked Sheets Transfer")
     group.Start()
     try:
         total = max(len(plan.sheets_to_create), 1)
@@ -1801,13 +1801,13 @@ def _run_one_sheet(doc, link_doc, link_option, sheet_item, plan, options,
     take twenty good sheets down with it.
     """
     sheet_group = DB.TransactionGroup(
-        doc, u"Linked Sheets Copy - {0}".format(sheet_item.number))
+        doc, u"Linked Sheets Transfer - {0}".format(sheet_item.number))
     sheet_group.Start()
     transaction = None
     snapshot = summary.snapshot()
     try:
         transaction = _start_transaction(
-            doc, u"Linked Sheets Copy - {0}".format(sheet_item.number))
+            doc, u"Linked Sheets Transfer - {0}".format(sheet_item.number))
         _build_sheet(doc, link_doc, link_option, sheet_item, plan, options,
                      transform, level_lookup, summary)
         transaction.Commit()
