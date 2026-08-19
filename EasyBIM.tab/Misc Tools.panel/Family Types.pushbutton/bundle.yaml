@@ -1,0 +1,17 @@
+title: |-
+  Family
+  Types
+tooltip: |-
+  Every family type and every parameter value in one editable table.
+
+  What Revit's type catalogue puts in a .txt file, shown as a grid: one row
+  per family type, one column per parameter, instance parameters marked
+  (default) because their per-type value is what a new instance is placed
+  with. Add, rename and delete types; export the table to Excel and import it
+  back. Nothing is written until you click Apply Changes.
+
+  Runs on the family in the editor, or pick a loaded family from a project -
+  the family is then reloaded, asking the same overwrite question a manual
+  load asks.
+author: Ruiming Liu
+min_revit_version: 2021

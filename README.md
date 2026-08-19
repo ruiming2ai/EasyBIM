@@ -588,3 +588,77 @@ points it at the file again. A new graph needs one pyRevit reload, which Apply
 offers. Custom nodes (`.dyf`) and Python-node scripts (`.py`) are refused with a
 plain message; the window tells you whether the graph is Dynamo 1.x or 2.x,
 which Python engines its nodes use and which packages it depends on.
+
+## Family Types (Misc Tools)
+
+What Revit's type catalogue puts in a `.txt` file, shown as a table you can
+actually read: one row per family type, one column per parameter, every value
+editable in place. Add, rename and delete types; export the table to Excel and
+import it back.
+
+It runs two ways. In the **family editor** the open `.rfa` *is* the family, so
+edits go straight into it and you save the file as usual. In a **project** you
+pick a loaded family from a category-grouped list, the tool opens it behind the
+window, and **Apply Changes** writes the edits and reloads the family — asking
+the same *Family Already Exists* question a manual load asks, with the same
+overwrite / overwrite-parameter-values / cancel choice and the same **"Do this
+for all loading families"** tick. A family you already had open in the editor is
+never closed behind your back.
+
+Nothing reaches the family until **Apply Changes**. Until then every edit is
+staged: changed cells go red, types marked for deletion grey out, and the status
+line counts what is waiting. **Cancel** asks before dropping staged work, and
+**Reload From Family** re-reads the family and discards it deliberately.
+
+### Instance parameters are in the table
+
+They belong there. A family type stores a value for *every* family parameter,
+instance ones included — that per-type value is the default a new instance is
+placed with, and it can differ from type to type, which is exactly what Revit's
+own Family Types dialog means by "(default)". The column headers carry the same
+marker, in the grid and in the export.
+
+### What can and cannot be edited
+
+Lengths, numbers, text, yes/no and materials are editable. A material is matched
+by name within the family — materials are unique by name there, so a name in a
+cell resolves to exactly one, and a name the family does not have is reported
+rather than silently skipped.
+
+Greyed cells are read-only, and the tooltip says which of these it is:
+formula-driven (the formula is in the tooltip), reporting, read-only, not
+user-modifiable, or an element reference other than a material — a family type
+or image reference has no name lookup a text cell could resolve.
+
+Two things Revit itself will not do: a family can never be left with no types at
+all, so the last surviving type refuses to be deleted; and there is no way to
+unset a family parameter, so clearing a cell is reported as skipped instead of
+being written as a zero.
+
+A family with no named types keeps its values on its current type, which has no
+name. That shows as a single `(default)` row — values editable, rename and
+delete off.
+
+### The Excel round trip
+
+**Export to Excel** writes the table as it currently looks, staged edits
+included. Each parameter's header cell carries two lines: the parameter name,
+then its **ElementId**. That id is what an import matches on, and it is on the
+visible sheet rather than buried in metadata so you can see what matched.
+Instance-parameter headers are blue, read-only headers red with their cells
+locked and greyed, and the sheet is protected so only the editable cells accept
+typing.
+
+**Import from Excel** opens a **Specify Types** window, the same question a type
+catalogue asks when a family is loaded. Every type in the file is listed with
+what the file would do to it — **New**, **Changed**, **Unchanged** — and you
+tick the ones to take. A **Delete family types that are not in the file**
+checkbox, off by default, handles the other direction. What you tick is *staged*
+into the grid as red cells; Apply is still the only thing that writes.
+
+Types match by name, the way a type catalogue matches them, so a name the family
+does not have becomes a new type — rename a type in the table rather than in the
+spreadsheet, where a rename and a new type are indistinguishable. Parameters
+match by that ElementId first and fall back to the name, so renaming a parameter
+in Revit does not break a workbook exported before the rename. A column matching
+nothing is reported, never guessed at.
