@@ -8,7 +8,7 @@ import unittest
 COMMAND_DIR = (
     pathlib.Path(__file__).resolve().parents[2]
     / "EasyBIM.tab"
-    / "My Ribbon.panel"
+    / "General.panel"
     / "My Ribbon.pushbutton"
 )
 STATE_MODULE_PATH = COMMAND_DIR / "my_ribbon_state.py"
