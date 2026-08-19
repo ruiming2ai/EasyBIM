@@ -131,13 +131,26 @@ def _build_ribbon():
         _FakeItem("CustomCtrl_%CustomCtrl_%pyRevit%pyRevit%Reload", "Reload"))
     pyrevit_tab = _FakeTab("pyRevit", panels=[pyrevit_panel])
 
-    ribbon = _FakeRibbon([easybim_tab, foo_tab, pyrevit_tab])
+    modify_panel = _FakePanel("Modify%Select", "Select")
+    modify_panel.Source.Items.append(_FakeItem("ID_BUTTON_SELECT", "Modify"))
+    modify_tab = _FakeTab("Modify", panels=[modify_panel])
+
+    native_dynamo = _FakeItem("CustomCtrl_%Manage%Visual Programming%Dynamo", "Dynamo")
+    native_dynamo.Image = "dynamo-small-image"
+    native_dynamo.LargeImage = "dynamo-large-image"
+    manage_panel = _FakePanel("CustomCtrl_%Manage%Visual Programming", "Visual Programming")
+    manage_panel.Source.Items.extend([
+        native_dynamo, _FakeItem("CustomCtrl_%Manage%Visual Programming%Dynamo Player", "Dynamo Player")])
+    manage_tab = _FakeTab("Manage", panels=[manage_panel])
+
+    ribbon = _FakeRibbon([easybim_tab, foo_tab, pyrevit_tab, modify_tab, manage_tab])
     return ribbon, {
         "easybim_tab": easybim_tab, "easybim_misc": easybim_misc,
         "foo_tab": foo_tab, "bar_panel": bar_panel, "baz": baz, "tools": tools,
         "child_a": child_a, "child_b": child_b, "stack": stack,
         "stacked_one": stacked_one, "stacked_two": stacked_two,
-        "pyrevit_tab": pyrevit_tab,
+        "pyrevit_tab": pyrevit_tab, "modify_tab": modify_tab, "manage_tab": manage_tab,
+        "native_dynamo": native_dynamo,
     }
 
 
@@ -240,6 +253,48 @@ class MyRibbonRegistryTests(unittest.TestCase):
         self.assertEqual(placement["path"][2], {"name": "B", "title": "Bee"})
         self.assertEqual(placement["title"], "Bee")
         self.assertEqual(placement["kind"], "button")
+
+    def test_hidden_tabs_are_read_and_unioned_with_legacy_hide_tab(self):
+        registry = self.mod.read_registry({
+            "format": 1,
+            "hidden_tabs": ["Systems", "foo", 3, ""],
+            "sources": [{"id": "s1", "kind": "git", "ext_name": "Foo", "tab_names": ["Foo", "Foo Extra"],
+                         "hide_tab": True},
+                        {"id": "s2", "kind": "installed", "ext_name": "Bar", "tab_names": ["Bar"],
+                         "hide_tab": False}]})
+        self.assertEqual(registry["hidden_tabs"], ["Systems", "foo", "3", "Foo Extra"])
+        old_file = self.mod.read_registry({"format": 1, "sources": [
+            {"id": "s1", "kind": "git", "ext_name": "Foo", "tab_names": ["Foo"], "hide_tab": True}]})
+        self.assertEqual(old_file["hidden_tabs"], ["Foo"])
+        self.assertEqual(self.mod.empty_registry()["hidden_tabs"], [])
+        self.assertTrue(self.mod.registry_has_work({"placements": [], "hidden_tabs": ["X"]}))
+
+    def test_dynamo_and_ribbon_sources_keep_their_fields(self):
+        registry = self.mod.read_registry({
+            "format": 1,
+            "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "title": "Graph", "bundle": "Graph.pushbutton",
+                         "icon": "", "ext_name": "EasyBIM_MyRibbon", "tab_names": ["My Ribbon Library"],
+                         "installed_by_my_ribbon": True},
+                        {"id": "s2", "kind": "ribbon", "ext_name": "Annotate", "tab_names": ["Annotate"]},
+                        {"id": "s3", "kind": "weird"}]})
+        dyn = registry["sources"][0]
+        self.assertEqual((dyn["kind"], dyn["path"], dyn["title"], dyn["bundle"], dyn["icon"]),
+                         ("dynamo", "P:/g.dyn", "Graph", "Graph.pushbutton", None))
+        self.assertEqual(registry["sources"][1]["kind"], "ribbon")
+        self.assertEqual(registry["sources"][2]["kind"], "git")
+
+    def test_dynamo_sources_are_always_ours_and_bad_bundle_names_are_dropped(self):
+        registry = self.mod.read_registry({
+            "format": 1,
+            "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "bundle": "C:evil.pushbutton",
+                         "installed_by_my_ribbon": False},
+                        {"id": "s2", "kind": "dynamo", "path": "P:/h.dyn", "bundle": "H.pushbutton"}]})
+        self.assertEqual(registry["sources"][0]["bundle"], "")
+        self.assertTrue(registry["sources"][0]["installed_by_my_ribbon"])
+        self.assertEqual(registry["sources"][1]["bundle"], "H.pushbutton")
+        self.assertTrue(self.mod.is_bundle_folder_name("A b.pushbutton"))
+        for bad in ("a/b.pushbutton", "C:x.pushbutton", "..", "x"):
+            self.assertFalse(self.mod.is_bundle_folder_name(bad), bad)
 
     def test_catalogue_sources_keep_their_catalogue_name(self):
         registry = self.mod.read_registry({
@@ -352,12 +407,29 @@ class MyRibbonApplyTests(unittest.TestCase):
         bar_items = list(self.parts["bar_panel"].Source.Items)
         self.assertEqual(bar_items, [self.parts["baz"], self.parts["tools"], self.parts["stack"]])
 
-    def test_hides_requested_tabs_but_never_pyrevit_or_a_destination(self):
-        report = self._apply()
+    def test_hides_requested_tabs_including_pyrevit_but_never_easybim_modify_or_a_destination(self):
+        registry = _registry()
+        registry["hidden_tabs"] = ["Modify", "EasyBIM"]
+        report = self._apply(registry)
         self.assertFalse(self.parts["foo_tab"].IsVisible)
-        self.assertTrue(self.parts["pyrevit_tab"].IsVisible)
+        self.assertFalse(self.parts["pyrevit_tab"].IsVisible)
         self.assertTrue(self.parts["easybim_tab"].IsVisible)
-        self.assertEqual(report["hidden_tabs"], ["Foo"])
+        self.assertTrue(self.parts["modify_tab"].IsVisible)
+        self.assertEqual(sorted(report["hidden_tabs"]), ["Foo", "pyRevit"])
+
+    def test_hidden_tabs_list_hides_tabs_no_source_owns(self):
+        registry = _registry()
+        registry["sources"] = []
+        registry["placements"] = []
+        registry["hidden_tabs"] = ["Manage"]
+        report = self._apply(registry)
+        self.assertFalse(self.parts["manage_tab"].IsVisible)
+        self.assertEqual(report["hidden_tabs"], ["Manage"])
+        # and un-hiding is taking it out of the list
+        registry["hidden_tabs"] = []
+        report = self._apply(registry)
+        self.assertTrue(self.parts["manage_tab"].IsVisible)
+        self.assertEqual(report["shown_tabs"], ["Manage"])
 
     def test_hiding_a_destination_tab_is_refused(self):
         registry = _registry()
@@ -395,7 +467,8 @@ class MyRibbonApplyTests(unittest.TestCase):
         self.assertIsNone(self._find_tab("MEP Kit"))
         self.assertIsNone(self._find_panel(self.parts["easybim_tab"], "My Tools"))
         self.assertTrue(self.parts["foo_tab"].IsVisible)
-        self.assertEqual(report["shown_tabs"], ["Foo"])
+        self.assertTrue(self.parts["pyrevit_tab"].IsVisible)
+        self.assertEqual(sorted(report["shown_tabs"]), ["Foo", "pyRevit"])
         self.assertEqual(list(self.parts["bar_panel"].Source.Items),
                          [self.parts["baz"], self.parts["tools"], self.parts["stack"]])
 
@@ -459,7 +532,7 @@ class MyRibbonApplyTests(unittest.TestCase):
                                       ribbon=self.ribbon, autodesk_windows=self.aw)
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["added"], [])
-        self.assertEqual(len(self.ribbon.Tabs), 3)
+        self.assertEqual(len(self.ribbon.Tabs), 5)
 
     def test_apply_saved_reads_the_file(self):
         tmp = tempfile.mkdtemp()
@@ -482,6 +555,182 @@ class MyRibbonApplyTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
 
 
+class LiveTabTests(unittest.TestCase):
+    def setUp(self):
+        self.mod = _load_module()
+        self.ribbon, self.parts = _build_ribbon()
+
+    def _live_tab(self):
+        # AdWindows class names decide what can be shared, so the fakes carry them
+        class RibbonButton(_FakeItem):
+            pass
+
+        class RibbonSplitButton(_FakeItem):
+            pass
+
+        class RibbonGallery(_FakeItem):
+            pass
+
+        class RibbonSeparator(_FakeItem):
+            pass
+
+        wall = RibbonButton("ID_OBJECTS_WALL", "Wall")
+        arch = RibbonButton("ID_OBJECTS_WALL_ARCH", "Wall: Architectural")
+        struct = RibbonButton("ID_OBJECTS_WALL_STRUCT", "Wall: Structural")
+        wall_split = RibbonSplitButton("ID_SPLIT_WALL", "Wall", children=[arch, struct])
+        one = RibbonButton("ID_ONE", "One")
+        two = RibbonButton("ID_TWO", "")
+        stack = RibbonRowPanel([one, two])
+        gallery = RibbonGallery("ID_GALLERY", "Gallery")
+        separator = RibbonSeparator("", "")
+        panel = _FakePanel("Architecture%Build", "Build")
+        panel.Source.Items.extend([wall, wall_split, stack, gallery, separator])
+        empty = _FakePanel("Architecture%Empty", "Empty")
+        return _FakeTab("Architecture", panels=[panel, empty]), {
+            "wall": wall, "arch": arch, "struct": struct, "wall_split": wall_split,
+            "one": one, "two": two, "gallery": gallery}
+
+    def test_describe_ribbon_tab_reads_items_groups_stacks_and_refuses_galleries(self):
+        tab, parts = self._live_tab()
+        described = self.mod.describe_ribbon_tab(tab)
+        self.assertEqual(described["name"], "Architecture")
+        self.assertEqual(described["tab_names"], ["Architecture"])
+        self.assertTrue(described["live"])
+        self.assertEqual([b["name"] for b in described["buttons"]],
+                         ["ID_OBJECTS_WALL", "ID_SPLIT_WALL", "ID_OBJECTS_WALL_ARCH",
+                          "ID_OBJECTS_WALL_STRUCT", "ID_ONE", "ID_TWO", "ID_GALLERY"])
+        by_name = dict((b["name"], b) for b in described["buttons"])
+        wall = by_name["ID_OBJECTS_WALL"]
+        self.assertEqual(wall["kind"], "button")
+        self.assertEqual(wall["control_id"], "ID_OBJECTS_WALL")
+        self.assertEqual(wall["path"], [{"name": "Architecture", "title": "Architecture"},
+                                        {"name": "Architecture%Build", "title": "Build"},
+                                        {"name": "ID_OBJECTS_WALL", "title": "Wall"}])
+        self.assertEqual(by_name["ID_SPLIT_WALL"]["kind"], "pulldown")
+        self.assertEqual([c["title"] for c in by_name["ID_SPLIT_WALL"]["children"]],
+                         ["Wall: Architectural", "Wall: Structural"])
+        self.assertEqual(by_name["ID_OBJECTS_WALL_ARCH"]["path"][-2]["name"], "ID_SPLIT_WALL")
+        # stack children sit flat on the panel; an untitled button shows its Id tail
+        self.assertEqual(by_name["ID_ONE"]["path"][1]["title"], "Build")
+        self.assertEqual(by_name["ID_TWO"]["title"], "ID_TWO")
+        # the gallery is refused by kind, the separator is skipped, the empty panel dropped
+        self.assertEqual(by_name["ID_GALLERY"]["kind"], "ribbon-ribbongallery")
+        panels = described["tabs"][0]["panels"]
+        self.assertEqual([p["title"] for p in panels], ["Build"])
+        self.assertEqual([i["name"] for i in panels[0]["items"]],
+                         ["ID_OBJECTS_WALL", "ID_SPLIT_WALL", "ID_ONE", "ID_TWO", "ID_GALLERY"])
+
+    def test_describe_ribbon_tab_carries_live_images_and_tooltips(self):
+        class RibbonToolTip(object):
+            Title = "Wall"
+            Content = "Draw a wall"
+        tab, parts = self._live_tab()
+        parts["wall"].Image = "small"
+        parts["wall"].LargeImage = "large"
+        parts["wall"].ToolTip = RibbonToolTip()
+        parts["arch"].ToolTip = "  plain   text "
+        described = self.mod.describe_ribbon_tab(tab)
+        by_name = dict((b["name"], b) for b in described["buttons"])
+        self.assertEqual(by_name["ID_OBJECTS_WALL"]["icon_source"], "small")
+        self.assertIsNone(by_name["ID_OBJECTS_WALL"]["icon"])
+        self.assertEqual(by_name["ID_OBJECTS_WALL"]["tooltip"], "Wall - Draw a wall")
+        self.assertEqual(by_name["ID_OBJECTS_WALL_ARCH"]["tooltip"], "plain text")
+
+    def test_list_ribbon_reports_visibility_and_contextual_flags(self):
+        self.parts["foo_tab"].IsVisible = False
+        self.parts["manage_tab"].IsContextualTab = True
+        summary = dict((t["title"], t) for t in self.mod.list_ribbon(self.ribbon))
+        self.assertFalse(summary["Foo"]["is_visible"])
+        self.assertTrue(summary["EasyBIM"]["is_visible"])
+        self.assertTrue(summary["Manage"]["is_contextual"])
+        self.assertFalse(summary["Foo"]["is_contextual"])
+
+    def test_find_native_dynamo_button_skips_dynamo_player_our_panels_and_placed_graphs(self):
+        native = self.mod.find_native_dynamo_button(self.ribbon)
+        self.assertIs(native, self.parts["native_dynamo"])
+        # a placed graph titled "Dynamo" on an ordinary panel is never mistaken for Revit's button
+        impostor = _FakeItem("CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Dynamo", "Dynamo")
+        self.parts["easybim_misc"].Source.Items.insert(0, impostor)
+        self.assertIs(self.mod.find_native_dynamo_button(self.ribbon, exclude=[impostor]),
+                      self.parts["native_dynamo"])
+        # Dynamo's own panel wins over a title match elsewhere even without the exclusion
+        self.assertIs(self.mod.find_native_dynamo_button(self.ribbon), self.parts["native_dynamo"])
+        self.parts["manage_tab"].Panels.clear()
+        self.assertIsNone(self.mod.find_native_dynamo_button(self.ribbon, exclude=[impostor]))
+
+    def test_live_items_are_classified_by_their_base_types_and_children_are_not_doubled(self):
+        class RibbonButton(_FakeItem):
+            pass
+
+        class MySpecialButton(RibbonButton):
+            pass
+
+        class RibbonSplitButton(_FakeItem):
+            def GetItems(self):
+                return list(self.Items)
+
+        special = MySpecialButton("ID_SPECIAL", "Special")
+        child = RibbonButton("ID_CHILD", "Child")
+        split = RibbonSplitButton("ID_SPLIT", "Split", children=[child])
+        panel = _FakePanel("T%P", "P")
+        panel.Source.Items.extend([special, split])
+        described = self.mod.describe_ribbon_tab(_FakeTab("T", panels=[panel]))
+        by_name = dict((b["name"], b) for b in described["buttons"])
+        self.assertEqual(by_name["ID_SPECIAL"]["kind"], "button")
+        self.assertEqual([c["name"] for c in by_name["ID_SPLIT"]["children"]], ["ID_CHILD"])
+
+
+class DynamoIconTests(unittest.TestCase):
+    def setUp(self):
+        self.mod = _load_module()
+        self.env = _EnvStore(self.mod)
+        self.ribbon, self.parts = _build_ribbon()
+        library_panel = _FakePanel("CustomCtrl_%My Ribbon Library%Dynamo", "Dynamo")
+        self.graph = _FakeItem("CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Renumber", "Renumber")
+        self.graph.Image = "drawn-small"
+        self.graph.LargeImage = "drawn-large"
+        self.custom = _FakeItem("CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Custom", "Custom")
+        self.custom.LargeImage = "user-large"
+        library_panel.Source.Items.extend([self.graph, self.custom])
+        self.ribbon.Tabs.append(_FakeTab("My Ribbon Library", panels=[library_panel]))
+
+    def _registry(self, icon=None):
+        return self.mod.read_registry({
+            "format": 1,
+            "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/r.dyn", "title": "Renumber",
+                         "bundle": "Renumber.pushbutton", "icon": None, "ext_name": "EasyBIM_MyRibbon",
+                         "tab_names": ["My Ribbon Library"], "installed_by_my_ribbon": True},
+                        {"id": "s2", "kind": "dynamo", "path": "P:/c.dyn", "title": "Custom",
+                         "bundle": "Custom.pushbutton", "icon": "C:/me.png", "ext_name": "EasyBIM_MyRibbon",
+                         "tab_names": ["My Ribbon Library"], "installed_by_my_ribbon": True}],
+            "destinations": [{"id": "d1", "tab": "EasyBIM", "panel": "My Tools"}],
+            "placements": [
+                {"id": "p1", "source": "s1", "dest": "d1", "order": 0, "kind": "button", "title": "Renumber",
+                 "control_id": "CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Renumber",
+                 "path": [_level("My Ribbon Library"), _level("Dynamo"), _level("Renumber")]},
+                {"id": "p2", "source": "s2", "dest": "d1", "order": 1, "kind": "button", "title": "Custom",
+                 "control_id": "CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Custom",
+                 "path": [_level("My Ribbon Library"), _level("Dynamo"), _level("Custom")]}],
+            "hidden_tabs": ["My Ribbon Library"]})
+
+    def test_default_dynamo_buttons_get_revits_own_images_custom_ones_keep_theirs(self):
+        report = self.mod.apply(self._registry(), ribbon=self.ribbon, autodesk_windows=_FakeAutodeskWindows())
+        self.assertEqual(report["added"], ["p1", "p2"])
+        self.assertEqual(self.graph.LargeImage, "dynamo-large-image")
+        self.assertEqual(self.graph.Image, "dynamo-small-image")
+        self.assertEqual(self.custom.LargeImage, "user-large")
+        self.assertEqual(report["dynamo_icons"], ["p1"])
+        # the library tab is hidden as requested
+        library = [t for t in self.ribbon.Tabs if t.Title == "My Ribbon Library"][0]
+        self.assertFalse(library.IsVisible)
+
+    def test_without_dynamo_installed_the_drawn_icon_stays(self):
+        self.parts["manage_tab"].Panels.clear()
+        report = self.mod.apply(self._registry(), ribbon=self.ribbon, autodesk_windows=_FakeAutodeskWindows())
+        self.assertEqual(self.graph.LargeImage, "drawn-large")
+        self.assertEqual(report["dynamo_icons"], [])
+
+
 class ListRibbonTests(unittest.TestCase):
     def test_lists_tabs_and_panels_and_marks_ours(self):
         mod = _load_module()
@@ -491,13 +740,13 @@ class ListRibbonTests(unittest.TestCase):
         mod.apply(registry, ribbon=ribbon, autodesk_windows=_FakeAutodeskWindows())
         summary = mod.list_ribbon(ribbon)
         titles = [t["title"] for t in summary]
-        self.assertEqual(titles, ["EasyBIM", "Foo", "pyRevit", "MEP Kit"])
+        self.assertEqual(titles, ["EasyBIM", "Foo", "pyRevit", "Modify", "Manage", "MEP Kit"])
         easybim = summary[0]
         self.assertEqual([p["title"] for p in easybim["panels"]], ["Misc Tools", "My Tools"])
         self.assertFalse(easybim["is_ours"])
         self.assertFalse(easybim["panels"][0]["is_ours"])
         self.assertTrue(easybim["panels"][1]["is_ours"])
-        self.assertTrue(summary[3]["is_ours"])
+        self.assertTrue(summary[5]["is_ours"])
         self.assertEqual(mod.list_ribbon(None) if mod._get_default_ribbon() is None else [], [])
 
 

@@ -389,7 +389,7 @@ class ParserAdapterTests(unittest.TestCase):
         self.assertTrue(described["has_startup"])
         self.assertTrue(described["has_hooks"])
         titles = [b["title"] for b in described["buttons"]]
-        self.assertEqual(titles, ["Baz\nTool", "A", "H", "Tools", "One", "Secret", "Corner"])
+        self.assertEqual(titles, ["Baz\nTool", "Tools", "A", "H", "One", "Secret", "Corner"])
         by_name = dict((b["name"], b) for b in described["buttons"])
         baz = by_name["Baz"]
         self.assertEqual(baz["kind"], "button")
@@ -546,6 +546,183 @@ class RemovalAndRootsTests(unittest.TestCase):
         self.assertEqual(self.host.find_installed_extension_dir("foo", [self.ext_root]),
                          os.path.join(self.ext_root, "Foo.extension"))
         self.assertIsNone(self.host.find_installed_extension_dir("Bar", [self.ext_root]))
+
+
+DYN_JSON = u'{"Uuid": "1", "IsCustomNode": false, "Name": "Graph", "Nodes": [' \
+           u'{"ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels", "Engine": "CPython3"}], ' \
+           u'"NodeLibraryDependencies": [{"Name": "Rhythm", "Version": "1"}]}'
+
+
+class DynamoBundleTests(unittest.TestCase):
+    def setUp(self):
+        self.host = _load_host()
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "Extensions")
+        os.makedirs(self.root)
+        self.graph = os.path.join(self.tmp, "graphs", "Renumber Sheets.dyn")
+        _touch(self.graph, DYN_JSON)
+        self.source = {"id": "s1", "kind": "dynamo", "path": self.graph, "title": "Renumber Sheets",
+                       "label": "Renumber Sheets", "bundle": "Renumber Sheets.pushbutton", "icon": None,
+                       "ext_name": "EasyBIM_MyRibbon", "tab_names": ["My Ribbon Library"],
+                       "installed_by_my_ribbon": True}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _bundle(self):
+        return os.path.join(self.root, "EasyBIM_MyRibbon.extension", "My Ribbon Library.tab",
+                            "Dynamo.panel", "Renumber Sheets.pushbutton")
+
+    def test_write_bundle_lays_out_a_pyrevit_dynamo_button(self):
+        facts = self.host.read_dynamo_facts(self.graph)
+        self.assertEqual(facts["format"], "2.x")
+        self.assertEqual(facts["python_engines"], ["CPython3"])
+        bundle = self.host.write_dynamo_bundle(self.source, facts=facts, root=self.root)
+        self.assertEqual(bundle, self._bundle())
+        self.assertTrue(os.path.isfile(os.path.join(bundle, "script.dyn")))
+        with open(os.path.join(bundle, "script.dyn"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), DYN_JSON)
+        with open(os.path.join(bundle, "bundle.yaml"), encoding="utf-8") as handle:
+            yaml = handle.read()
+        self.assertIn('title: "Renumber Sheets"', yaml)
+        self.assertIn("dynamo_path: " + __import__("json").dumps(self.graph), yaml)
+        self.assertIn("automate: true", yaml)
+        self.assertIn("Contains Python nodes (CPython3)", yaml)
+        self.assertIn("Uses packages: Rhythm", yaml)
+        for name in ("icon.png", "icon.dark.png"):
+            self.assertTrue(os.path.isfile(os.path.join(bundle, name)), name)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "EasyBIM_MyRibbon.extension", "README.txt")))
+        self.assertEqual(self.host.dynamo_graph_status(self.source, root=self.root), "ok")
+
+    def test_a_custom_icon_replaces_both_themes(self):
+        icon = os.path.join(self.tmp, "me.png")
+        _touch(icon, "PNGDATA")
+        self.host.write_dynamo_bundle(self.source, icon_png=icon, root=self.root)
+        for name in ("icon.png", "icon.dark.png"):
+            with open(os.path.join(self._bundle(), name)) as handle:
+                self.assertEqual(handle.read(), "PNGDATA")
+
+    def test_copy_refreshes_only_when_the_original_is_newer_and_survives_its_loss(self):
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "current")
+        _touch(self.graph, DYN_JSON + " ")
+        future = os.path.getmtime(self.graph) + 10
+        os.utime(self.graph, (future, future))
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "copied")
+        with open(os.path.join(self._bundle(), "script.dyn"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), DYN_JSON + " ")
+        os.remove(self.graph)
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "missing")
+        self.assertTrue(os.path.isfile(os.path.join(self._bundle(), "script.dyn")))
+        self.assertEqual(self.host.dynamo_graph_status(self.source, root=self.root), "missing")
+
+    def test_delete_bundle_only_inside_the_library(self):
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        ok, message = self.host.delete_dynamo_bundle(dict(self.source, bundle=""), root=self.root)
+        self.assertFalse(ok)
+        ok, message = self.host.delete_dynamo_bundle(dict(self.source, bundle="..\\..\\x"), root=self.root)
+        self.assertFalse(ok)
+        self.assertTrue(os.path.isdir(self._bundle()))
+        ok, message = self.host.remove_installed_source(self.source, allowed_roots=[self.root])
+        self.assertTrue(ok, message)
+        self.assertFalse(os.path.isdir(self._bundle()))
+
+    def test_sync_writes_missing_bundles_refreshes_and_deletes(self):
+        unnamed = dict(self.source, id="s2", bundle="", path=os.path.join(self.tmp, "graphs", "Other.dyn"),
+                       title="Other", label="Other")
+        _touch(unnamed["path"], DYN_JSON)
+        gone = dict(self.source, id="s3", bundle="Gone.pushbutton", title="Gone", label="Gone")
+        self.host.write_dynamo_bundle(gone, root=self.root)
+        registry = {"sources": [self.source, unnamed]}
+        report = self.host.sync_dynamo_bundles(registry, pending_deletes=[gone], root=self.root)
+        self.assertEqual(sorted(report["written"]), ["Other", "Renumber Sheets"])
+        self.assertEqual(unnamed["bundle"], "Other.pushbutton")
+        self.assertEqual(report["deleted"], ["Gone"])
+        self.assertFalse(os.path.isdir(os.path.join(os.path.dirname(self._bundle()), "Gone.pushbutton")))
+        self.assertEqual(report["errors"], [])
+        os.remove(unnamed["path"])
+        report = self.host.sync_dynamo_bundles(registry, root=self.root)
+        self.assertEqual(report["missing_graph"], ["s2"])
+        self.assertEqual(report["current"], ["Renumber Sheets"])
+
+    def test_sync_rewrites_yaml_when_the_graph_is_located_elsewhere_or_goes_missing(self):
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        moved = os.path.join(self.tmp, "moved", "Renumber Sheets.dyn")
+        _touch(moved, DYN_JSON)
+        self.source["path"] = moved
+        report = self.host.sync_dynamo_bundles({"sources": [self.source]}, root=self.root)
+        self.assertEqual(report["written"], ["Renumber Sheets"])
+        with open(os.path.join(self._bundle(), "bundle.yaml"), encoding="utf-8") as handle:
+            yaml = handle.read()
+        self.assertIn(__import__("json").dumps(moved), yaml)
+        # unchanged -> nothing rewritten
+        report = self.host.sync_dynamo_bundles({"sources": [self.source]}, root=self.root)
+        self.assertEqual(report["written"], [])
+        self.assertEqual(report["current"], ["Renumber Sheets"])
+        # the original vanishes: the yaml drops dynamo_path so the copy really runs
+        os.remove(moved)
+        report = self.host.sync_dynamo_bundles({"sources": [self.source]}, root=self.root)
+        self.assertEqual(report["written"], ["Renumber Sheets"])
+        self.assertEqual(report["missing_graph"], ["s1"])
+        with open(os.path.join(self._bundle(), "bundle.yaml"), encoding="utf-8") as handle:
+            yaml = handle.read()
+        self.assertNotIn("dynamo_path", yaml)
+        self.assertIn("last copy runs", yaml)
+        self.assertTrue(os.path.isfile(os.path.join(self._bundle(), "script.dyn")))
+        self.assertEqual(self.host.dynamo_graph_status(self.source, root=self.root), "missing")
+
+    def test_sync_makes_bundle_names_unique_and_reports_real_deletes_only(self):
+        other = dict(self.source, id="s2", path=os.path.join(self.tmp, "graphs", "Other.dyn"),
+                     title="Other", label="Other", bundle="Renumber Sheets.pushbutton")  # clash
+        _touch(other["path"], DYN_JSON)
+        registry = {"sources": [self.source, other], "placements": [
+            {"id": "p2", "source": "s2", "dest": "d1", "order": 0, "kind": "button", "title": "Other",
+             "control_id": "x", "path": [{"name": "My Ribbon Library", "title": "My Ribbon Library"},
+                                         {"name": "Dynamo", "title": "Dynamo"},
+                                         {"name": "Renumber Sheets", "title": "Other"}]}]}
+        never_written = dict(self.source, id="s9", bundle="Ghost.pushbutton", title="Ghost", label="Ghost")
+        report = self.host.sync_dynamo_bundles(registry, pending_deletes=[never_written], root=self.root)
+        self.assertEqual(other["bundle"], "Other.pushbutton")
+        self.assertEqual(report["renamed"], [("Renumber Sheets.pushbutton", "Other.pushbutton")])
+        self.assertEqual(registry["placements"][0]["path"][-1]["name"], "Other")
+        self.assertEqual(registry["placements"][0]["control_id"],
+                         "CustomCtrl_%CustomCtrl_%My Ribbon Library%Dynamo%Other")
+        self.assertEqual(sorted(report["written"]), ["Other", "Renumber Sheets"])
+        self.assertEqual(report["deleted"], [])   # Ghost never existed: no reload for nothing
+        self.assertEqual(report["errors"], [])
+
+    def test_a_crafted_bundle_name_cannot_write_or_delete_outside_the_library(self):
+        evil = dict(self.source, bundle="C:evil.pushbutton")
+        self.assertIsNone(self.host.dynamo_bundle_dir(evil, root=self.root))
+        with self.assertRaises(ValueError):
+            self.host.write_dynamo_bundle(evil, root=self.root)
+        ok, message = self.host.delete_dynamo_bundle(evil, root=self.root)
+        self.assertFalse(ok)
+        report = self.host.sync_dynamo_bundles({"sources": [evil]}, root=self.root)
+        # the sync renamed it to something valid instead
+        self.assertEqual(evil["bundle"], "Renumber Sheets.pushbutton")
+        self.assertEqual(report["written"], ["Renumber Sheets"])
+
+    def test_sync_never_writes_a_bundle_without_a_graph(self):
+        ghost = dict(self.source, id="s9", bundle="Ghost.pushbutton", title="Ghost", label="Ghost",
+                     path=os.path.join(self.tmp, "nope.dyn"))
+        report = self.host.sync_dynamo_bundles({"sources": [ghost]}, root=self.root)
+        self.assertEqual(report["missing_graph"], ["s9"])
+        self.assertEqual(report["written"], [])
+        self.assertFalse(os.path.isdir(os.path.join(os.path.dirname(self._bundle()), "Ghost.pushbutton")))
+
+    def test_new_bundle_names_avoid_existing_folders(self):
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        self.assertEqual(self.host.new_dynamo_bundle_name("renumber sheets", self.root),
+                         "renumber sheets 2.pushbutton")
+        self.assertEqual(self.host.new_dynamo_bundle_name("Other", self.root), "Other.pushbutton")
+
+    def test_library_constants_match_the_engine(self):
+        lib_path = pathlib.Path(__file__).resolve().parents[2] / "lib" / "easybim" / "my_ribbon.py"
+        source = lib_path.read_text(encoding="utf-8")
+        self.assertIn('LIBRARY_EXTENSION_NAME = "{0}"'.format(self.host.LIBRARY_EXTENSION_NAME), source)
+        self.assertIn('LIBRARY_TAB = "{0}"'.format(self.host.LIBRARY_TAB), source)
+        self.assertIn('LIBRARY_DYNAMO_PANEL = "{0}"'.format(self.host.LIBRARY_DYNAMO_PANEL), source)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,51 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="My Ribbon - Show or hide tabs"
+        Width="560"
+        Height="640"
+        MinWidth="460"
+        MinHeight="420"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="160"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Show or hide ribbon tabs" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock Text="Ticked tabs are shown. EasyBIM stays on (My Ribbon lives there, so there is always a way back) and so does Modify, Revit's editing tab. Changes take effect when you press Apply."
+                       Margin="0,6,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <DockPanel Grid.Row="1" Margin="0,0,0,8" LastChildFill="False">
+            <Button Content="Select all" Width="90" Height="30" Margin="0,0,8,0" Click="select_all_click"/>
+            <Button Content="Select none" Width="90" Height="30" Click="select_none_click"/>
+            <TextBlock x:Name="count_tb" DockPanel.Dock="Right" VerticalAlignment="Center" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+        </DockPanel>
+
+        <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="1" Padding="6">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel x:Name="TabListPanel"/>
+            </ScrollViewer>
+        </Border>
+
+        <Border Grid.Row="3" BorderBrush="#D0D0D0" BorderThickness="1" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="status_tb" Grid.Column="0" VerticalAlignment="Center" Foreground="DimGray" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Confirm" Width="100" Height="34" Margin="0,0,8,0" IsDefault="True" Click="confirm_click"/>
+                    <Button Content="Cancel" Width="100" Height="34" IsCancel="True" Click="cancel_click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
