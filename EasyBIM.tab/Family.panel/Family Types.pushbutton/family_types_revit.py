@@ -72,31 +72,101 @@ def _spec_label(definition):
     """
     if definition is None:
         return u""
-    if _has(definition, "GetDataType"):
-        spec = _catch(lambda: definition.GetDataType())
-        if spec is not None:
-            label = safe_text(_catch(lambda: spec.TypeId, u""))
-            if label:
-                # "autodesk.spec.aec:length-2.0.0" -> "length"
-                tail = label.split(":")[-1]
-                return tail.split("-")[0].replace("_", " ") or label
+    spec = _data_spec(definition)
+    if spec is not None:
+        label = safe_text(_catch(lambda: spec.TypeId, u""))
+        if label:
+            # "autodesk.spec.aec:length-2.0.0" -> "length"
+            tail = label.split(":")[-1]
+            return tail.split("-")[0].replace("_", " ") or label
     if _has(definition, "ParameterType"):
         return _enum_name(_catch(lambda: definition.ParameterType))
     return u""
 
 
-def _is_yes_no(definition, parameter):
-    """Whether an Integer parameter is really a checkbox."""
-    if _has(definition, "GetDataType"):
-        spec = _catch(lambda: definition.GetDataType())
-        spec_id = safe_text(_catch(lambda: spec.TypeId, u""))
-        if spec_id:
-            return "yesno" in spec_id.replace("-", "").replace("_", "").lower()
-    name = _enum_name(_catch(lambda: definition.ParameterType))
-    if name:
-        return name == "YesNo"
-    del parameter
+def _data_spec(definition):
+    """The parameter's spec, however this Revit hands one out.
+
+    ``GetDataType`` is the 2022+ answer; ``GetSpecTypeId`` is the 2021 one.
+    Returns None where neither exists.
+    """
+    if definition is None:
+        return None
+    for name in ("GetDataType", "GetSpecTypeId"):
+        if not _has(definition, name):
+            continue
+        spec = _catch(lambda: getattr(definition, name)())
+        if spec is not None:
+            return spec
+    return None
+
+
+def _yes_no_spec():
+    """``SpecTypeId.Boolean.YesNo``, or None on a Revit that lacks it."""
+    boolean = getattr(getattr(DB, "SpecTypeId", None), "Boolean", None)
+    return getattr(boolean, "YesNo", None)
+
+
+def _reads_as_a_word(family_types, parameter):
+    """Does Revit render this Integer parameter's value as a word?
+
+    The route that needs no knowledge of spec ids or enum names, and works in
+    any language: a Yes/No parameter stores 0 or 1 and its value string is a
+    word ("Yes", "Oui", ...), while a plain integer's value string is the
+    number itself.  This is the backstop for a host whose spec this code does
+    not recognise - the case that shipped twice with yes/no columns rendering
+    as 0 and 1.
+    """
+    for family_type in family_types or []:
+        if not _catch(lambda: family_type.HasValue(parameter), False):
+            continue
+        value = _catch(lambda: family_type.AsInteger(parameter))
+        if value is None or int(value) not in (0, 1):
+            return False
+        text = safe_text(_catch(lambda: family_type.AsValueString(parameter)))
+        text = text.strip()
+        if not text:
+            continue
+        # "Yes" is a checkbox; anything carrying a digit is a number, which
+        # also covers an integer that renders with a unit ("1 mm").
+        return not any(char.isdigit() for char in text)
     return False
+
+
+def _is_yes_no(definition, parameter, family_types=None):
+    """Whether an Integer parameter is really a checkbox.
+
+    Four independent routes, cheapest and most certain first. Any one of them
+    is enough, because the cost of missing a Yes/No parameter is a column of
+    0s and 1s - which is exactly what this got wrong before.
+    """
+    spec = _data_spec(definition)
+
+    # 1. Compare against the spec object itself, so no id string is assumed.
+    wanted = _yes_no_spec()
+    if spec is not None and wanted is not None:
+        if _catch(lambda: bool(spec.Equals(wanted)), False):
+            return True
+
+    # 2. The spec id as text, for a host whose SpecTypeId we could not read.
+    spec_id = safe_text(_catch(lambda: spec.TypeId, u"")) if spec is not None \
+        else u""
+    if "yesno" in spec_id.replace("-", "").replace("_", "").lower():
+        return True
+
+    # 3. The legacy enum (2021-2022; ParameterType was removed in 2023).
+    legacy = _catch(lambda: definition.ParameterType)
+    if legacy is not None:
+        if _enum_name(legacy) == "YesNo":
+            return True
+        wanted_legacy = getattr(getattr(DB, "ParameterType", None), "YesNo",
+                                None)
+        if wanted_legacy is not None \
+                and _catch(lambda: bool(legacy == wanted_legacy), False):
+            return True
+
+    # 4. Ask Revit how it renders the value.
+    return _reads_as_a_word(family_types, parameter)
 
 
 def _is_material(definition, family_doc, family_types, parameter):
@@ -106,9 +176,9 @@ def _is_material(definition, family_doc, family_types, parameter):
     the value carried by an existing type settles it, which is why the types
     are passed in.
     """
-    if _has(definition, "GetDataType"):
-        spec_id = safe_text(
-            _catch(lambda: definition.GetDataType().TypeId, u""))
+    spec = _data_spec(definition)
+    if spec is not None:
+        spec_id = safe_text(_catch(lambda: spec.TypeId, u""))
         if spec_id:
             return "material" in spec_id.lower()
     name = _enum_name(_catch(lambda: definition.ParameterType))
@@ -148,7 +218,8 @@ def parameter_infos(family_doc, manager, family_types):
             "spec_label": _spec_label(definition),
             "is_instance": bool(_catch(lambda: parameter.IsInstance, False)),
             "is_yes_no": (storage == state.STORAGE_INTEGER
-                          and _is_yes_no(definition, parameter)),
+                          and _is_yes_no(definition, parameter,
+                                         family_types)),
             "is_material": is_material,
             # IsReadOnly and UserModifiable are deliberately not read here.
             # FamilyParameter inherits them from Parameter, where they mean
