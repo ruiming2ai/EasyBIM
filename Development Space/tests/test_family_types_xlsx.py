@@ -195,6 +195,39 @@ class WorkbookRoundTripTests(unittest.TestCase):
         rows = self._read()[ftxlsx.EXPORT_SHEET_NAME].rows
         self.assertEqual(1, len(rows))
 
+    def test_a_yes_no_column_still_writes_yes_and_no(self):
+        # The cell is a bool in the grid now; the workbook format must not
+        # have changed with it, or older exports stop comparing.
+        self._write()
+        rows = self._read()[ftxlsx.EXPORT_SHEET_NAME].rows
+        header = rows[0][1]
+        at = header.index(u"Load Bearing (default)\n103")
+        self.assertEqual(u"Yes", rows[1][1][at])
+
+    def test_a_yes_no_edit_round_trips_through_the_workbook(self):
+        self._write()
+        sheets = self._read()
+        export_rows = list(sheets[ftxlsx.EXPORT_SHEET_NAME].rows)
+        header = export_rows[0][1]
+        at = header.index(u"Load Bearing (default)\n103")
+        excel_row, cells = export_rows[1]
+        cells = list(cells)
+        cells[at] = u"No"
+        export_rows[1] = (excel_row, cells)
+
+        plan = st.plan_import(export_rows,
+                              sheets[ftxlsx.METADATA_SHEET_NAME].rows,
+                              self.rows, self.columns)
+        changed = [e for e in plan.entries if e.status == st.IMPORT_CHANGED]
+        self.assertEqual(1, len(changed))
+        column, value = changed[0].edits[0]
+        self.assertEqual("Load Bearing", column.param_name)
+        self.assertIs(False, value)
+
+        st.apply_import_selection(plan, [changed[0].key], self.rows,
+                                  self.columns, st.TypeRowBase)
+        self.assertIs(False, getattr(self.rows[0], column.attr))
+
     def test_a_workbook_the_tool_did_not_write_is_recognisable(self):
         # The command refuses a workbook with no export sheet rather than
         # guessing at its shape; this pins the name that check keys off.
