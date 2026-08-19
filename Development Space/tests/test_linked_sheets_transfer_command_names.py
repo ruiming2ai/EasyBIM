@@ -1,4 +1,4 @@
-"""Bundle, XAML and IronPython wiring checks for Linked Sheets Copy.
+"""Bundle, XAML and IronPython wiring checks for Linked Sheets Transfer.
 
 Modelled on ``test_load_parameters_command_names.py``.  These catch the drift a
 syntax check cannot: a handler renamed in the code but not the XAML, a control
@@ -16,10 +16,11 @@ import xml.etree.ElementTree as ET
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "Sheet.panel"
-COMMAND_DIR = PANEL_DIR / "Linked Sheets Copy.pushbutton"
-UI_MODULE = COMMAND_DIR / "linked_sheets_copy_ui.py"
-STATE_MODULE = COMMAND_DIR / "linked_sheets_copy_state.py"
-REVIT_MODULE = COMMAND_DIR / "linked_sheets_copy_revit.py"
+COMMAND_DIR = PANEL_DIR / "Linked Sheets Transfer.pushbutton"
+SCRIPT_MODULE = COMMAND_DIR / "script.py"
+UI_MODULE = COMMAND_DIR / "linked_sheets_transfer_ui.py"
+STATE_MODULE = COMMAND_DIR / "linked_sheets_transfer_state.py"
+REVIT_MODULE = COMMAND_DIR / "linked_sheets_transfer_revit.py"
 GEOMETRY_MODULE = REPO_ROOT / "lib" / "easybim" / "sheet_geometry.py"
 COPY_PASTE_MODULE = REPO_ROOT / "lib" / "easybim" / "copy_paste.py"
 VIEW_ALIGN = (REPO_ROOT / "EasyBIM.tab" / "Views.panel"
@@ -30,16 +31,16 @@ HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",
                  "TextChanged", "PreviewKeyDown", "CellEditEnding")
 
 WINDOW_CLASSES = {
-    "LinkedSheetsCopyWindow.xaml": "LinkedSheetsCopyWindow",
+    "LinkedSheetsTransferWindow.xaml": "LinkedSheetsTransferWindow",
     "ConfirmWindow.xaml": "ConfirmWindow",
     "ReportWindow.xaml": "ReportWindow",
 }
 
 EXPECTED_MODULES = (
     "script.py",
-    "linked_sheets_copy_state.py",
-    "linked_sheets_copy_revit.py",
-    "linked_sheets_copy_ui.py",
+    "linked_sheets_transfer_state.py",
+    "linked_sheets_transfer_revit.py",
+    "linked_sheets_transfer_ui.py",
 )
 
 CONTROL_ATTRIBUTE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -124,14 +125,14 @@ def _function_source(path, function_name):
     return u""
 
 
-class LinkedSheetsCopyBundleTests(unittest.TestCase):
+class LinkedSheetsTransferBundleTests(unittest.TestCase):
     def test_command_folder_sits_in_the_sheet_panel(self):
         self.assertTrue(COMMAND_DIR.is_dir())
 
     def test_panel_layout_lists_the_new_button(self):
         # An unlisted bundle is appended by pyRevit, so placement needs this.
         layout = (PANEL_DIR / "bundle.yaml").read_text(encoding="utf-8")
-        self.assertIn("Linked Sheets Copy", layout)
+        self.assertIn("Linked Sheets Transfer", layout)
 
     def test_panel_layout_still_lists_every_sibling_button(self):
         layout = (PANEL_DIR / "bundle.yaml").read_text(encoding="utf-8")
@@ -168,7 +169,7 @@ class LinkedSheetsCopyBundleTests(unittest.TestCase):
             self.assertTrue((COMMAND_DIR / name).is_file(), name)
 
 
-class LinkedSheetsCopyXamlTests(unittest.TestCase):
+class LinkedSheetsTransferXamlTests(unittest.TestCase):
     def test_every_window_xaml_parses(self):
         for name in WINDOW_CLASSES:
             _xaml_root(name)
@@ -204,12 +205,12 @@ class LinkedSheetsCopyXamlTests(unittest.TestCase):
         # A CheckBox with Content swallows the row click, which breaks the
         # Extended range selection the grid is set up for.
         source = (COMMAND_DIR
-                  / "LinkedSheetsCopyWindow.xaml").read_text(encoding="utf-8")
+                  / "LinkedSheetsTransferWindow.xaml").read_text(encoding="utf-8")
         self.assertNotIn('<CheckBox Content="{Binding', source)
 
     def test_the_sheet_grid_allows_range_selection(self):
         source = (COMMAND_DIR
-                  / "LinkedSheetsCopyWindow.xaml").read_text(encoding="utf-8")
+                  / "LinkedSheetsTransferWindow.xaml").read_text(encoding="utf-8")
         self.assertIn('SelectionMode="Extended"', source)
         self.assertIn('SelectionUnit="FullRow"', source)
 
@@ -217,7 +218,7 @@ class LinkedSheetsCopyXamlTests(unittest.TestCase):
         # The collision re-check reads the row, so the binding must not wait
         # for focus to leave the cell.
         source = (COMMAND_DIR
-                  / "LinkedSheetsCopyWindow.xaml").read_text(encoding="utf-8")
+                  / "LinkedSheetsTransferWindow.xaml").read_text(encoding="utf-8")
         self.assertIn(
             '{Binding new_number, Mode=TwoWay, '
             'UpdateSourceTrigger=PropertyChanged}', source)
@@ -227,7 +228,7 @@ class LinkedSheetsCopyXamlTests(unittest.TestCase):
 
     def test_the_level_dropdown_offers_the_rows_own_choices(self):
         source = (COMMAND_DIR
-                  / "LinkedSheetsCopyWindow.xaml").read_text(encoding="utf-8")
+                  / "LinkedSheetsTransferWindow.xaml").read_text(encoding="utf-8")
         self.assertIn('ItemsSource="{Binding choices}"', source)
         self.assertIn('SelectedItem="{Binding host_choice', source)
 
@@ -235,7 +236,7 @@ class LinkedSheetsCopyXamlTests(unittest.TestCase):
         # Every window has exactly one button that starts or becomes disabled,
         # and a disabled button that cannot say why is the repo's least
         # favourite kind.
-        for name, count in (("LinkedSheetsCopyWindow.xaml", 1),
+        for name, count in (("LinkedSheetsTransferWindow.xaml", 1),
                             ("ConfirmWindow.xaml", 1),
                             ("ReportWindow.xaml", 1)):
             source = (COMMAND_DIR / name).read_text(encoding="utf-8")
@@ -244,7 +245,7 @@ class LinkedSheetsCopyXamlTests(unittest.TestCase):
                 name)
 
 
-class LinkedSheetsCopyContractTests(unittest.TestCase):
+class LinkedSheetsTransferContractTests(unittest.TestCase):
     """Assertions that lock in decisions a refactor could quietly undo."""
 
     def test_the_whole_run_is_one_undo_step(self):
@@ -398,7 +399,7 @@ class LinkedSheetsCopyContractTests(unittest.TestCase):
         self.assertNotIn("math.cos", align_source)
 
 
-class LinkedSheetsCopyIronPythonTests(unittest.TestCase):
+class LinkedSheetsTransferIronPythonTests(unittest.TestCase):
     def test_command_scripts_avoid_python3_only_constructs(self):
         failures = []
         paths = sorted(COMMAND_DIR.glob("*.py")) + [GEOMETRY_MODULE]
@@ -462,6 +463,104 @@ class LinkedSheetsCopyIronPythonTests(unittest.TestCase):
         source = UI_MODULE.read_text(encoding="utf-8")
         self.assertNotIn("Autodesk.Revit", source)
         self.assertNotIn("import clr", source)
+
+
+class RenameSurvivedTests(unittest.TestCase):
+    """The wiring a rename breaks, and that only Revit would otherwise catch.
+
+    ``script.py`` reaches its sibling modules, its window classes and its XAML
+    by *name*, all resolved at runtime: a file renamed without its callers
+    imports cleanly, compiles cleanly, and dies on the first click.
+    """
+
+    def setUp(self):
+        self.script = ast.parse(SCRIPT_MODULE.read_text(encoding="utf-8"))
+
+    def _script_constants(self):
+        found = {}
+        for node in self.script.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            value = node.value
+            if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found[target.id] = value.value
+        return found
+
+    def _import_aliases(self):
+        """``import linked_sheets_transfer_ui as ui`` -> {"ui": "..._ui"}."""
+        aliases = {}
+        for node in ast.walk(self.script):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    aliases[alias.asname or alias.name] = alias.name
+        return aliases
+
+    def test_every_module_the_script_imports_by_name_is_present(self):
+        for module in self._import_aliases().values():
+            if not module.startswith("linked_sheets_transfer"):
+                continue
+            self.assertIn(module + ".py", EXPECTED_MODULES)
+            self.assertTrue((COMMAND_DIR / (module + ".py")).is_file(), module)
+
+    def test_every_xaml_the_script_names_is_on_disk(self):
+        named = [value for name, value in self._script_constants().items()
+                 if name.endswith("_XAML")]
+        # The three windows, and no constant quietly dropped.
+        self.assertEqual(sorted(named), sorted(WINDOW_CLASSES))
+        for value in named:
+            self.assertTrue((COMMAND_DIR / value).is_file(), value)
+
+    def test_every_window_the_script_opens_is_a_class_in_the_ui_module(self):
+        ui_module = self._import_aliases()
+        ui_alias = [alias for alias, module in ui_module.items()
+                    if module.endswith("_ui")]
+        self.assertEqual(len(ui_alias), 1, ui_module)
+        ui_alias = ui_alias[0]
+
+        defined = set()
+        for node in ast.walk(ast.parse(UI_MODULE.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef):
+                defined.add(node.name)
+
+        used = set()
+        for node in ast.walk(self.script):
+            if (isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == ui_alias):
+                used.add(node.attr)
+        self.assertTrue(used)
+        for name in sorted(used):
+            self.assertIn(name, defined)
+
+        # and each of those window classes is the one its XAML is checked against
+        for class_name in WINDOW_CLASSES.values():
+            self.assertIn(class_name, used, class_name)
+
+    def test_the_old_copy_name_is_gone_from_the_bundle(self):
+        # "copy" the verb stays - the tool does copy sheets.  What must not
+        # survive is the old command name in a module, class or label.
+        stale = ("linked_sheets_copy", "LinkedSheetsCopy", "Linked Sheets Copy",
+                 "lsc_revit")
+        for path in sorted(list(COMMAND_DIR.glob("*.py"))
+                           + list(COMMAND_DIR.glob("*.xaml"))
+                           + list(COMMAND_DIR.glob("*.yaml"))):
+            source = path.read_text(encoding="utf-8")
+            for token in stale:
+                self.assertNotIn(token, source, "%s in %s" % (token, path.name))
+
+    def test_the_user_facing_name_is_the_new_one_everywhere_it_shows(self):
+        source = SCRIPT_MODULE.read_text(encoding="utf-8")
+        self.assertIn('__title__ = "Linked Sheets\\nTransfer"', source)
+        self.assertIn('TITLE = "Linked Sheets Transfer"', source)
+        for name in WINDOW_CLASSES:
+            title = re.search(r'Title="([^"]*)"',
+                              (COMMAND_DIR / name).read_text(encoding="utf-8"))
+            self.assertIsNotNone(title, name)
+            self.assertTrue(title.group(1).startswith("Linked Sheets Transfer"),
+                            "%s: %s" % (name, title.group(1)))
 
 
 if __name__ == "__main__":

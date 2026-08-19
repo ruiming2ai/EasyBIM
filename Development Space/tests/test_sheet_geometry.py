@@ -1,4 +1,4 @@
-"""The projection View Align and Linked Sheets Copy both place viewports with.
+"""The projection View Align and Linked Sheets Transfer both place viewports with.
 
 A sign error in here is invisible until somebody overlays two printed sheets,
 so the cases are hand-computed rather than taken from the implementation.
@@ -221,7 +221,7 @@ def _link_transform(point, degrees, offset):
 
 
 class LinkedSheetOverlayTests(unittest.TestCase):
-    """The promise Linked Sheets Copy makes, simulated end to end.
+    """The promise Linked Sheets Transfer makes, simulated end to end.
 
     The link is rotated 30 degrees and moved a long way from the origin, which
     is the case that defeats copying a viewport's position off the page.

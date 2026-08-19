@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Pure state for Linked Sheets Copy: rows, level mapping, plan, report text.
+"""Pure state for Linked Sheets Transfer: rows, level mapping, plan, report text.
 
 No Revit imports.  Everything Revit-shaped arrives as plain values gathered by
-``linked_sheets_copy_revit``, which is what lets the test suite load this
+``linked_sheets_transfer_revit``, which is what lets the test suite load this
 module standalone and check the decisions that actually bite - the level
 resolution ladder, sheet-number collisions, and a dry run that cannot drift
 from what the executor does, because both read the object built here.

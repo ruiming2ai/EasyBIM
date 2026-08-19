@@ -171,7 +171,7 @@ def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
     if not ok:
         return None, reason
 
-    # One shared implementation with Linked Sheets Copy, in
+    # One shared implementation with Linked Sheets Transfer, in
     # lib/easybim/sheet_geometry.py - two copies of this maths would drift.
     projection, projection_reason = sheet_geometry.build_projection(
         view, viewport)
