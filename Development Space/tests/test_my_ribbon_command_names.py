@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel"
+PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "My Ribbon.panel"
 COMMAND_DIR = PANEL_DIR / "My Ribbon.pushbutton"
 SCRIPT_MODULE = COMMAND_DIR / "script.py"
 UI_MODULE = COMMAND_DIR / "my_ribbon_ui.py"
@@ -158,7 +158,7 @@ def _png_size(path):
 
 
 class MyRibbonBundleTests(unittest.TestCase):
-    def test_command_folder_sits_in_the_misc_tools_panel(self):
+    def test_command_folder_sits_on_its_own_panel(self):
         self.assertTrue(COMMAND_DIR.is_dir())
 
     def test_bundle_yaml_carries_the_ribbon_title(self):

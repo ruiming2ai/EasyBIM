@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel"
+PANEL_DIR = REPO_ROOT / "EasyBIM.tab" / "Family.panel"
 COMMAND_DIR = PANEL_DIR / "Families Downgrade.pushbutton"
 SCRIPT_MODULE = COMMAND_DIR / "script.py"
 UI_MODULE = COMMAND_DIR / "families_downgrade_ui.py"
@@ -153,7 +153,7 @@ def _method_source(path, class_name, method_name):
 
 
 class FamiliesDowngradeBundleTests(unittest.TestCase):
-    def test_command_folder_sits_in_the_misc_tools_panel(self):
+    def test_command_folder_sits_in_the_family_panel(self):
         self.assertTrue(COMMAND_DIR.is_dir())
 
     def test_bundle_yaml_carries_title_author_and_the_version_gate(self):
