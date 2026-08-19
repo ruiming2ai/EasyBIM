@@ -166,6 +166,12 @@ class MyRibbonBundleTests(unittest.TestCase):
         self.assertIn('title: "My\\nRibbon"', bundle)
         self.assertIn("tooltip:", bundle)
 
+    def test_the_button_stays_live_with_no_document_open(self):
+        # Building your own ribbon touches no document, and the most likely
+        # moment to reach for it is Revit's start page before any model is open.
+        bundle = (COMMAND_DIR / "bundle.yaml").read_text(encoding="utf-8")
+        self.assertIn("context: zero-doc", bundle)
+
     def test_both_icon_variants_exist_at_the_house_size(self):
         for name in ("icon.png", "icon.dark.png"):
             icon = COMMAND_DIR / name
