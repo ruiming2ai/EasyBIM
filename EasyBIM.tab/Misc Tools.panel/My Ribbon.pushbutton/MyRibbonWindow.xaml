@@ -17,7 +17,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="My Ribbon" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Pick buttons from other pyRevit extensions and put them on panels of your own. Updates come from pyRevit ▸ Update (and EasyBIM Auto Update); Apply needs no reload."
+            <TextBlock Text="Pick buttons from other pyRevit extensions, Revit's own tabs, other add-ins or Dynamo graphs, and put them on panels of your own. Updates come from pyRevit ▸ Update (and EasyBIM Auto Update); Apply closes this window."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -55,11 +55,19 @@
                                  SelectionChanged="sources_selection_changed"/>
                     </Border>
 
-                    <StackPanel Grid.Row="2" Orientation="Horizontal">
-                        <Button x:Name="remove_source_btn" Content="Remove" Width="90" Height="30" Margin="0,0,8,0" IsEnabled="False" Click="remove_source_click"/>
-                        <Button x:Name="open_folder_btn" Content="Open folder" Width="100" Height="30" Margin="0,0,8,0" IsEnabled="False" Click="open_folder_click"/>
-                        <Button x:Name="add_buttons_btn" Content="Add buttons from it..." Width="150" Height="30" IsEnabled="False" Click="add_buttons_click"/>
-                    </StackPanel>
+                    <!-- A WrapPanel: five buttons do not fit the column at its
+                         minimum width, and a clipped button is worse than a
+                         second row. -->
+                    <WrapPanel Grid.Row="2">
+                        <Button x:Name="remove_source_btn" Content="Remove" Width="80" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="remove_source_click"
+                                ToolTip="Forget this source and its placed buttons. Files stay."/>
+                        <Button x:Name="uninstall_btn" Content="Uninstall" Width="80" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="uninstall_source_click"
+                                ToolTip="Remove it and delete the files My Ribbon installed for it (on Apply)."/>
+                        <Button x:Name="open_folder_btn" Content="Open folder" Width="95" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="open_folder_click"/>
+                        <Button x:Name="locate_btn" Content="Locate graph..." Width="110" Height="30" Margin="0,0,8,4" Visibility="Collapsed" Click="locate_click"
+                                ToolTip="Point this Dynamo button at the graph file again (moved or renamed)."/>
+                        <Button x:Name="add_buttons_btn" Content="Add buttons from it..." Width="150" Height="30" Margin="0,0,0,4" IsEnabled="False" Click="add_buttons_click"/>
+                    </WrapPanel>
                 </Grid>
             </Border>
 
@@ -73,7 +81,9 @@
 
                     <DockPanel Grid.Row="0" LastChildFill="True">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
-                            <Button Content="New panel..." Width="100" Height="30" Margin="8,0,8,0" Click="new_panel_click"/>
+                            <Button Content="Show/Hide tabs..." Width="125" Height="30" Margin="8,0,8,0" Click="show_hide_tabs_click"
+                                    ToolTip="Choose which ribbon tabs are visible. EasyBIM and Modify always stay."/>
+                            <Button Content="New panel..." Width="100" Height="30" Margin="0,0,8,0" Click="new_panel_click"/>
                             <Button Content="New tab..." Width="90" Height="30" Click="new_tab_click"/>
                         </StackPanel>
                         <StackPanel>

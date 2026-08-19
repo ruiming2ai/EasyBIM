@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <!-- EasyBIM "My Ribbon" fallback icon for a Dynamo-graph button: two nodes on a wire
+       inside a rounded square.  Used only when Revit's own Dynamo images cannot be
+       copied onto the button (Dynamo not installed).  Light theme; the dark variant
+       swaps the fill.  Rasterise: convert -background none -density 384 in.svg -resize 96x96 out.png -->
+  <rect x="6" y="6" width="84" height="84" rx="18" ry="18" fill="#2E7BC9"/>
+  <path d="M 30 34 C 50 34, 46 62, 66 62" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+  <rect x="14" y="22" width="24" height="24" rx="5" ry="5" fill="#FFFFFF"/>
+  <rect x="58" y="50" width="24" height="24" rx="5" ry="5" fill="#FFFFFF"/>
+  <circle cx="30" cy="34" r="4.5" fill="#2E7BC9"/>
+  <circle cx="66" cy="62" r="4.5" fill="#2E7BC9"/>
+</svg>

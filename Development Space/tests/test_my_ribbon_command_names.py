@@ -36,6 +36,8 @@ WINDOW_CLASSES = {
     "DestinationWindow.xaml": "DestinationWindow",
     "ImportPreviewWindow.xaml": "ImportPreviewWindow",
     "CredentialsWindow.xaml": "CredentialsWindow",
+    "TabVisibilityWindow.xaml": "TabVisibilityWindow",
+    "DynamoButtonWindow.xaml": "DynamoButtonWindow",
 }
 
 EXPECTED_MODULES = (
@@ -174,6 +176,14 @@ class MyRibbonBundleTests(unittest.TestCase):
     def test_icon_sources_live_beside_the_spec(self):
         self.assertTrue((SPEC_DIR / "2026-08-15-my-ribbon-icon.svg").is_file())
         self.assertTrue((SPEC_DIR / "2026-08-15-my-ribbon-icon.dark.svg").is_file())
+        self.assertTrue((SPEC_DIR / "2026-08-16-my-ribbon-dynamo-icon.svg").is_file())
+        self.assertTrue((SPEC_DIR / "2026-08-16-my-ribbon-dynamo-icon.dark.svg").is_file())
+
+    def test_dynamo_fallback_icons_ship_with_the_bundle(self):
+        for name in ("dynamo_icon.png", "dynamo_icon.dark.png"):
+            icon = COMMAND_DIR / name
+            self.assertTrue(icon.is_file(), name)
+            self.assertEqual(_png_size(icon), (96, 96), name)
 
     def test_expected_modules_exist(self):
         for name in EXPECTED_MODULES:
@@ -275,10 +285,61 @@ class MyRibbonContractTests(unittest.TestCase):
         for forbidden in ("bundle.yaml", "execfile", "makedirs(", "copyfile", "copytree"):
             self.assertNotIn(forbidden, _function_source(LIB_MODULE, "apply"), forbidden)
 
-    def test_the_pyrevit_tab_is_never_hidden(self):
+    def test_easybim_and_modify_are_never_hidden_and_the_window_freezes_them(self):
+        # EasyBIM carries the My Ribbon button (the way back); Modify is
+        # Revit's contextual editing tab.  The pyRevit tab may be hidden.
         lib = LIB_MODULE.read_text(encoding="utf-8")
-        self.assertIn('PROTECTED_TABS = ("pyrevit",)', lib)
+        self.assertIn('PROTECTED_TABS = ("easybim", "modify")', lib)
         self.assertIn("PROTECTED_TABS", _function_source(LIB_MODULE, "_apply_tab_visibility"))
+        self.assertIn('FROZEN_TABS = ("easybim", "modify")', UI_MODULE.read_text(encoding="utf-8"))
+        node = _class_node(UI_MODULE, "TabVisibilityWindow")
+        source = UI_MODULE.read_text(encoding="utf-8").splitlines()
+        window_source = "\n".join(source[node.lineno - 1:getattr(node, "end_lineno", len(source))])
+        self.assertIn("frozen = key in FROZEN_TABS", window_source)
+        self.assertIn("checkbox.IsEnabled = False", window_source)
+        self.assertIn("PYREVIT_TAB_NOTE", window_source)
+
+    def test_tab_visibility_is_one_list_in_the_registry(self):
+        # hidden_tabs is the truth; the per-source flag is a shortcut onto it
+        self.assertIn('registry["hidden_tabs"]', _function_source(LIB_MODULE, "read_registry"))
+        self.assertIn('registry.get("hidden_tabs")', _function_source(LIB_MODULE, "_apply_tab_visibility"))
+        self.assertIn("set_tabs_hidden", _function_source(STATE_MODULE, "set_hide_tab"))
+        self.assertIn("replace_hidden_tabs", _function_source(UI_MODULE, "show_hide_tabs_click"))
+
+    def test_remove_keeps_files_and_uninstall_stages_the_delete(self):
+        remove = _function_source(UI_MODULE, "remove_source_click")
+        uninstall = _function_source(UI_MODULE, "uninstall_source_click")
+        # Remove stages a delete only for a Dynamo button, which is nothing but
+        # the bundle My Ribbon wrote
+        self.assertEqual(remove.count("pending_deletes.append"), 1)
+        self.assertIn('source.get("kind") == "dynamo"', remove)
+        self.assertIn("pending_deletes.append(source)", uninstall)
+        self.assertIn('installed_by_my_ribbon', uninstall)
+        self.assertIn("installed_by_my_ribbon", _function_source(UI_MODULE, "_refresh_buttons"))
+
+    def test_apply_closes_the_window(self):
+        run = _function_source(SCRIPT_MODULE, "_run")
+        self.assertRegex(run, r"host\.reload_pyrevit\(\)\s*\n\s*#[^\n]*\n\s*return")
+        self.assertIn("forms.alert(notice", _function_source(SCRIPT_MODULE, "_apply"))
+
+    def test_dynamo_buttons_are_real_pyrevit_bundles_that_run_the_original_graph(self):
+        self.assertIn("dynamo_path", _function_source(STATE_MODULE, "render_dynamo_bundle_yaml"))
+        self.assertIn("automate: true", _function_source(STATE_MODULE, "render_dynamo_bundle_yaml"))
+        apply_body = _function_source(SCRIPT_MODULE, "_apply")
+        self.assertLess(apply_body.index("sync_dynamo_bundles"), apply_body.index("my_ribbon.apply("))
+        self.assertIn('facts.get("problem")', _function_source(SCRIPT_MODULE, "_add_dynamo_flow"))
+        self.assertIn("LIBRARY_TAB], True", _function_source(SCRIPT_MODULE, "_add_dynamo_flow"))
+        self.assertIn("delete_dynamo_bundle", _function_source(HOST_MODULE, "remove_installed_source"))
+        self.assertIn("is_bundle_folder_name", _function_source(HOST_MODULE, "dynamo_bundle_dir"))
+        self.assertIn("bundle is None", _function_source(HOST_MODULE, "delete_dynamo_bundle"))
+        # the sync (which may rename bundles and their placements) runs before the save
+        self.assertLess(apply_body.index("sync_dynamo_bundles"), apply_body.index("save_registry"))
+        self.assertIn("is_bundle_folder_name", _function_source(LIB_MODULE, "_clean_source"))
+
+    def test_live_ribbon_tabs_are_read_not_parsed(self):
+        self.assertIn("describe_tab_by_title", _function_source(SCRIPT_MODULE, "_add_source_flow"))
+        self.assertIn("_RIBBON_GROUP_TYPES", _function_source(LIB_MODULE, "_collect_live_items"))
+        self.assertIn("icon_source", _function_source(UI_MODULE, "_add_row"))
 
     def test_apply_takes_back_its_previous_additions_first(self):
         body = _function_source(LIB_MODULE, "apply")
