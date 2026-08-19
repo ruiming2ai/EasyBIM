@@ -4,3 +4,4 @@ tooltip: |-
   Paste a GitHub link, choose from what is installed, or browse pyRevit's catalogue; then tick the buttons you want and say where they go - an EasyBIM panel, a new panel, or a tab of your own.
   Sources are installed as normal pyRevit extensions, so pyRevit's Update button keeps them fresh. Settings can be exported and imported.
 author: Ruiming Liu
+context: zero-doc
