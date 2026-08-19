@@ -10,7 +10,6 @@ import clr
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.Exceptions import OperationCanceledException
-from Autodesk.Revit import UI
 from Autodesk.Revit.UI import TaskDialog
 
 from pyrevit import forms
@@ -25,6 +24,7 @@ if SCRIPT_DIR not in sys.path:
 # The family-selection pages, collectors and link cascade are shared with
 # Families Downgrade and live in lib/easybim/family_selection_*; only the
 # transfer/export/close machinery is this bundle's own.
+from easybim.family_load_options import build_overwrite_prompt
 from easybim.family_selection_revit import get_link_document_options
 from easybim.family_selection_revit import get_link_family_options
 from easybim.family_selection_revit import get_open_family_documents
@@ -48,9 +48,7 @@ from easybim.family_selection_ui import LINK_SELECTION_XAML
 from easybim.family_selection_ui import LinkSelectionWindow
 from easybim.family_selection_ui import SOURCE_SELECTION_XAML
 from easybim.family_selection_ui import SourceSelectionWindow
-from families_transfer_revit import DECLINE
-from families_transfer_revit import OVERWRITE
-from families_transfer_revit import OVERWRITE_WITH_VALUES
+
 from families_transfer_revit import close_open_family_documents
 from families_transfer_revit import export_families
 from families_transfer_revit import get_open_target_documents
@@ -121,78 +119,6 @@ def _with_progress(title, work):
             return not progress_bar.cancelled
 
         return work(_tick)
-
-
-OVERWRITE_LINK = "Overwrite the existing version"
-OVERWRITE_VALUES_LINK = "Overwrite the existing version and its parameter values"
-APPLY_TO_ALL_TEXT = "Do this for all loading families"
-
-
-def _build_overwrite_prompt():
-    """Our own "Family Already Exists" question, or None if we cannot ask it.
-
-    Built from the same widget Revit uses - command links plus a verification
-    checkbox - so it looks like the dialog an interactive load shows. The
-    difference that matters is that the checkbox is ours: Revit's own version
-    of it does not survive a load driven one family at a time, and honouring
-    it across the batch is the whole point.
-
-    Returning None puts the transfer back on its original behaviour: overwrite
-    and report, without asking. That is what a Revit with no verification
-    checkbox gets, rather than a prompt whose tick would do nothing.
-    """
-    command_ids = getattr(UI, "TaskDialogCommandLinkId", None)
-    link_one = getattr(command_ids, "CommandLink1", None)
-    link_two = getattr(command_ids, "CommandLink2", None)
-    if link_one is None or link_two is None:
-        return None
-
-    # VerificationText and WasVerificationChecked have both been in the API
-    # since 2011, so this guard should never fire; it is here so an exotic
-    # host degrades to the original behaviour instead of throwing.
-    try:
-        probe = TaskDialog("EasyBIM")
-        probe.VerificationText = APPLY_TO_ALL_TEXT
-    except Exception:
-        return None
-
-    def _ask(family_name):
-        dialog = TaskDialog("Family Already Exists")
-        # Without this Revit prepends "External Command Name - " to the title.
-        dialog.TitleAutoPrefix = False
-        dialog.MainInstruction = (
-            "You are trying to load the family {}, which already exists in "
-            "this project.  What do you want to do?".format(family_name)
-        )
-        # Cancel is a common button; its result is TaskDialogResult.Cancel,
-        # which is also what ESC, Alt+F4 and the X return - one branch covers
-        # all four. Note the two enums disagree on values for the same names,
-        # so they must never be cast to each other.
-        dialog.CommonButtons = UI.TaskDialogCommonButtons.Cancel
-        dialog.DefaultButton = UI.TaskDialogResult.Cancel
-        # VerificationText, never ExtraCheckBoxText: setting both throws.
-        dialog.VerificationText = APPLY_TO_ALL_TEXT
-        dialog.AddCommandLink(link_one, OVERWRITE_LINK)
-        dialog.AddCommandLink(link_two, OVERWRITE_VALUES_LINK)
-
-        result = dialog.Show()
-
-        # A method, not a property, and it throws unless the dialog has a
-        # verification checkbox and has already been shown - both true here.
-        try:
-            apply_to_all = bool(dialog.WasVerificationChecked())
-        except Exception:
-            apply_to_all = False
-
-        if result == UI.TaskDialogResult.CommandLink1:
-            return OVERWRITE, apply_to_all
-        if result == UI.TaskDialogResult.CommandLink2:
-            return OVERWRITE_WITH_VALUES, apply_to_all
-        # Cancel means "not this one". The tick is deliberately ignored here,
-        # so the next family that clashes asks again.
-        return DECLINE, False
-
-    return _ask
 
 
 def _pick_export_folder_confirming_overwrites(selected_families):
@@ -591,7 +517,7 @@ def _run():
                     "Transferring families",
                     lambda tick: transfer_families(
                         doc, selected_families, selected_targets, progress=tick,
-                        overwrite_prompt=_build_overwrite_prompt()),
+                        overwrite_prompt=build_overwrite_prompt()),
                 )
                 _show_summary(_note_link_refusals(summary, _probed_links()))
                 return
@@ -606,7 +532,7 @@ def _run():
                     "Transferring families",
                     lambda tick: transfer_families(
                         doc, selected_families, selected_targets, progress=tick,
-                        overwrite_prompt=_build_overwrite_prompt()),
+                        overwrite_prompt=build_overwrite_prompt()),
                 )
                 close_summary = close_open_family_documents(get_open_family_documents(uiapp, doc))
                 _show_summary(
