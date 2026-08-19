@@ -50,12 +50,19 @@ PENDING_ENVVAR = "EASYBIM_MYRIBBON_PENDING"
 
 ID_PREFIX = "EasyBIM_MyRibbon_"
 
-#: Tabs the engine never hides, whatever the registry says: the pyRevit tab
-#: carries Reload, Update, Settings and Extensions - hiding it would leave the
-#: user with no way back if My Ribbon itself broke.
-PROTECTED_TABS = ("pyrevit",)
+#: Tabs the engine never hides, whatever the registry says: EasyBIM carries
+#: the My Ribbon button itself (the only way back to un-hide anything), and
+#: Modify is Revit's contextual editing tab.  The pyRevit tab *can* be hidden
+#: (the Show/Hide window warns); EasyBIM staying visible is the way back.
+PROTECTED_TABS = ("easybim", "modify")
 
-SOURCE_KINDS = ("git", "catalogue", "installed")
+SOURCE_KINDS = ("git", "catalogue", "installed", "ribbon", "dynamo")
+
+#: My Ribbon's own extension: holds the bundles it generates itself (today:
+#: Dynamo graphs).  pyRevit loads it like any extension; its tab is hidden.
+LIBRARY_EXTENSION_NAME = "EasyBIM_MyRibbon"
+LIBRARY_TAB = "My Ribbon Library"
+LIBRARY_DYNAMO_PANEL = "Dynamo"
 
 
 class RegistryFormatError(Exception):
@@ -71,6 +78,7 @@ def empty_registry():
         "sources": [],
         "destinations": [],
         "placements": [],
+        "hidden_tabs": [],
     }
 
 
@@ -106,7 +114,27 @@ def read_registry(raw):
     registry["destinations"] = [d for d in registry["destinations"] if d["id"]]
     registry["placements"] = [
         p for p in registry["placements"] if p["id"] and p["dest"] and p["path"]]
+    # hidden_tabs is the one truth for tab visibility; files from before it
+    # existed only carried the per-source "hide its own tab" flag, so union.
+    hidden = []
+    raw_hidden = raw.get("hidden_tabs")
+    for name in (raw_hidden if isinstance(raw_hidden, list) else []):
+        _add_unique_name(hidden, _text(name))
+    for source in registry["sources"]:
+        if source.get("hide_tab"):
+            for name in source.get("tab_names", []):
+                _add_unique_name(hidden, name)
+    registry["hidden_tabs"] = hidden
     return registry
+
+
+def _add_unique_name(names, name):
+    if not name:
+        return
+    key = _normalize_label(name)
+    if any(_normalize_label(existing) == key for existing in names):
+        return
+    names.append(name)
 
 
 def _list_of_dicts(value):
@@ -143,6 +171,11 @@ def _clean_source(raw):
     if kind == "catalogue":
         # the catalogue entry name is how the source is found again on import
         source["name"] = _text(raw.get("name")) or source["ext_name"]
+    if kind == "dynamo":
+        source["path"] = _text(raw.get("path"))
+        source["title"] = _text(raw.get("title")) or source["label"]
+        source["bundle"] = _text(raw.get("bundle"))
+        source["icon"] = _text(raw.get("icon")) or None
     return source
 
 
@@ -249,7 +282,7 @@ def registry_has_work(registry):
     """True when applying would touch the ribbon at all."""
     if not isinstance(registry, dict):
         return False
-    if registry.get("placements"):
+    if registry.get("placements") or registry.get("hidden_tabs"):
         return True
     return any(s.get("hide_tab") for s in registry.get("sources", []))
 
@@ -349,6 +382,7 @@ def apply(registry, ribbon=None, autodesk_windows=None, logger=None):
     placements = sorted(
         registry.get("placements", []),
         key=lambda p: (p.get("dest", ""), p.get("order", 0), p.get("id", "")))
+    placed_items = {}
 
     for placement in placements:
         dest = destinations.get(placement.get("dest"))
@@ -373,6 +407,7 @@ def apply(registry, ribbon=None, autodesk_windows=None, logger=None):
         items = _panel_items(panel)
         if _collection_contains(items, item):
             report["added"].append(placement["id"])
+            placed_items[placement["id"]] = item
             continue
         try:
             _add_item(items, item)
@@ -381,9 +416,11 @@ def apply(registry, ribbon=None, autodesk_windows=None, logger=None):
             continue
         new_mirror["items"].append((items, item))
         report["added"].append(placement["id"])
+        placed_items[placement["id"]] = item
         _log_debug(logger, "Placed {0} in {1} > {2}".format(
             placement.get("title"), dest["tab"], dest["panel"]))
 
+    _apply_dynamo_icons(ribbon, placements, placed_items, sources, report, logger)
     _apply_tab_visibility(ribbon, registry, sources, destinations, new_mirror, mirror, report, logger)
     _drop_unused_containers(ribbon, mirror, new_mirror, report, logger)
     _store_mirror(new_mirror)
@@ -398,6 +435,7 @@ def _empty_report():
         "created_panels": [],
         "hidden_tabs": [],
         "shown_tabs": [],
+        "dynamo_icons": [],
         "errors": [],
     }
 
@@ -441,9 +479,193 @@ def list_ribbon(ribbon=None):
             "title": title,
             "id": _safe_text(_getattr_safe(tab, "Id")),
             "is_ours": _is_ours(tab),
+            "is_visible": _getattr_safe(tab, "IsVisible", True) is not False,
+            "is_contextual": bool(_getattr_safe(tab, "IsContextualTab", False)),
             "panels": panels,
         })
     return summary
+
+
+# -- a live tab as a source (native Revit tabs, other add-ins) ----------------
+
+#: AdWindows item types by what My Ribbon can do with them.  Anything not
+#: listed is refused (galleries, combos, text boxes, sliders, labels...).
+_RIBBON_BUTTON_TYPES = ("RibbonButton", "RibbonToggleButton", "RibbonCheckBox",
+                        "RibbonRadioButton", "RibbonCommandItem")
+_RIBBON_GROUP_TYPES = ("RibbonSplitButton", "RibbonMenuButton", "RibbonListButton",
+                       "RibbonChecklistButton", "RibbonRadioButtonGroup")
+_RIBBON_SKIP_TYPES = ("RibbonSeparator", "RibbonRowBreak", "RibbonPanelBreak")
+
+
+def describe_ribbon_tab(tab):
+    """Read a live ribbon tab into the same plain dicts ``describe_extension``
+    gives for a parsed pyRevit extension, so the picker can show native Revit
+    and add-in buttons.  Icons come back as ``icon_source`` (an ImageSource),
+    not a file path.  Never raises; odd items are skipped."""
+    tab_level = {"name": _safe_text(_getattr_safe(tab, "Id")) or _tab_title(tab),
+                 "title": _tab_title(tab)}
+    panels = []
+    buttons = []
+    for panel in _tab_panels(tab):
+        source = _panel_source(panel)
+        title = _panel_title(panel)
+        if not title and not _safe_text(_getattr_safe(source, "Id")):
+            continue
+        panel_level = {"name": _safe_text(_getattr_safe(source, "Id")) or title,
+                       "title": title or _safe_text(_getattr_safe(source, "Id"))}
+        items = []
+        _collect_live_items(_panel_items(panel), [tab_level, panel_level], items, buttons)
+        if items:
+            panels.append({"name": panel_level["name"], "title": panel_level["title"],
+                           "items": items})
+    return {
+        "name": tab_level["title"],
+        "dir": "",
+        "tab_names": [tab_level["title"]],
+        "tabs": [{"name": tab_level["name"], "title": tab_level["title"], "panels": panels}],
+        "buttons": buttons,
+        "has_startup": False,
+        "has_hooks": False,
+        "live": True,
+    }
+
+
+def describe_tab_by_title(title, ribbon=None):
+    """``describe_ribbon_tab`` for the live tab called ``title`` (None when
+    it is not on the ribbon)."""
+    try:
+        ribbon = ribbon or _get_default_ribbon()
+    except Exception:
+        return None
+    if ribbon is None:
+        return None
+    tab = _find_tab(ribbon, [title])
+    return describe_ribbon_tab(tab) if tab is not None else None
+
+
+def _collect_live_items(items, path, out, flat):
+    for item in _safe_iter(items):
+        type_name = _type_name(item)
+        if type_name in _RIBBON_SKIP_TYPES:
+            continue
+        if _is_stack(item):
+            # a row panel is a stack: its buttons sit flat on the panel
+            _collect_live_items(_child_items(item), path, out, flat)
+            continue
+        item_id = _safe_text(_getattr_safe(item, "Id"))
+        title = _item_title(item)
+        if not item_id and not title:
+            continue
+        if type_name in _RIBBON_GROUP_TYPES:
+            kind = "pulldown"
+        elif type_name in _RIBBON_BUTTON_TYPES:
+            kind = "button"
+        else:
+            kind = "ribbon-" + (type_name.lower() or "item")
+        level = {"name": item_id or title, "title": title or item_id}
+        entry = {
+            "kind": kind,
+            "name": level["name"],
+            "title": level["title"],
+            "tooltip": _item_tooltip_text(item),
+            "icon": None,
+            "icon_source": _getattr_safe(item, "Image") or _getattr_safe(item, "LargeImage"),
+            "control_id": item_id,
+            "path": path + [level],
+            "min_revit": None,
+            "max_revit": None,
+            "in_layout": True,
+            "children": [],
+            "type_name": type_name,
+        }
+        out.append(entry)
+        flat.append(entry)
+        if kind == "pulldown":
+            _collect_live_items(_child_items(item), path + [level], entry["children"], flat)
+
+
+def _type_name(obj):
+    get_type = _getattr_safe(obj, "GetType")
+    if callable(get_type):
+        try:
+            return _safe_text(_getattr_safe(get_type(), "Name"))
+        except Exception:
+            pass
+    return obj.__class__.__name__
+
+
+def _item_title(item):
+    for attr_name in ("Text", "AutomationName", "Name"):
+        text = _safe_text(_getattr_safe(item, attr_name))
+        if text.strip():
+            return text
+    return _id_tail(_getattr_safe(item, "Id"))
+
+
+def _item_tooltip_text(item):
+    tooltip = _getattr_safe(item, "ToolTip")
+    if tooltip is None:
+        return ""
+    if isinstance(tooltip, type(u"")) or isinstance(tooltip, str):
+        return " ".join(_safe_text(tooltip).split())
+    parts = []
+    for attr_name in ("Title", "Content", "ExpandedContent"):
+        value = _getattr_safe(tooltip, attr_name)
+        if value is not None and (isinstance(value, type(u"")) or isinstance(value, str)):
+            text = " ".join(_safe_text(value).split())
+            if text and text not in parts:
+                parts.append(text)
+    return " - ".join(parts)
+
+
+# -- the native Dynamo look for Dynamo buttons ----------------------------------
+
+
+def find_native_dynamo_button(ribbon):
+    """Revit's own Dynamo button (Manage > Visual Programming > Dynamo), or
+    None when Dynamo is not installed.  Items on My Ribbon's own panels and on
+    the library tab are skipped so a placed Dynamo graph never matches."""
+    for tab in _safe_iter(getattr(ribbon, "Tabs", [])):
+        if _is_ours(tab) or _normalize_label(_tab_title(tab)) == _normalize_label(LIBRARY_TAB):
+            continue
+        for panel in _tab_panels(tab):
+            if _is_ours(_panel_source(panel)):
+                continue
+            for item in _safe_iter(_panel_items(panel)):
+                if _normalize_label(_item_title(item)) == "dynamo" \
+                        or _normalize_label(_id_tail(_getattr_safe(item, "Id"))) == "dynamo":
+                    return item
+    return None
+
+
+def _apply_dynamo_icons(ribbon, placements, placed_items, sources, report, logger):
+    """Give placed Dynamo graphs Revit's own Dynamo images unless the user
+    chose an icon.  Same object on both panels, so the library copy changes
+    too - which is fine, that tab is hidden."""
+    wanted = []
+    for placement in placements:
+        source = sources.get(placement.get("source")) or {}
+        if source.get("kind") != "dynamo" or source.get("icon"):
+            continue
+        item = placed_items.get(placement.get("id"))
+        if item is not None:
+            wanted.append((placement, item))
+    if not wanted:
+        return
+    native = find_native_dynamo_button(ribbon)
+    if native is None:
+        return
+    large = _getattr_safe(native, "LargeImage")
+    small = _getattr_safe(native, "Image")
+    for placement, item in wanted:
+        done = False
+        if large is not None:
+            done = _try_setattr(item, "LargeImage", large) or done
+        if small is not None:
+            done = _try_setattr(item, "Image", small) or done
+        if done:
+            report["dynamo_icons"].append(placement.get("id"))
+    _log_debug(logger, "Dynamo icons applied to {0} item(s).".format(len(report["dynamo_icons"])))
 
 
 # -- mirror of what we added ------------------------------------------------
@@ -758,17 +980,19 @@ def _apply_tab_visibility(ribbon, registry, sources, destinations, new_mirror, o
     protected = set(PROTECTED_TABS)
     for dest in destinations.values():
         protected.add(_normalize_label(dest.get("tab")))
-    wanted_hidden = []
+    wanted_names = list(registry.get("hidden_tabs") or [])
     for source in sources.values():
-        if not source.get("hide_tab"):
+        if source.get("hide_tab"):
+            for tab_name in source.get("tab_names", []):
+                _add_unique_name(wanted_names, tab_name)
+    wanted_hidden = []
+    for tab_name in wanted_names:
+        key = _normalize_label(tab_name)
+        if key in protected:
             continue
-        for tab_name in source.get("tab_names", []):
-            key = _normalize_label(tab_name)
-            if key in protected:
-                continue
-            tab = _find_tab(ribbon, [tab_name])
-            if tab is not None and not any(tab is t for t in wanted_hidden):
-                wanted_hidden.append(tab)
+        tab = _find_tab(ribbon, [tab_name])
+        if tab is not None and not any(tab is t for t in wanted_hidden):
+            wanted_hidden.append(tab)
     for tab in wanted_hidden:
         if _try_setattr(tab, "IsVisible", False):
             new_mirror["hidden"].append(tab)
