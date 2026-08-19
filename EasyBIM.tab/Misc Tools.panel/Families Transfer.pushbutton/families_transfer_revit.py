@@ -10,6 +10,7 @@ document open/close) is shared with Families Downgrade and lives in
 from pyrevit import DB
 
 from easybim.copy_paste import copy_paste_options
+from easybim import family_load_options
 from easybim.family_selection_revit import application_from
 from easybim.family_selection_revit import close_family_doc
 from easybim.family_selection_revit import collect_families
@@ -78,95 +79,14 @@ def get_open_target_documents(uiapp, source_doc, selected_document_keys=None):
 
     return sort_target_documents(options)
 
-OVERWRITE = "overwrite"
-OVERWRITE_WITH_VALUES = "overwrite_values"
-DECLINE = "decline"
-
-
-class FamilyTransferLoadOptions(DB.IFamilyLoadOptions):
-    """Answers Revit's "this family already exists" question.
-
-    Revit raises this only when the family is both already in the target and
-    actually *different*, so a byte-identical family loads with no prompt at
-    all - the same as loading it by hand.
-
-    ``ask`` is a callable taking the family name and returning
-    ``(answer, apply_to_all)``. Left as ``None`` the answer is a silent
-    overwrite including parameter values: that is what a UI-less session gets,
-    and what a Revit too old to show the prompt falls back to.
-    """
-
-    def __init__(self, ask=None):
-        self._ask = ask
-        #: Set once the user ticks "do this for all"; suppresses later prompts.
-        self._remembered = None
-        self.family_name = ""
-        self.declined = False
-        #: How many times the user was actually asked - the apply-to-all is
-        #: only meaningful if this stays at 1 for a batch.
-        self.prompts = 0
-
-    def begin(self, family_name):
-        """Name the family about to load, and clear the last decline.
-
-        ``OnFamilyFound`` is handed only ``familyInUse`` and an out-parameter;
-        there is no family name anywhere in the callback, so the caller has to
-        leave one here for the prompt to use.
-        """
-        self.family_name = _safe_text(family_name)
-        self.declined = False
-
-    def _decide(self, family_name):
-        if self._remembered is not None:
-            return self._remembered
-        if self._ask is None:
-            return OVERWRITE_WITH_VALUES
-
-        self.prompts += 1
-        try:
-            answer, apply_to_all = self._ask(family_name)
-        except Exception:
-            # A prompt that cannot be shown must not abandon the family.
-            return OVERWRITE_WITH_VALUES
-
-        if answer not in (OVERWRITE, OVERWRITE_WITH_VALUES, DECLINE):
-            answer = OVERWRITE_WITH_VALUES
-        # A decline is never remembered: Cancel means "not this one", so the
-        # next family that clashes asks again.
-        if apply_to_all and answer != DECLINE:
-            self._remembered = answer
-        return answer
-
-    def OnFamilyFound(self, familyInUse, overwriteParameterValues):
-        del familyInUse
-        answer = self._decide(self.family_name)
-        if answer == DECLINE:
-            self.declined = True
-            return False
-        try:
-            overwriteParameterValues.Value = (answer == OVERWRITE_WITH_VALUES)
-        except Exception:
-            pass
-        return True
-
-    def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
-        del familyInUse
-        # Nested and shared families can name themselves, and they run through
-        # the same remembered answer so one tick covers them too.
-        name = _safe_text(getattr(sharedFamily, "Name", "")) or self.family_name
-        answer = self._decide(name)
-        if answer == DECLINE:
-            self.declined = True
-            return False
-        try:
-            source.Value = DB.FamilySource.Family
-        except Exception:
-            pass
-        try:
-            overwriteParameterValues.Value = (answer == OVERWRITE_WITH_VALUES)
-        except Exception:
-            pass
-        return True
+# The "Family Already Exists" prompt and the IFamilyLoadOptions that asks it
+# live in lib/easybim/family_load_options.py, shared with Family Types. The
+# names this command has always used are re-exported here, for its own call
+# sites and for the tests that read them off this module.
+FamilyTransferLoadOptions = family_load_options.FamilyLoadOptions
+OVERWRITE = family_load_options.OVERWRITE
+OVERWRITE_WITH_VALUES = family_load_options.OVERWRITE_WITH_VALUES
+DECLINE = family_load_options.DECLINE
 
 
 def pick_export_folder():
