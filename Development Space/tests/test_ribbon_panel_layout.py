@@ -14,7 +14,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TAB_DIR = REPO_ROOT / "EasyBIM.tab"
 FAMILY_PANEL = TAB_DIR / "Family.panel"
 MISC_PANEL = TAB_DIR / "Misc Tools.panel"
-MY_RIBBON_PANEL = TAB_DIR / "My Ribbon.panel"
+GENERAL_PANEL = TAB_DIR / "General.panel"
 
 FAMILY_BUTTONS = ("Family Types", "Families Downgrade", "Families Transfer")
 
@@ -55,12 +55,12 @@ class GridOffsetTests(unittest.TestCase):
         self.assertTrue((MISC_PANEL / "Grid Offset.pushbutton" / "script.py").is_file())
 
 
-class MyRibbonPanelTests(unittest.TestCase):
-    def test_my_ribbon_stands_alone_on_its_own_panel(self):
-        # pyRevit has no tab-level button, so a panel of one is as close to a
-        # single button as the ribbon gets.
-        self.assertEqual(_bundle_names(MY_RIBBON_PANEL, ".pushbutton"), ["My Ribbon.pushbutton"])
-        self.assertTrue((MY_RIBBON_PANEL / "My Ribbon.pushbutton" / "script.py").is_file())
+class GeneralPanelTests(unittest.TestCase):
+    def test_my_ribbon_sits_on_the_general_panel(self):
+        self.assertTrue((GENERAL_PANEL / "My Ribbon.pushbutton" / "script.py").is_file())
+
+    def test_the_panel_it_briefly_had_to_itself_is_gone(self):
+        self.assertFalse((TAB_DIR / "My Ribbon.panel").exists())
 
     def test_my_ribbon_left_misc_tools_behind(self):
         self.assertFalse((MISC_PANEL / "My Ribbon.pushbutton").exists())
