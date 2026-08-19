@@ -305,6 +305,8 @@ def setUpModule():
 
     sys.path.insert(0, str(COMMAND_DIR))
     # Order matters: each module imports the ones before it.
+    _load_as("easybim.family_load_options",
+             LIB_DIR / "family_load_options.py")
     selection = _load_as("easybim.family_selection_state",
                          LIB_DIR / "family_selection_state.py")
     fs_revit = _load_as("easybim.family_selection_revit",

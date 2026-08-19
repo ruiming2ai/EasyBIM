@@ -26,6 +26,7 @@ REVIT_MODULE = COMMAND_DIR / "families_transfer_revit.py"
 LIB_DIR = REPO_ROOT / "lib" / "easybim"
 UI_DIR = LIB_DIR / "ui"
 COPY_PASTE_MODULE = LIB_DIR / "copy_paste.py"
+LOAD_OPTIONS_MODULE = LIB_DIR / "family_load_options.py"
 # The family-selection pages, collectors and link cascade are shared with
 # Families Downgrade and live in lib; the checks below cover them from here
 # because this bundle is where they were built and where their tests live.
@@ -340,26 +341,33 @@ class FamiliesTransferContractTests(unittest.TestCase):
     def test_the_user_is_asked_before_a_family_is_overwritten(self):
         # Our own prompt, not Revit's: Revit's carries the same checkbox but
         # scopes it to one LoadFamily call, and this tool loads one family
-        # per call, so the tick would never cover a batch.
-        source = _code_without_prose(SCRIPT_MODULE)
+        # per call, so the tick would never cover a batch. The prompt moved to
+        # lib when Family Types became its second consumer; this bundle must
+        # still reach it rather than grow a copy.
+        source = _code_without_prose(LOAD_OPTIONS_MODULE)
         self.assertIn("AddCommandLink", source)
         self.assertIn("VerificationText", source)
         self.assertIn("WasVerificationChecked", source)
         self.assertNotIn("GetRevitUIFamilyLoadOptions", source)
         self.assertNotIn("GetRevitUIFamilyLoadOptions",
                          _code_without_prose(REVIT_MODULE))
+        self.assertIn(
+            "from easybim.family_load_options import build_overwrite_prompt",
+            SCRIPT_MODULE.read_text(encoding="utf-8"))
+        self.assertNotIn("AddCommandLink", _code_without_prose(SCRIPT_MODULE))
 
     def test_the_prompt_cannot_collide_with_the_other_checkbox(self):
         # Setting VerificationText and ExtraCheckBoxText on one TaskDialog
         # makes Show() throw.
-        source = _code_without_prose(SCRIPT_MODULE)
-        self.assertNotIn("ExtraCheckBoxText", source)
-        self.assertNotIn("WasExtraCheckBoxChecked", source)
+        for path in (LOAD_OPTIONS_MODULE, SCRIPT_MODULE):
+            source = _code_without_prose(path)
+            self.assertNotIn("ExtraCheckBoxText", source, path.name)
+            self.assertNotIn("WasExtraCheckBoxChecked", source, path.name)
 
     def test_the_prompt_owns_its_own_title(self):
         # Without TitleAutoPrefix = False, Revit prepends the command name
         # and the window stops matching the one it is imitating.
-        body = _function_source(SCRIPT_MODULE, "_build_overwrite_prompt")
+        body = _function_source(LOAD_OPTIONS_MODULE, "build_overwrite_prompt")
         self.assertIn("TitleAutoPrefix = False", body)
         self.assertIn("Family Already Exists", body)
 
@@ -377,6 +385,13 @@ class FamiliesTransferContractTests(unittest.TestCase):
         self.assertIn("FamilyTransferLoadOptions(ask=overwrite_prompt)", body)
         loop_at = body.index("for done, family_option in enumerate(families)")
         self.assertLess(body.index("FamilyTransferLoadOptions("), loop_at)
+        # The name this bundle has always used still resolves - it is now an
+        # alias for the shared class rather than a second implementation.
+        revit_source = REVIT_MODULE.read_text(encoding="utf-8")
+        self.assertIn(
+            "FamilyTransferLoadOptions = family_load_options.FamilyLoadOptions",
+            revit_source)
+        self.assertNotIn("class FamilyTransferLoadOptions", revit_source)
 
     def test_export_asks_before_it_replaces_files_on_disk(self):
         source = _code_without_prose(SCRIPT_MODULE)
