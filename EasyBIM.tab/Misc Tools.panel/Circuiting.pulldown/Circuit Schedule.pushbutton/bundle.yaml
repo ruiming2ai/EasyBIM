@@ -1,0 +1,8 @@
+title: |-
+  Circuit
+  Schedule
+tooltip: |-
+  Browse the model's electrical distribution as a tree, the way Revit's System Browser shows systems - but only circuits.
+
+  The service board is at the root, every sub-panel sits under the circuit that feeds it, and end devices are the leaves. Search by circuit number, panel or load name; double-click a row to select and zoom to it in the active view.
+author: Ruiming Liu
