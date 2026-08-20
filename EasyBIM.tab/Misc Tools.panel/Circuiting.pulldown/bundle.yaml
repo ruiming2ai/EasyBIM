@@ -1,3 +1,6 @@
 title: Circuiting
 tooltip: Batch tools for electrical circuits.
 author: Ruiming Liu
+layout:
+  - Update Circuit Rating
+  - Circuit Schedule
