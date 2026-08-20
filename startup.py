@@ -35,6 +35,18 @@ except Exception:
 
 
 try:
+    from easybim import circuit_schedule_panel
+
+    # Same rule as the clash pane: Revit only accepts RegisterDockablePane
+    # during application init, so the registration has to happen every session
+    # even when the browser is never opened.  It costs nothing on its own - the
+    # pane stays hidden and holds no state until Circuit Schedule opens it.
+    circuit_schedule_panel.register()
+except Exception:
+    pass
+
+
+try:
     from easybim import temp_phase_close
     temp_phase_close.install_completion_handlers()
 except Exception as ex:

@@ -186,6 +186,76 @@ that ended up blank all show up here. A circuit is listed if *any* of the
 parameters you ticked reads zero or nothing. That makes the report the list of
 what is left to do — when it is empty it says so.
 
+### Circuit Schedule
+
+Revit's System Browser shows every system in the model at once and cannot be
+searched. This is the same idea narrowed to electricity: a docked panel holding
+the whole distribution chain as one tree, with a search box.
+
+The **service board sits at the root** — whatever no circuit feeds. Under it are
+its circuits; under each circuit are the things that circuit feeds. A downstream
+panel is not a leaf: it opens up into its own circuits, so a receptacle six
+levels down is reached the way power actually reaches it, board by board.
+
+Three kinds of row, and they are meant to look different:
+
+| | | |
+| --- | --- | --- |
+| ▣ | **Board** | Bold. Its second line names its feeder — `fed from DP-2 / 9` — so every board says where it comes from. The root says `utility service`. |
+| ▼ | **Circuit** | Its number sits in its own column so the numbers line up down the panel. The second line is the electrical reading: `225 A · 3P · 208 V · 30 kVA`. |
+| ▪ | **Load** | Small and grey, always a leaf. Second line is the category and level. |
+
+That split is the upstream/downstream story. **A board tells you where it comes
+from; a circuit tells you where it goes.** Within any circuit, a child that is
+itself a distribution board is bold and opens; a receptacle is small, grey and
+does not — so a feeder to a sub-board never reads like a branch circuit. Colour
+runs from dark at the service to pale far downstream, on the row glyph and its
+left rule only, so it survives both Revit themes.
+
+Selecting a row fills the **path line** at the top of the panel:
+`MSB ▸ 3 ▸ DP-2 ▸ 9 ▸ LP-2 ▸ 12 ▸ Recept East`. That is what keeps "upstream"
+legible after a search drops you six levels down with every parent scrolled off
+the top.
+
+**Double-click** a row — or select it and press **Show** — to select and zoom to
+it in the active view. A circuit frames everything on it at once. **Refresh**
+re-reads the model; your expanded rows and your search survive it. Nothing here
+ever writes to the model.
+
+#### Searching
+
+Type a circuit number, a panel name, a load name or an element id. The tree
+prunes to the branches that answer, keeping every parent so the chain back to
+the service stays on screen, and opens them for you.
+
+Circuit numbers are matched **as whole numbers, not as text**: `12` finds
+circuit `12` and circuit `12,14,16`, and does **not** find `112`. In a project
+with three-digit circuits a substring match makes number search useless, so it
+is the one field that is not matched by substring. `LP-1/12` and `LP-1 12` both
+work. Everything else — panel names, load names, categories — is plain
+case-insensitive substring. **Esc** clears the box; **Enter** jumps to and shows
+the first match.
+
+#### What the model can throw at it
+
+- A **spare or space** — a circuit with nothing on it — is listed and marked
+  `spare`, the way it would be on a panel schedule.
+- A circuit with **no panel assigned** cannot hang anywhere, so it goes in an
+  `Unassigned circuits` group at the bottom rather than being dropped.
+- A **board fed by two circuits** is drawn in full under the first and appears
+  under the second in italics as `already shown under …`. Both feeders show it;
+  the subtree is only drawn once.
+- A **circular feed** — a board somehow upstream of itself — stops there in
+  orange rather than recursing. It is a modelling error and the panel says so.
+
+#### One restart, once
+
+The panel docks the way Revit's own browsers do, and Revit only accepts a new
+dockable panel while it is starting up. So the first time after installing or
+updating the extension, **restart Revit** — a pyRevit reload is not enough. Until
+you do, Circuit Schedule opens as a floating window pinned to the right instead,
+which works the same but does not dock.
+
 ## Families Transfer (Family)
 
 Collect loadable families from wherever they happen to be, then push them into
