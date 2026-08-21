@@ -541,7 +541,19 @@ def _title_block_for_sheet(doc, sheet):
 
 
 def _sheet_owned_elements(doc, sheet):
-    """{int id: element} for everything the sheet owns, viewports included."""
+    """{int id: element} for the things the sheet itself owns.
+
+    ``FilteredElementCollector(doc, sheet.Id)`` is scoped by *visibility*, not
+    by ownership: it also returns the model elements seen through the placed
+    viewports.  This repo names that same unfiltered call `_visible_element_ids`
+    in Families Downgrade, and Grid Offset depends on the behaviour to reach
+    project-wide `DB.Grid` datums through a view.
+
+    Handing one of those to `_move_sheet_element` would translate real model
+    geometry by a paper-space vector, which is why the ownership test below is
+    not optional.  Sheet Manager's `copy_sheet_detailing` and Linked Sheets
+    Transfer's `sheet_detailing_ids` guard the same collector the same way.
+    """
     found = {}
     try:
         elements = (
@@ -552,11 +564,36 @@ def _sheet_owned_elements(doc, sheet):
     except Exception:
         return found
 
+    sheet_id_int = _eid_int(sheet.Id)
+    by_id = {}
+    candidates = []
+
     for element in elements:
         element_id = _eid_int(getattr(element, "Id", None))
         if element_id in (None, -1):
             continue
-        found[element_id] = element
+
+        is_viewport = isinstance(element, DB.Viewport)
+
+        owner_id = None
+        if not is_viewport:
+            try:
+                owner_id = _eid_int(element.OwnerViewId)
+            except Exception:
+                owner_id = None
+
+        try:
+            is_revision_schedule = bool(
+                getattr(element, "IsTitleblockRevisionSchedule", False)
+            )
+        except Exception:
+            is_revision_schedule = False
+
+        by_id[element_id] = element
+        candidates.append((element_id, owner_id, is_viewport, is_revision_schedule))
+
+    for element_id in sheet_titleblocks.sheet_owned_ids(candidates, sheet_id_int):
+        found[element_id] = by_id[element_id]
     return found
 
 
