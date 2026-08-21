@@ -116,7 +116,12 @@
                             <CheckBox x:Name="match_title_line_cb" Content="Match view title line length" Margin="0,0,0,8"/>
                             <CheckBox x:Name="assign_scope_cb" Content="Assign Scope Box" Margin="0,0,0,8" Click="assign_scope_clicked"/>
                             <CheckBox x:Name="assign_crop_cb" Content="Assign Crop View Region" Margin="0,0,0,8" Click="assign_crop_clicked"/>
-                            <CheckBox x:Name="match_viewport_type_cb" Content="Match viewport type"/>
+                            <CheckBox x:Name="match_viewport_type_cb" Content="Match viewport type" Margin="0,0,0,8"/>
+                            <CheckBox x:Name="align_title_block_cb" Content="Align Title Block" Margin="0,0,0,8"/>
+                            <CheckBox x:Name="move_sheet_content_cb"
+                                      Content="Move other sheet elements with it"
+                                      Margin="20,0,0,0"
+                                      IsEnabled="{Binding IsChecked, ElementName=align_title_block_cb}"/>
                         </StackPanel>
                     </Border>
 
