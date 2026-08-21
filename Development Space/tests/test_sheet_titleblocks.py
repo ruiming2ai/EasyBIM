@@ -205,16 +205,19 @@ class SheetOwnedIdsTests(unittest.TestCase):
 
     SHEET = 99
 
-    # (element_id, owner_view_id, is_viewport, is_titleblock_revision_schedule)
-    TITLE_BLOCK = (500, 99, False, False)
-    TEXT_NOTE = (600, 99, False, False)
-    VIEWPORT = (501, None, True, False)
-    WALL_THROUGH_A_VIEWPORT = (900, None, False, False)
-    GRID_OWNED_BY_ANOTHER_VIEW = (901, 42, False, False)
-    TB_REVISION_SCHEDULE = (700, 99, False, True)
+    # (element_id, owner_view_id, is_viewport, is_tb_revision_schedule,
+    #  is_title_block)
+    TITLE_BLOCK = (500, 99, False, False, True)
+    SECOND_TITLE_BLOCK = (502, 99, False, False, True)
+    TEXT_NOTE = (600, 99, False, False, False)
+    VIEWPORT = (501, None, True, False, False)
+    WALL_THROUGH_A_VIEWPORT = (900, None, False, False, False)
+    GRID_OWNED_BY_ANOTHER_VIEW = (901, 42, False, False, False)
+    TB_REVISION_SCHEDULE = (700, 99, False, True, False)
 
     def _owned(self, *candidates):
-        return titleblocks.sheet_owned_ids(list(candidates), self.SHEET)
+        return titleblocks.sheet_owned_ids(list(candidates), self.SHEET,
+                                           keep_title_block_id=500)
 
     def test_a_model_element_seen_through_a_viewport_is_never_moved(self):
         self.assertEqual(
@@ -225,7 +228,19 @@ class SheetOwnedIdsTests(unittest.TestCase):
             [500], self._owned(self.TITLE_BLOCK, self.GRID_OWNED_BY_ANOTHER_VIEW))
 
     def test_an_unreadable_owner_excludes_rather_than_admits(self):
-        self.assertEqual([], self._owned((800, None, False, False)))
+        self.assertEqual([], self._owned((800, None, False, False, False)))
+
+    def test_only_the_frame_being_positioned_moves(self):
+        # A sheet can carry more than one title block. Moving the others would
+        # make them sit still with the sub-option off and jump with it on.
+        self.assertEqual(
+            [500], self._owned(self.TITLE_BLOCK, self.SECOND_TITLE_BLOCK))
+
+    def test_with_no_frame_named_no_title_block_moves(self):
+        self.assertEqual(
+            [600],
+            titleblocks.sheet_owned_ids(
+                [self.TITLE_BLOCK, self.TEXT_NOTE], self.SHEET))
 
     def test_the_sheets_own_annotation_travels_with_the_frame(self):
         self.assertEqual(
@@ -247,8 +262,8 @@ class SheetOwnedIdsTests(unittest.TestCase):
             self._owned(self.TITLE_BLOCK, self.VIEWPORT, self.TEXT_NOTE))
 
     def test_unusable_ids_are_dropped(self):
-        self.assertEqual([], self._owned((None, 99, False, False),
-                                         (-1, 99, False, False)))
+        self.assertEqual([], self._owned((None, 99, False, False, False),
+                                         (-1, 99, False, False, False)))
 
     def test_nothing_in_is_nothing_out(self):
         self.assertEqual([], titleblocks.sheet_owned_ids(None, self.SHEET))
@@ -261,6 +276,7 @@ class SheetOwnedIdsTests(unittest.TestCase):
                         self.VIEWPORT,
                         self.GRID_OWNED_BY_ANOTHER_VIEW,
                         self.TEXT_NOTE,
+                        self.SECOND_TITLE_BLOCK,
                         self.TB_REVISION_SCHEDULE))
 
 
