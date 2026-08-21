@@ -159,7 +159,14 @@ def _map_reference_point_to_host(model_point_in_ref_doc, doc_option):
         return None, "Failed converting linked reference model point to host coordinates: {}".format(ex)
 
 
-def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
+def _try_build_projection(doc, viewport):
+    """A ``SheetProjection`` for a placed view, or ``(None, reason)``.
+
+    Build this *after* every configuration write and after a regeneration.
+    `sheet_geometry`'s own docstring is explicit about why: `View.Outline` moves
+    whenever the crop, the annotation crop or the scale changes, so "a
+    SheetProjection is only valid for as long as the view is untouched".
+    """
     if not viewport:
         return None, "Viewport is missing."
 
@@ -174,8 +181,11 @@ def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
 
     # One shared implementation with Linked Sheets Transfer, in
     # lib/easybim/sheet_geometry.py - two copies of this maths would drift.
-    projection, projection_reason = sheet_geometry.build_projection(
-        view, viewport)
+    return sheet_geometry.build_projection(view, viewport)
+
+
+def _try_compute_model_anchor_on_sheet(doc, viewport, model_point):
+    projection, projection_reason = _try_build_projection(doc, viewport)
     if projection is None:
         return None, projection_reason
 
@@ -500,6 +510,65 @@ def _can_match_viewport_type(target_viewport, ref_type_id):
     return True, ""
 
 
+def _point_text(point):
+    """A point as `(x, y, z)` in feet, whatever shape it arrives in."""
+    if point is None:
+        return "<none>"
+    try:
+        return "({:.6f}, {:.6f}, {:.6f})".format(
+            float(point.X), float(point.Y), float(point.Z))
+    except Exception:
+        pass
+    try:
+        return "({:.6f}, {:.6f}, {:.6f})".format(
+            float(point[0]), float(point[1]), float(point[2]))
+    except Exception:
+        return _safe_text(point)
+
+
+def _point_values(point):
+    if point is None:
+        return None
+    try:
+        return (float(point.X), float(point.Y), float(point.Z))
+    except Exception:
+        pass
+    try:
+        return (float(point[0]), float(point[1]), float(point[2]))
+    except Exception:
+        return None
+
+
+def _delta_of(before, after):
+    start = _point_values(before)
+    end = _point_values(after)
+    if start is None or end is None:
+        return None
+    return (end[0] - start[0], end[1] - start[1], end[2] - start[2])
+
+
+def _builtin_category_int(builtin_category):
+    try:
+        return int(builtin_category)
+    except Exception:
+        return None
+
+
+TITLE_BLOCK_CATEGORY_INT = _builtin_category_int(
+    getattr(DB.BuiltInCategory, "OST_TitleBlocks", None))
+
+
+def _element_category(element):
+    """``(category_id_int, category_name)``; either half can be None/blank."""
+    category = getattr(element, "Category", None)
+    if category is None:
+        return None, ""
+    try:
+        return _eid_int(category.Id), _safe_text(category.Name)
+    except Exception:
+        return None, ""
+
+
 def _active_sheet_hint(doc):
     """(sheet_id_int, view_id_int) for whatever the user currently has open.
 
@@ -540,7 +609,7 @@ def _title_block_for_sheet(doc, sheet):
     return sheet_titleblocks.first_title_block(DB, doc, sheet)
 
 
-def _sheet_owned_elements(doc, sheet):
+def _sheet_owned_elements(doc, sheet, keep_title_block_id=None):
     """{int id: element} for the things the sheet itself owns.
 
     ``FilteredElementCollector(doc, sheet.Id)`` is scoped by *visibility*, not
@@ -589,10 +658,23 @@ def _sheet_owned_elements(doc, sheet):
         except Exception:
             is_revision_schedule = False
 
-        by_id[element_id] = element
-        candidates.append((element_id, owner_id, is_viewport, is_revision_schedule))
+        category_id, _ = _element_category(element)
+        is_title_block = (
+            TITLE_BLOCK_CATEGORY_INT is not None
+            and category_id == TITLE_BLOCK_CATEGORY_INT
+        )
 
-    for element_id in sheet_titleblocks.sheet_owned_ids(candidates, sheet_id_int):
+        by_id[element_id] = element
+        candidates.append(
+            (element_id, owner_id, is_viewport, is_revision_schedule, is_title_block)
+        )
+
+    owned_ids = sheet_titleblocks.sheet_owned_ids(
+        candidates,
+        sheet_id_int,
+        keep_title_block_id=keep_title_block_id,
+    )
+    for element_id in owned_ids:
         found[element_id] = by_id[element_id]
     return found
 
@@ -687,12 +769,42 @@ class RunStats(object):
         # whole run before apply, and a sheet without a title block must not
         # cost every other sheet its alignment.
         self.notes = []
+        # What actually moved, so a wrong result can name its own cause
+        # instead of costing a round trip.
+        self.sheet_diagnostics = []
+        self.viewport_diagnostics = []
 
     def add_issue(self, viewport_id, view_id, sheet_label, view_label, reason, stage):
         self.issues.append(IssueRecord(viewport_id, view_id, sheet_label, view_label, stage, reason))
 
     def add_note(self, text):
         self.notes.append(_safe_text(text))
+
+    def add_sheet_diagnostic(self, sheet_label, shift, point_before, point_after,
+                             moved_by_kind, failed):
+        self.sheet_diagnostics.append(
+            {
+                "sheet_label": sheet_label,
+                "shift": shift,
+                "point_before": point_before,
+                "point_after": point_after,
+                "moved_by_kind": moved_by_kind,
+                "failed": failed,
+            }
+        )
+
+    def add_viewport_diagnostic(self, row, center_before, center_after,
+                                target_point, landed_before):
+        self.viewport_diagnostics.append(
+            {
+                "sheet_label": getattr(row, "sheet_label", "<unknown>"),
+                "view_name": getattr(row, "view_name", "<unknown>"),
+                "center_before": center_before,
+                "center_after": center_after,
+                "target_point": target_point,
+                "landed_before": landed_before,
+            }
+        )
 
 
 class ReferenceDocOption(object):
@@ -1306,8 +1418,12 @@ class ViewAlignWindow(forms.WPFWindow):
                 )
                 continue
 
-            owned = _sheet_owned_elements(self.active_doc, sheet)
             title_block_id = _eid_int(title_block.Id)
+            owned = _sheet_owned_elements(
+                self.active_doc,
+                sheet,
+                keep_title_block_id=title_block_id,
+            )
             owned[title_block_id] = title_block
 
             move_ids = sheet_titleblocks.plan_sheet_move(
@@ -1332,17 +1448,29 @@ class ViewAlignWindow(forms.WPFWindow):
         for plan in plans:
             shift = plan["shift"]
             sheet_label = plan["sheet_label"]
+            elements = plan["elements"]
             pinned_elements = []
+            moved_by_kind = {}
+            failed = []
 
-            for index, element in enumerate(plan["elements"]):
+            title_block = elements[0] if elements else None
+            point_before = sheet_titleblocks.location_point(title_block)
+
+            for index, element in enumerate(elements):
                 if _unpin_if_pinned(element):
                     pinned_elements.append(element)
                     stats.pinned_unpinned += 1
 
                 ok_move, move_reason = _move_sheet_element(element, shift)
+                _, kind = _element_category(element)
+                kind = kind or type(element).__name__
+
                 if not ok_move:
+                    failed.append("{} ({})".format(kind, move_reason))
                     stats.add_note("{}: {}".format(sheet_label, move_reason))
                     continue
+
+                moved_by_kind[kind] = moved_by_kind.get(kind, 0) + 1
 
                 # plan_sheet_move always puts the title block first.
                 if index == 0:
@@ -1356,6 +1484,86 @@ class ViewAlignWindow(forms.WPFWindow):
                     stats.pinned_restored += 1
                 except Exception:
                     pass
+
+            stats.add_sheet_diagnostic(
+                sheet_label,
+                shift,
+                point_before,
+                sheet_titleblocks.location_point(title_block),
+                moved_by_kind,
+                failed,
+            )
+
+    def _print_diagnostics(self, stats, headline):
+        """Say what actually moved, and by how much, in the output window.
+
+        A misplaced result is otherwise only visible on the sheet, where the
+        cause is invisible: a frame displaced by an exact multiple of the shift
+        means something moved it repeatedly, while an arbitrary residual means
+        something read a derived value that had gone stale.  The numbers below
+        tell those two apart without another round trip.
+        """
+        if not stats.sheet_diagnostics and not stats.viewport_diagnostics:
+            return
+
+        try:
+            output = script.get_output()
+        except Exception:
+            output = None
+
+        lines = ["", "=" * 72, "View Align diagnostics - {}".format(headline), "=" * 72]
+
+        for entry in stats.sheet_diagnostics:
+            shift = entry["shift"] or (0.0, 0.0, 0.0)
+            lines.append("")
+            lines.append("SHEET {}".format(entry["sheet_label"]))
+            lines.append("  shift requested : {}".format(_point_text(shift)))
+            lines.append("  title block     : {} -> {}".format(
+                _point_text(entry["point_before"]),
+                _point_text(entry["point_after"]),
+            ))
+            lines.append("  title block moved by: {}".format(
+                _point_text(_delta_of(entry["point_before"], entry["point_after"]))
+            ))
+            if entry["moved_by_kind"]:
+                for kind in sorted(entry["moved_by_kind"].keys()):
+                    lines.append("    moved {:>4} x {}".format(
+                        entry["moved_by_kind"][kind], kind))
+            else:
+                lines.append("    moved nothing")
+            for failure in entry["failed"]:
+                lines.append("    FAILED {}".format(failure))
+
+        for entry in stats.viewport_diagnostics:
+            lines.append("")
+            lines.append("VIEWPORT {} on {}".format(
+                entry["view_name"], entry["sheet_label"]))
+            lines.append("  box centre      : {} -> {}".format(
+                _point_text(entry["center_before"]),
+                _point_text(entry["center_after"]),
+            ))
+            lines.append("  anchor landed at: {}".format(
+                _point_text(entry["landed_before"])))
+            lines.append("  anchor wanted at: {}".format(
+                _point_text(entry["target_point"])))
+            lines.append("  delta applied   : {}".format(
+                _point_text(_delta_of(entry["landed_before"], entry["target_point"]))
+            ))
+
+        lines.append("")
+        lines.append("Sheet coordinates are in feet. A title block that moved by an exact")
+        lines.append("multiple of the requested shift was moved more than once; an arbitrary")
+        lines.append("residual points at a stale derived value instead.")
+        lines.append("=" * 72)
+
+        body = "\n".join(lines)
+        if output is not None:
+            try:
+                print(body)
+                return
+            except Exception:
+                pass
+        logger.info(body)
 
     def _build_summary_text(self, stats, headline):
         lines = [
@@ -1627,12 +1835,15 @@ class ViewAlignWindow(forms.WPFWindow):
             if has_row_issue:
                 continue
 
+            # target_anchor is deliberately NOT carried forward: it was
+            # measured before any write, and the placement re-measures after
+            # the regeneration instead. It exists here only to prove the
+            # viewport can be measured at all.
             apply_context_rows.append(
                 {
                     "row": row,
                     "viewport": viewport,
                     "view": view,
-                    "target_anchor": target_anchor,
                 }
             )
 
@@ -1665,17 +1876,17 @@ class ViewAlignWindow(forms.WPFWindow):
             tx = DB.Transaction(self.active_doc, "Apply View Align")
             tx.Start()
 
-            # The frame is settled before any viewport is placed. This move is
-            # sheet-space only, so it cannot disturb View.Outline - the stale
-            # derived value that makes the crop and scope box options risky -
-            # and the viewports being aligned are excluded from it anyway.
+            # ---- pass 1: every write that can reshape a viewport box -------
+            # Nothing is measured yet. View.Outline is derived from the crop,
+            # the annotation crop, the scale and the view template, and stays
+            # stale until the document regenerates, so a measurement taken
+            # before these writes describes a box that no longer exists.
             self._apply_title_block_moves(title_block_plans, stats)
 
             for context in apply_context_rows:
                 current_row = context["row"]
                 current_viewport = context["viewport"]
                 current_view = context["view"]
-                target_anchor = context["target_anchor"]
 
                 stats.targets_processed += 1
 
@@ -1706,10 +1917,66 @@ class ViewAlignWindow(forms.WPFWindow):
                         raise Exception(crop_reason)
                     stats.crop_assigned += 1
 
-                delta = _xyz_sub(ref_anchor, target_anchor)
-                current_center = current_viewport.GetBoxCenter()
-                current_viewport.SetBoxCenter(_xyz_add(current_center, delta))
+            # ---- the regeneration that makes the next reads describe reality
+            # `Linked Sheets Transfer.place_and_align` does exactly this, and
+            # says why: "Measuring a stale outline is exactly how a viewport
+            # ends up confidently misplaced."
+            current_row = None
+            current_viewport = None
+            try:
+                self.active_doc.Regenerate()
+            except Exception as regen_error:
+                raise Exception(
+                    "Could not regenerate before measuring: {}".format(regen_error)
+                )
+
+            # The reference is re-measured in that same regenerated state, so
+            # both sides of the comparison come from one moment in time.
+            ref_sheet_anchor, ref_sheet_reason = _try_compute_model_anchor_on_sheet(
+                reference.doc_option.doc,
+                ref_viewport,
+                ref_model_anchor_in_ref_doc,
+            )
+            if ref_sheet_anchor is None:
+                raise Exception(
+                    "Reference viewport could not be measured after the writes: {}".format(
+                        ref_sheet_reason
+                    )
+                )
+
+            ref_sheet_point = sheet_geometry.to_xyz(ref_sheet_anchor)
+            anchor_point = sheet_geometry.to_xyz(global_model_anchor_host)
+            if ref_sheet_point is None or anchor_point is None:
+                raise Exception("Reference anchor could not be read as a point.")
+
+            # ---- pass 2: measure last, then place --------------------------
+            for context in apply_context_rows:
+                current_row = context["row"]
+                current_viewport = context["viewport"]
+
+                projection, projection_reason = _try_build_projection(
+                    self.active_doc,
+                    current_viewport,
+                )
+                if projection is None:
+                    raise Exception(
+                        "Measurement after the writes failed: {}".format(projection_reason)
+                    )
+
+                center_before = current_viewport.GetBoxCenter()
+                new_center = projection.box_center_for(anchor_point, ref_sheet_point)
+                current_viewport.SetBoxCenter(
+                    _xyz(new_center[0], new_center[1], new_center[2])
+                )
                 stats.aligned += 1
+
+                stats.add_viewport_diagnostic(
+                    current_row,
+                    center_before,
+                    new_center,
+                    ref_sheet_point,
+                    projection.project(anchor_point),
+                )
 
                 if options.match_title_position:
                     ok_pos, pos_reason = _set_label_offset(current_viewport, ref_label_offset)
@@ -1750,11 +2017,13 @@ class ViewAlignWindow(forms.WPFWindow):
                 pass
 
             summary = self._build_summary_text(stats, "View Align aborted during apply. Transaction rolled back.")
+            self._print_diagnostics(stats, "aborted during apply, rolled back")
             self._set_status("Apply failed and was rolled back.")
             forms.alert(summary, title="View Align", warn_icon=True)
             return
 
         summary = self._build_summary_text(stats, "View Align completed.")
+        self._print_diagnostics(stats, "completed")
         self._set_status("Done. Aligned {} of {} selected target viewport(s).".format(stats.aligned, stats.targets_selected))
         forms.alert(summary, title="View Align", warn_icon=False)
 
