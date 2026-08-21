@@ -22,6 +22,7 @@ from __future__ import print_function
 from pyrevit import DB
 
 from easybim import sheet_geometry
+from easybim import sheet_titleblocks
 from easybim.copy_paste import copy_paste_options
 from easybim.compat import eid_to_int
 from easybim.compat import element_id_factory
@@ -249,15 +250,14 @@ def _title_block_label(symbol):
 
 
 def sheet_title_blocks(document, sheet):
-    """Title block instances placed on one sheet, in element order."""
-    try:
-        return list(
-            DB.FilteredElementCollector(document, sheet.Id)
-            .OfCategory(DB.BuiltInCategory.OST_TitleBlocks)
-            .WhereElementIsNotElementType()
-            .ToElements())
-    except Exception:
-        return []
+    """Title block instances placed on one sheet, in element order.
+
+    One shared implementation with `View Align`, in
+    lib/easybim/sheet_titleblocks.py - both tools move a title block so a
+    sheet's frame lines up with viewports placed by absolute sheet
+    coordinates, and two copies of that would drift.
+    """
+    return sheet_titleblocks.sheet_title_blocks(DB, document, sheet)
 
 
 def _classify_view(view):

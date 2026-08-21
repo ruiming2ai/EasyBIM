@@ -24,6 +24,7 @@ except Exception:
 
 
 from easybim import sheet_geometry
+from easybim import sheet_titleblocks
 from easybim.compat import eid_to_int as _eid_int
 from easybim.compat import safe_text as _safe_text
 
@@ -499,13 +500,84 @@ def _can_match_viewport_type(target_viewport, ref_type_id):
     return True, ""
 
 
+def _title_block_for_sheet(doc, sheet):
+    """(title_block, extra_count) for one sheet; (None, 0) when it has none."""
+    return sheet_titleblocks.first_title_block(DB, doc, sheet)
+
+
+def _sheet_owned_elements(doc, sheet):
+    """{int id: element} for everything the sheet owns, viewports included."""
+    found = {}
+    try:
+        elements = (
+            DB.FilteredElementCollector(doc, sheet.Id)
+            .WhereElementIsNotElementType()
+            .ToElements()
+        )
+    except Exception:
+        return found
+
+    for element in elements:
+        element_id = _eid_int(getattr(element, "Id", None))
+        if element_id in (None, -1):
+            continue
+        found[element_id] = element
+    return found
+
+
+def _unpin_if_pinned(element):
+    try:
+        if bool(getattr(element, "Pinned", False)):
+            element.Pinned = False
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _move_sheet_element(element, shift):
+    """Move one sheet-owned element by a (dx, dy, dz) sheet-space shift.
+
+    Issued one element at a time on purpose. The Revit API has no
+    ``CanMoveElement`` to pre-test with - the ``Can*`` pair is
+    ``CanMirrorElement``/``CanMirrorElements`` - so a grouped, workset-locked
+    or otherwise immovable element can only be discovered by trying. One at a
+    time makes that cost a single reported note instead of rolling back the
+    whole run.
+
+    A viewport is repositioned through ``SetBoxCenter``, this tool's own idiom
+    for moving one, rather than through ``ElementTransformUtils``.
+    """
+    if not _is_valid_api_object(element):
+        return False, "Element is no longer valid."
+
+    try:
+        if isinstance(element, DB.Viewport):
+            center = element.GetBoxCenter()
+            element.SetBoxCenter(
+                _xyz(center.X + shift[0], center.Y + shift[1], center.Z + shift[2])
+            )
+        else:
+            DB.ElementTransformUtils.MoveElement(
+                element.Document,
+                element.Id,
+                _xyz(shift[0], shift[1], shift[2]),
+            )
+        return True, ""
+    except Exception as ex:
+        return False, "Failed moving element: {}".format(ex)
+
+
 class AlignmentOptions(object):
-    def __init__(self, match_title_position, match_title_line_length, assign_scope_box, assign_crop_region, match_viewport_type):
+    def __init__(self, match_title_position, match_title_line_length, assign_scope_box, assign_crop_region, match_viewport_type, align_title_block=False, move_sheet_content=False):
         self.match_title_position = bool(match_title_position)
         self.match_title_line_length = bool(match_title_line_length)
         self.assign_scope_box = bool(assign_scope_box)
         self.assign_crop_region = bool(assign_crop_region)
         self.match_viewport_type = bool(match_viewport_type)
+        self.align_title_block = bool(align_title_block)
+        # Only meaningful under align_title_block; the sub-option cannot act alone.
+        self.move_sheet_content = bool(align_title_block) and bool(move_sheet_content)
 
 
 class ReferenceSelection(object):
@@ -534,12 +606,21 @@ class RunStats(object):
         self.scope_assigned = 0
         self.crop_assigned = 0
         self.viewport_type_matched = 0
+        self.title_blocks_aligned = 0
+        self.sheet_elements_moved = 0
         self.pinned_unpinned = 0
         self.pinned_restored = 0
         self.issues = []
+        # Notes are deliberately NOT issues: anything in self.issues aborts the
+        # whole run before apply, and a sheet without a title block must not
+        # cost every other sheet its alignment.
+        self.notes = []
 
     def add_issue(self, viewport_id, view_id, sheet_label, view_label, reason, stage):
         self.issues.append(IssueRecord(viewport_id, view_id, sheet_label, view_label, stage, reason))
+
+    def add_note(self, text):
+        self.notes.append(_safe_text(text))
 
 
 class ReferenceDocOption(object):
@@ -626,6 +707,8 @@ class ViewAlignWindow(forms.WPFWindow):
         self.assign_scope_cb.IsChecked = False
         self.assign_crop_cb.IsChecked = False
         self.match_viewport_type_cb.IsChecked = False
+        self.align_title_block_cb.IsChecked = False
+        self.move_sheet_content_cb.IsChecked = False
 
     def _set_status(self, text):
         self.status_tb.Text = _safe_text(text)
@@ -1071,6 +1154,99 @@ class ViewAlignWindow(forms.WPFWindow):
             stage=stage,
         )
 
+    def _plan_title_block_moves(self, ref_point, rows_by_sheet, options, stats):
+        """One move plan per target sheet: the elements to shift, and by how much.
+
+        Planned per *sheet*, not per viewport - a sheet carrying three selected
+        viewports must move its frame once, not three times.
+
+        A sheet with no title block is recorded as a note and dropped from the
+        plan. Its viewports still align. It must never reach ``stats.issues``,
+        which aborts the entire run before anything is written.
+        """
+        plans = []
+
+        for sheet_id_int in sorted(rows_by_sheet.keys()):
+            rows = rows_by_sheet[sheet_id_int]
+            sheet = rows[0].sheet
+            sheet_label = rows[0].sheet_label
+
+            title_block, extra_count = _title_block_for_sheet(self.active_doc, sheet)
+            if title_block is None:
+                stats.add_note(
+                    "{}: sheet has no title block; title block alignment skipped.".format(sheet_label)
+                )
+                continue
+
+            if extra_count:
+                stats.add_note(
+                    "{}: sheet has {} extra title block(s); the first one was used.".format(
+                        sheet_label,
+                        extra_count,
+                    )
+                )
+
+            shift = sheet_titleblocks.title_block_shift(
+                ref_point,
+                sheet_titleblocks.location_point(title_block),
+            )
+            if shift is None:
+                stats.add_note(
+                    "{}: title block is already at the reference position.".format(sheet_label)
+                )
+                continue
+
+            owned = _sheet_owned_elements(self.active_doc, sheet)
+            title_block_id = _eid_int(title_block.Id)
+            owned[title_block_id] = title_block
+
+            move_ids = sheet_titleblocks.plan_sheet_move(
+                sorted(owned.keys()),
+                [row.viewport_id_int for row in rows],
+                options.move_sheet_content,
+                title_block_id=title_block_id,
+            )
+
+            plans.append(
+                {
+                    "sheet_label": sheet_label,
+                    "shift": shift,
+                    "elements": [owned[x] for x in move_ids if x in owned],
+                }
+            )
+
+        return plans
+
+    def _apply_title_block_moves(self, plans, stats):
+        """Shift each planned sheet. Runs inside the caller's transaction."""
+        for plan in plans:
+            shift = plan["shift"]
+            sheet_label = plan["sheet_label"]
+            pinned_elements = []
+
+            for index, element in enumerate(plan["elements"]):
+                if _unpin_if_pinned(element):
+                    pinned_elements.append(element)
+                    stats.pinned_unpinned += 1
+
+                ok_move, move_reason = _move_sheet_element(element, shift)
+                if not ok_move:
+                    stats.add_note("{}: {}".format(sheet_label, move_reason))
+                    continue
+
+                # plan_sheet_move always puts the title block first.
+                if index == 0:
+                    stats.title_blocks_aligned += 1
+                else:
+                    stats.sheet_elements_moved += 1
+
+            for element in pinned_elements:
+                try:
+                    element.Pinned = True
+                    stats.pinned_restored += 1
+                except Exception:
+                    pass
+
     def _build_summary_text(self, stats, headline):
         lines = [
             headline,
@@ -1082,10 +1258,21 @@ class ViewAlignWindow(forms.WPFWindow):
             "Scope box assigned: {}".format(stats.scope_assigned),
             "Crop region assigned: {}".format(stats.crop_assigned),
             "Viewport type matched: {}".format(stats.viewport_type_matched),
+            "Title blocks aligned: {}".format(stats.title_blocks_aligned),
+            "Other sheet elements moved: {}".format(stats.sheet_elements_moved),
             "Pinned unpinned: {}".format(stats.pinned_unpinned),
             "Pinned restored: {}".format(stats.pinned_restored),
+            "Notes: {}".format(len(stats.notes)),
             "Issues: {}".format(len(stats.issues)),
         ]
+
+        if stats.notes:
+            lines.append("")
+            lines.append("Notes (up to 200 rows):")
+            for note in stats.notes[:200]:
+                lines.append("- {}".format(note))
+            if len(stats.notes) > 200:
+                lines.append("... {} additional note(s) omitted.".format(len(stats.notes) - 200))
 
         if stats.issues:
             lines.append("")
@@ -1129,6 +1316,8 @@ class ViewAlignWindow(forms.WPFWindow):
             assign_scope_box=self.assign_scope_cb.IsChecked,
             assign_crop_region=self.assign_crop_cb.IsChecked,
             match_viewport_type=self.match_viewport_type_cb.IsChecked,
+            align_title_block=self.align_title_block_cb.IsChecked,
+            move_sheet_content=self.move_sheet_content_cb.IsChecked,
         )
 
         if options.assign_scope_box and options.assign_crop_region:
@@ -1193,6 +1382,32 @@ class ViewAlignWindow(forms.WPFWindow):
 
         ref_label_offset = _get_label_offset(ref_viewport) if options.match_title_position else None
         ref_label_line_length = _get_label_line_length(ref_viewport) if options.match_title_line_length else None
+        ref_title_block_point = None
+        ref_title_block_extra = 0
+        if options.align_title_block:
+            # Sheet points are paper space. A reference sheet in a linked or
+            # other open document needs no conversion, and must NOT go through
+            # doc_to_host_transform - that maps model coordinates, and a sheet
+            # is not part of the model's geometry.
+            ref_title_block, ref_title_block_extra = _title_block_for_sheet(
+                reference.doc_option.doc,
+                ref_row.sheet,
+            )
+            if ref_title_block is None:
+                forms.alert(
+                    "The reference sheet has no title block, so Align Title Block has nothing to match.",
+                    title="View Align",
+                )
+                return
+
+            ref_title_block_point = sheet_titleblocks.location_point(ref_title_block)
+            if ref_title_block_point is None:
+                forms.alert(
+                    "The reference title block has no location point to align to.",
+                    title="View Align",
+                )
+                return
+
         ref_viewport_type_id = None
         ref_type_reason = ""
         if options.match_viewport_type:
@@ -1203,6 +1418,14 @@ class ViewAlignWindow(forms.WPFWindow):
 
         stats = RunStats()
         stats.targets_selected = len(target_ids)
+
+        if ref_title_block_extra:
+            stats.add_note(
+                "Reference sheet {} has {} extra title block(s); the first one was used.".format(
+                    ref_row.sheet_label,
+                    ref_title_block_extra,
+                )
+            )
 
         if options.assign_scope_box and ref_scope_box_id is None:
             self._add_issue(
@@ -1309,6 +1532,18 @@ class ViewAlignWindow(forms.WPFWindow):
             forms.alert(summary, title="View Align", warn_icon=True)
             return
 
+        title_block_plans = []
+        if options.align_title_block:
+            rows_by_sheet = defaultdict(list)
+            for context in apply_context_rows:
+                rows_by_sheet[context["row"].sheet_id_int].append(context["row"])
+            title_block_plans = self._plan_title_block_moves(
+                ref_title_block_point,
+                rows_by_sheet,
+                options,
+                stats,
+            )
+
         tx_group = DB.TransactionGroup(self.active_doc, "View Align")
         tx = None
         current_row = None
@@ -1319,6 +1554,12 @@ class ViewAlignWindow(forms.WPFWindow):
             tx_group.Start()
             tx = DB.Transaction(self.active_doc, "Apply View Align")
             tx.Start()
+
+            # The frame is settled before any viewport is placed. This move is
+            # sheet-space only, so it cannot disturb View.Outline - the stale
+            # derived value that makes the crop and scope box options risky -
+            # and the viewports being aligned are excluded from it anyway.
+            self._apply_title_block_moves(title_block_plans, stats)
 
             for context in apply_context_rows:
                 current_row = context["row"]
