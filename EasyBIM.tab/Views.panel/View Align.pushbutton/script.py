@@ -14,7 +14,6 @@ from pyrevit.compat import get_elementid_value_func
 logger = script.get_logger()
 get_elementid_value = get_elementid_value_func()
 
-MODEL_ANCHOR_HOST = DB.XYZ.Zero
 SCOPE_BOX_BIP = getattr(DB.BuiltInParameter, "VIEWER_VOLUME_OF_INTEREST_CROP", None)
 
 try:
@@ -159,25 +158,32 @@ def _map_reference_point_to_host(model_point_in_ref_doc, doc_option):
         return None, "Failed converting linked reference model point to host coordinates: {}".format(ex)
 
 
-def _try_build_projection(doc, viewport):
+def _try_build_projection(doc, viewport, view=None, view_is_checked=False):
     """A ``SheetProjection`` for a placed view, or ``(None, reason)``.
 
     Build this *after* every configuration write and after a regeneration.
     `sheet_geometry`'s own docstring is explicit about why: `View.Outline` moves
     whenever the crop, the annotation crop or the scale changes, so "a
     SheetProjection is only valid for as long as the view is untouched".
+
+    ``view`` and ``view_is_checked`` exist for the load-time scan, which has
+    already resolved the view and already run the type check. Every Revit
+    property read is a managed-to-native call, so repeating those across every
+    viewport in the project is what a caller pays to open the window.
     """
     if not viewport:
         return None, "Viewport is missing."
 
-    try:
-        view = doc.GetElement(viewport.ViewId)
-    except Exception:
-        view = None
+    if view is None:
+        try:
+            view = doc.GetElement(viewport.ViewId)
+        except Exception:
+            view = None
 
-    ok, reason = _is_supported_view_type(view)
-    if not ok:
-        return None, reason
+    if not view_is_checked:
+        ok, reason = _is_supported_view_type(view)
+        if not ok:
+            return None, reason
 
     # One shared implementation with Linked Sheets Transfer, in
     # lib/easybim/sheet_geometry.py - two copies of this maths would drift.
@@ -749,7 +755,8 @@ class ReferenceDocOption(object):
 
 
 class ViewportRow(object):
-    def __init__(self, doc, sheet, viewport, view):
+    def __init__(self, doc, sheet, viewport, view, sheet_number=None,
+                 sheet_name=None):
         self.doc = doc
         self.sheet = sheet
         self.viewport = viewport
@@ -759,8 +766,14 @@ class ViewportRow(object):
         self.viewport_id_int = _eid_int(viewport.Id)
         self.view_id_int = _eid_int(view.Id)
 
-        self.sheet_number = _safe_text(getattr(sheet, "SheetNumber", ""))
-        self.sheet_name = _safe_text(getattr(sheet, "Name", ""))
+        # The scan passes these in: every viewport on one sheet shares them,
+        # so reading them per row is the same interop call repeated.
+        if sheet_number is None:
+            sheet_number = _safe_text(getattr(sheet, "SheetNumber", ""))
+        if sheet_name is None:
+            sheet_name = _safe_text(getattr(sheet, "Name", ""))
+        self.sheet_number = sheet_number
+        self.sheet_name = sheet_name
         self.view_name = _safe_text(getattr(view, "Name", ""))
         self.view_type_badge_text = _normalized_view_type_label(view)
 
@@ -837,8 +850,13 @@ class ViewAlignWindow(forms.WPFWindow):
         self._reference_doc_options = self._collect_reference_doc_options(self.active_doc)
 
     def _load_target_rows(self):
-        rows = self._collect_candidate_viewport_rows(self.active_doc, model_point=MODEL_ANCHOR_HOST)
+        rows = self._collect_candidate_viewport_rows(self.active_doc)
         self._target_rows = rows
+
+        # The reference combo asks for the active document next, with the same
+        # model point. Without this it misses its own cache and walks every
+        # viewport in the project a second time before the window can open.
+        self._reference_rows_by_doc_key[_doc_path_key(self.active_doc)] = rows
         self._target_rows_by_id = {row.viewport_id_int: row for row in rows}
 
         sheet_map = defaultdict(list)
@@ -975,7 +993,13 @@ class ViewAlignWindow(forms.WPFWindow):
         )
         return options
 
-    def _collect_candidate_viewport_rows(self, doc, model_point):
+    def _collect_candidate_viewport_rows(self, doc):
+        """Every viewport in *doc* that can be measured, as `ViewportRow`s.
+
+        Measurability is a property of the view and the viewport - whether a
+        projection can be built at all - so this takes no model point. The
+        anchor for a particular point is solved later, per run.
+        """
         rows = []
         try:
             sheets = (
@@ -998,6 +1022,13 @@ class ViewAlignWindow(forms.WPFWindow):
             except Exception:
                 viewport_ids = []
 
+            if not viewport_ids:
+                continue
+
+            # Read once per sheet rather than once per viewport on it.
+            sheet_number = _safe_text(getattr(sheet, "SheetNumber", ""))
+            sheet_name = _safe_text(getattr(sheet, "Name", ""))
+
             for viewport_id in viewport_ids:
                 viewport = doc.GetElement(viewport_id)
                 if not viewport:
@@ -1013,8 +1044,13 @@ class ViewAlignWindow(forms.WPFWindow):
                 if not ok:
                     continue
 
-                anchor, reason = _try_compute_model_anchor_on_sheet(doc, viewport, model_point)
-                if anchor is None:
+                # The projection is the whole test - this loop only needs to
+                # know the viewport can be measured, never where the anchor
+                # lands - so the view and the type check are handed straight
+                # over rather than resolved and re-run a second time.
+                projection, reason = _try_build_projection(
+                    doc, viewport, view=view, view_is_checked=True)
+                if projection is None:
                     logger.debug(
                         "Skipping viewport id %s from selection. Reason: %s",
                         _eid_int(viewport.Id),
@@ -1022,7 +1058,9 @@ class ViewAlignWindow(forms.WPFWindow):
                     )
                     continue
 
-                rows.append(ViewportRow(doc, sheet, viewport, view))
+                rows.append(ViewportRow(doc, sheet, viewport, view,
+                                        sheet_number=sheet_number,
+                                        sheet_name=sheet_name))
 
         return rows
 
@@ -1046,7 +1084,7 @@ class ViewAlignWindow(forms.WPFWindow):
 
         cached = self._reference_rows_by_doc_key.get(doc_option.key)
         if cached is None:
-            cached = self._collect_candidate_viewport_rows(doc_option.doc, model_point=MODEL_ANCHOR_HOST)
+            cached = self._collect_candidate_viewport_rows(doc_option.doc)
             self._reference_rows_by_doc_key[doc_option.key] = cached
 
         sheet_map = defaultdict(list)
