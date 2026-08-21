@@ -83,11 +83,12 @@ def title_block_shift(source_point, target_point, eps=DEFAULT_EPS):
     return (dx, dy, dz)
 
 
-def sheet_owned_ids(candidates, sheet_id_int):
+def sheet_owned_ids(candidates, sheet_id_int, keep_title_block_id=None):
     """The ids among *candidates* that the sheet itself owns, order preserved.
 
     ``candidates`` is an iterable of ``(element_id, owner_view_id, is_viewport,
-    is_titleblock_revision_schedule)`` built by the Revit-facing caller.
+    is_titleblock_revision_schedule, is_title_block)`` built by the
+    Revit-facing caller.
 
     This filter has to exist because ``FilteredElementCollector(doc, sheet.Id)``
     is scoped by *visibility*, not by ownership: it also hands back the model
@@ -108,15 +109,26 @@ def sheet_owned_ids(candidates, sheet_id_int):
 
     A title-block revision schedule is dropped, because it rides on the title
     block and moving it separately would shift it twice.
+
+    Every title-block instance other than ``keep_title_block_id`` is dropped
+    too.  A sheet can carry more than one frame, and only the one being
+    positioned may move - otherwise a second frame sits still when the
+    sub-option is off and jumps when it is on.  Both sibling tools exclude the
+    title-block category outright (``sheet_detailing_ids``,
+    ``copy_sheet_detailing``); here one instance has to survive, so the filter
+    is by id rather than by category alone.
     """
     owned = []
 
     for candidate in candidates or []:
-        element_id, owner_view_id, is_viewport, is_revision_schedule = candidate
+        (element_id, owner_view_id, is_viewport, is_revision_schedule,
+         is_title_block) = candidate
 
         if element_id is None or element_id == -1:
             continue
         if is_revision_schedule:
+            continue
+        if is_title_block and element_id != keep_title_block_id:
             continue
 
         if is_viewport:
