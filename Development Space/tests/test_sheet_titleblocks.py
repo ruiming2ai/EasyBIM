@@ -44,20 +44,31 @@ class _Location(object):
 
 
 class _Element(object):
-    def __init__(self, element_id, point=None):
+    def __init__(self, element_id, point=None, category=None, owner_view_id=None):
         self.Id = element_id
+        self.category = category
+        self.owner_view_id = owner_view_id
         if point is not None:
             self.Location = _Location(point)
 
 
 class _Collector(object):
-    """The two-call chain ``sheet_title_blocks`` walks."""
+    """Models the real collector: scoped by *visibility*, not by ownership.
+
+    A view-scoped ``FilteredElementCollector`` also returns the model elements
+    seen through the placed viewports, which is what made the first version of
+    this feature move real geometry.  The earlier fake here returned only what
+    a test seeded for the sheet, so it rubber-stamped the very assumption that
+    is false in Revit and could never have caught it.  ``OfCategory`` filters
+    for real too, for the same reason.
+    """
 
     def __init__(self, elements):
-        self._elements = elements
+        self._elements = list(elements)
 
-    def OfCategory(self, _category):
-        return self
+    def OfCategory(self, category):
+        return _Collector([x for x in self._elements
+                           if getattr(x, "category", None) == category])
 
     def WhereElementIsNotElementType(self):
         return self
@@ -75,14 +86,18 @@ class _DB(object):
 
     BuiltInCategory = _BuiltInCategory
 
-    def __init__(self, elements_by_sheet_id, raises=False):
+    def __init__(self, elements_by_sheet_id, raises=False, model_elements=None):
         self._by_sheet = elements_by_sheet_id
         self._raises = raises
+        self._model_elements = list(model_elements or [])
 
     def FilteredElementCollector(self, _document, sheet_id):
         if self._raises:
             raise RuntimeError("collector refused")
-        return _Collector(self._by_sheet.get(sheet_id, []))
+        # Everything visible on the sheet: what it owns, plus whatever shows
+        # through its viewports.
+        return _Collector(list(self._by_sheet.get(sheet_id, []))
+                          + list(self._model_elements))
 
 
 class _Sheet(object):
@@ -134,27 +149,42 @@ class LocationPointTests(unittest.TestCase):
         self.assertIsNone(titleblocks.location_point(_Element(7)))
 
 
+TB = _BuiltInCategory.OST_TitleBlocks
+
+
+def _title_block(element_id, owner_view_id=99):
+    return _Element(element_id, category=TB, owner_view_id=owner_view_id)
+
+
 class CollectionTests(unittest.TestCase):
     def test_title_blocks_come_back_in_element_order(self):
-        first, second = _Element(11), _Element(12)
+        first, second = _title_block(11), _title_block(12)
         db = _DB({99: [first, second]})
         found = titleblocks.sheet_title_blocks(db, None, _Sheet(99))
         self.assertEqual([first, second], found)
 
     def test_the_first_title_block_wins_and_the_rest_are_counted(self):
-        first, second, third = _Element(11), _Element(12), _Element(13)
+        first, second, third = _title_block(11), _title_block(12), _title_block(13)
         db = _DB({99: [first, second, third]})
         block, extra = titleblocks.first_title_block(db, None, _Sheet(99))
         self.assertIs(first, block)
         self.assertEqual(2, extra)
 
     def test_one_title_block_reports_no_extras(self):
-        db = _DB({99: [_Element(11)]})
+        db = _DB({99: [_title_block(11)]})
         _, extra = titleblocks.first_title_block(db, None, _Sheet(99))
         self.assertEqual(0, extra)
 
+    def test_model_elements_seen_through_the_viewports_are_not_title_blocks(self):
+        # The collector is visibility-scoped, so a grid on the sheet's views
+        # comes back too. Only the category filter keeps it out.
+        grid = _Element(500, category="OST_Grids", owner_view_id=None)
+        db = _DB({99: [_title_block(11)]}, model_elements=[grid])
+        found = titleblocks.sheet_title_blocks(db, None, _Sheet(99))
+        self.assertEqual([11], [x.Id for x in found])
+
     def test_a_sheet_with_no_title_block_is_reported_not_raised(self):
-        db = _DB({99: []})
+        db = _DB({99: []}, model_elements=[_Element(500, category="OST_Grids")])
         self.assertEqual((None, 0),
                          titleblocks.first_title_block(db, None, _Sheet(99)))
 
@@ -163,6 +193,75 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual([], titleblocks.sheet_title_blocks(db, None, _Sheet(99)))
         self.assertEqual((None, 0),
                          titleblocks.first_title_block(db, None, _Sheet(99)))
+
+
+class SheetOwnedIdsTests(unittest.TestCase):
+    """The guard that keeps this option on the sheet and out of the model.
+
+    A view-scoped collector returns what is *visible*, which on a sheet
+    includes every model element drawn through the placed viewports.  Moving
+    one of those translates real geometry by a paper-space vector.
+    """
+
+    SHEET = 99
+
+    # (element_id, owner_view_id, is_viewport, is_titleblock_revision_schedule)
+    TITLE_BLOCK = (500, 99, False, False)
+    TEXT_NOTE = (600, 99, False, False)
+    VIEWPORT = (501, None, True, False)
+    WALL_THROUGH_A_VIEWPORT = (900, None, False, False)
+    GRID_OWNED_BY_ANOTHER_VIEW = (901, 42, False, False)
+    TB_REVISION_SCHEDULE = (700, 99, False, True)
+
+    def _owned(self, *candidates):
+        return titleblocks.sheet_owned_ids(list(candidates), self.SHEET)
+
+    def test_a_model_element_seen_through_a_viewport_is_never_moved(self):
+        self.assertEqual(
+            [500], self._owned(self.TITLE_BLOCK, self.WALL_THROUGH_A_VIEWPORT))
+
+    def test_an_element_owned_by_another_view_is_never_moved(self):
+        self.assertEqual(
+            [500], self._owned(self.TITLE_BLOCK, self.GRID_OWNED_BY_ANOTHER_VIEW))
+
+    def test_an_unreadable_owner_excludes_rather_than_admits(self):
+        self.assertEqual([], self._owned((800, None, False, False)))
+
+    def test_the_sheets_own_annotation_travels_with_the_frame(self):
+        self.assertEqual(
+            [500, 600], self._owned(self.TITLE_BLOCK, self.TEXT_NOTE))
+
+    def test_a_viewport_is_admitted_without_consulting_its_owner(self):
+        # Viewport.OwnerViewId is unproven in this codebase, so retention must
+        # not depend on it - here it is None and the viewport still survives.
+        self.assertEqual([501], self._owned(self.VIEWPORT))
+
+    def test_a_title_block_revision_schedule_is_not_moved_twice(self):
+        # It rides on the title block, so moving it separately shifts it twice.
+        self.assertEqual(
+            [500], self._owned(self.TITLE_BLOCK, self.TB_REVISION_SCHEDULE))
+
+    def test_order_is_preserved_so_the_title_block_stays_findable(self):
+        self.assertEqual(
+            [500, 501, 600],
+            self._owned(self.TITLE_BLOCK, self.VIEWPORT, self.TEXT_NOTE))
+
+    def test_unusable_ids_are_dropped(self):
+        self.assertEqual([], self._owned((None, 99, False, False),
+                                         (-1, 99, False, False)))
+
+    def test_nothing_in_is_nothing_out(self):
+        self.assertEqual([], titleblocks.sheet_owned_ids(None, self.SHEET))
+
+    def test_a_whole_sheet_of_visible_elements_reduces_to_the_owned_ones(self):
+        self.assertEqual(
+            [500, 501, 600],
+            self._owned(self.TITLE_BLOCK,
+                        self.WALL_THROUGH_A_VIEWPORT,
+                        self.VIEWPORT,
+                        self.GRID_OWNED_BY_ANOTHER_VIEW,
+                        self.TEXT_NOTE,
+                        self.TB_REVISION_SCHEDULE))
 
 
 class PlanSheetMoveTests(unittest.TestCase):

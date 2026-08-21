@@ -83,12 +83,62 @@ def title_block_shift(source_point, target_point, eps=DEFAULT_EPS):
     return (dx, dy, dz)
 
 
+def sheet_owned_ids(candidates, sheet_id_int):
+    """The ids among *candidates* that the sheet itself owns, order preserved.
+
+    ``candidates`` is an iterable of ``(element_id, owner_view_id, is_viewport,
+    is_titleblock_revision_schedule)`` built by the Revit-facing caller.
+
+    This filter has to exist because ``FilteredElementCollector(doc, sheet.Id)``
+    is scoped by *visibility*, not by ownership: it also hands back the model
+    elements seen through the placed viewports.  Translating one of those by a
+    paper-space vector would move real model geometry, so nothing may be moved
+    on the strength of the collector alone.
+
+    ``OwnerViewId`` is this repo's established ownership test - see
+    ``sheet_manager_revit.copy_sheet_detailing`` and
+    ``linked_sheets_transfer_revit.sheet_detailing_ids``, which both apply it to
+    this same collector.  As in both of those, an unreadable owner (``None``)
+    excludes rather than admits.
+
+    A viewport is admitted by its own flag and never by ``OwnerViewId``: both
+    precedents drop viewports *before* their owner test, so
+    ``Viewport.OwnerViewId`` has no proven value in this codebase and must not
+    be depended on.
+
+    A title-block revision schedule is dropped, because it rides on the title
+    block and moving it separately would shift it twice.
+    """
+    owned = []
+
+    for candidate in candidates or []:
+        element_id, owner_view_id, is_viewport, is_revision_schedule = candidate
+
+        if element_id is None or element_id == -1:
+            continue
+        if is_revision_schedule:
+            continue
+
+        if is_viewport:
+            owned.append(element_id)
+            continue
+
+        if owner_view_id is None or owner_view_id != sheet_id_int:
+            continue
+
+        owned.append(element_id)
+
+    return owned
+
+
 def plan_sheet_move(sheet_element_ids, aligned_viewport_ids,
                     move_other_content, title_block_id=None):
     """The element ids to shift for one sheet, in a stable order.
 
-    ``sheet_element_ids`` is every sheet-owned element id, viewports included.
-    The viewports *this run is aligning* are dropped: they take their position
+    ``sheet_element_ids`` must already have been through :func:`sheet_owned_ids`
+    - a raw view-scoped collector also returns model elements, which must never
+    reach this function.  The viewports *this run is aligning* are dropped: they
+    take their position
     from the alignment maths, and their view titles ride along on
     ``Viewport.LabelOffset``.  Everything else keeps its place inside the
     frame, which is the whole point of the sub-option - an unselected viewport
