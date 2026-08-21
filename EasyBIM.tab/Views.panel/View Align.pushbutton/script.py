@@ -500,6 +500,41 @@ def _can_match_viewport_type(target_viewport, ref_type_id):
     return True, ""
 
 
+def _active_sheet_hint(doc):
+    """(sheet_id_int, view_id_int) for whatever the user currently has open.
+
+    Either half can be None. ``uidoc.ActiveGraphicalView`` is tried before
+    ``doc.ActiveView`` - the guarded cascade Tag Align's ``_active_view`` uses,
+    because the first is absent outside a UI context and the second can raise.
+
+    A sheet answers directly; any other view answers with its own id, which the
+    caller resolves to a sheet through the viewport rows it already holds.
+    """
+    view = None
+    try:
+        uidoc = revit.uidoc
+        view = uidoc.ActiveGraphicalView if uidoc else None
+    except Exception:
+        view = None
+
+    if view is None:
+        try:
+            view = doc.ActiveView
+        except Exception:
+            view = None
+
+    if view is None:
+        return None, None
+
+    try:
+        if isinstance(view, DB.ViewSheet):
+            return _eid_int(view.Id), None
+    except Exception:
+        return None, None
+
+    return None, _eid_int(getattr(view, "Id", None))
+
+
 def _title_block_for_sheet(doc, sheet):
     """(title_block, extra_count) for one sheet; (None, 0) when it has none."""
     return sheet_titleblocks.first_title_block(DB, doc, sheet)
@@ -686,6 +721,9 @@ class ViewAlignWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, xaml_file_name)
 
         self.active_doc = revit.doc
+        # Read before any combo is populated; _refresh_reference_doc_combo
+        # cascades straight into the sheet combo, which consumes it.
+        self._active_sheet_hint = _active_sheet_hint(self.active_doc)
         self._reference_doc_options = []
         self._reference_rows_by_doc_key = {}
 
@@ -941,7 +979,11 @@ class ViewAlignWindow(forms.WPFWindow):
         self.ref_sheet_cb.ItemsSource = sheet_options
 
         if sheet_options:
-            self.ref_sheet_cb.SelectedIndex = 0
+            self.ref_sheet_cb.SelectedIndex = self._preferred_sheet_index(
+                doc_option,
+                sheet_options,
+                cached,
+            )
             self._refresh_reference_view_combo()
             self._set_status(
                 "Loaded {} reference viewport(s) from {}.".format(
@@ -952,6 +994,37 @@ class ViewAlignWindow(forms.WPFWindow):
         else:
             self.ref_view_cb.ItemsSource = []
             self._set_status("No model-coordinate-compatible reference viewports found in selected document.")
+
+    def _preferred_sheet_index(self, doc_option, sheet_options, rows):
+        """The sheet row to open on: the one the user is looking at, else 0.
+
+        Only meaningful for the active document - a sheet open in the host says
+        nothing about which sheet a linked model should offer. Falls back to 0
+        both when nothing is active and when the scan finds no match, the rule
+        `view_template_transfer_ui._active_view_index` follows.
+        """
+        if not sheet_options:
+            return 0
+        if not doc_option or doc_option.doc != self.active_doc:
+            return 0
+
+        sheet_id_int, view_id_int = self._active_sheet_hint
+
+        # Standing in a view rather than on a sheet: the rows already carry the
+        # view -> sheet mapping, so no reverse index has to be built.
+        if sheet_id_int is None and view_id_int is not None:
+            for row in rows or []:
+                if row.view_id_int == view_id_int:
+                    sheet_id_int = row.sheet_id_int
+                    break
+
+        if sheet_id_int is None:
+            return 0
+
+        for index, option in enumerate(sheet_options):
+            if option.rows and option.rows[0].sheet_id_int == sheet_id_int:
+                return index
+        return 0
 
     def _refresh_reference_view_combo(self):
         sheet_option = self.ref_sheet_cb.SelectedItem
