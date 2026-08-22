@@ -4,6 +4,16 @@
 # pylint: disable=import-error,invalid-name,broad-except,too-many-lines
 from collections import defaultdict
 
+import clr
+
+clr.AddReference("PresentationFramework")
+clr.AddReference("PresentationCore")
+clr.AddReference("WindowsBase")
+
+from System.Windows import RoutedEventHandler
+from System.Windows.Controls import CheckBox
+from System.Windows.Controls.Primitives import ButtonBase
+
 from pyrevit import DB
 from pyrevit import forms
 from pyrevit import revit
@@ -809,6 +819,9 @@ class TargetViewportNode(object):
         self.row = row
         self.children = []
         self.is_checked = False
+        # Bound TwoWay to TreeViewItem.IsExpanded: a virtualized row has no
+        # container to read it from, so the state has to live on the data.
+        self.is_expanded = True
 
 
 class ViewAlignWindow(forms.WPFWindow):
@@ -826,10 +839,21 @@ class ViewAlignWindow(forms.WPFWindow):
         self._target_rows_by_id = {}
         self._target_sheet_records = []
         self._checked_viewport_ids = set()
+        # Sheets are expanded unless the user closed them; tracked here
+        # because _refresh_target_tree builds new node objects each time.
+        self._collapsed_sheet_ids = set()
 
         self._setup_defaults()
         self._load_reference_docs()
         self._load_target_rows()
+
+        # The row template is stamped once per row, so a Click attribute in
+        # it would attach a handler per row. One handler on the tree catches
+        # them all as they bubble - the same shape as
+        # view_template_transfer_ui and four other tools here.
+        self.target_tv.AddHandler(
+            ButtonBase.ClickEvent,
+            RoutedEventHandler(self.target_checkbox_click))
 
         self._refresh_reference_doc_combo()
         self._refresh_target_tree()
@@ -1157,7 +1181,25 @@ class ViewAlignWindow(forms.WPFWindow):
         if view_options:
             self.ref_view_cb.SelectedIndex = 0
 
-    def _refresh_target_tree(self):
+    def _capture_expansion(self):
+        """Fold the live nodes' expansion back into ``_collapsed_sheet_ids``.
+
+        The IsExpanded binding is TwoWay, so clicking an expander has already
+        written the user's choice onto the node. This runs before the nodes are
+        replaced, so the choice survives the rebuild.
+        """
+        for sheet_node in (self.target_tv.ItemsSource or []):
+            if getattr(sheet_node, "is_expanded", True):
+                self._collapsed_sheet_ids.discard(sheet_node.key)
+            else:
+                self._collapsed_sheet_ids.add(sheet_node.key)
+
+    def _refresh_target_tree(self, capture_expansion=True):
+        # Expand All / Collapse All have just decided the expansion state, so
+        # they refresh without capturing - re-reading the live nodes here would
+        # overwrite the decision with what is still on screen.
+        if capture_expansion:
+            self._capture_expansion()
         search_token = _safe_text(self.target_search_tb.Text).strip().lower()
 
         root_nodes = []
@@ -1181,6 +1223,8 @@ class ViewAlignWindow(forms.WPFWindow):
                 key=record["sheet_id_int"],
                 display_name="{} - {}".format(record["sheet_number"], record["sheet_name"]),
             )
+            sheet_node.is_expanded = (
+                record["sheet_id_int"] not in self._collapsed_sheet_ids)
 
             child_checked_count = 0
             for row in candidate_rows:
@@ -1229,27 +1273,19 @@ class ViewAlignWindow(forms.WPFWindow):
                 yield sheet_node, child
 
     def _set_tree_expanded(self, expand):
-        try:
-            self.target_tv.UpdateLayout()
-        except Exception:
-            pass
+        """Expand or collapse every sheet, on screen or not.
 
-        for item in self.target_tv.Items:
-            root_container = self.target_tv.ItemContainerGenerator.ContainerFromItem(item)
-            if root_container:
-                self._set_container_expanded_recursive(root_container, expand)
-
-    def _set_container_expanded_recursive(self, container, expand):
-        try:
-            container.IsExpanded = bool(expand)
-            container.UpdateLayout()
-        except Exception:
-            pass
-
-        for child_item in container.Items:
-            child_container = container.ItemContainerGenerator.ContainerFromItem(child_item)
-            if child_container:
-                self._set_container_expanded_recursive(child_container, expand)
+        Reaching for containers could only ever have moved the rows WPF had
+        realized, and it forced a full layout pass per row while doing it.
+        Setting the data reaches the whole tree in one rebuild.
+        """
+        self._capture_expansion()
+        if expand:
+            self._collapsed_sheet_ids.clear()
+        else:
+            self._collapsed_sheet_ids = set(
+                record["sheet_id_int"] for record in self._target_sheet_records)
+        self._refresh_target_tree(capture_expansion=False)
 
     def _get_selected_reference(self):
         doc_option = self.ref_doc_cb.SelectedItem
@@ -1272,12 +1308,18 @@ class ViewAlignWindow(forms.WPFWindow):
         self._refresh_target_tree()
 
     def target_checkbox_click(self, sender, args):
-        del args
-        node = getattr(sender, "DataContext", None)
+        # Every ButtonBase click inside the tree bubbles here, expander
+        # toggles included, so the source has to be checked before acting.
+        del sender
+        source = getattr(args, "OriginalSource", None)
+        if not isinstance(source, CheckBox):
+            return
+
+        node = getattr(source, "DataContext", None)
         if not node:
             return
 
-        desired = sender.IsChecked
+        desired = source.IsChecked
         if node.is_sheet:
             checked_state = bool(desired)
             for child in node.children:
