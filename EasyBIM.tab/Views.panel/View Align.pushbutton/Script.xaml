@@ -10,17 +10,22 @@
         ResizeMode="CanResizeWithGrip">
     <Window.Resources>
         <Style x:Key="TreeItemStyle" TargetType="TreeViewItem">
-            <Setter Property="IsExpanded" Value="True"/>
+            <!-- Containers are virtualized, so ContainerFromItem returns null
+                 for an unrealized row and a recycled one is re-bound to a
+                 different node. Binding IsExpanded is the only way Expand All
+                 and Collapse All can reach the whole tree from code. -->
+            <Setter Property="IsExpanded" Value="{Binding is_expanded, Mode=TwoWay}"/>
         </Style>
 
         <HierarchicalDataTemplate x:Key="TargetNodeTemplate" ItemsSource="{Binding children}">
             <DockPanel Margin="0,2,0,2" LastChildFill="True">
+                <!-- No Click here: the template is stamped per row, so the
+                     handler is attached once on the tree instead. -->
                 <CheckBox Width="18"
                           VerticalAlignment="Center"
                           Margin="0,0,6,0"
                           IsThreeState="True"
-                          IsChecked="{Binding is_checked, Mode=TwoWay}"
-                          Click="target_checkbox_click"/>
+                          IsChecked="{Binding is_checked, Mode=TwoWay}"/>
 
                 <Border x:Name="typeBadge"
                         DockPanel.Dock="Right"
@@ -159,6 +164,9 @@
                               Grid.Row="2"
                               BorderBrush="#B9B9B9"
                               BorderThickness="1"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.CanContentScroll="True"
                               ItemTemplate="{StaticResource TargetNodeTemplate}"
                               ItemContainerStyle="{StaticResource TreeItemStyle}"/>
 
