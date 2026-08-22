@@ -668,6 +668,22 @@ def _unpin_if_pinned(element):
     return False
 
 
+def _restore_pins(pinned, stats):
+    """Re-pin what was unpinned in order to move it.
+
+    ``pinned`` is ``[(element, label)]``. This is housekeeping after the real
+    work, so a pin that will not go back is reported and the run continues:
+    staying silent would leave an element unlocked with nobody told, and
+    raising would discard an alignment that has already succeeded.
+    """
+    for element, label in pinned:
+        try:
+            element.Pinned = True
+            stats.pinned_restored += 1
+        except Exception as ex:
+            stats.add_note("{}: pin could not be restored: {}".format(label, ex))
+
+
 def _move_sheet_element(element, shift):
     """Move one sheet-owned element by a (dx, dy, dz) sheet-space shift.
 
@@ -1466,7 +1482,7 @@ class ViewAlignWindow(forms.WPFWindow):
 
             for index, element in enumerate(elements):
                 if _unpin_if_pinned(element):
-                    pinned_elements.append(element)
+                    pinned_elements.append((element, sheet_label))
                     stats.pinned_unpinned += 1
 
                 ok_move, move_reason = _move_sheet_element(element, shift)
@@ -1480,12 +1496,7 @@ class ViewAlignWindow(forms.WPFWindow):
                 else:
                     stats.sheet_elements_moved += 1
 
-            for element in pinned_elements:
-                try:
-                    element.Pinned = True
-                    stats.pinned_restored += 1
-                except Exception:
-                    pass
+            _restore_pins(pinned_elements, stats)
 
     def _build_summary_text(self, stats, headline):
         lines = [
@@ -1814,7 +1825,10 @@ class ViewAlignWindow(forms.WPFWindow):
 
                 if getattr(current_viewport, "Pinned", False):
                     current_viewport.Pinned = False
-                    pinned_rows.append((current_row, current_viewport))
+                    pinned_rows.append((
+                        current_viewport,
+                        "{} / {}".format(current_row.sheet_label, current_row.view_name),
+                    ))
                     stats.pinned_unpinned += 1
 
                 if options.assign_scope_box:
@@ -1903,11 +1917,9 @@ class ViewAlignWindow(forms.WPFWindow):
                         raise Exception(len_reason)
                     stats.title_line_matched += 1
 
-            for row, viewport in pinned_rows:
-                current_row = row
-                current_viewport = viewport
-                viewport.Pinned = True
-                stats.pinned_restored += 1
+            # Unguarded, this threw into the handler below and rolled back a
+            # run that had already aligned everything correctly.
+            _restore_pins(pinned_rows, stats)
 
             tx.Commit()
             tx_group.Assimilate()
