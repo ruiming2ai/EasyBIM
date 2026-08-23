@@ -444,6 +444,39 @@ that carries their exported origin; the API puts a connector at the centre of
 its face, so a connector that shared a big face with others reports how far
 it landed from where it was.
 
+## Sheet Align (Sheet)
+
+Sheet Align straightens a set of sheets by shifting everything each one owns as
+a single block - title block, viewports, text, detail lines, images, schedules
+and revision clouds all move together, keeping their positions relative to each
+other.
+
+Tick the sheets to fix, then pick one of two datums:
+
+- **By Sheet Origin** moves each sheet's title block onto that sheet's own zero
+  point. No reference sheet is involved. Every sheet ends up on the same
+  footing, whatever state it started in.
+- **By Title Block Origin** moves each sheet's title block to where the
+  reference sheet's title block sits, so the whole set matches one good sheet.
+
+Only the title block can serve as the landmark, because the sheet origin is the
+same point on every sheet - comparing one sheet's origin to another's always
+gives zero, and nothing would move. That is why the first option is a
+normalisation rather than a match.
+
+Model geometry is never touched. A sheet's contents are read through an
+ownership test, not just "what is visible on the sheet", because a view-scoped
+collector also hands back the walls and grids seen through the placed
+viewports; moving one of those would translate real model geometry by a
+paper-space vector.
+
+Pinned elements are unpinned to move and pinned again afterwards. A pin that
+will not go back is reported in the summary and the run carries on - it is
+never silently skipped, and it never discards work that already succeeded. A
+sheet with no title block is reported and skipped rather than aborting the run.
+
+The whole run is one undo step.
+
 ## Linked Sheets Transfer (Sheet, Revit 2024+)
 
 Linked Sheets Transfer reuses a Revit link's sheets. Pick a loaded link, tick its
