@@ -32,6 +32,7 @@ except Exception:
     INVALID_EID = DB.ElementId(-1)
 
 
+from easybim import sheet_content
 from easybim import sheet_geometry
 from easybim import sheet_titleblocks
 from easybim.compat import eid_to_int as _eid_int
@@ -526,26 +527,8 @@ def _can_match_viewport_type(target_viewport, ref_type_id):
     return True, ""
 
 
-def _builtin_category_int(builtin_category):
-    try:
-        return int(builtin_category)
-    except Exception:
-        return None
-
-
-TITLE_BLOCK_CATEGORY_INT = _builtin_category_int(
+TITLE_BLOCK_CATEGORY_INT = sheet_content.builtin_category_int(
     getattr(DB.BuiltInCategory, "OST_TitleBlocks", None))
-
-
-def _element_category(element):
-    """``(category_id_int, category_name)``; either half can be None/blank."""
-    category = getattr(element, "Category", None)
-    if category is None:
-        return None, ""
-    try:
-        return _eid_int(category.Id), _safe_text(category.Name)
-    except Exception:
-        return None, ""
 
 
 def _active_sheet_hint(doc):
@@ -589,132 +572,32 @@ def _title_block_for_sheet(doc, sheet):
 
 
 def _sheet_owned_elements(doc, sheet, keep_title_block_id=None):
-    """{int id: element} for the things the sheet itself owns.
+    """The things the sheet itself owns, as {int id: element}.
 
-    ``FilteredElementCollector(doc, sheet.Id)`` is scoped by *visibility*, not
-    by ownership: it also returns the model elements seen through the placed
-    viewports.  This repo names that same unfiltered call `_visible_element_ids`
-    in Families Downgrade, and Grid Offset depends on the behaviour to reach
-    project-wide `DB.Grid` datums through a view.
-
-    Handing one of those to `_move_sheet_element` would translate real model
-    geometry by a paper-space vector, which is why the ownership test below is
-    not optional.  Sheet Manager's `copy_sheet_detailing` and Linked Sheets
-    Transfer's `sheet_detailing_ids` guard the same collector the same way.
+    One shared implementation with Sheet Align, in
+    lib/easybim/sheet_content.py. The ownership guard inside is what keeps a
+    paper-space shift off real model geometry, and two copies of it would mean
+    finding that bug twice.
     """
-    found = {}
-    try:
-        elements = (
-            DB.FilteredElementCollector(doc, sheet.Id)
-            .WhereElementIsNotElementType()
-            .ToElements()
-        )
-    except Exception:
-        return found
-
-    sheet_id_int = _eid_int(sheet.Id)
-    by_id = {}
-    candidates = []
-
-    for element in elements:
-        element_id = _eid_int(getattr(element, "Id", None))
-        if element_id in (None, -1):
-            continue
-
-        is_viewport = isinstance(element, DB.Viewport)
-
-        owner_id = None
-        if not is_viewport:
-            try:
-                owner_id = _eid_int(element.OwnerViewId)
-            except Exception:
-                owner_id = None
-
-        try:
-            is_revision_schedule = bool(
-                getattr(element, "IsTitleblockRevisionSchedule", False)
-            )
-        except Exception:
-            is_revision_schedule = False
-
-        category_id, _ = _element_category(element)
-        is_title_block = (
-            TITLE_BLOCK_CATEGORY_INT is not None
-            and category_id == TITLE_BLOCK_CATEGORY_INT
-        )
-
-        by_id[element_id] = element
-        candidates.append(
-            (element_id, owner_id, is_viewport, is_revision_schedule, is_title_block)
-        )
-
-    owned_ids = sheet_titleblocks.sheet_owned_ids(
-        candidates,
-        sheet_id_int,
-        keep_title_block_id=keep_title_block_id,
-    )
-    for element_id in owned_ids:
-        found[element_id] = by_id[element_id]
-    return found
+    return sheet_content.owned_elements(
+        DB, doc, sheet, _eid_int, TITLE_BLOCK_CATEGORY_INT,
+        keep_title_block_id=keep_title_block_id)
 
 
 def _unpin_if_pinned(element):
-    try:
-        if bool(getattr(element, "Pinned", False)):
-            element.Pinned = False
-            return True
-    except Exception:
-        pass
-    return False
+    return sheet_content.unpin_if_pinned(element)
 
 
 def _restore_pins(pinned, stats):
-    """Re-pin what was unpinned in order to move it.
-
-    ``pinned`` is ``[(element, label)]``. This is housekeeping after the real
-    work, so a pin that will not go back is reported and the run continues:
-    staying silent would leave an element unlocked with nobody told, and
-    raising would discard an alignment that has already succeeded.
-    """
-    for element, label in pinned:
-        try:
-            element.Pinned = True
-            stats.pinned_restored += 1
-        except Exception as ex:
-            stats.add_note("{}: pin could not be restored: {}".format(label, ex))
+    """Re-pin, counting what went back and noting what would not."""
+    restored, failures = sheet_content.restore_pins(pinned)
+    stats.pinned_restored += restored
+    for label, reason in failures:
+        stats.add_note("{}: {}".format(label, reason))
 
 
 def _move_sheet_element(element, shift):
-    """Move one sheet-owned element by a (dx, dy, dz) sheet-space shift.
-
-    Issued one element at a time on purpose. The Revit API has no
-    ``CanMoveElement`` to pre-test with - the ``Can*`` pair is
-    ``CanMirrorElement``/``CanMirrorElements`` - so a grouped, workset-locked
-    or otherwise immovable element can only be discovered by trying. One at a
-    time makes that cost a single reported note instead of rolling back the
-    whole run.
-
-    A viewport is repositioned through ``SetBoxCenter``, this tool's own idiom
-    for moving one, rather than through ``ElementTransformUtils``.
-    """
-    if not _is_valid_api_object(element):
-        return False, "Element is no longer valid."
-
-    try:
-        if isinstance(element, DB.Viewport):
-            center = element.GetBoxCenter()
-            element.SetBoxCenter(
-                _xyz(center.X + shift[0], center.Y + shift[1], center.Z + shift[2])
-            )
-        else:
-            DB.ElementTransformUtils.MoveElement(
-                element.Document,
-                element.Id,
-                _xyz(shift[0], shift[1], shift[2]),
-            )
-        return True, ""
-    except Exception as ex:
-        return False, "Failed moving element: {}".format(ex)
+    return sheet_content.move_element(DB, element, shift)
 
 
 class AlignmentOptions(object):
