@@ -10,6 +10,7 @@ try:
 except Exception:
     doc = None
 
-# For a button, it's usually friendlier to force-show the dialog even if we
-# are on a family doc or have no active doc (so the user always gets feedback).
+# A ribbon click is not inside a Revit event handler, so the windows can open
+# straight away.  Forced, so the user always gets feedback even on a family
+# doc or with no active doc.
 run_start_message_workflow(doc=doc, force=True)

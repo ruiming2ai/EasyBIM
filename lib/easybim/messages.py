@@ -2,29 +2,25 @@
 """
 EasyBIM messages.py
 
-This module centralizes the startup message and helpers.  Both your
-`doc-opened.py` hook and the ribbon button call into `show_start_message`
-to present the onboarding reminder.  It can also show an EasyBIM Active
-Workset picker after the alert and print a Coordination Review summary.
+This module centralizes the two startup windows: an EasyBIM Active Workset
+picker and a Coordination Review summary.  Both your `doc-opened.py` hook and
+the ribbon button call into `show_start_message` to run them.
 
-Engine notes:
-  * In Rocket Mode (CPython), `pyrevit.forms` is unavailable.  We therefore
-    build a small WPF dialog ourselves to render true bold.  If WPF fails
-    for any reason, we fall back to Revit's `TaskDialog` with plain text.
+There used to be an onboarding alert in front of both, and removing it is why
+`run_start_message_on_file_open` now defers instead of running inline - see
+that function.
 
 Usage:
     from easybim.messages import show_start_message
     show_start_message(doc=doc, force=False, open_worksets_after=True)
 
 Parameters:
-    title (str): Title for the dialog window (default "EasyBIM").
-    force (bool): If True, always show the dialog (useful for the ribbon
-        button).  Otherwise we filter out families and linked documents.
+    force (bool): If True, always run (useful for the ribbon button).
+        Otherwise we filter out families and linked documents.
     doc (Document or None): The active Revit document; the helper uses it
-        to decide if the message should display.  If None, the message
-        will show when force is True.
+        to decide whether to run.  If None, it runs when force is True.
     open_worksets_after (bool): When True, an Active Workset picker window
-        will open automatically after the user closes the alert.
+        opens automatically.
     run_coord_report_after (bool): When True, a Coordination Review summary
         report is printed after startup actions complete.
 """
@@ -34,13 +30,6 @@ import time
 # =============================
 #  Public API (what others call)
 # =============================
-
-START_MESSAGE = (
-    "Please Check Your Current **<<Workset>>**.\n\n"
-    "For New Users, please read the **<<Starting View>>** (Available in only new projects) "
-    "for GB Standards & Best Practices."
-)
-
 
 _UNMAPPED_LINK_KEY = "__UNMAPPED__"
 _INSTANCE_LIST_CAP = 200
@@ -56,36 +45,23 @@ _FILE_OPEN_TRIGGER_MAX_AGE_SEC = 90.0
 
 
 def show_start_message(
-    title="EasyBIM",
     force=False,
     doc=None,
     open_worksets_after=False,
     run_coord_report_after=False
 ):
-    """Show onboarding dialog and optionally run startup follow-up actions.
+    """Run the startup windows: the Active Workset picker and the
+    Coordination Review summary.
 
-    We keep this function name and signature stable so your hook and button do
-    not need to change other than toggling optional flags.
+    Callers must already be somewhere Revit will accept a modal - a ribbon
+    click, or the Idling delegate.  Not from inside a Revit event handler;
+    see ``run_start_message_on_file_open``.
     """
-    # 1) Decide if we should show (unless the caller explicitly forces it)
+    # 1) Decide if we should run (unless the caller explicitly forces it)
     if not (force or _should_show_for_doc(doc)):
         return
 
-    # 2) Try the rich WPF dialog first (it renders true bold); track success
-    shown = _alert_wpf_with_bold(title, START_MESSAGE)
-
-    # 3) If WPF failed for any reason, fall back to Revit TaskDialog (plain text)
-    if not shown:
-        try:
-            from Autodesk.Revit.UI import TaskDialog
-            TaskDialog.Show(title, START_MESSAGE.replace("**", ""))
-            shown = True
-        except Exception:
-            # Last resort: write to console so at least something is visible in logs
-            print("[EasyBIM] {}: {}".format(title, START_MESSAGE.replace("**", "")))
-
-    # 4) Optionally run/queue startup follow-up actions after user closes dialog.
-    if shown and (open_worksets_after or run_coord_report_after):
+    if open_worksets_after or run_coord_report_after:
         run_doc = doc if _is_doc_valid(doc) else None
         if not _is_doc_valid(run_doc):
             run_doc = _get_active_doc_from_uiapp(_get_uiapp())
@@ -115,25 +91,31 @@ def run_start_message_workflow(doc=None, force=False):
 
 
 def run_start_message_on_file_open(doc=None):
-    """Run Start Message for a qualifying opened file with context fallback."""
-    if _is_doc_eligible_for_file_open(doc):
-        _clear_file_open_trigger_pending()
-        try:
-            return run_start_message_workflow(doc=doc, force=False)
-        finally:
-            # The passive detector only needs to observe the document-open
-            # phase.  Detach here unconditionally so an early bail inside the
-            # workflow can never leave the FailuresProcessing handler attached
-            # for the rest of the session.
-            _disable_passive_coordination_review_detector()
+    """Hand an opened file's startup windows to the Idling delegate.
 
-    # Only defer when hook timing did not provide a usable document context.
-    # The deferred startup job detaches the detector after its report runs.
-    if not _is_doc_valid(doc):
+    This runs inside Revit's ``DocumentOpened`` event, where the document is
+    not the active one yet and the open is still finishing - Revit will not
+    accept the workset picker here.  The onboarding alert used to hide that:
+    its modal blocked this hook until Revit had settled and the document was
+    active, so the inline call that followed worked by accident.  With the
+    alert gone the wait has to be explicit, so every eligible open is marked
+    pending and ``_process_file_open_trigger_pending`` runs it on the first
+    Idling tick - Revit is between commands there and ``ActiveUIDocument`` is
+    the file that was just opened.  That deferred route is not new; it is the
+    path this hook already used whenever it could not get a document.
+
+    The passive coordination detector is deliberately left attached: it stops
+    when the deferred report consumes it, so warnings raised while Revit
+    finishes the open are still recorded.
+    """
+    if _is_doc_eligible_for_file_open(doc) or not _is_doc_valid(doc):
         _mark_file_open_trigger_pending()
-    else:
-        _clear_file_open_trigger_pending()
-        _disable_passive_coordination_review_detector()
+        return None
+
+    # A family or a linked document: nothing to run, and nothing left for the
+    # detector to observe.
+    _clear_file_open_trigger_pending()
+    _disable_passive_coordination_review_detector()
     return None
 
 
@@ -424,7 +406,11 @@ def _process_file_open_trigger_pending(uiapp=None):
         _save_file_open_trigger_state(state)
 
     if (now - created_at) > _FILE_OPEN_TRIGGER_MAX_AGE_SEC:
+        # Every eligible open now routes through this trigger, so an expiry
+        # here is the one path that would otherwise leave the detector's
+        # FailuresProcessing handler attached for the rest of the session.
         _clear_file_open_trigger_pending()
+        _disable_passive_coordination_review_detector()
         return
 
     uiapp = uiapp or _get_uiapp()
@@ -1340,76 +1326,3 @@ def _get_uiapp():
     except Exception:
         return None
 
-
-def _alert_wpf_with_bold(title, message):
-    """Render a simple modal WPF dialog and interpret **bold** markers visually.
-    Returns True if the dialog was shown successfully, False if any error occurs.
-    """
-    try:
-        # (1) Ensure WPF assemblies are loaded for CPython/IronPython
-        import clr
-        clr.AddReference("PresentationFramework")
-        clr.AddReference("PresentationCore")
-        clr.AddReference("WindowsBase")
-
-        # (2) Import the WPF types we need
-        from System.Windows import Window, WindowStartupLocation, SizeToContent, HorizontalAlignment, Thickness
-        from System.Windows.Controls import StackPanel, TextBlock, Button
-        from System.Windows.Documents import Run, Bold, LineBreak
-
-        # (3) Helper to add a text chunk that may contain single \n line breaks
-        def _add_text_chunk(tb, text, make_bold=False):
-            parts = text.split("\n")
-            for idx, chunk in enumerate(parts):
-                run = Run(chunk)
-                tb.Inlines.Add(Bold(run) if make_bold else run)
-                if idx < len(parts) - 1:
-                    tb.Inlines.Add(LineBreak())
-
-        # (4) Build a small window
-        win = Window()
-        win.Title = title
-        win.SizeToContent = SizeToContent.WidthAndHeight
-        win.WindowStartupLocation = WindowStartupLocation.CenterScreen
-        win.MinWidth = 440
-        win.Topmost = True
-
-        root = StackPanel()
-        root.Margin = Thickness(20)
-
-        # (5) Convert our mini-markdown ("**bold**") into WPF inlines
-        for para in message.split("\n\n"):
-            tb = TextBlock()
-            tb.TextWrapping = True
-            segments = para.split("**")
-            for i, seg in enumerate(segments):
-                _add_text_chunk(tb, seg, make_bold=(i % 2 == 1))
-            if root.Children.Count > 0:
-                tb.Margin = Thickness(0, 8, 0, 0)
-            root.Children.Add(tb)
-
-        # (6) OK button to close the dialog
-        ok = Button()
-        ok.Content = "OK"
-        ok.MinWidth = 90
-        ok.Margin = Thickness(0, 16, 0, 0)
-        ok.HorizontalAlignment = HorizontalAlignment.Right
-
-        def _close(sender, args):
-            try:
-                win.DialogResult = True
-            except Exception:
-                pass
-            win.Close()
-
-        ok.Click += _close
-
-        root.Children.Add(ok)
-        win.Content = root
-
-        # (7) Show dialog modally; returns after user clicks OK
-        win.ShowDialog()
-        return True
-
-    except Exception:
-        return False
