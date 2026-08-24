@@ -148,6 +148,82 @@ class IdlingDispatcherTests(unittest.TestCase):
         self.assertNotIn("idling.install()", startup_text)
         self.assertIn("__revit__", startup_text)
 
+    def test_install_falls_back_to_the_raw_host_object(self):
+        """During application init `HOST_APP.uiapp` is None: pyRevit stored a
+        UIControlledApplication and the property only exposes a UIApplication.
+        The raw stored host raises Idling all the same, so install uses it."""
+        raw_host = FakeUiapp()
+        self.idling.HOST_APP = types.SimpleNamespace(uiapp=None, _uiapp=raw_host)
+
+        self.assertTrue(self.idling.install())
+
+        self.assertEqual(1, len(raw_host.added))
+        self.assertTrue(self.idling.is_installed())
+
+    # -- heartbeat and ensure_installed -----------------------------------
+
+    def test_first_tick_marks_the_heartbeat_and_install_resets_it(self):
+        self.idling._run_consumers = lambda sender: None
+        uiapp = FakeUiapp()
+
+        self.idling.install(uiapp)
+        self.assertFalse(bool(self.store.get(self.idling.TICKED_ENVVAR, False)))
+
+        self.idling._on_idling(uiapp, None)
+        self.assertTrue(bool(self.store[self.idling.TICKED_ENVVAR]))
+
+        # A fresh subscription owes fresh proof of life...
+        self.idling.install(uiapp)
+        self.assertFalse(bool(self.store[self.idling.TICKED_ENVVAR]))
+
+        # ...and its own first tick provides it again.
+        self.idling._on_idling(uiapp, None)
+        self.assertTrue(bool(self.store[self.idling.TICKED_ENVVAR]))
+
+    def test_ensure_installed_installs_when_nothing_is_subscribed(self):
+        uiapp = FakeUiapp()
+
+        self.assertTrue(self.idling.ensure_installed(uiapp))
+
+        self.assertEqual(1, len(uiapp.added))
+        self.assertTrue(self.idling.is_installed())
+
+    def test_ensure_installed_is_a_noop_once_the_delegate_has_ticked(self):
+        self.idling._run_consumers = lambda sender: None
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+        self.idling._on_idling(uiapp, None)  # proof of life
+
+        other = FakeUiapp()
+        self.assertTrue(self.idling.ensure_installed(other))
+
+        self.assertEqual([], other.added)
+        self.assertEqual(1, len(uiapp.added))
+
+    def test_ensure_installed_replaces_a_mirrored_delegate_that_never_ticked(self):
+        """The dead-startup-engine case: the mirror reports a delegate, but it
+        has produced no tick, so ensure reinstalls from the live context."""
+        dead_uiapp = FakeUiapp()
+        dead_handler = object()
+        self.store[self.idling.HANDLER_ENVVAR] = {
+            "handler": dead_handler,
+            "uiapp": dead_uiapp,
+        }
+
+        live_uiapp = FakeUiapp()
+        self.assertTrue(self.idling.ensure_installed(live_uiapp))
+
+        self.assertEqual([dead_handler], dead_uiapp.removed)
+        self.assertEqual(1, len(live_uiapp.added))
+
+    def test_doc_opened_hook_anchors_the_install(self):
+        """startup.py's install can silently fail (unusable handles, or a
+        delegate dying with the startup engine); the hook is the guarantee."""
+        hook_text = (ROOT / "hooks" / "doc-opened.py").read_text(encoding="utf-8")
+
+        self.assertIn("from easybim import idling", hook_text)
+        self.assertIn("ensure_installed(__revit__)", hook_text)
+
     def test_uninstall_clears_both_anchors(self):
         uiapp = FakeUiapp()
         self.idling.install(uiapp)

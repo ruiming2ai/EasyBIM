@@ -63,8 +63,18 @@ except Exception:
 #: Mirrors the live delegate and its event source across a pyRevit reload.
 HANDLER_ENVVAR = "EASYBIM_IDLING_HANDLER"
 
+#: Set by the first Idling pass after an install - the only proof that the
+#: subscribed delegate actually runs.  The mirror alone cannot give that:
+#: a delegate subscribed by an engine that was later disposed stays in the
+#: mirror while never firing again.  ``install()`` resets it.
+TICKED_ENVVAR = "EASYBIM_IDLING_TICKED"
+
 _HANDLER = None
 _HANDLER_UIAPP = None
+
+#: Per-engine latch so the heartbeat costs one flag read per tick after the
+#: first; the cross-engine truth lives in the envvar.
+_TICK_MARKED = [False]
 
 #: Consumers open modal dialogs, and Revit can keep pumping Idling behind a
 #: modal.  pyRevit envvars hand back live mutable dicts, so a re-entrant pass
@@ -124,35 +134,53 @@ def _set_envvar(name, value):
 # -- event source ---------------------------------------------------------
 
 
-def _get_uiapp(uiapp=None):
+def _uiapp_candidates(uiapp=None):
+    """Possible event sources, best first.  Entries may be None; callers skip
+    those.  `__revit__` first, then `HOST_APP` - the same order `messages` and
+    `coordination_review_passive` use.
+    """
+    candidates = []
     if uiapp is not None:
-        return uiapp
+        candidates.append(uiapp)
 
-    # `__revit__` first, then `HOST_APP.uiapp` - the same order `messages` and
-    # `coordination_review_passive` use.  During Revit's application init
-    # `HOST_APP.uiapp` is None, because pyRevit hands startup a
-    # UIControlledApplication and only ever exposes a UIApplication there;
-    # asking it alone meant `install()` found no source and skipped.
+    # Only reaches a value when pyRevit injected `__revit__` into this scope;
+    # it does not inject library modules, so the guard usually just skips.
     try:
-        return __revit__
+        candidates.append(__revit__)
     except Exception:
         pass
 
     try:
-        return HOST_APP.uiapp
+        candidates.append(HOST_APP.uiapp)
     except Exception:
-        return None
+        pass
+
+    # During Revit's application init `HOST_APP.uiapp` is None: pyRevit stored
+    # a UIControlledApplication and the property only ever exposes a
+    # UIApplication.  The raw stored host object raises Idling all the same,
+    # so probe it too.  Private attribute, hence the guard.
+    try:
+        candidates.append(getattr(HOST_APP, "_uiapp", None))
+    except Exception:
+        pass
+
+    return [candidate for candidate in candidates if candidate is not None]
+
+
+def _get_uiapp(uiapp=None):
+    for candidate in _uiapp_candidates(uiapp):
+        return candidate
+    return None
 
 
 def _idling_source(uiapp=None):
-    uiapp = _get_uiapp(uiapp)
-    if uiapp is None:
-        return None
-    try:
-        getattr(uiapp, "Idling")
-        return uiapp
-    except Exception:
-        return None
+    for candidate in _uiapp_candidates(uiapp):
+        try:
+            getattr(candidate, "Idling")
+            return candidate
+        except Exception:
+            continue
+    return None
 
 
 def _make_idling_handler():
@@ -257,6 +285,10 @@ def _on_idling(sender, args):
         return
     _IN_PASS[0] = True
     try:
+        if not _TICK_MARKED[0]:
+            # Proof of life for ensure_installed; once per install.
+            _TICK_MARKED[0] = True
+            _set_envvar(TICKED_ENVVAR, True)
         _run_consumers(sender)
     finally:
         _IN_PASS[0] = False
@@ -308,6 +340,9 @@ def install(uiapp=None):
     _HANDLER = handler
     _HANDLER_UIAPP = source
     _set_envvar(HANDLER_ENVVAR, {"handler": handler, "uiapp": source})
+    # A fresh subscription owes fresh proof of life.
+    _TICK_MARKED[0] = False
+    _set_envvar(TICKED_ENVVAR, False)
     _log("Idling delegate installed.")
     return True
 
@@ -330,3 +365,21 @@ def is_installed():
         return True
     stored = _get_envvar(HANDLER_ENVVAR, None)
     return bool(isinstance(stored, dict) and stored.get("handler") is not None)
+
+
+def ensure_installed(uiapp=None):
+    """Install the delegate if it is missing or has never actually ticked.
+
+    ``startup.py`` runs during Revit's application init, where none of the
+    usual application handles are reliable: its install can silently skip,
+    or subscribe a delegate that dies with the startup engine while the
+    envvar mirror still reports it.  Event hooks (``doc-opened``) call this
+    with their live ``__revit__`` instead.  A missing delegate is installed;
+    a mirrored one that has produced no tick yet is replaced from this
+    known-good context (``install`` detaches the old subscription first).
+    A healthy delegate that simply had no tick yet gets one harmless
+    reinstall; one that has ticked costs two envvar reads and no churn.
+    """
+    if is_installed() and bool(_get_envvar(TICKED_ENVVAR, False)):
+        return True
+    return install(uiapp)
