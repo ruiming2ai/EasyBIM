@@ -4,6 +4,17 @@
 
 from easybim.messages import run_start_message_on_file_open
 
+# Anchor EasyBIM's Idling delegate here, where `__revit__` is a live
+# UIApplication.  startup.py also installs it, but during application init the
+# handles it can reach are unreliable, and a delegate subscribed there can die
+# with the startup engine while the mirror still reports it.  Ensure first, so
+# the file-open trigger this very run may mark is drained by a live delegate.
+try:
+    from easybim import idling
+    idling.ensure_installed(__revit__)
+except Exception:
+    pass
+
 # Try hook event args first (most reliable in hook context), then fall back
 # to active UIDocument.
 doc = None
