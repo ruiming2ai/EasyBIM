@@ -42,6 +42,11 @@ class FakeDocument(object):
     IsFamilyDocument = False
     IsLinked = False
     IsWorkshared = True
+    # A queued job identifies its document by path/title; an opened file
+    # always has them, and without them the job falls back to whatever is
+    # active, which is a different code path.
+    PathName = r"C:\Models\sample.rvt"
+    Title = "sample.rvt"
 
 
 class FakeUidoc(object):
@@ -49,9 +54,24 @@ class FakeUidoc(object):
         self.Document = doc
 
 
+class FakeApplication(object):
+    def __init__(self, docs):
+        self.Documents = list(docs)
+
+
 class FakeUiapp(object):
-    def __init__(self, doc):
+    """``active`` is what Revit reports as current; ``documents`` is what is
+    open.  During ``DocumentOpened`` the newly opened file is in the second
+    but not yet the first, which is the whole point of the queued path."""
+
+    def __init__(self, doc, documents=None):
         self.ActiveUIDocument = FakeUidoc(doc) if doc is not None else None
+        self.Application = FakeApplication(
+            documents if documents is not None else ([doc] if doc else [])
+        )
+
+    def activate(self, doc):
+        self.ActiveUIDocument = FakeUidoc(doc)
 
 
 class NoDialogMachineryTests(unittest.TestCase):
@@ -161,6 +181,146 @@ class RunStartMessageWorkflowTests(unittest.TestCase):
             self.messages.run_start_message_workflow(doc=self.doc, force=True)
 
         report.assert_called_once_with(self.doc)
+
+
+class FileOpenDefersToIdlingTests(unittest.TestCase):
+    """The regression: the doc-opened hook must not raise the picker itself.
+
+    ``run_start_message_on_file_open`` runs inside Revit's ``DocumentOpened``
+    event, where the new document is not active yet and the open is still
+    finishing - a modal raised there is refused or lands behind Revit.  While
+    the onboarding alert existed its own modal blocked the hook until Revit
+    had settled, so the inline call worked by accident; removing the alert
+    removed that barrier and both windows stopped appearing.
+    """
+
+    def setUp(self):
+        self.messages = _load_messages()
+        self.doc = FakeDocument()
+
+    def test_the_hook_queues_instead_of_opening_the_windows_inline(self):
+        with mock.patch.object(self.messages, "_show_workset_picker_for_doc") as picker, \
+             mock.patch.object(self.messages, "_print_coordination_review_report") as report, \
+             mock.patch.object(self.messages, "_enqueue_startup_actions") as enqueue, \
+             mock.patch.object(self.messages, "_disable_passive_coordination_review_detector"):
+            self.messages.run_start_message_on_file_open(doc=self.doc)
+
+        enqueue.assert_called_once_with(
+            doc=self.doc, open_worksets_after=True, run_coord_report_after=True,
+        )
+        picker.assert_not_called()
+        report.assert_not_called()
+
+    def test_defer_queues_even_though_a_valid_document_is_in_hand(self):
+        with mock.patch.object(self.messages, "_run_startup_actions_now") as run_now, \
+             mock.patch.object(self.messages, "_enqueue_startup_actions") as enqueue:
+            self.messages.show_start_message(
+                force=True, doc=self.doc, defer=True,
+                open_worksets_after=True, run_coord_report_after=True,
+            )
+
+        enqueue.assert_called_once()
+        run_now.assert_not_called()
+
+    def test_the_ribbon_button_still_opens_the_windows_straight_away(self):
+        # The button is a user click, not an event handler: nothing to wait for.
+        with mock.patch.object(self.messages, "_run_startup_actions_now") as run_now, \
+             mock.patch.object(self.messages, "_enqueue_startup_actions") as enqueue:
+            self.messages.run_start_message_workflow(doc=self.doc, force=True)
+
+        run_now.assert_called_once()
+        enqueue.assert_not_called()
+
+
+class QueuedJobStillOpensBothWindowsTests(unittest.TestCase):
+    """End to end over the real state machine: hook -> queue -> Idling.
+
+    Only the two windows and the envvar-backed state store are faked, so the
+    job dict really is built by ``_enqueue_startup_job`` and really is driven
+    by ``_process_startup_job``.
+    """
+
+    def setUp(self):
+        self.messages = _load_messages()
+        self.doc = FakeDocument()
+        self.other = FakeDocument()
+        self.other.PathName = r"C:\Models\other.rvt"
+        self.other.Title = "other.rvt"
+        self._state = {"next_id": 1, "jobs": []}
+
+    def _install_state_store(self):
+        def _load():
+            return self._state
+
+        def _save(state):
+            self._state = state
+            return True
+
+        return (
+            mock.patch.object(self.messages, "_load_startup_state", side_effect=_load),
+            mock.patch.object(self.messages, "_save_startup_state", side_effect=_save),
+        )
+
+    def test_the_windows_open_once_the_document_becomes_active(self):
+        load_patch, save_patch = self._install_state_store()
+        calls = []
+
+        # Revit during DocumentOpened: our file is open, but the previously
+        # active document is still the active one.
+        uiapp = FakeUiapp(self.other, documents=[self.other, self.doc])
+
+        with load_patch, save_patch, \
+             mock.patch.object(self.messages, "_show_workset_picker_for_doc",
+                               side_effect=lambda d: calls.append(("picker", d))), \
+             mock.patch.object(self.messages, "_print_coordination_review_report",
+                               side_effect=lambda d: calls.append(("report", d))), \
+             mock.patch.object(self.messages, "_disable_passive_coordination_review_detector"), \
+             mock.patch.object(self.messages, "_clear_file_open_trigger_pending"), \
+             mock.patch.object(self.messages, "_load_file_open_trigger_state",
+                               return_value={"pending": False, "created_at": 0.0}):
+
+            self.messages.run_start_message_on_file_open(doc=self.doc)
+
+            # The hook itself opened nothing, but left work behind.
+            self.assertEqual([], calls)
+            self.assertTrue(self.messages.has_pending_startup_jobs())
+
+            # Idling ticks while our document is still not the active one:
+            # the job waits rather than showing the picker on the wrong doc.
+            self.messages.process_startup_jobs(uiapp)
+            self.assertEqual([], calls)
+
+            # Revit finishes the open and activates it.
+            uiapp.activate(self.doc)
+            self.messages.process_startup_jobs(uiapp)
+            self.messages.process_startup_jobs(uiapp)
+
+        self.assertEqual(["picker", "report"], [name for name, _ in calls])
+        for _, passed_doc in calls:
+            self.assertIs(self.doc, passed_doc)
+
+    def test_the_queue_drains_so_the_windows_do_not_reopen(self):
+        load_patch, save_patch = self._install_state_store()
+        calls = []
+        uiapp = FakeUiapp(self.doc, documents=[self.doc])
+
+        with load_patch, save_patch, \
+             mock.patch.object(self.messages, "_show_workset_picker_for_doc",
+                               side_effect=lambda d: calls.append("picker")), \
+             mock.patch.object(self.messages, "_print_coordination_review_report",
+                               side_effect=lambda d: calls.append("report")), \
+             mock.patch.object(self.messages, "_disable_passive_coordination_review_detector"), \
+             mock.patch.object(self.messages, "_clear_file_open_trigger_pending"), \
+             mock.patch.object(self.messages, "_load_file_open_trigger_state",
+                               return_value={"pending": False, "created_at": 0.0}):
+
+            self.messages.run_start_message_on_file_open(doc=self.doc)
+            for _ in range(6):
+                self.messages.process_startup_jobs(uiapp)
+
+            self.assertFalse(self.messages.has_pending_startup_jobs())
+
+        self.assertEqual(["picker", "report"], calls)
 
 
 if __name__ == "__main__":

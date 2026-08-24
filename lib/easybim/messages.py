@@ -45,10 +45,15 @@ def show_start_message(
     force=False,
     doc=None,
     open_worksets_after=False,
-    run_coord_report_after=False
+    run_coord_report_after=False,
+    defer=False
 ):
     """Run the startup follow-up actions: the Active Workset picker and/or
     the Coordination Review summary.
+
+    ``defer`` hands the work to the Idling delegate even when a valid
+    document is already in hand.  Callers running inside a Revit event
+    handler must set it; see ``run_start_message_on_file_open``.
 
     We keep this function name and signature (minus the dialog's old
     ``title``) stable so your hook and button do not need to change other
@@ -60,8 +65,21 @@ def show_start_message(
     if not (open_worksets_after or run_coord_report_after):
         return
 
-    # 2) Run immediately if a valid document is already available, otherwise
-    #    queue for the Idling delegate to pick up once one is.
+    # 2) A caller inside a Revit event handler cannot raise a modal itself:
+    #    the document is not the active one yet and Revit is still finishing
+    #    the open, so the picker is refused or lands behind the main window.
+    #    Hand those to the Idling delegate, which waits for the document to
+    #    become active before it shows anything.
+    if defer:
+        _enqueue_startup_actions(
+            doc=doc,
+            open_worksets_after=open_worksets_after,
+            run_coord_report_after=run_coord_report_after,
+        )
+        return
+
+    # 3) Otherwise run immediately if a valid document is already available,
+    #    and queue for the Idling delegate when none is.
     run_doc = doc if _is_doc_valid(doc) else None
     if not _is_doc_valid(run_doc):
         run_doc = _get_active_doc_from_uiapp(_get_uiapp())
@@ -80,22 +98,32 @@ def show_start_message(
         )
 
 
-def run_start_message_workflow(doc=None, force=False):
+def run_start_message_workflow(doc=None, force=False, defer=False):
     """Run the default EasyBIM start-message workflow."""
     return show_start_message(
         doc=doc,
         force=force,
         open_worksets_after=True,
         run_coord_report_after=True,
+        defer=defer,
     )
 
 
 def run_start_message_on_file_open(doc=None):
-    """Run Start Message for a qualifying opened file with context fallback."""
+    """Run Start Message for a qualifying opened file with context fallback.
+
+    This runs from the ``doc-opened`` hook, i.e. inside Revit's
+    ``DocumentOpened`` event: the new document is not the active one yet and
+    the open is still finishing, so the workset picker and the report are
+    queued (``defer=True``) rather than raised here.  Until the onboarding
+    alert was removed, its own modal happened to supply that barrier - it
+    blocked the hook until Revit had settled and the document was active -
+    which is why the two windows appeared even though the call was inline.
+    """
     if _is_doc_eligible_for_file_open(doc):
         _clear_file_open_trigger_pending()
         try:
-            return run_start_message_workflow(doc=doc, force=False)
+            return run_start_message_workflow(doc=doc, force=False, defer=True)
         finally:
             # The passive detector only needs to observe the document-open
             # phase.  Detach here unconditionally so an early bail inside the
