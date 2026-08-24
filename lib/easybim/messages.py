@@ -91,26 +91,44 @@ def run_start_message_workflow(doc=None, force=False):
 
 
 def run_start_message_on_file_open(doc=None):
-    """Run Start Message for a qualifying opened file with context fallback."""
-    if _is_doc_eligible_for_file_open(doc):
-        _clear_file_open_trigger_pending()
-        try:
-            return run_start_message_workflow(doc=doc, force=False)
-        finally:
-            # The passive detector only needs to observe the document-open
-            # phase.  Detach here unconditionally so an early bail inside the
-            # workflow can never leave the FailuresProcessing handler attached
-            # for the rest of the session.
-            _disable_passive_coordination_review_detector()
+    """Note the file-open startup work; never raise windows from the hook.
 
-    # Only defer when hook timing did not provide a usable document context.
-    # The deferred startup job detaches the detector after its report runs.
-    if not _is_doc_valid(doc):
-        _mark_file_open_trigger_pending()
-    else:
+    DocumentOpened fires before the opened document is active, so windows
+    raised here are refused or land behind the main window.  The removed
+    onboarding alert used to absorb that gap by accident: its modal blocked
+    this hook while Revit finished activating the document, and only the
+    OK click let the picker and the report run.  Without the modal, this
+    entry point only marks the file-open trigger; ``hooks/view-activated.py``
+    runs the work via ``run_pending_file_open_startup`` the moment Revit
+    activates the document - exactly when that OK click used to land.  The
+    Idling delegate remains a second consumer of the same trigger.
+    """
+    if _is_doc_valid(doc) and not _is_doc_eligible_for_file_open(doc):
+        # A real but ineligible document (family, linked): nothing will run,
+        # so drop any stale trigger and let the passive detector go.
         _clear_file_open_trigger_pending()
         _disable_passive_coordination_review_detector()
+        return None
+
+    # Eligible document, or no usable document context at hook time (the
+    # common case: ActiveUIDocument is not set yet).  Opening several files
+    # in a burst re-marks the trigger; one drain serves the active document.
+    # The detector stays attached; the report's own finally detaches it.
+    _mark_file_open_trigger_pending()
     return None
+
+
+def run_pending_file_open_startup(uiapp=None):
+    """Run the deferred file-open startup work if its trigger is pending.
+
+    Called by ``hooks/view-activated.py`` with the hook's live ``__revit__``.
+    The shared processor does the rest: cheap exit when nothing is pending,
+    expiry, active-document eligibility, consuming the trigger before any
+    modal shows, then the workflow inline.  The Idling delegate drains the
+    same trigger through ``process_startup_jobs``; whichever fires first
+    wins, and the consumed flag makes the other a no-op.
+    """
+    _process_file_open_trigger_pending(uiapp=uiapp)
 
 
 # =============================
@@ -401,6 +419,10 @@ def _process_file_open_trigger_pending(uiapp=None):
 
     if (now - created_at) > _FILE_OPEN_TRIGGER_MAX_AGE_SEC:
         _clear_file_open_trigger_pending()
+        # The workflow will never run for this trigger, so its report cannot
+        # detach the passive detector; do it here or it stays attached for
+        # the rest of the session.
+        _disable_passive_coordination_review_detector()
         return
 
     uiapp = uiapp or _get_uiapp()
