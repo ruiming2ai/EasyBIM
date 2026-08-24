@@ -127,6 +127,17 @@ def _set_envvar(name, value):
 def _get_uiapp(uiapp=None):
     if uiapp is not None:
         return uiapp
+
+    # `__revit__` first, then `HOST_APP.uiapp` - the same order `messages` and
+    # `coordination_review_passive` use.  During Revit's application init
+    # `HOST_APP.uiapp` is None, because pyRevit hands startup a
+    # UIControlledApplication and only ever exposes a UIApplication there;
+    # asking it alone meant `install()` found no source and skipped.
+    try:
+        return __revit__
+    except Exception:
+        pass
+
     try:
         return HOST_APP.uiapp
     except Exception:

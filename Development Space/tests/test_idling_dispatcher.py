@@ -109,6 +109,45 @@ class IdlingDispatcherTests(unittest.TestCase):
         self.assertFalse(self.idling.is_installed())
         self.assertTrue(any("subscription failed" in item for item in self.logs))
 
+    def test_install_finds_the_source_when_host_app_has_no_uiapp(self):
+        """Revit's application init is exactly this shape.
+
+        pyRevit hands `startup.py` a UIControlledApplication and only ever
+        exposes a UIApplication through `HOST_APP.uiapp`, so that attribute is
+        None there.  Asking it alone made `install()` skip and left the whole
+        session with no delegate: no deferred auto-update, no My Ribbon apply,
+        and no drain of the file-open startup jobs.  UIControlledApplication
+        raises Idling too, so `__revit__` is a valid source.
+        """
+        self.idling.HOST_APP = types.SimpleNamespace(uiapp=None)
+        uiapp = FakeUiapp()
+        # Stands in for the builtin: the bare `__revit__` read inside the
+        # module resolves to a module global when one is present.
+        self.idling.__revit__ = uiapp
+        try:
+            self.assertTrue(self.idling.install())
+        finally:
+            del self.idling.__revit__
+
+        self.assertEqual(1, len(uiapp.added))
+        self.assertTrue(self.idling.is_installed())
+
+    def test_install_still_skips_when_no_source_is_reachable(self):
+        """The skip path stays intact - a missing host is not made up for."""
+        self.idling.HOST_APP = types.SimpleNamespace(uiapp=None)
+
+        self.assertFalse(self.idling.install())
+        self.assertFalse(self.idling.is_installed())
+        self.assertTrue(any("Install skipped" in item for item in self.logs))
+
+    def test_startup_hands_the_application_to_install(self):
+        """A bare `idling.install()` in startup.py is the bug itself."""
+        startup_text = (ROOT / "startup.py").read_text(encoding="utf-8")
+
+        self.assertIn("idling.install(", startup_text)
+        self.assertNotIn("idling.install()", startup_text)
+        self.assertIn("__revit__", startup_text)
+
     def test_uninstall_clears_both_anchors(self):
         uiapp = FakeUiapp()
         self.idling.install(uiapp)

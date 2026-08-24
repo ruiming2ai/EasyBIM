@@ -29,7 +29,9 @@ class TempPhaseConversionTests(unittest.TestCase):
 
         startup_text = (ROOT / "startup.py").read_text(encoding="utf-8")
         self.assertIn("from easybim import idling", startup_text)
-        self.assertIn("idling.install()", startup_text)
+        # The application is passed explicitly: a bare install() finds no event
+        # source during application init.  See test_idling_dispatcher.
+        self.assertIn("idling.install(", startup_text)
 
         idling_runtime = (ROOT / "lib" / "easybim" / "idling.py").read_text(
             encoding="utf-8"

@@ -63,7 +63,21 @@ try:
     # One .NET Idling delegate for all of EasyBIM's deferred work.  A pyRevit
     # hook script would instead be read and recompiled on every Idling event,
     # which Revit raises continuously for the whole session.
-    idling.install()
+    #
+    # The application has to be handed over explicitly.  Revit runs this during
+    # application init, where pyRevit's `__revit__` is a UIControlledApplication
+    # and `HOST_APP.uiapp` - the only source idling knows on its own - is None.
+    # A bare install() therefore found no event source and silently skipped,
+    # leaving the whole session without a delegate: no deferred auto-update, no
+    # My Ribbon apply, and no drain of the file-open startup jobs until
+    # something reloaded pyRevit from a command.  UIControlledApplication raises
+    # Idling just like UIApplication, so it is a valid source here.
+    try:
+        _startup_app = __revit__
+    except NameError:
+        _startup_app = None
+
+    idling.install(_startup_app)
 except Exception as ex:
     try:
         from easybim import temp_phase_close
