@@ -106,6 +106,31 @@ class _FakeAutodeskWindows(object):
         def __init__(self):
             _FakeTab.__init__(self, "")
 
+    class RibbonRowPanel(object):
+        """No-arg twin of the reader fake above: the rows the engine builds."""
+
+        def __init__(self):
+            self.Id = ""
+            self.Text = ""
+            self.Items = _FakeItems()
+
+    class RibbonButton(object):
+        def __init__(self):
+            self.Id = ""
+            self.Text = ""
+
+    class RibbonSeparator(object):
+        def __init__(self):
+            self.Id = ""
+
+    class RibbonPanelBreak(object):
+        def __init__(self):
+            self.Id = ""
+
+    class RibbonItemSize(object):
+        Standard = "standard-size"
+        Large = "large-size"
+
 
 def _build_ribbon():
     easybim_misc = _FakePanel("CustomCtrl_%EasyBIM%Misc Tools", "Misc Tools")
@@ -748,6 +773,181 @@ class ListRibbonTests(unittest.TestCase):
         self.assertTrue(easybim["panels"][1]["is_ours"])
         self.assertTrue(summary[5]["is_ours"])
         self.assertEqual(mod.list_ribbon(None) if mod._get_default_ribbon() is None else [], [])
+
+
+class StackApplyTests(unittest.TestCase):
+    """Stacked rows of small clones, separators and the slide-out fold."""
+
+    def setUp(self):
+        self.mod = _load_module()
+        self.env = _EnvStore(self.mod)
+        self.ribbon, self.parts = _build_ribbon()
+        self.aw = _FakeAutodeskWindows()
+
+    def _apply(self, registry):
+        return self.mod.apply(registry, ribbon=self.ribbon, autodesk_windows=self.aw)
+
+    def _stack_registry(self, members=2):
+        placements = [
+            {"id": "p_one", "source": "s1", "dest": "d1", "order": 0, "kind": "button",
+             "title": "Baz Tool", "control_id": "CustomCtrl_%CustomCtrl_%Foo%Bar%Baz",
+             "path": [_level("Foo"), _level("Bar"), _level("Baz", "Baz Tool")],
+             "stack": "k1"},
+            {"id": "p_two", "source": "s1", "dest": "d1", "order": 1, "kind": "button",
+             "title": "Two", "control_id": "",
+             "path": [_level("Foo"), _level("Bar"), _level("Two")],
+             "stack": "k1"},
+        ][:members]
+        return {
+            "format": 1,
+            "sources": [{"id": "s1", "kind": "git", "url": "https://github.com/o/foo",
+                         "ext_name": "Foo", "tab_names": ["Foo"]}],
+            "destinations": [
+                {"id": "d1", "tab": "EasyBIM", "panel": "My Tools", "own_tab": False}],
+            "placements": placements,
+        }
+
+    def _my_tools(self):
+        for panel in self.parts["easybim_tab"].Panels:
+            if panel.Source.Title == "My Tools":
+                return panel
+        return None
+
+    def test_a_stack_becomes_one_row_of_small_clones(self):
+        handler = object()
+        self.parts["baz"].CommandHandler = handler
+        report = self._apply(self.mod.read_registry(self._stack_registry()))
+        self.assertEqual(report["missing"], [])
+        self.assertEqual(sorted(report["added"]), ["p_one", "p_two"])
+        panel = self._my_tools()
+        self.assertEqual(len(panel.Source.Items), 1)
+        row = panel.Source.Items[0]
+        self.assertTrue(row.Id.startswith(self.mod.ID_PREFIX + "row_"))
+        self.assertEqual(len(row.Items), 2)
+        clone = row.Items[0]
+        self.assertIsNot(clone, self.parts["baz"])
+        self.assertEqual(clone.Text, "Baz Tool")
+        self.assertIs(clone.CommandHandler, handler)
+        self.assertEqual(clone.Size, self.aw.RibbonItemSize.Standard)
+        self.assertTrue(clone.Id.startswith(self.mod.ID_PREFIX))
+        self.assertTrue(clone.ShowText)
+
+    def test_the_shared_original_is_never_touched(self):
+        self._apply(self.mod.read_registry(self._stack_registry()))
+        baz = self.parts["baz"]
+        self.assertFalse(hasattr(baz, "Size"))
+        self.assertFalse(hasattr(baz, "ShowText"))
+        self.assertEqual(baz.Text, "Baz Tool")
+        # still exactly once on its home panel, nowhere else as itself
+        home = [i for i in self.parts["bar_panel"].Source.Items if i is baz]
+        self.assertEqual(len(home), 1)
+        panel = self._my_tools()
+        self.assertFalse(any(i is baz for i in panel.Source.Items))
+        self.assertFalse(any(i is baz for i in panel.Source.Items[0].Items))
+
+    def test_apply_twice_leaves_one_row(self):
+        registry = self.mod.read_registry(self._stack_registry())
+        self._apply(registry)
+        self._apply(registry)
+        panel = self._my_tools()
+        self.assertEqual(len(panel.Source.Items), 1)
+        self.assertEqual(len(panel.Source.Items[0].Items), 2)
+
+    def test_a_missing_member_still_builds_the_row(self):
+        raw = self._stack_registry()
+        raw["placements"][1]["path"] = [_level("Foo"), _level("Bar"), _level("Gone")]
+        report = self._apply(self.mod.read_registry(raw))
+        self.assertEqual(report["added"], ["p_one"])
+        self.assertEqual(len(report["missing"]), 1)
+        panel = self._my_tools()
+        self.assertEqual(len(panel.Source.Items), 1)
+        self.assertEqual(len(panel.Source.Items[0].Items), 1)
+
+    def test_all_members_missing_leaves_no_row(self):
+        raw = self._stack_registry()
+        for placement in raw["placements"]:
+            placement["control_id"] = ""
+            placement["path"] = [_level("Foo"), _level("Bar"), _level("Gone")]
+        report = self._apply(self.mod.read_registry(raw))
+        self.assertEqual(report["added"], [])
+        self.assertEqual(len(report["missing"]), 2)
+        self.assertEqual(len(self._my_tools().Source.Items), 0)
+
+    def test_a_stack_of_one_places_the_shared_object_flat(self):
+        report = self._apply(self.mod.read_registry(self._stack_registry(members=1)))
+        self.assertEqual(report["added"], ["p_one"])
+        panel = self._my_tools()
+        self.assertEqual(len(panel.Source.Items), 1)
+        self.assertIs(panel.Source.Items[0], self.parts["baz"])
+
+    def test_markers_render_as_our_objects_and_stay_single(self):
+        raw = self._stack_registry()
+        for placement in raw["placements"]:
+            placement["stack"] = ""
+        raw["placements"].append(
+            {"id": "p_sep", "source": "", "dest": "d1", "order": 2,
+             "kind": "separator", "title": "", "control_id": "", "path": []})
+        raw["placements"].append(
+            {"id": "p_fold", "source": "", "dest": "d1", "order": 3,
+             "kind": "slideout", "title": "", "control_id": "", "path": []})
+        registry = self.mod.read_registry(raw)
+        self.assertEqual(len(registry["placements"]), 4)  # markers survive the read
+        report = self._apply(registry)
+        self.assertIn("p_sep", report["added"])
+        self.assertIn("p_fold", report["added"])
+        panel = self._my_tools()
+        self.assertEqual(len(panel.Source.Items), 4)
+        self.assertTrue(panel.Source.Items[2].Id.startswith(self.mod.ID_PREFIX + "sep_"))
+        self.assertTrue(panel.Source.Items[3].Id.startswith(self.mod.ID_PREFIX + "fold_"))
+        self._apply(registry)
+        self.assertEqual(len(self._my_tools().Source.Items), 4)
+
+    def test_an_empty_registry_takes_rows_and_markers_back(self):
+        raw = self._stack_registry()
+        raw["placements"].append(
+            {"id": "p_sep", "source": "", "dest": "d1", "order": 2,
+             "kind": "separator", "title": "", "control_id": "", "path": []})
+        self._apply(self.mod.read_registry(raw))
+        self._apply(self.mod.empty_registry())
+        # the emptied panel was ours, so the take-back drops it whole
+        self.assertIsNone(self._my_tools())
+        home = [i for i in self.parts["bar_panel"].Source.Items if i is self.parts["baz"]]
+        self.assertEqual(len(home), 1)
+
+    def test_dynamo_icons_land_on_the_clone_not_the_original(self):
+        raw = self._stack_registry()
+        raw["sources"].append({"id": "s9", "kind": "dynamo", "ext_name": "EasyBIM_MyRibbon",
+                               "path": "C:\\graphs\\g.dyn", "title": "One",
+                               "installed_by_my_ribbon": True})
+        raw["placements"][1] = {
+            "id": "p_two", "source": "s9", "dest": "d1", "order": 1, "kind": "button",
+            "title": "One", "control_id": "",
+            "path": [_level("Foo"), _level("Bar"), _level("One")], "stack": "k1"}
+        report = self._apply(self.mod.read_registry(raw))
+        self.assertIn("p_two", report["dynamo_icons"])
+        row = self._my_tools().Source.Items[0]
+        clone = row.Items[1]
+        self.assertEqual(clone.Image, "dynamo-small-image")
+        self.assertIsNone(getattr(self.parts["stacked_one"], "Image", None))
+
+    def test_our_rows_never_pass_for_a_source(self):
+        ours = _FakeAutodeskWindows.RibbonRowPanel()
+        ours.Id = self.mod.ID_PREFIX + "row_k1"
+        clone = _FakeAutodeskWindows.RibbonButton()
+        clone.Text = "Baz Tool"
+        ours.Items.Add(clone)
+        items = _FakeItems([ours])
+        self.assertIsNone(self.mod._find_item_by_aliases(items, ["Baz Tool"]))
+        theirs = RibbonRowPanel([_FakeItem("X", "Baz Tool")])
+        self.assertIsNotNone(
+            self.mod._find_item_by_aliases(_FakeItems([theirs]), ["Baz Tool"]))
+
+    def test_the_live_reader_skips_our_objects(self):
+        self._apply(self.mod.read_registry(self._stack_registry()))
+        described = self.mod.describe_ribbon_tab(self.parts["easybim_tab"])
+        titles = [b["title"] for b in described["buttons"]]
+        self.assertNotIn("Baz Tool", titles)  # the clone stays invisible
+        self.assertIn("Slope", titles)
 
 
 if __name__ == "__main__":
