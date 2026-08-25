@@ -9,17 +9,29 @@ MODULE_PATH = REPO_ROOT / "lib" / "easybim" / "auto_update.py"
 COMMAND_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel" / "Auto Update.pushbutton"
 
 
-def _load_module():
+#: Where the fakes pretend this extension lives.  ``_find_own_repo`` matches
+#: repositories against this module's own folder, so the loader pins the seam
+#: to this path and every fake repo carries a matching ``directory``.
+FAKE_EXTENSION_ROOT = "/ext/EasyBIM"
+
+
+def _load_module(extension_root=FAKE_EXTENSION_ROOT):
     spec = importlib.util.spec_from_file_location("auto_update", str(MODULE_PATH))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if extension_root is not None:
+        module._get_extension_root = lambda: extension_root
     return module
 
 
 class _FakeRepoInfo(object):
-    def __init__(self, name, last_commit_hash):
+    def __init__(self, name, last_commit_hash, directory=None):
         self.name = name
         self.last_commit_hash = last_commit_hash
+        # Default: our own repo is the one whose folder is the extension root.
+        self.directory = (
+            directory if directory is not None else "/ext/{}".format(name)
+        )
 
 
 class _FakeSessionManager(object):
@@ -49,6 +61,7 @@ class _FakeUpdater(object):
         self.after_repos = list(after_repos or self.repos)
         self.sessionmgr = sessionmgr
         self.request_reload = request_reload
+        self.updated_repos = []
 
     def get_all_extension_repos(self):
         return list(self.repos)
@@ -59,11 +72,19 @@ class _FakeUpdater(object):
             raise self.check_exception
         return self.pending_updates
 
-    def update_pyrevit(self):
+    def update_repo(self, repo_info):
         self.call_count += 1
+        self.updated_repos.append(repo_info)
         self.repos = list(self.after_repos)
         if self.request_reload:
             self.sessionmgr.reload_pyrevit()
+
+    def update_pyrevit(self):
+        # The whole point of the change: never pull every extension again.
+        raise AssertionError(
+            "update_pyrevit() must not be called - Auto Update is scoped to "
+            "the EasyBIM repository"
+        )
 
 
 class _FakeStartupLock(object):
@@ -127,7 +148,7 @@ class AutoUpdateTests(unittest.TestCase):
         module = _load_module()
 
         with mock.patch.object(module, "_try_acquire_startup_lock", return_value=False):
-            with mock.patch.object(module, "_run_native_update") as run_update:
+            with mock.patch.object(module, "_run_easybim_update") as run_update:
                 result = module.run_startup_auto_update()
 
         run_update.assert_not_called()
@@ -312,14 +333,15 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertEqual(result["updated_repos"], [])
         self.assertEqual(sessionmgr.reload_count, 0)
 
-    def test_popup_lists_single_changed_repo_before_native_reload(self):
+    def test_popup_and_reload_when_the_easybim_repo_moves(self):
+        # No request_reload here on purpose: the reload must come from our own
+        # head diff, not from the updater asking for one.
         module = _load_module()
         sessionmgr = _FakeSessionManager()
         updater = _FakeUpdater(
             before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
             after_repos=[_FakeRepoInfo("EasyBIM", "def456")],
             sessionmgr=sessionmgr,
-            request_reload=True,
         )
 
         with mock.patch.object(module, "_get_native_updater", return_value=updater):
@@ -329,14 +351,16 @@ class AutoUpdateTests(unittest.TestCase):
 
         show_message.assert_called_once()
         message = show_message.call_args[0][0]
-        self.assertIn("pyRevit Update installed changes:", message)
+        self.assertIn("EasyBIM Auto Update installed changes:", message)
         self.assertIn("- EasyBIM", message)
         self.assertIn("pyRevit is reloading.", message)
         self.assertEqual(result["status"], module.STATUS_UPDATED)
         self.assertEqual(result["updated_repos"], ["EasyBIM"])
         self.assertEqual(sessionmgr.reload_count, 1)
 
-    def test_popup_lists_multiple_changed_repos(self):
+    def test_another_extension_moving_is_neither_updated_nor_reported(self):
+        # The whole point: a stranger's repo advancing must not pull us into a
+        # popup or a reload, and must never be handed to update_repo.
         module = _load_module()
         sessionmgr = _FakeSessionManager()
         updater = _FakeUpdater(
@@ -345,11 +369,10 @@ class AutoUpdateTests(unittest.TestCase):
                 _FakeRepoInfo("Other.extension", "111111"),
             ],
             after_repos=[
-                _FakeRepoInfo("EasyBIM", "def456"),
+                _FakeRepoInfo("EasyBIM", "abc123"),
                 _FakeRepoInfo("Other.extension", "222222"),
             ],
             sessionmgr=sessionmgr,
-            request_reload=True,
         )
 
         with mock.patch.object(module, "_get_native_updater", return_value=updater):
@@ -357,11 +380,14 @@ class AutoUpdateTests(unittest.TestCase):
                 with mock.patch.object(module, "_show_message") as show_message:
                     result = module.run_startup_auto_update()
 
-        message = show_message.call_args[0][0]
-        self.assertIn("- EasyBIM", message)
-        self.assertIn("- Other.extension", message)
-        self.assertEqual(result["updated_repos"], ["EasyBIM", "Other.extension"])
-        self.assertEqual(sessionmgr.reload_count, 1)
+        show_message.assert_not_called()
+        self.assertEqual(result["updated_repos"], [])
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+        self.assertEqual(sessionmgr.reload_count, 0)
+        self.assertEqual(
+            [repo.directory for repo in updater.updated_repos],
+            [FAKE_EXTENSION_ROOT],
+        )
 
     def test_native_reload_still_runs_when_no_hash_change_is_detected(self):
         module = _load_module()
@@ -383,7 +409,7 @@ class AutoUpdateTests(unittest.TestCase):
         self.assertEqual(result["updated_repos"], [])
         self.assertEqual(sessionmgr.reload_count, 1)
 
-    def test_native_reload_is_restored_when_update_raises(self):
+    def test_reload_is_restored_and_reported_when_the_pull_raises(self):
         module = _load_module()
         sessionmgr = _FakeSessionManager()
         original_reload = sessionmgr.reload_pyrevit
@@ -392,49 +418,276 @@ class AutoUpdateTests(unittest.TestCase):
             def get_all_extension_repos(self):
                 return [_FakeRepoInfo("EasyBIM", "abc123")]
 
-            def update_pyrevit(self):
-                raise RuntimeError("native update failed")
+            def update_repo(self, repo_info):
+                raise RuntimeError("pull failed")
 
         with mock.patch.object(module, "_get_native_updater", return_value=FailingUpdater()):
             with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
-                with self.assertRaises(RuntimeError):
-                    module.run_manual_auto_update()
+                with mock.patch.object(module, "_show_message") as show_message:
+                    result = module.run_manual_auto_update()
 
+        # Restored on the way out of the failure, not just the happy path.
         self.assertIs(sessionmgr.reload_pyrevit, original_reload)
+        self.assertEqual(result["status"], module.STATUS_UPDATE_FAILED)
+        self.assertEqual(sessionmgr.reload_count, 0)
+        show_message.assert_called_once()
+        self.assertIn("pull failed", show_message.call_args[0][0])
 
-    def test_snapshot_failure_runs_native_update_without_popup_interception(self):
+    def test_repo_enumeration_failure_fails_closed(self):
+        # Previously this fell through to updating every extension.  Now it
+        # must do nothing at all: we cannot tell which repo is ours.
         module = _load_module()
         sessionmgr = _FakeSessionManager()
 
-        class SnapshotFailingUpdater(object):
+        class EnumerationFailingUpdater(object):
             def __init__(self):
                 self.call_count = 0
 
             def get_all_extension_repos(self):
-                raise RuntimeError("snapshot failed")
+                raise RuntimeError("enumeration failed")
 
-            def update_pyrevit(self):
+            def update_repo(self, repo_info):
                 self.call_count += 1
-                sessionmgr.reload_pyrevit()
 
-        updater = SnapshotFailingUpdater()
+        updater = EnumerationFailingUpdater()
 
         with mock.patch.object(module, "_get_native_updater", return_value=updater):
             with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
                 with mock.patch.object(module, "_show_message") as show_message:
                     result = module.run_manual_auto_update()
 
-        show_message.assert_not_called()
-        self.assertEqual(updater.call_count, 1)
-        self.assertEqual(sessionmgr.reload_count, 1)
-        self.assertEqual(result["status"], module.STATUS_NO_OP)
+        self.assertEqual(updater.call_count, 0)
+        self.assertEqual(sessionmgr.reload_count, 0)
+        self.assertEqual(result["status"], module.STATUS_REPO_NOT_FOUND)
         self.assertEqual(result["updated_repos"], [])
+        show_message.assert_called_once()
 
     def test_easybim_auto_update_has_no_local_command_runner_dependencies(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
 
         self.assertNotIn("subprocess", source)
         self.assertNotIn("shutil", source)
+
+    def test_auto_update_never_calls_the_update_everything_routine(self):
+        # The regression that matters: one stray update_pyrevit() and the tool
+        # is back to pulling every extension on the machine.
+        source = MODULE_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("update_pyrevit", source)
+
+
+class OwnRepoOnlyTests(unittest.TestCase):
+    """The scoping itself: one repository is pulled, and it is ours."""
+
+    def _run_manual(self, module, updater, sessionmgr):
+        with mock.patch.object(module, "_get_native_updater", return_value=updater):
+            with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
+                with mock.patch.object(module, "_show_message") as show_message:
+                    result = module.run_manual_auto_update()
+        return result, show_message
+
+    def test_only_the_easybim_repo_is_handed_to_update_repo(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[
+                _FakeRepoInfo("Other.extension", "111111"),
+                _FakeRepoInfo("EasyBIM", "abc123"),
+                _FakeRepoInfo("Third.extension", "333333"),
+            ],
+            sessionmgr=sessionmgr,
+        )
+
+        self._run_manual(module, updater, sessionmgr)
+
+        self.assertEqual(
+            [repo.directory for repo in updater.updated_repos],
+            [FAKE_EXTENSION_ROOT],
+        )
+
+    def test_no_reload_when_our_repo_did_not_move(self):
+        # The other half of the complaint: the old tool reloaded regardless.
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            after_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            sessionmgr=sessionmgr,
+        )
+
+        result, show_message = self._run_manual(module, updater, sessionmgr)
+
+        self.assertEqual(sessionmgr.reload_count, 0)
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+        show_message.assert_not_called()
+
+    def test_fails_closed_when_our_repo_is_not_among_the_extensions(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("Other.extension", "111111")],
+            sessionmgr=sessionmgr,
+        )
+
+        result, show_message = self._run_manual(module, updater, sessionmgr)
+
+        self.assertEqual(updater.updated_repos, [])
+        self.assertEqual(sessionmgr.reload_count, 0)
+        self.assertEqual(result["status"], module.STATUS_REPO_NOT_FOUND)
+        show_message.assert_called_once()
+
+    def test_fails_closed_when_the_updater_has_no_per_repo_entry_point(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+
+        class OldUpdater(object):
+            def __init__(self):
+                self.enumerated = 0
+
+            def get_all_extension_repos(self):
+                self.enumerated += 1
+                return [_FakeRepoInfo("EasyBIM", "abc123")]
+
+        updater = OldUpdater()
+        result, show_message = self._run_manual(module, updater, sessionmgr)
+
+        self.assertEqual(result["status"], module.STATUS_REPO_NOT_FOUND)
+        self.assertEqual(sessionmgr.reload_count, 0)
+        self.assertEqual(updater.enumerated, 0, "must bail before doing any work")
+        show_message.assert_called_once()
+
+    def test_startup_failures_stay_silent(self):
+        # A machine that can never self-update must not nag every session.
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("Other.extension", "111111")],
+            sessionmgr=sessionmgr,
+        )
+
+        with mock.patch.object(module, "_try_acquire_startup_lock", return_value=None):
+            with mock.patch.object(module, "_get_native_updater", return_value=updater):
+                with mock.patch.object(module, "_get_session_manager", return_value=sessionmgr):
+                    with mock.patch.object(module, "_show_message") as show_message:
+                        result = module.run_startup_auto_update()
+
+        self.assertEqual(result["status"], module.STATUS_REPO_NOT_FOUND)
+        show_message.assert_not_called()
+
+    def test_a_reload_request_from_pyrevit_is_still_honoured(self):
+        module = _load_module()
+        sessionmgr = _FakeSessionManager()
+        updater = _FakeUpdater(
+            before_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            after_repos=[_FakeRepoInfo("EasyBIM", "abc123")],
+            sessionmgr=sessionmgr,
+            request_reload=True,
+        )
+
+        result, show_message = self._run_manual(module, updater, sessionmgr)
+
+        self.assertEqual(sessionmgr.reload_count, 1)
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+        show_message.assert_not_called()
+
+    def test_the_update_still_runs_without_a_session_manager(self):
+        module = _load_module()
+        updater = _FakeUpdater(before_repos=[_FakeRepoInfo("EasyBIM", "abc123")])
+
+        with mock.patch.object(module, "_get_native_updater", return_value=updater):
+            with mock.patch.object(
+                module, "_get_session_manager", side_effect=RuntimeError("no loader")
+            ):
+                with mock.patch.object(module, "_show_message"):
+                    result = module.run_manual_auto_update()
+
+        self.assertEqual(
+            [repo.directory for repo in updater.updated_repos],
+            [FAKE_EXTENSION_ROOT],
+        )
+        self.assertEqual(result["status"], module.STATUS_NO_OP)
+
+
+class FindOwnRepoTests(unittest.TestCase):
+    """Matching this extension to its repository, by directory only."""
+
+    def setUp(self):
+        self.module = _load_module()
+
+    def _find(self, repos, core_repo=None):
+        class _Updater(object):
+            def get_all_extension_repos(self):
+                return list(repos)
+
+            if core_repo is not None:
+                def get_pyrevit_repo(self):
+                    return core_repo
+
+        return self.module._find_own_repo(_Updater())
+
+    def test_matches_when_the_extension_folder_is_the_repo_root(self):
+        repo = _FakeRepoInfo("EasyBIM", "abc", directory=FAKE_EXTENSION_ROOT)
+        self.assertIs(self._find([repo]), repo)
+
+    def test_matches_a_repo_that_contains_the_extension(self):
+        # pyRevit discovers repos by walking up, so in a checkout holding
+        # several *.extension folders the repo is a parent of ours.
+        repo = _FakeRepoInfo("Monorepo", "abc", directory="/ext")
+        self.assertIs(self._find([repo]), repo)
+
+    def test_the_deepest_matching_repo_wins(self):
+        outer = _FakeRepoInfo("Monorepo", "abc", directory="/ext")
+        inner = _FakeRepoInfo("EasyBIM", "abc", directory=FAKE_EXTENSION_ROOT)
+        self.assertIs(self._find([outer, inner]), inner)
+        self.assertIs(self._find([inner, outer]), inner)
+
+    def test_a_trailing_separator_still_matches(self):
+        # LibGit2Sharp reports a working directory with a trailing separator.
+        repo = _FakeRepoInfo("EasyBIM", "abc", directory=FAKE_EXTENSION_ROOT + "/")
+        self.assertIs(self._find([repo]), repo)
+
+    def test_a_sibling_sharing_a_prefix_is_not_matched(self):
+        repo = _FakeRepoInfo("Easy", "abc", directory="/ext/Easy")
+        self.assertIsNone(self._find([repo]))
+
+    def test_a_repo_without_a_directory_is_never_matched_by_name(self):
+        repo = _FakeRepoInfo("EasyBIM", "abc", directory="")
+        self.assertIsNone(self._find([repo]))
+
+    def test_the_pyrevit_core_clone_is_never_selected(self):
+        # If EasyBIM sits inside pyRevit's own clone, the ancestor rule would
+        # otherwise pick the core repo and we would pull pyRevit itself.
+        core = _FakeRepoInfo("pyRevit", "abc", directory="/ext")
+        self.assertIsNone(self._find([core], core_repo=core))
+
+    def test_third_party_repos_are_preferred_over_the_full_list(self):
+        ours = _FakeRepoInfo("EasyBIM", "abc", directory=FAKE_EXTENSION_ROOT)
+
+        class _Updater(object):
+            def __init__(self):
+                self.used = []
+
+            def get_thirdparty_ext_repos(self):
+                self.used.append("thirdparty")
+                return [ours]
+
+            def get_all_extension_repos(self):
+                self.used.append("all")
+                return [ours]
+
+        updater = _Updater()
+        self.assertIs(self.module._find_own_repo(updater), ours)
+        self.assertEqual(updater.used, ["thirdparty"])
+
+
+class ExtensionRootTests(unittest.TestCase):
+    def test_the_real_root_is_the_folder_holding_extension_yaml(self):
+        # Loaded without the fake seam, so this exercises the real derivation.
+        module = _load_module(extension_root=None)
+        root = pathlib.Path(module._get_extension_root())
+
+        self.assertEqual(root, REPO_ROOT)
+        self.assertTrue((root / "Extension.yaml").is_file())
 
 
 class AutoUpdateBundleTests(unittest.TestCase):

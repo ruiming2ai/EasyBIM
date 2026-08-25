@@ -267,8 +267,9 @@ class MyRibbonContractTests(unittest.TestCase):
     def test_sources_are_installed_where_pyrevit_updates_them(self):
         # The whole point of the design: a linked repository is a normal
         # pyRevit extension under the default third-party folder, so
-        # pyRevit > Update (and EasyBIM Auto Update) pull it and Reload
-        # rebuilds it.  My Ribbon never runs an updater of its own.
+        # pyRevit > Update pulls it and Reload rebuilds it.  My Ribbon never
+        # runs an updater of its own, and EasyBIM Auto Update updates only
+        # EasyBIM, so pyRevit > Update is what keeps these fresh.
         host = _code_without_prose(HOST_MODULE)
         self.assertIn("THIRDPARTY_EXTENSIONS_DEFAULT_DIR", host)
         for path in (SCRIPT_MODULE, HOST_MODULE, UI_MODULE, STATE_MODULE, LIB_MODULE):

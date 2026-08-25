@@ -635,11 +635,13 @@ Two things make it safe to lean on:
 
 - **A downloaded repository is installed as a normal pyRevit extension** (under
   `%APPDATA%\pyRevit\Extensions`, the folder pyRevit always scans). That is why
-  **pyRevit ▸ Update** — and EasyBIM Auto Update, which calls the same routine —
-  keep it up to date, and Reload rebuilds it. My Ribbon runs no updater of its
-  own. Its original tab can stay hidden ("Hide its own tab", on by default for
-  repositories you bring in this way, off for extensions that were already
-  installed); its startup script and hooks keep working.
+  **pyRevit ▸ Update** keeps it up to date, and Reload rebuilds it. My Ribbon
+  runs no updater of its own — and neither does EasyBIM Auto Update, which
+  updates only EasyBIM itself, so pyRevit ▸ Update is what refreshes the
+  extensions you bring in here. Its original tab can stay hidden ("Hide its own
+  tab", on by default for repositories you bring in this way, off for
+  extensions that were already installed); its startup script and hooks keep
+  working.
 - **A placed button is the extension's own live button**, added to your panel —
   the same trick that puts EasyBIM's Slope and Flip Multiple on Revit's Modify
   tab. It runs the same command, greys out in the same situations, and shows the

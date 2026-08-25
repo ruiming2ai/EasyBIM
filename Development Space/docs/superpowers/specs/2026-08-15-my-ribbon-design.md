@@ -22,8 +22,7 @@ A catalogue entry is installed with pyRevit's own installer
 (`extpackages.install`, dependencies included). An extension already on the
 computer — EasyBIM itself, pyRevitTools — is simply used. Because every source
 is an ordinary enabled extension, `versionmgr.updater.update_pyrevit()` — the
-routine behind pyRevit ▸ Update and behind EasyBIM Auto Update — walks it,
-pulls its repository (`Repository.Discover` walks up from the extension folder,
+routine behind pyRevit ▸ Update — walks it, pulls its repository (`Repository.Discover` walks up from the extension folder,
 so a repository holding several `*.extension` sub-folders is found too) and
 reloads. My Ribbon runs no updater of its own; the command-names test fails the
 build if a `git_pull` or `update_pyrevit` call appears in it.
@@ -182,7 +181,8 @@ Nothing here has run inside Revit. In order of risk:
    sit on a new EasyBIM-tab panel and on a new tab of their own with icons and
    tooltips, and a click runs the tool.
 2. pyRevit ▸ Update pulls a change in that repository and Reload keeps the
-   placements; EasyBIM Auto Update at startup does the same.
+   placements. (EasyBIM Auto Update no longer does: since 2026-08-25 it updates
+   only EasyBIM's own repository.)
 3. A context-limited tool greys out on the copy exactly as at home.
 4. A whole pull-down and a single pull-down child shared as a top-level button
    (fallback: share the whole pull-down).
