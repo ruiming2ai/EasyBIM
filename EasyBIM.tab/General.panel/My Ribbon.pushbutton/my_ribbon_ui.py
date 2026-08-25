@@ -215,24 +215,33 @@ class MyRibbonWindow(forms.WPFWindow):
             node.Header = header
             node.Tag = ("dest", dest.get("id"))
             node.IsExpanded = True
-            for placement in rows:
-                leaf = Windows.Controls.TreeViewItem()
-                source = sources.get(placement.get("source"), {})
-                text = u"{0}   - {1}".format(
-                    _one_line(placement.get("title")),
-                    source.get("label") or source.get("ext_name") or "?")
-                if placement.get("kind") in ("pulldown", "splitbutton", "splitpushbutton"):
-                    text += "   [whole drop-down]"
-                issue = self.placement_issues.get(placement.get("id"))
-                if issue:
-                    text += "   ! " + issue
-                leaf.Header = text
-                leaf.Tag = ("placement", placement.get("id"))
-                node.Items.Add(leaf)
-                self._tree_items[placement.get("id")] = leaf
+            index = 0
+            while index < len(rows):
+                placement = rows[index]
+                stack_id = state.safe_text(placement.get("stack"))
+                if stack_id:
+                    members = [placement]
+                    scan = index + 1
+                    while scan < len(rows) and \
+                            state.safe_text(rows[scan].get("stack")) == stack_id:
+                        members.append(rows[scan])
+                        scan += 1
+                    if len(members) >= 2:
+                        stack_node = Windows.Controls.TreeViewItem()
+                        stack_node.Header = u"Stacked ({0} small buttons)".format(len(members))
+                        stack_node.Tag = ("stack", stack_id)
+                        stack_node.IsExpanded = True
+                        for member in members:
+                            stack_node.Items.Add(self._placement_leaf(member, sources))
+                        node.Items.Add(stack_node)
+                        self._tree_items[stack_id] = stack_node
+                        index = scan
+                        continue
+                node.Items.Add(self._placement_leaf(placement, sources))
+                index += 1
             self.ButtonsTree.Items.Add(node)
             self._tree_items[dest.get("id")] = node
-        total = len(self.working.get("placements", []))
+        total = state.summarize(self.working)["placements"]
         panels = len(self.working.get("destinations", []))
         self.buttons_count_tb.Text = "{0} button{1} on {2} panel{3}.".format(
             total, "" if total == 1 else "s", panels, "" if panels == 1 else "s")
@@ -243,6 +252,28 @@ class MyRibbonWindow(forms.WPFWindow):
             self.ButtonsTree.Items.Add(node)
         self._selected_node = None
         self._refresh_buttons()
+
+    def _placement_leaf(self, placement, sources):
+        leaf = Windows.Controls.TreeViewItem()
+        kind = placement.get("kind")
+        if kind == "separator":
+            text = u"———   separator"
+        elif kind == "slideout":
+            text = u"—▼—   slide-out (rows below open under the panel)"
+        else:
+            source = sources.get(placement.get("source"), {})
+            text = u"{0}   - {1}".format(
+                _one_line(placement.get("title")),
+                source.get("label") or source.get("ext_name") or "?")
+            if kind in ("pulldown", "splitbutton", "splitpushbutton"):
+                text += "   [whole drop-down]"
+            issue = self.placement_issues.get(placement.get("id"))
+            if issue:
+                text += "   ! " + issue
+        leaf.Header = text
+        leaf.Tag = ("placement", placement.get("id"))
+        self._tree_items[placement.get("id")] = leaf
+        return leaf
 
     def _refresh_status(self, notice=None):
         changes = state.count_changes(self.saved, self.working) + len(self.pending_deletes)
@@ -269,12 +300,28 @@ class MyRibbonWindow(forms.WPFWindow):
         self.add_buttons_btn.IsEnabled = has_source
         node = self._selected_node
         is_placement = bool(node and node[0] == "placement")
+        is_stack = bool(node and node[0] == "stack")
         is_dest = bool(node and node[0] == "dest")
-        self.move_up_btn.IsEnabled = is_placement
-        self.move_down_btn.IsEnabled = is_placement
-        self.move_to_btn.IsEnabled = is_placement
+        placement = state.find_placement_by_id(self.working, node[1]) if is_placement else None
+        self.move_up_btn.IsEnabled = is_placement or is_stack
+        self.move_down_btn.IsEnabled = is_placement or is_stack
+        self.move_to_btn.IsEnabled = is_placement or is_stack
         self.rename_btn.IsEnabled = is_dest
         self.remove_placement_btn.IsEnabled = is_placement or is_dest
+        self.remove_placement_btn.ToolTip = (
+            "A stack is dissolved with Unstack; its buttons stay." if is_stack else None)
+        stack_ok = False
+        if is_placement:
+            stack_ok, _ = state.can_group_with_next(self.working, node[1])
+        self.stack_btn.IsEnabled = stack_ok
+        self.unstack_btn.IsEnabled = is_stack or bool(placement and placement.get("stack"))
+        dest_id = self._selected_dest_id()
+        self.separator_btn.IsEnabled = dest_id is not None
+        can_fold = dest_id is not None and not state.has_slideout(self.working, dest_id)
+        self.slideout_btn.IsEnabled = can_fold
+        self.slideout_btn.ToolTip = (
+            "This panel already has a slide-out." if dest_id is not None and not can_fold
+            else "Rows below the fold drop into the slide-out that opens under the panel.")
 
     def _rebuild(self, notice=None):
         self._is_ready = False
@@ -418,6 +465,22 @@ class MyRibbonWindow(forms.WPFWindow):
         self._selected_node = getattr(item, "Tag", None) if item is not None else None
         self._refresh_buttons()
 
+    def _selected_dest_id(self):
+        """The destination the selected node belongs to, whatever its kind."""
+        node = self._selected_node
+        if not node:
+            return None
+        if node[0] == "dest":
+            return node[1]
+        if node[0] == "placement":
+            placement = state.find_placement_by_id(self.working, node[1])
+            return placement.get("dest") if placement else None
+        if node[0] == "stack":
+            for row in self.working.get("placements", []):
+                if state.safe_text(row.get("stack")) == node[1]:
+                    return row.get("dest")
+        return None
+
     def _select_tree_item(self, item_id):
         item = self._tree_items.get(item_id)
         if item is not None:
@@ -455,21 +518,21 @@ class MyRibbonWindow(forms.WPFWindow):
 
     def _move(self, delta):
         node = self._selected_node
-        if not node or node[0] != "placement":
+        if not node or node[0] not in ("placement", "stack"):
             return
-        if state.move_placement(self.working, node[1], delta):
+        if state.move_node(self.working, node[0], node[1], delta):
             self._rebuild()
             self._select_tree_item(node[1])
 
     def move_to_click(self, sender, args):
         del sender, args
         node = self._selected_node
-        if not node or node[0] != "placement":
+        if not node or node[0] not in ("placement", "stack"):
             return
-        placement = state.find_placement_by_id(self.working, node[1])
+        current_dest = self._selected_dest_id()
         options = []
         for dest in self.working.get("destinations", []):
-            if dest.get("id") != placement.get("dest"):
+            if dest.get("id") != current_dest:
                 options.append(_dest_label(dest))
         if not options:
             forms.alert("There is no other panel yet. Create one with New panel... or New tab...",
@@ -481,10 +544,58 @@ class MyRibbonWindow(forms.WPFWindow):
             return
         for dest in self.working.get("destinations", []):
             if _dest_label(dest) == picked:
-                state.move_placement_to(self.working, node[1], dest.get("id"))
+                if node[0] == "stack":
+                    state.move_stack_to(self.working, node[1], dest.get("id"))
+                else:
+                    state.move_placement_to(self.working, node[1], dest.get("id"))
                 break
         self._rebuild()
         self._select_tree_item(node[1])
+
+    def stack_click(self, sender, args):
+        del sender, args
+        node = self._selected_node
+        if not node or node[0] != "placement":
+            return
+        ok, reason = state.group_with_next(self.working, node[1])
+        if not ok:
+            forms.alert(reason, title=TITLE)
+            return
+        placement = state.find_placement_by_id(self.working, node[1])
+        self._rebuild()
+        self._select_tree_item(state.safe_text(placement.get("stack")) or node[1])
+
+    def unstack_click(self, sender, args):
+        del sender, args
+        node = self._selected_node
+        if not node or node[0] not in ("placement", "stack"):
+            return
+        if state.ungroup(self.working, node[1]):
+            self._rebuild()
+            if node[0] == "placement":
+                self._select_tree_item(node[1])
+
+    def separator_click(self, sender, args):
+        del sender, args
+        dest_id = self._selected_dest_id()
+        if dest_id is None:
+            return
+        entry = state.add_separator(self.working, dest_id)
+        self._rebuild()
+        if entry is not None:
+            self._select_tree_item(entry.get("id"))
+
+    def slideout_click(self, sender, args):
+        del sender, args
+        dest_id = self._selected_dest_id()
+        if dest_id is None:
+            return
+        entry = state.add_slideout(self.working, dest_id)
+        if entry is None:
+            forms.alert("This panel already has a slide-out.", title=TITLE)
+            return
+        self._rebuild()
+        self._select_tree_item(entry.get("id"))
 
     def rename_click(self, sender, args):
         del sender, args

@@ -96,13 +96,24 @@
                         <TreeView x:Name="ButtonsTree" BorderThickness="0" SelectedItemChanged="tree_selection_changed"/>
                     </Border>
 
-                    <StackPanel Grid.Row="2" Orientation="Horizontal">
-                        <Button x:Name="move_up_btn" Content="Up" Width="60" Height="30" Margin="0,0,8,0" IsEnabled="False" Click="move_up_click"/>
-                        <Button x:Name="move_down_btn" Content="Down" Width="60" Height="30" Margin="0,0,8,0" IsEnabled="False" Click="move_down_click"/>
-                        <Button x:Name="move_to_btn" Content="Move to..." Width="90" Height="30" Margin="0,0,8,0" IsEnabled="False" Click="move_to_click"/>
-                        <Button x:Name="rename_btn" Content="Rename..." Width="90" Height="30" Margin="0,0,8,0" IsEnabled="False" Click="rename_click"/>
-                        <Button x:Name="remove_placement_btn" Content="Remove" Width="90" Height="30" IsEnabled="False" Click="remove_placement_click"/>
-                    </StackPanel>
+                    <!-- A WrapPanel: nine buttons do not fit the column at its
+                         minimum width, and a clipped button is worse than a
+                         second row. -->
+                    <WrapPanel Grid.Row="2">
+                        <Button x:Name="move_up_btn" Content="Up" Width="60" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="move_up_click"/>
+                        <Button x:Name="move_down_btn" Content="Down" Width="60" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="move_down_click"/>
+                        <Button x:Name="move_to_btn" Content="Move to..." Width="90" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="move_to_click"/>
+                        <Button x:Name="rename_btn" Content="Rename..." Width="90" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="rename_click"/>
+                        <Button x:Name="remove_placement_btn" Content="Remove" Width="90" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="remove_placement_click"/>
+                        <Button x:Name="stack_btn" Content="Stack with next" Width="115" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="stack_click"
+                                ToolTip="Put this button and the one below it into one row of small buttons (up to three). Each keeps running its own command."/>
+                        <Button x:Name="unstack_btn" Content="Unstack" Width="80" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="unstack_click"
+                                ToolTip="Dissolve the stack; its buttons stay on the panel, full size again."/>
+                        <Button x:Name="separator_btn" Content="Add separator" Width="110" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="separator_click"
+                                ToolTip="A vertical line at the end of this panel; move it like any row."/>
+                        <Button x:Name="slideout_btn" Content="Add slide-out" Width="110" Height="30" Margin="0,0,0,4" IsEnabled="False" Click="slideout_click"
+                                ToolTip="Rows below the fold drop into the slide-out that opens under the panel."/>
+                    </WrapPanel>
                 </Grid>
             </Border>
         </Grid>

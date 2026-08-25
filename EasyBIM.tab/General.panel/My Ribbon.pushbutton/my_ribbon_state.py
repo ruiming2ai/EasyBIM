@@ -33,6 +33,20 @@ SOURCE_EXTRA_FIELDS = {
     "dynamo": ("path", "title", "bundle", "icon"),
 }
 
+#: Placement rows that are layout, not buttons: a vertical separator and the
+#: slide-out fold.  Kept equal to ``easybim.my_ribbon.MARKER_KINDS`` (pinned
+#: by a test) - the engine draws them, this module only stages them.
+MARKER_KINDS = ("separator", "slideout")
+
+#: A stacked row holds two or three small buttons - Revit's own rule for
+#: stacked items, and pyRevit's for ``.stack`` folders.
+STACK_MIN = 2
+STACK_MAX = 3
+
+#: Only a plain button can join a stack: a drop-down needs its full-height
+#: arrow, and a marker is not a button at all.
+STACKABLE_KINDS = ("button",)
+
 _WINDOWS_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -533,6 +547,9 @@ def add_placement(registry, source_id, dest_id, button):
         "title": safe_text(button.get("title")),
         "control_id": safe_text(button.get("control_id")),
         "path": [dict(level) for level in (button.get("path") or [])],
+        # a stack id groups 2-3 rows into one row of small buttons; new
+        # placements start flat and never inherit an id from another registry
+        "stack": "",
     }
     registry.setdefault("placements", []).append(entry)
     return entry
@@ -577,23 +594,318 @@ def move_placement_to(registry, placement_id, dest_id):
               if p.get("dest") == dest_id]
     placement["dest"] = dest_id
     placement["order"] = (max(orders) + 1) if orders else 0
+    placement["stack"] = ""  # a row leaves its stack when it leaves the panel
     renumber(registry)
     return True
 
 
 def renumber(registry):
-    """Dense 0..n orders per destination, keeping the current sequence."""
+    """Dense 0..n orders per destination, keeping the current sequence - and
+    the layout invariants with them (contiguous stacks, one fold per panel)."""
+    return normalize_layout(registry)
+
+
+# -- panel layout: stacks and markers ---------------------------------------
+
+
+def is_marker(placement):
+    return safe_text(placement.get("kind")) in MARKER_KINDS
+
+
+def normalize_layout(registry):
+    """Restore the layout invariants and dense 0..n orders per destination.
+
+    A stack's members sit together (the block stays where its first member
+    is), only plain buttons stack, a stack of one is no stack, a stack of
+    four sheds its tail, and a panel folds only once (the first slide-out
+    wins; a duplicate - a hand-edited file - is dropped).
+    """
     for dest in registry.get("destinations", []):
-        for order, row in enumerate(placements_in(registry, dest.get("id"))):
+        rows = placements_in(registry, dest.get("id"))
+        for row in rows:
+            if row.get("stack") and safe_text(row.get("kind")) not in STACKABLE_KINDS:
+                row["stack"] = ""
+        ordered = []
+        seen_stacks = set()
+        for row in rows:
+            stack_id = safe_text(row.get("stack"))
+            if not stack_id:
+                ordered.append(row)
+            elif stack_id not in seen_stacks:
+                seen_stacks.add(stack_id)
+                ordered.extend(r for r in rows
+                               if safe_text(r.get("stack")) == stack_id)
+        kept = {}
+        for row in ordered:
+            stack_id = safe_text(row.get("stack"))
+            if not stack_id:
+                continue
+            if kept.get(stack_id, 0) >= STACK_MAX:
+                row["stack"] = ""
+            else:
+                kept[stack_id] = kept.get(stack_id, 0) + 1
+        for row in ordered:
+            stack_id = safe_text(row.get("stack"))
+            if stack_id and kept.get(stack_id, 0) < STACK_MIN:
+                row["stack"] = ""
+        folded = False
+        dropped = []
+        for row in ordered:
+            if safe_text(row.get("kind")) == "slideout":
+                if folded:
+                    dropped.append(row)
+                folded = True
+        for row in dropped:
+            ordered.remove(row)
+            registry["placements"].remove(row)
+        for order, row in enumerate(ordered):
             row["order"] = order
     return registry
+
+
+def can_group_with_next(registry, placement_id):
+    """Could this row and the one below it stack together?  ``(ok, reason)``;
+    the reason is the plain sentence for the refusal alert."""
+    placement = find_placement_by_id(registry, placement_id)
+    if placement is None:
+        return False, "Select a button first."
+    if is_marker(placement):
+        return False, "A separator or slide-out cannot be stacked."
+    if safe_text(placement.get("kind")) not in STACKABLE_KINDS:
+        return False, "A whole drop-down cannot be stacked; it needs its full-height arrow."
+    rows = placements_in(registry, placement.get("dest"))
+    ids = [r.get("id") for r in rows]
+    index = ids.index(placement_id)
+    stack_id = safe_text(placement.get("stack"))
+    next_index = index + 1
+    while stack_id and next_index < len(rows) \
+            and safe_text(rows[next_index].get("stack")) == stack_id:
+        next_index += 1
+    if next_index >= len(rows):
+        return False, "There is no button below this one on the panel."
+    other = rows[next_index]
+    if is_marker(other) or safe_text(other.get("kind")) not in STACKABLE_KINDS:
+        return False, "The row below is not a plain button."
+    this_size = len([r for r in rows
+                     if stack_id and safe_text(r.get("stack")) == stack_id]) or 1
+    other_id = safe_text(other.get("stack"))
+    other_size = len([r for r in rows
+                      if other_id and safe_text(r.get("stack")) == other_id]) or 1
+    if this_size + other_size > STACK_MAX:
+        return False, "A stack holds at most {0} small buttons.".format(STACK_MAX)
+    return True, ""
+
+
+def group_with_next(registry, placement_id):
+    """Stack this row with the one below it (two, then three).  The buttons
+    render small; each keeps running its own command.  ``(ok, reason)``."""
+    ok, reason = can_group_with_next(registry, placement_id)
+    if not ok:
+        return False, reason
+    placement = find_placement_by_id(registry, placement_id)
+    rows = placements_in(registry, placement.get("dest"))
+    ids = [r.get("id") for r in rows]
+    index = ids.index(placement_id)
+    stack_id = safe_text(placement.get("stack"))
+    next_index = index + 1
+    while stack_id and next_index < len(rows) \
+            and safe_text(rows[next_index].get("stack")) == stack_id:
+        next_index += 1
+    other = rows[next_index]
+    other_id = safe_text(other.get("stack"))
+    if stack_id:
+        other["stack"] = stack_id
+    elif other_id:
+        placement["stack"] = other_id
+    else:
+        new_stack = new_id("k", _stack_ids(registry))
+        placement["stack"] = new_stack
+        other["stack"] = new_stack
+    normalize_layout(registry)
+    return True, ""
+
+
+def ungroup(registry, node_id):
+    """Dissolve the stack this row (or stack id) belongs to; the buttons stay
+    where they are, full size again."""
+    stack_id = safe_text(node_id)
+    placement = find_placement_by_id(registry, node_id)
+    if placement is not None:
+        stack_id = safe_text(placement.get("stack"))
+    if not stack_id:
+        return False
+    hit = False
+    for row in registry.get("placements", []):
+        if safe_text(row.get("stack")) == stack_id:
+            row["stack"] = ""
+            hit = True
+    if hit:
+        normalize_layout(registry)
+    return hit
+
+
+def _stack_ids(registry):
+    return [safe_text(p.get("stack")) for p in registry.get("placements", [])
+            if safe_text(p.get("stack"))]
+
+
+def add_separator(registry, dest_id):
+    """A vertical line at the end of the panel; move it like any row."""
+    return _add_marker(registry, dest_id, "separator")
+
+
+def add_slideout(registry, dest_id):
+    """The panel's fold: rows below it drop into the slide-out that opens
+    under the panel.  One per panel."""
+    if has_slideout(registry, dest_id):
+        return None
+    return _add_marker(registry, dest_id, "slideout")
+
+
+def has_slideout(registry, dest_id):
+    return any(p.get("dest") == dest_id and safe_text(p.get("kind")) == "slideout"
+               for p in registry.get("placements", []))
+
+
+def _add_marker(registry, dest_id, kind):
+    if find_destination_by_id(registry, dest_id) is None:
+        return None
+    orders = [p.get("order", 0) for p in registry.get("placements", [])
+              if p.get("dest") == dest_id]
+    entry = {
+        "id": new_id("p", _ids(registry, "placements")),
+        "source": "",
+        "dest": dest_id,
+        "order": (max(orders) + 1) if orders else 0,
+        "kind": kind,
+        "title": "",
+        "control_id": "",
+        "path": [],
+        "stack": "",
+    }
+    registry.setdefault("placements", []).append(entry)
+    return entry
+
+
+def move_node(registry, node_kind, node_id, delta):
+    """Up/Down for the tree.  A stack moves as one block, a plain row steps
+    over a whole block, and a stacked member moves inside its stack - or out
+    of it when it is already at the edge.  True when something moved."""
+    if delta not in (-1, 1):
+        return False
+    if node_kind == "stack":
+        return _move_block(registry, node_id, delta)
+    placement = find_placement_by_id(registry, node_id)
+    if placement is None:
+        return False
+    stack_id = safe_text(placement.get("stack"))
+    if stack_id:
+        return _move_member(registry, placement, stack_id, delta)
+    return _move_plain(registry, placement, delta)
+
+
+def _dest_blocks(registry, dest_id):
+    """The panel's rows as blocks: a plain row alone, a stack's members
+    together (assumes the normalized contiguous order)."""
+    blocks = []
+    seen = set()
+    rows = placements_in(registry, dest_id)
+    for row in rows:
+        stack_id = safe_text(row.get("stack"))
+        if not stack_id:
+            blocks.append([row])
+        elif stack_id not in seen:
+            seen.add(stack_id)
+            blocks.append([r for r in rows
+                           if safe_text(r.get("stack")) == stack_id])
+    return blocks
+
+
+def _move_block(registry, stack_id, delta):
+    dest_id = None
+    for row in registry.get("placements", []):
+        if safe_text(row.get("stack")) == safe_text(stack_id):
+            dest_id = row.get("dest")
+            break
+    if dest_id is None:
+        return False
+    blocks = _dest_blocks(registry, dest_id)
+    index = None
+    for position, block in enumerate(blocks):
+        if safe_text(block[0].get("stack")) == safe_text(stack_id):
+            index = position
+            break
+    return _swap_blocks(registry, dest_id, blocks, index, delta)
+
+
+def _move_plain(registry, placement, delta):
+    blocks = _dest_blocks(registry, placement.get("dest"))
+    index = None
+    for position, block in enumerate(blocks):
+        if len(block) == 1 and block[0].get("id") == placement.get("id"):
+            index = position
+            break
+    return _swap_blocks(registry, placement.get("dest"), blocks, index, delta)
+
+
+def _swap_blocks(registry, dest_id, blocks, index, delta):
+    if index is None:
+        return False
+    target = index + delta
+    if target < 0 or target >= len(blocks):
+        return False
+    blocks.insert(target, blocks.pop(index))
+    order = 0
+    for block in blocks:
+        for row in block:
+            row["order"] = order
+            order += 1
+    return True
+
+
+def move_stack_to(registry, stack_id, dest_id):
+    """Move a whole stack to another panel, still stacked."""
+    if find_destination_by_id(registry, dest_id) is None:
+        return False
+    members = [r for r in registry.get("placements", [])
+               if safe_text(r.get("stack")) == safe_text(stack_id)]
+    if not members:
+        return False
+    members.sort(key=lambda r: (r.get("order", 0), r.get("id", "")))
+    orders = [p.get("order", 0) for p in registry.get("placements", [])
+              if p.get("dest") == dest_id]
+    base = (max(orders) + 1) if orders else 0
+    for offset, row in enumerate(members):
+        row["dest"] = dest_id
+        row["order"] = base + offset
+    renumber(registry)
+    return True
+
+
+def _move_member(registry, placement, stack_id, delta):
+    rows = [r for r in placements_in(registry, placement.get("dest"))
+            if safe_text(r.get("stack")) == stack_id]
+    ids = [r.get("id") for r in rows]
+    index = ids.index(placement.get("id"))
+    target = index + delta
+    if 0 <= target < len(rows):
+        other = rows[target]
+        placement["order"], other["order"] = other["order"], placement["order"]
+        normalize_layout(registry)
+        return True
+    # at the stack's edge the move steps out: the freed row keeps its order,
+    # so it lands just above (or below) the block it left
+    placement["stack"] = ""
+    normalize_layout(registry)
+    return True
 
 
 def summarize(registry):
     return {
         "sources": len(registry.get("sources", [])),
         "destinations": len(registry.get("destinations", [])),
-        "placements": len(registry.get("placements", [])),
+        "placements": len([p for p in registry.get("placements", [])
+                           if not is_marker(p)]),
     }
 
 
@@ -751,19 +1063,28 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
             plan["sources_to_install"].append(source.get("label") or source.get("ext_name"))
 
     dest_map = {}
+    new_dest_ids = set()
     for dest in incoming.get("destinations", []):
         existing = find_destination(result, dest.get("tab"), dest.get("panel"))
         if existing is None:
             entry = add_destination(result, dest.get("tab"), dest.get("panel"), dest.get("own_tab"))
             plan["destinations_added"].append("{0} > {1}".format(entry["tab"], entry["panel"]))
+            new_dest_ids.add(entry["id"])
         else:
             entry = existing
         dest_map[dest.get("id")] = entry["id"]
 
+    stack_map = {}
     for placement in sorted(incoming.get("placements", []),
                             key=lambda p: (p.get("dest", ""), p.get("order", 0))):
-        source_id = source_map.get(placement.get("source"))
         dest_id = dest_map.get(placement.get("dest"))
+        if is_marker(placement):
+            # layout only: carried into panels this import creates; a panel
+            # that already exists here keeps its own layout
+            if dest_id in new_dest_ids:
+                _add_marker(result, dest_id, safe_text(placement.get("kind")))
+            continue
+        source_id = source_map.get(placement.get("source"))
         if source_id is None or dest_id is None:
             plan["placements_skipped"].append(
                 "{0} (its source or panel is missing from the file)".format(placement.get("title")))
@@ -772,6 +1093,13 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
             plan["placements_skipped"].append("{0} (already placed)".format(placement.get("title")))
             continue
         entry = add_placement(result, source_id, dest_id, placement)
+        # stacks come along, under fresh ids so two registries never collide
+        incoming_stack = safe_text(placement.get("stack"))
+        if incoming_stack:
+            if incoming_stack not in stack_map:
+                stack_map[incoming_stack] = new_id(
+                    "k", _stack_ids(result) + list(stack_map.values()))
+            entry["stack"] = stack_map[incoming_stack]
         plan["placements_added"].append(entry.get("title"))
     renumber(result)
     sync_source_hide_flags(result)

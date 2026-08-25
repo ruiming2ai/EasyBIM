@@ -608,5 +608,229 @@ class ImportExportTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("Ghost") for item in plan["placements_skipped"]))
 
 
+class StackLayoutTests(unittest.TestCase):
+    """Stacks of 2-3 small buttons, separators and the slide-out fold."""
+
+    def setUp(self):
+        self.state = _load_state()
+        self.registry = {"format": 1, "sources": [
+            {"id": "s1", "kind": "git", "url": "https://github.com/o/r", "ext_name": "R"}],
+            "destinations": [], "placements": [], "hidden_tabs": []}
+        self.dest = self.state.add_destination(self.registry, "EasyBIM", "My Tools")
+        self.a = self.state.add_placement(self.registry, "s1", self.dest["id"], _button("A"))
+        self.b = self.state.add_placement(self.registry, "s1", self.dest["id"], _button("B"))
+        self.c = self.state.add_placement(self.registry, "s1", self.dest["id"], _button("C"))
+
+    def _order(self):
+        rows = self.state.placements_in(self.registry, self.dest["id"])
+        return [(r.get("title"), self.state.safe_text(r.get("stack"))) for r in rows]
+
+    def test_group_with_next_makes_a_stack_of_two_then_three(self):
+        ok, reason = self.state.group_with_next(self.registry, self.a["id"])
+        self.assertTrue(ok, reason)
+        stack_id = self.a["stack"]
+        self.assertTrue(stack_id)
+        self.assertEqual(self.b["stack"], stack_id)
+        self.assertEqual(self.c["stack"], "")
+        ok, reason = self.state.group_with_next(self.registry, self.a["id"])
+        self.assertTrue(ok, reason)
+        self.assertEqual(self.c["stack"], stack_id)
+        self.assertEqual(self._order(), [("A", stack_id), ("B", stack_id), ("C", stack_id)])
+
+    def test_a_stack_holds_at_most_three(self):
+        self.state.group_with_next(self.registry, self.a["id"])
+        self.state.group_with_next(self.registry, self.a["id"])
+        self.state.add_placement(self.registry, "s1", self.dest["id"], _button("D"))
+        ok, reason = self.state.group_with_next(self.registry, self.a["id"])
+        self.assertFalse(ok)
+        self.assertIn("at most", reason)
+
+    def test_only_plain_buttons_stack(self):
+        pulldown = self.state.add_placement(
+            self.registry, "s1", self.dest["id"], _button("Tools", kind="pulldown"))
+        ok, reason = self.state.group_with_next(self.registry, pulldown["id"])
+        self.assertFalse(ok)
+        self.assertIn("drop-down", reason)
+        ok, reason = self.state.group_with_next(self.registry, self.c["id"])
+        self.assertFalse(ok)  # the row below is the pulldown
+        sep = self.state.add_separator(self.registry, self.dest["id"])
+        ok, reason = self.state.group_with_next(self.registry, sep["id"])
+        self.assertFalse(ok)
+
+    def test_the_last_row_has_nothing_to_stack_with(self):
+        ok, reason = self.state.group_with_next(self.registry, self.c["id"])
+        self.assertFalse(ok)
+        self.assertIn("below", reason)
+
+    def test_a_plain_row_joins_the_stack_below_it(self):
+        self.state.group_with_next(self.registry, self.b["id"])  # b+c stacked
+        stack_id = self.b["stack"]
+        ok, reason = self.state.group_with_next(self.registry, self.a["id"])
+        self.assertTrue(ok, reason)
+        self.assertEqual(self.a["stack"], stack_id)
+        self.assertEqual(self._order(), [("A", stack_id), ("B", stack_id), ("C", stack_id)])
+
+    def test_ungroup_dissolves_the_whole_stack(self):
+        self.state.group_with_next(self.registry, self.a["id"])
+        stack_id = self.a["stack"]
+        self.assertTrue(self.state.ungroup(self.registry, self.b["id"]))
+        self.assertEqual([self.a["stack"], self.b["stack"]], ["", ""])
+        self.state.group_with_next(self.registry, self.a["id"])
+        self.assertTrue(self.state.ungroup(self.registry, self.a["stack"]))
+        self.assertEqual([self.a["stack"], self.b["stack"]], ["", ""])
+        self.assertFalse(self.state.ungroup(self.registry, stack_id))
+
+    def test_normalize_pulls_members_together_and_dissolves_singles(self):
+        self.a["stack"] = "k1"
+        self.c["stack"] = "k1"  # scattered around b
+        self.state.normalize_layout(self.registry)
+        self.assertEqual(self._order(), [("A", "k1"), ("C", "k1"), ("B", "")])
+        self.c["stack"] = ""
+        self.state.normalize_layout(self.registry)
+        self.assertEqual(self.a["stack"], "")  # a stack of one is no stack
+
+    def test_normalize_sheds_a_fourth_member_and_marker_stacks(self):
+        d = self.state.add_placement(self.registry, "s1", self.dest["id"], _button("D"))
+        for row in (self.a, self.b, self.c, d):
+            row["stack"] = "k1"
+        sep = self.state.add_separator(self.registry, self.dest["id"])
+        sep["stack"] = "k1"
+        self.state.normalize_layout(self.registry)
+        self.assertEqual([r["stack"] for r in (self.a, self.b, self.c)], ["k1"] * 3)
+        self.assertEqual(d["stack"], "")
+        self.assertEqual(sep["stack"], "")
+
+    def test_member_moves_inside_and_out_at_the_edge(self):
+        self.state.group_with_next(self.registry, self.a["id"])
+        stack_id = self.a["stack"]
+        self.assertTrue(self.state.move_node(self.registry, "placement", self.b["id"], -1))
+        self.assertEqual(self._order(), [("B", stack_id), ("A", stack_id), ("C", "")])
+        # the top member moving up steps out of the stack... which dissolves
+        # the remaining single
+        self.assertTrue(self.state.move_node(self.registry, "placement", self.b["id"], -1))
+        self.assertEqual(self.b["stack"], "")
+        self.assertEqual(self.a["stack"], "")
+
+    def test_a_stack_moves_as_one_block(self):
+        self.state.group_with_next(self.registry, self.b["id"])  # b+c below a
+        stack_id = self.b["stack"]
+        self.assertTrue(self.state.move_node(self.registry, "stack", stack_id, -1))
+        self.assertEqual(self._order(), [("B", stack_id), ("C", stack_id), ("A", "")])
+        self.assertFalse(self.state.move_node(self.registry, "stack", stack_id, -1))
+
+    def test_a_plain_row_steps_over_a_whole_block(self):
+        self.state.group_with_next(self.registry, self.a["id"])  # a+b, then c
+        stack_id = self.a["stack"]
+        self.assertTrue(self.state.move_node(self.registry, "placement", self.c["id"], -1))
+        self.assertEqual(self._order(), [("C", ""), ("A", stack_id), ("B", stack_id)])
+
+    def test_leaving_the_panel_leaves_the_stack(self):
+        other = self.state.add_destination(self.registry, "EasyBIM", "Second")
+        self.state.group_with_next(self.registry, self.a["id"])
+        self.state.group_with_next(self.registry, self.a["id"])  # a+b+c
+        self.state.move_placement_to(self.registry, self.b["id"], other["id"])
+        self.assertEqual(self.b["stack"], "")
+        self.assertEqual(self.a["stack"], self.c["stack"])
+        self.assertTrue(self.a["stack"])
+
+    def test_move_stack_to_keeps_the_block_stacked(self):
+        other = self.state.add_destination(self.registry, "EasyBIM", "Second")
+        self.state.add_placement(self.registry, "s1", other["id"], _button("X"))
+        self.state.group_with_next(self.registry, self.a["id"])
+        stack_id = self.a["stack"]
+        self.assertTrue(self.state.move_stack_to(self.registry, stack_id, other["id"]))
+        rows = self.state.placements_in(self.registry, other["id"])
+        self.assertEqual([r.get("title") for r in rows], ["X", "A", "B"])
+        self.assertEqual([self.state.safe_text(r.get("stack")) for r in rows],
+                         ["", stack_id, stack_id])
+
+    def test_markers_append_and_the_panel_folds_once(self):
+        sep = self.state.add_separator(self.registry, self.dest["id"])
+        self.assertEqual(sep["kind"], "separator")
+        self.assertEqual(sep["source"], "")
+        self.assertEqual(sep["path"], [])
+        fold = self.state.add_slideout(self.registry, self.dest["id"])
+        self.assertIsNotNone(fold)
+        self.assertTrue(self.state.has_slideout(self.registry, self.dest["id"]))
+        self.assertIsNone(self.state.add_slideout(self.registry, self.dest["id"]))
+        self.assertIsNone(self.state.add_separator(self.registry, "nope"))
+
+    def test_markers_are_not_counted_as_buttons(self):
+        self.state.add_separator(self.registry, self.dest["id"])
+        self.state.add_slideout(self.registry, self.dest["id"])
+        self.assertEqual(self.state.summarize(self.registry)["placements"], 3)
+        self.assertIn("3 buttons", self.state.status_line(self.registry, 0))
+
+    def test_removing_a_member_dissolves_a_pair(self):
+        self.state.group_with_next(self.registry, self.a["id"])
+        self.state.remove_placement(self.registry, self.b["id"])
+        self.assertEqual(self.a["stack"], "")
+
+    def test_export_and_replace_import_carry_the_layout(self):
+        self.state.group_with_next(self.registry, self.a["id"])
+        self.state.add_separator(self.registry, self.dest["id"])
+        document = self.state.export_document(self.registry)
+        empty = {"format": 1, "sources": [], "destinations": [], "placements": [],
+                 "hidden_tabs": []}
+        plan = self.state.plan_import(empty, document, "replace")
+        rows = self.state.placements_in(
+            plan["result"], plan["result"]["destinations"][0]["id"])
+        self.assertEqual([r.get("kind") for r in rows],
+                         ["button", "button", "button", "separator"])
+        stacks = [self.state.safe_text(r.get("stack")) for r in rows]
+        self.assertTrue(stacks[0] and stacks[0] == stacks[1])
+
+    def test_an_imported_stack_never_collides_with_an_existing_id(self):
+        self.state.group_with_next(self.registry, self.a["id"])  # takes "k1" here
+        incoming = {
+            "format": 1,
+            "sources": [{"id": "s7", "kind": "installed", "ext_name": "Other",
+                         "tab_names": ["Other"]}],
+            "destinations": [{"id": "d7", "tab": "Their Tab", "panel": "Their Panel",
+                              "own_tab": True}],
+            "placements": [
+                dict(_button("X"), id="px", source="s7", dest="d7", order=0, stack="k1"),
+                dict(_button("Y"), id="py", source="s7", dest="d7", order=1, stack="k1"),
+            ],
+            "hidden_tabs": [],
+        }
+        plan = self.state.plan_import(self.registry, incoming, "merge",
+                                      installed_ext_names=["Other"])
+        new_dest = self.state.find_destination(plan["result"], "Their Tab", "Their Panel")
+        rows = self.state.placements_in(plan["result"], new_dest["id"])
+        imported = self.state.safe_text(rows[0].get("stack"))
+        self.assertTrue(imported)
+        self.assertEqual(imported, self.state.safe_text(rows[1].get("stack")))
+        self.assertNotEqual(imported, "k1")  # our own k1 keeps its members
+        ours = [self.state.safe_text(r.get("stack"))
+                for r in self.state.placements_in(plan["result"], self.dest["id"])]
+        self.assertEqual(ours, ["k1", "k1", ""])
+
+    def test_merge_import_keeps_an_existing_panels_layout(self):
+        self.state.group_with_next(self.registry, self.a["id"])
+        incoming = self.state.export_document(self.registry)
+        incoming["placements"].append({
+            "id": "p_sep", "source": "", "dest": incoming["destinations"][0]["id"],
+            "order": 9, "kind": "separator", "title": "", "control_id": "", "path": []})
+        current = self.state.export_document(self.registry)
+        for row in current["placements"]:
+            row["stack"] = ""
+        plan = self.state.plan_import(current, incoming, "merge")
+        rows = self.state.placements_in(
+            plan["result"], plan["result"]["destinations"][0]["id"])
+        # the panel already exists here: its flat layout stays, the file's
+        # separator is not spliced in
+        self.assertEqual([r.get("kind") for r in rows], ["button"] * 3)
+
+    def test_a_round_one_registry_shape_still_imports(self):
+        incoming = self.state.export_document(self.registry)
+        for row in incoming["placements"]:
+            row.pop("stack", None)
+        empty = {"format": 1, "sources": [], "destinations": [], "placements": [],
+                 "hidden_tabs": []}
+        plan = self.state.plan_import(empty, incoming, "replace")
+        self.assertEqual(len(plan["placements_added"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
