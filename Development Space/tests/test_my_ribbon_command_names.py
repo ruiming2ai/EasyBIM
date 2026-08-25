@@ -449,6 +449,46 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertEqual(_code_without_prose(SCRIPT_MODULE).count("save_registry("), 1)
         self.assertNotIn("save_registry", _code_without_prose(UI_MODULE))
 
+    def test_marker_kinds_match_between_lib_and_state(self):
+        # both halves stage/draw the same two layout rows; a drifted tuple
+        # would be silently wrong, not loudly broken
+        pin = 'MARKER_KINDS = ("separator", "slideout")'
+        self.assertIn(pin, LIB_MODULE.read_text(encoding="utf-8"))
+        self.assertIn(pin, STATE_MODULE.read_text(encoding="utf-8"))
+
+    def test_stack_sizes_are_revits_two_or_three(self):
+        state_source = STATE_MODULE.read_text(encoding="utf-8")
+        self.assertIn("STACK_MIN = 2", state_source)
+        self.assertIn("STACK_MAX = 3", state_source)
+        self.assertIn('STACKABLE_KINDS = ("button",)', state_source)
+
+    def test_only_the_clone_builder_touches_size_and_command_handler(self):
+        # a stacked placement is a small CLONE; the shared original is never
+        # resized or rewired.  Confining the two attribute names to the one
+        # builder keeps any future edit from mutating a live source item.
+        source = LIB_MODULE.read_text(encoding="utf-8")
+        builder = _function_source(LIB_MODULE, "_make_stack_clone")
+        self.assertIn('"CommandHandler"', builder)
+        self.assertIn('"Size"', builder)
+        rest = source.replace(builder, "")
+        self.assertNotIn('"CommandHandler"', rest)
+        self.assertNotIn('"Size"', rest)
+
+    def test_markers_survive_the_registry_read_without_a_path(self):
+        body = _function_source(LIB_MODULE, "read_registry")
+        self.assertIn("MARKER_KINDS", body)
+        clean = _function_source(LIB_MODULE, "_clean_placement")
+        self.assertIn('"stack"', clean)
+
+    def test_marker_rows_are_created_in_one_place_and_never_via_add_placement(self):
+        state_code = _code_without_prose(STATE_MODULE)
+        self.assertEqual(state_code.count("def _add_marker("), 1)
+        # add_placement de-duplicates by (source, path): two markers share an
+        # empty path, so routing them through it would collapse them to one
+        for name in ("add_separator", "add_slideout"):
+            body = _function_source(STATE_MODULE, name)
+            self.assertNotIn("add_placement", body)
+
 
 class MyRibbonIronPythonTests(unittest.TestCase):
     def test_command_scripts_avoid_python3_only_constructs(self):

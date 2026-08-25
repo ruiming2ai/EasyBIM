@@ -58,6 +58,12 @@ PROTECTED_TABS = ("easybim", "modify")
 
 SOURCE_KINDS = ("git", "catalogue", "installed", "ribbon", "dynamo")
 
+#: Placement rows that are layout, not buttons: a vertical separator and the
+#: slide-out fold (everything after it drops into the panel's fold-out).
+#: They carry no source and no path; the engine draws an object of its own.
+#: Kept equal to ``my_ribbon_state.MARKER_KINDS`` (pinned by a test).
+MARKER_KINDS = ("separator", "slideout")
+
 #: My Ribbon's own extension: holds the bundles it generates itself (today:
 #: Dynamo graphs).  pyRevit loads it like any extension; its tab is hidden.
 LIBRARY_EXTENSION_NAME = "EasyBIM_MyRibbon"
@@ -112,8 +118,10 @@ def read_registry(raw):
         _clean_placement(p) for p in _list_of_dicts(raw.get("placements"))]
     registry["sources"] = [s for s in registry["sources"] if s["id"]]
     registry["destinations"] = [d for d in registry["destinations"] if d["id"]]
+    # a layout marker (separator / slide-out) has no button path by design
     registry["placements"] = [
-        p for p in registry["placements"] if p["id"] and p["dest"] and p["path"]]
+        p for p in registry["placements"]
+        if p["id"] and p["dest"] and (p["path"] or p["kind"] in MARKER_KINDS)]
     # hidden_tabs is the one truth for tab visibility; files from before it
     # existed only carried the per-source "hide its own tab" flag, so union.
     hidden = []
@@ -229,6 +237,8 @@ def _clean_placement(raw):
         "title": _text(raw.get("title")) or (path[-1]["title"] if path else ""),
         "control_id": _text(raw.get("control_id")),
         "path": path,
+        # placements sharing a stack id render as one row of small buttons
+        "stack": _text(raw.get("stack")),
     }
 
 
@@ -401,7 +411,10 @@ def apply(registry, ribbon=None, autodesk_windows=None, logger=None):
         key=lambda p: (p.get("dest", ""), p.get("order", 0), p.get("id", "")))
     placed_items = {}
 
-    for placement in placements:
+    index = 0
+    while index < len(placements):
+        placement = placements[index]
+        index += 1
         dest = destinations.get(placement.get("dest"))
         if dest is None:
             _miss(report, placement, "its destination no longer exists")
@@ -416,6 +429,26 @@ def apply(registry, ribbon=None, autodesk_windows=None, logger=None):
         if panel is None:
             _miss(report, placement, "tab '{0}' is not on the ribbon".format(dest["tab"]))
             continue
+
+        if placement.get("kind") in MARKER_KINDS:
+            _place_marker(autodesk_windows, panel, placement, new_mirror, report, logger)
+            continue
+
+        stack_id = placement.get("stack")
+        if stack_id:
+            # placements are sorted by (dest, order): a stack's members are
+            # the run of rows right here that share its id
+            run = [placement]
+            while index < len(placements) \
+                    and placements[index].get("dest") == placement.get("dest") \
+                    and placements[index].get("stack") == stack_id:
+                run.append(placements[index])
+                index += 1
+            if len(run) >= 2:
+                _place_stack(ribbon, autodesk_windows, panel, run, new_mirror,
+                             report, placed_items, logger)
+                continue
+            # a stack of one is just a button: place it flat, shared
 
         item, reason = _find_source_item(ribbon, placement)
         if item is None:
@@ -463,6 +496,138 @@ def _miss(report, placement, reason):
         "title": placement.get("title"),
         "reason": reason,
     })
+
+
+# -- stacked rows and layout markers -----------------------------------------
+
+
+def _place_stack(ribbon, autodesk_windows, panel, run, mirror, report,
+                 placed_items, logger):
+    """2-3 placements as one row of small buttons.
+
+    The row (``RibbonRowPanel``) is our own object; each button in it is a
+    small **clone** that shares the original's command handler.  The original
+    is never touched - button size is a property of the item itself, so
+    shrinking the shared object would shrink it on its home tab too.
+    """
+    row = _create_stack_row(autodesk_windows, run[0])
+    if row is None:
+        for placement in run:
+            _miss(report, placement, "Autodesk.Windows unavailable, cannot build the stack")
+        return
+    items = _panel_items(panel)
+    try:
+        _add_item(items, row)
+    except Exception as ex:
+        for placement in run:
+            _miss(report, placement, "could not add: {0}".format(_safe_text(ex)))
+        return
+    entry = (items, row)
+    mirror["items"].append(entry)
+    row_items = _getattr_safe(row, "Items")
+    added = 0
+    for placement in run:
+        item, reason = _find_source_item(ribbon, placement)
+        if item is None:
+            _miss(report, placement, reason)
+            continue
+        clone = _make_stack_clone(autodesk_windows, item, placement)
+        if clone is None:
+            _miss(report, placement, "could not build the small copy")
+            continue
+        try:
+            _add_item(row_items, clone)
+        except Exception as ex:
+            _miss(report, placement, "could not add: {0}".format(_safe_text(ex)))
+            continue
+        added += 1
+        report["added"].append(placement["id"])
+        placed_items[placement["id"]] = clone
+    if not added:
+        # every member missing: an empty row would paint as a sliver
+        _remove_item(items, row)
+        mirror["items"].remove(entry)
+        return
+    _log_debug(logger, "Stacked {0} small button(s).".format(added))
+
+
+def _create_stack_row(autodesk_windows, first_placement):
+    row_type = _getattr_safe(autodesk_windows, "RibbonRowPanel")
+    if row_type is None:
+        return None
+    try:
+        row = row_type()
+    except Exception:
+        return None
+    _try_setattr(row, "Id", ID_PREFIX + "row_" + slug(first_placement.get("stack")))
+    return row
+
+
+def _make_stack_clone(autodesk_windows, item, placement):
+    """A small copy of ``item``: same command handler (so the click runs the
+    same command and the enabled state follows it), text/icon/tooltip copied
+    at apply time, ``Size`` Standard so the stack renders it small."""
+    button_type = _getattr_safe(autodesk_windows, "RibbonButton")
+    if button_type is None:
+        return None
+    try:
+        clone = button_type()
+    except Exception:
+        return None
+    _try_setattr(clone, "Id", ID_PREFIX + "p_" + slug(placement.get("id")))
+    for attr_name in ("Text", "Image", "LargeImage", "ToolTip", "Description",
+                      "KeyTip", "IsEnabled", "IsToolTipEnabled"):
+        value = _getattr_safe(item, attr_name)
+        if value is not None:
+            _try_setattr(clone, attr_name, value)
+    if not _safe_text(_getattr_safe(clone, "Text")):
+        _try_setattr(clone, "Text", placement.get("title"))
+    handler = _getattr_safe(item, "CommandHandler")
+    if handler is not None:
+        _try_setattr(clone, "CommandHandler", handler)
+    parameter = _getattr_safe(item, "CommandParameter")
+    if parameter is not None:
+        _try_setattr(clone, "CommandParameter", parameter)
+    standard = _getattr_safe(_getattr_safe(autodesk_windows, "RibbonItemSize"), "Standard")
+    if standard is not None:
+        _try_setattr(clone, "Size", standard)
+    _try_setattr(clone, "ShowText", True)
+    _try_setattr(clone, "ShowImage", True)
+    return clone
+
+
+def _place_marker(autodesk_windows, panel, placement, mirror, report, logger):
+    """A separator or the slide-out fold: an object of our own, so there is
+    no source to find - create, add, mirror."""
+    marker = _create_layout_marker(autodesk_windows, placement)
+    if marker is None:
+        _miss(report, placement, "Autodesk.Windows unavailable, cannot draw it")
+        return
+    items = _panel_items(panel)
+    try:
+        _add_item(items, marker)
+    except Exception as ex:
+        _miss(report, placement, "could not add: {0}".format(_safe_text(ex)))
+        return
+    mirror["items"].append((items, marker))
+    report["added"].append(placement["id"])
+    _log_debug(logger, "Placed a {0}.".format(placement.get("kind")))
+
+
+def _create_layout_marker(autodesk_windows, placement):
+    if placement.get("kind") == "separator":
+        type_name, id_word = "RibbonSeparator", "sep"
+    else:
+        type_name, id_word = "RibbonPanelBreak", "fold"
+    marker_type = _getattr_safe(autodesk_windows, type_name)
+    if marker_type is None:
+        return None
+    try:
+        marker = marker_type()
+    except Exception:
+        return None
+    _try_setattr(marker, "Id", ID_PREFIX + id_word + "_" + slug(placement.get("id")))
+    return marker
 
 
 # -- ribbon summary (for the destination picker) ------------------------------
@@ -562,6 +727,10 @@ def describe_tab_by_title(title, ribbon=None):
 
 def _collect_live_items(items, path, out, flat):
     for item in _safe_iter(items):
+        if _is_ours(item):
+            # our stacked rows, clones and markers are copies of things that
+            # already have a home - never offer them as sources
+            continue
         chain = _type_chain(item)
         type_name = chain[0] if chain else ""
         if any(name in _RIBBON_SKIP_TYPES for name in chain):
@@ -978,9 +1147,11 @@ def _find_item_by_aliases(items, aliases):
         if _item_matches(item, keys):
             return item
     # Stacks show their children flat on the panel: look one level down
-    # without treating the stack itself as a match.
+    # without treating the stack itself as a match.  Our own rows hold
+    # clones, never a source - skip them so a clone cannot pass for its
+    # original.
     for item in _safe_iter(items):
-        if _is_stack(item):
+        if _is_stack(item) and not _is_ours(item):
             hit = _find_item_by_aliases(_child_items(item), aliases)
             if hit is not None:
                 return hit

@@ -692,6 +692,23 @@ offers. Custom nodes (`.dyf`) and Python-node scripts (`.py`) are refused with a
 plain message; the window tells you whether the graph is Dynamo 1.x or 2.x,
 which Python engines its nodes use and which packages it depends on.
 
+### Stacks, separators and the slide-out
+
+Panels of your own can use the ribbon's whole layout language, not just a
+row of large buttons. Select a button and press **Stack with next** to put
+it and the one below into a row of **small buttons** - press it again for
+three, the most a stack holds; **Unstack** dissolves the row and the buttons
+return to full size. A stacked button is a small copy that runs the same
+command and greys out in the same situations - the original button is never
+touched, so nothing shrinks on its home tab. **Add separator** draws a
+vertical line you can move like any row, and **Add slide-out** folds
+everything below it into the drop-down that opens under the panel (one fold
+per panel). Up and Down move a stack as one block; dragging a button out of
+its panel takes it out of its stack. Whole drop-downs stay full size - they
+need their full-height arrow. Re-arranging still needs no reload, the layout
+travels with **Export…**/**Import…**, and an older EasyBIM reading the same
+settings file simply shows the buttons flat.
+
 ## Family Types (Family)
 
 What Revit's type catalogue puts in a `.txt` file, shown as a table you can
