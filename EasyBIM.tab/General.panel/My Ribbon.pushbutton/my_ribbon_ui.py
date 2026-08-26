@@ -179,8 +179,8 @@ class MyRibbonWindow(forms.WPFWindow):
         self.sources_count_tb.Text = "{0} source{1}.".format(count, "" if count == 1 else "s")
         if not count:
             item = Windows.Controls.ListBoxItem()
-            item.Content = _text_block("No sources yet. Press Add source... to download a repository, "
-                                       "pick an installed extension, or browse pyRevit's catalogue.",
+            item.Content = _text_block("No sources yet. Press Add source... to pick an installed "
+                                       "extension, a tab already on the ribbon, or a Dynamo graph.",
                                        grey=True)
             item.IsEnabled = False
             self.SourcesList.Items.Add(item)
@@ -663,26 +663,22 @@ class MyRibbonWindow(forms.WPFWindow):
 
 
 class SourceSelectionWindow(forms.WPFWindow):
-    """Three cards: a git link, installed extensions, pyRevit's catalogue.
+    """Two cards: what is already on this computer (pyRevit extensions, Revit's
+    own tabs and other add-ins) and Dynamo graphs.  An extension this computer
+    does not have yet is installed in pyRevit's own Extensions window first.
 
-    ``result`` is ``("git", link, branch)``, ``("installed", ext)``,
-    ``("catalogue", row)`` or None.
+    ``result`` is ``("installed", ext)``, ``("ribbon", tab)``,
+    ``("dynamo", paths)`` or None.
     """
 
-    def __init__(self, xaml_file_name, installed, catalogue, link_text="", branch_text="",
-                 ribbon_tabs=None, linked_names=None):
+    def __init__(self, xaml_file_name, installed, ribbon_tabs=None, linked_names=None):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.installed = list(installed or [])
         self.ribbon_tabs = list(ribbon_tabs or [])
         self.linked_names = set(state.normalize_label(n) for n in (linked_names or []))
-        self.catalogue = list(catalogue or [])
         self.result = None
-        self.LinkBox.Text = _safe_text(link_text)
-        self.BranchBox.Text = _safe_text(branch_text)
         self._populate_installed()
-        self._populate_catalogue()
-        self._validate_link()
         self._is_ready = True
 
     def _group_header(self, text):
@@ -732,65 +728,6 @@ class SourceSelectionWindow(forms.WPFWindow):
                 count, "" if count == 1 else "s", len(self.ribbon_tabs),
                 "" if len(self.ribbon_tabs) == 1 else "s"))
 
-    def _populate_catalogue(self):
-        self.CatalogueList.Items.Clear()
-        needle = _search_text(self.CatalogueSearchBox)
-        shown = 0
-        for row in self.catalogue:
-            haystack = " ".join([row.get("name", ""), row.get("author", ""),
-                                 row.get("description", "")]).lower()
-            if needle and needle not in haystack:
-                continue
-            item = Windows.Controls.ListBoxItem()
-            panel = Windows.Controls.StackPanel()
-            title = row.get("name")
-            if row.get("installed"):
-                title += "   (installed)"
-            panel.Children.Add(_text_block(title, bold=True))
-            detail = row.get("description") or ""
-            if row.get("author"):
-                detail = "{0}  -  {1}".format(row.get("author"), detail) if detail else row.get("author")
-            panel.Children.Add(_text_block(detail, grey=True, size=11))
-            item.Content = panel
-            item.Tag = row
-            self.CatalogueList.Items.Add(item)
-            shown += 1
-        total = len(self.catalogue)
-        self.catalogue_count_tb.Text = "{0} of {1} listed. This is pyRevit's own list of community " \
-                                       "extensions; it needs no internet to browse.".format(shown, total)
-        if not total:
-            self.catalogue_count_tb.Text = "pyRevit's catalogue could not be read on this computer."
-
-    def _validate_link(self):
-        ref, error = state.parse_git_url(self.LinkBox.Text)
-        if ref is None:
-            self.download_btn.IsEnabled = False
-            self.link_hint_tb.Text = error if _safe_text(self.LinkBox.Text).strip() else ""
-            return
-        self.download_btn.IsEnabled = True
-        hint = "Will download {0} from {1}".format(ref.label, ref.host)
-        if ref.branch and not _safe_text(self.BranchBox.Text).strip():
-            self.BranchBox.Text = ref.branch
-        if ref.subpath:
-            hint += " (the link points inside the repository; the whole repository is downloaded)"
-        self.link_hint_tb.Text = hint
-
-    def link_changed(self, sender, args):
-        del sender, args
-        if not getattr(self, "_is_ready", False):
-            return
-        self._validate_link()
-
-    def download_click(self, sender, args):
-        del sender, args
-        ref, error = state.parse_git_url(self.LinkBox.Text)
-        if ref is None:
-            forms.alert(error, title=TITLE)
-            return
-        self.result = ("git", _safe_text(self.LinkBox.Text).strip(),
-                       _safe_text(self.BranchBox.Text).strip())
-        self.Close()
-
     def installed_selection_changed(self, sender, args):
         del sender, args
         item = self.InstalledList.SelectedItem
@@ -822,29 +759,6 @@ class SourceSelectionWindow(forms.WPFWindow):
         if isinstance(picked, type(u"")) or isinstance(picked, str):
             picked = [picked]
         self.result = ("dynamo", list(picked))
-        self.Close()
-
-    def catalogue_search_changed(self, sender, args):
-        del sender, args
-        if not getattr(self, "_is_ready", False):
-            return
-        self._populate_catalogue()
-        self.install_catalogue_btn.IsEnabled = False
-
-    def catalogue_selection_changed(self, sender, args):
-        del sender, args
-        self.install_catalogue_btn.IsEnabled = self.CatalogueList.SelectedItem is not None
-
-    def catalogue_double_click(self, sender, args):
-        del sender, args
-        self.install_catalogue_click(None, None)
-
-    def install_catalogue_click(self, sender, args):
-        del sender, args
-        item = self.CatalogueList.SelectedItem
-        if item is None:
-            return
-        self.result = ("catalogue", item.Tag)
         self.Close()
 
     def cancel_click(self, sender, args):
