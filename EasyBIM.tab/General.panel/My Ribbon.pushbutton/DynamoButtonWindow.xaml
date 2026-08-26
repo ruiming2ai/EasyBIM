@@ -52,7 +52,7 @@
                 </StackPanel>
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,14,0,0" FontSize="12" Foreground="DimGray" TextWrapping="Wrap"
-                           Text="The button runs the graph from where the file is, so later edits count the next time you click. Ctrl+click opens the graph in Dynamo instead. The button appears after one pyRevit reload."/>
+                           Text="The button runs the graph from where the file is, so later edits count the next time you click - unless the graph is saved in Manual run mode, which pyRevit will not run at all: that one runs from a copy set to Automatic, refreshed on every Apply. Ctrl+click opens the graph in Dynamo instead. The button appears after one pyRevit reload."/>
             </Grid>
         </Border>
 

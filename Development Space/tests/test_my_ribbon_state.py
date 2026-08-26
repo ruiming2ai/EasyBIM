@@ -374,6 +374,19 @@ DYN_2X = u"""{
 
 DYN_1X = u'<?xml version="1.0" encoding="utf-8"?><Workspace Version="1.3.4.6666" X="0" Y="0" zoom="1" Name="Old Graph"><Elements><Dynamo.Nodes.PythonNode type="DSIronPythonNode.PythonNode" /></Elements></Workspace>'
 
+DYN_2X_MANUAL = u"""{
+  "Uuid": "456", "IsCustomNode": false, "Name": "Manual Graph",
+  "Nodes": [
+    {"ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels", "Engine": "IronPython2", "Id": "a"}
+  ],
+  "View": {
+    "Dynamo": {"ScaleFactor": 1.0, "HasRunWithoutCrash": true, "RunType": "Manual", "RunPeriod": "1000"}
+  }
+}"""
+
+DYN_1X_MANUAL = u'<?xml version="1.0" encoding="utf-8"?><Workspace Version="1.3.4.6666" Name="Old Graph" ' \
+                u'RunType="Manual" RunPeriod="1000" HasRunWithoutCrash="False"><Elements /></Workspace>'
+
 
 class DynamoHelperTests(unittest.TestCase):
     def setUp(self):
@@ -402,6 +415,55 @@ class DynamoHelperTests(unittest.TestCase):
         custom = self.state.dynamo_facts_from_text(DYN_2X.replace('"IsCustomNode": false', '"IsCustomNode": true'), "x.dyn")
         self.assertTrue(custom["is_custom_node"])
         self.assertIn("custom node", custom["problem"])
+
+    def test_the_run_mode_and_the_python_engine_are_read_from_the_graph(self):
+        """Both decide how the bundle is written, so both come off the file."""
+        auto = self.state.dynamo_facts_from_text(DYN_2X, "g.dyn")
+        self.assertEqual(auto["run_type"], "")
+        self.assertEqual(auto["engine"], "mixed")
+        self.assertTrue(self.state.dynamo_uses_cpython(auto))
+        self.assertFalse(self.state.dynamo_needs_forced_run(auto))
+
+        manual = self.state.dynamo_facts_from_text(DYN_2X_MANUAL, "g.dyn")
+        self.assertEqual(manual["run_type"], "Manual")
+        self.assertEqual(manual["engine"], "IronPython2")
+        self.assertFalse(self.state.dynamo_uses_cpython(manual))
+        self.assertTrue(self.state.dynamo_needs_forced_run(manual))
+        self.assertIn("saved in Manual run mode", " ".join(self.state.dynamo_tags(manual)))
+
+        old = self.state.dynamo_facts_from_text(DYN_1X_MANUAL, "old.dyn")
+        self.assertEqual((old["format"], old["run_type"]), ("1.x", "Manual"))
+        self.assertTrue(self.state.dynamo_needs_forced_run(old))
+
+        # a graph that says Automatic is left alone, and so is one that says nothing
+        auto_2x = self.state.dynamo_facts_from_text(
+            DYN_2X_MANUAL.replace('"RunType": "Manual"', '"RunType": "Automatic"'), "g.dyn")
+        self.assertFalse(self.state.dynamo_needs_forced_run(auto_2x))
+        self.assertFalse(self.state.dynamo_needs_forced_run({}))
+
+    def test_forcing_automatic_run_changes_that_one_value_and_nothing_else(self):
+        for text in (DYN_2X_MANUAL, DYN_1X_MANUAL):
+            patched, changed = self.state.force_automatic_run(text)
+            self.assertTrue(changed)
+            # putting the one word back gives the file byte for byte
+            self.assertEqual(patched.replace("Automatic", "Manual"), text)
+            self.assertEqual(
+                self.state.dynamo_facts_from_text(patched, "g.dyn")["run_type"], "Automatic")
+            # running it again is a no-op
+            self.assertEqual(self.state.force_automatic_run(patched), (patched, False))
+
+    def test_a_graph_that_cannot_be_patched_confidently_is_handed_back_untouched(self):
+        for text in ("garbage", DYN_2X,
+                     DYN_2X_MANUAL + DYN_2X_MANUAL):  # two RunType values, no single answer
+            self.assertEqual(self.state.force_automatic_run(text), (text, False))
+
+    def test_the_bundle_yaml_asks_for_a_clean_engine_only_for_cpython(self):
+        plain = self.state.render_dynamo_bundle_yaml("T", "tip", "C:\\g.dyn")
+        self.assertIn("automate: true", plain)
+        self.assertNotIn("clean:", plain)
+        clean = self.state.render_dynamo_bundle_yaml("T", "tip", None, clean=True)
+        self.assertIn("clean: true", clean)
+        self.assertNotIn("dynamo_path", clean)
 
     def test_bundle_folder_names_are_one_plain_component(self):
         ok = self.state.is_bundle_folder_name

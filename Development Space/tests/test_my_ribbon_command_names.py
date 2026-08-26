@@ -324,6 +324,32 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn('installed_by_my_ribbon', uninstall)
         self.assertIn("installed_by_my_ribbon", _function_source(UI_MODULE, "_refresh_buttons"))
 
+    def test_a_manual_graph_is_the_one_case_that_runs_from_our_copy(self):
+        """pyRevit opens a graph saved in Manual run mode and never runs it, so
+        that graph - and only that graph - loses dynamo_path to a patched copy."""
+        desired = _function_source(HOST_MODULE, "desired_dynamo_yaml")
+        self.assertIn("dynamo_needs_forced_run", desired)
+        self.assertIn("graph_exists and not forced", desired)
+        refresh = _function_source(HOST_MODULE, "refresh_dynamo_copy")
+        self.assertIn("dynamo_needs_forced_run", refresh)
+        self.assertIn("_write_forced_copy", refresh)
+        # the user's own graph is never rewritten: the patch is written to the
+        # bundle copy and nowhere else
+        forced = _function_source(HOST_MODULE, "_write_forced_copy")
+        self.assertIn("io.open(target", forced)
+        self.assertNotIn("io.open(path, \"w", forced)
+        # and the patch is one textual substitution, never a re-serialisation
+        force = _function_source(STATE_MODULE, "force_automatic_run")
+        self.assertIn("len(found) != 1", force)
+        self.assertNotIn("json.dumps", force)
+
+    def test_the_clean_engine_is_asked_for_by_cpython_graphs_only(self):
+        desired = _function_source(HOST_MODULE, "desired_dynamo_yaml")
+        self.assertIn("clean=dynamo_uses_cpython", desired)
+        render = _function_source(STATE_MODULE, "render_dynamo_bundle_yaml")
+        self.assertIn("clean: true", render)
+        self.assertIn("automate: true", render)
+
     def test_apply_closes_the_window(self):
         run = _function_source(SCRIPT_MODULE, "_run")
         self.assertRegex(run, r"host\.reload_pyrevit\(\)\s*\n\s*#[^\n]*\n\s*return")

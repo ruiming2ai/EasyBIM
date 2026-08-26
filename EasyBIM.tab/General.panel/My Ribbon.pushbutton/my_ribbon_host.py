@@ -17,8 +17,11 @@ import stat
 from my_ribbon_state import (
     dynamo_bundle_name,
     dynamo_facts_from_text,
+    dynamo_needs_forced_run,
     dynamo_tooltip,
+    dynamo_uses_cpython,
     extension_dir_name,
+    force_automatic_run,
     is_bundle_folder_name,
     normalize_label,
     render_dynamo_bundle_yaml,
@@ -851,7 +854,7 @@ def write_dynamo_bundle(source, facts=None, icon_png=None, root=None):
     ensure_library_extension(root)
     if not os.path.isdir(bundle):
         os.makedirs(bundle)
-    refresh_dynamo_copy(source, root=root)
+    refresh_dynamo_copy(source, root=root, facts=facts)
     yaml_text = desired_dynamo_yaml(source, facts)
     with io.open(os.path.join(bundle, "bundle.yaml"), "w", encoding="utf-8") as handle:
         handle.write(yaml_text if isinstance(yaml_text, type(u"")) else yaml_text.decode("utf-8"))
@@ -860,17 +863,21 @@ def write_dynamo_bundle(source, facts=None, icon_png=None, root=None):
 
 
 def desired_dynamo_yaml(source, facts=None):
-    """What bundle.yaml must say for this source now.  ``dynamo_path`` names
-    the original only while it exists; when the graph is gone the key is left
-    out so pyRevit runs the copy (with it set, pyRevit would try the missing
-    file)."""
+    """What bundle.yaml must say for this source now.  ``dynamo_path`` names the
+    original only while it exists *and* pyRevit would actually run it: when the
+    graph is gone the key is left out so pyRevit runs the copy (with it set,
+    pyRevit would try the missing file), and when the graph is saved in Manual
+    or Periodic run mode it is left out too, so the run mode our copy forces to
+    Automatic is the one that reaches Dynamo."""
     path = safe_text(source.get("path"))
     graph_exists = bool(path) and os.path.isfile(path)
+    forced = dynamo_needs_forced_run(facts or {})
     tooltip = dynamo_tooltip(path, facts or {})
     if not graph_exists:
         tooltip += "\n(The original file is missing - the last copy runs.)"
     return render_dynamo_bundle_yaml(source.get("title") or source.get("label"), tooltip,
-                                     path if graph_exists else None)
+                                     path if (graph_exists and not forced) else None,
+                                     clean=dynamo_uses_cpython(facts or {}))
 
 
 def _read_text(path):
@@ -899,10 +906,13 @@ def write_dynamo_icons(source, icon_png=None, root=None):
     return wrote
 
 
-def refresh_dynamo_copy(source, root=None):
-    """Keep ``script.dyn`` a copy of the original graph.  Returns
-    ``"copied"``, ``"current"`` (copy up to date), ``"missing"`` (original
-    gone - the last copy stays) or ``"no-bundle"``."""
+def refresh_dynamo_copy(source, root=None, facts=None):
+    """Keep ``script.dyn`` a copy of the original graph.  A graph saved in a run
+    mode pyRevit will not execute is copied with that one value forced to
+    Automatic (``force_automatic_run``), which is what makes the button run at
+    all; the user's own file is never written.  Returns ``"copied"``,
+    ``"current"`` (copy up to date), ``"missing"`` (original gone - the last
+    copy stays) or ``"no-bundle"``."""
     bundle = dynamo_bundle_dir(source, root)
     if bundle is None or not os.path.isdir(bundle):
         return "no-bundle"
@@ -910,18 +920,56 @@ def refresh_dynamo_copy(source, root=None):
     target = os.path.join(bundle, "script.dyn")
     if not path or not os.path.isfile(path):
         return "missing"
+    if facts is None:
+        facts = read_dynamo_facts(path)
+    patching = dynamo_needs_forced_run(facts)
     try:
         if os.path.isfile(target) and os.path.getmtime(target) >= os.path.getmtime(path) \
-                and os.path.getsize(target) == os.path.getsize(path):
+                and (patching or os.path.getsize(target) == os.path.getsize(path)):
+            # a patched copy is deliberately a different size from the original,
+            # so only its date can say whether it is still current
             return "current"
     except Exception:
         pass
+    if patching and _write_forced_copy(path, target):
+        return "copied"
     shutil.copyfile(path, target)
     try:
         shutil.copystat(path, target)
     except Exception:
         pass
     return "copied"
+
+
+def _write_forced_copy(path, target):
+    """Write ``target`` as ``path`` with its run mode forced to Automatic.
+    False when the file cannot be read, decoded or patched, so the caller falls
+    back to a plain copy rather than writing something half-understood."""
+    try:
+        with io.open(path, "rb") as handle:
+            raw = handle.read()
+    except Exception:
+        return False
+    bom = raw.startswith(b"\xef\xbb\xbf")
+    try:
+        text = raw[3:].decode("utf-8") if bom else raw.decode("utf-8")
+    except Exception:
+        return False
+    patched, changed = force_automatic_run(text)
+    if not changed:
+        return False
+    try:
+        with io.open(target, "wb") as handle:
+            if bom:
+                handle.write(b"\xef\xbb\xbf")
+            handle.write(patched.encode("utf-8"))
+    except Exception:
+        return False
+    try:
+        shutil.copystat(path, target)
+    except Exception:
+        pass
+    return True
 
 
 def delete_dynamo_bundle(source, root=None):
@@ -993,13 +1041,24 @@ def sync_dynamo_bundles(registry, pending_deletes=(), root=None):
             else:
                 if not os.path.isfile(os.path.join(bundle, "icon.png")):
                     write_dynamo_icons(source, root=root)
-            status = refresh_dynamo_copy(source, root=root)
+            status = refresh_dynamo_copy(source, root=root, facts=facts)
             if status == "copied":
                 report["refreshed"].append(source.get("title") or source.get("label"))
             elif status == "missing":
                 report["missing_graph"].append(source.get("id"))
             else:
                 report["current"].append(source.get("title") or source.get("label"))
+            # the copy is what pyRevit runs for a manual graph, so read it back:
+            # a run mode we could not change is a button that will do nothing,
+            # and the user has to hear that rather than find it out by clicking
+            if graph_exists and dynamo_needs_forced_run(facts) and \
+                    dynamo_needs_forced_run(read_dynamo_facts(os.path.join(bundle, "script.dyn"))):
+                report["errors"].append(
+                    "{0}: the graph is saved in {1} run mode, and My Ribbon could not set its "
+                    "copy to Automatic. Open the graph in Dynamo and set Run to Automatic, or "
+                    "the button will do nothing.".format(
+                        source.get("title") or source.get("label"),
+                        safe_text(facts.get("run_type")) or "Manual"))
         except Exception as ex:
             report["errors"].append("{0}: {1}".format(source.get("title") or source.get("label"),
                                                       _short_error(ex)))
