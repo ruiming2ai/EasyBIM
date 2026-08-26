@@ -552,6 +552,12 @@ DYN_JSON = u'{"Uuid": "1", "IsCustomNode": false, "Name": "Graph", "Nodes": [' \
            u'{"ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels", "Engine": "CPython3"}], ' \
            u'"NodeLibraryDependencies": [{"Name": "Rhythm", "Version": "1"}]}'
 
+#: The same graph on IronPython and saved in Manual run mode - the two things
+#: that change how the bundle is written.
+DYN_JSON_MANUAL = u'{"Uuid": "2", "IsCustomNode": false, "Name": "Graph", "Nodes": [' \
+                  u'{"ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels", "Engine": "IronPython2"}], ' \
+                  u'"View": {"Dynamo": {"RunType": "Manual", "RunPeriod": "1000"}}}'
+
 
 class DynamoBundleTests(unittest.TestCase):
     def setUp(self):
@@ -615,6 +621,64 @@ class DynamoBundleTests(unittest.TestCase):
         self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "missing")
         self.assertTrue(os.path.isfile(os.path.join(self._bundle(), "script.dyn")))
         self.assertEqual(self.host.dynamo_graph_status(self.source, root=self.root), "missing")
+
+    def test_a_manual_graph_runs_from_a_copy_forced_to_automatic(self):
+        """pyRevit opens a manual graph and never runs it, so the button does
+        nothing.  The copy carries the fix and dynamo_path steps aside for it."""
+        _touch(self.graph, DYN_JSON_MANUAL)
+        facts = self.host.read_dynamo_facts(self.graph)
+        self.assertEqual(facts["run_type"], "Manual")
+        bundle = self.host.write_dynamo_bundle(self.source, facts=facts, root=self.root)
+
+        with open(os.path.join(bundle, "script.dyn"), encoding="utf-8") as handle:
+            copied = handle.read()
+        self.assertIn('"RunType": "Automatic"', copied)
+        self.assertEqual(copied.replace("Automatic", "Manual"), DYN_JSON_MANUAL)
+
+        with open(os.path.join(bundle, "bundle.yaml"), encoding="utf-8") as handle:
+            yaml = handle.read()
+        self.assertNotIn("dynamo_path", yaml)
+        self.assertIn("automate: true", yaml)
+        self.assertIn("Saved in Manual run mode", yaml)
+
+        # the user's own file is never the one that gets written
+        with open(self.graph, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), DYN_JSON_MANUAL)
+
+    def test_a_patched_copy_is_current_until_the_original_moves_on(self):
+        _touch(self.graph, DYN_JSON_MANUAL)
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        # the patched copy is a different size from the original by design, so
+        # only its date may decide whether it is stale
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "current")
+        _touch(self.graph, DYN_JSON_MANUAL.replace('"Uuid": "2"', '"Uuid": "3"'))
+        future = os.path.getmtime(self.graph) + 10
+        os.utime(self.graph, (future, future))
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "copied")
+        with open(os.path.join(self._bundle(), "script.dyn"), encoding="utf-8") as handle:
+            fresh = handle.read()
+        self.assertIn('"Uuid": "3"', fresh)
+        self.assertIn('"RunType": "Automatic"', fresh)
+
+    def test_only_a_cpython_graph_asks_for_a_clean_engine(self):
+        cpython = self.host.desired_dynamo_yaml(self.source, self.host.read_dynamo_facts(self.graph))
+        self.assertIn("clean: true", cpython)
+        self.assertIn("dynamo_path", cpython)
+        _touch(self.graph, DYN_JSON_MANUAL)
+        ironpython = self.host.desired_dynamo_yaml(self.source, self.host.read_dynamo_facts(self.graph))
+        self.assertNotIn("clean:", ironpython)
+        self.assertIn("DynamoIronPython2.7", ironpython)
+
+    def test_a_graph_whose_run_mode_cannot_be_forced_is_reported_not_hidden(self):
+        """The copy is still written, but the button will not run: say so."""
+        # a second "RunType" anywhere in the file means there is no single
+        # answer, so nothing is rewritten by guesswork
+        _touch(self.graph, DYN_JSON_MANUAL.replace(
+            '"Engine": "IronPython2"', '"Engine": "IronPython2", "RunType": "Manual"'))
+        registry = {"sources": [self.source], "placements": []}
+        report = self.host.sync_dynamo_bundles(registry, root=self.root)
+        self.assertTrue(any("Manual run mode" in message for message in report["errors"]),
+                        report["errors"])
 
     def test_delete_bundle_only_inside_the_library(self):
         self.host.write_dynamo_bundle(self.source, root=self.root)

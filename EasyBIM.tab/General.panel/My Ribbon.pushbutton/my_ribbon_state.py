@@ -1157,11 +1157,14 @@ def _listing(items, limit=6):
 def dynamo_facts_from_text(text, file_name=""):
     """What a picked file is, read from its content: ``format`` (``"2.x"``
     JSON, ``"1.x"`` XML or ``"unknown"``), ``is_custom_node``, ``name``,
-    ``python_engines`` (e.g. ``["CPython3"]``), ``packages`` (names from the
-    2.x dependency list) and ``problem`` (a sentence when the file is not a
-    runnable graph).  Never raises."""
+    ``python_engines`` (e.g. ``["CPython3"]``), ``engine`` (the one verdict of
+    that list - see ``dynamo_engine``), ``run_type`` (``"Automatic"``,
+    ``"Manual"``, ``"Periodic"`` or ``""`` when the file does not say),
+    ``packages`` (names from the 2.x dependency list) and ``problem`` (a
+    sentence when the file is not a runnable graph).  Never raises."""
     facts = {"format": "unknown", "is_custom_node": False, "name": "",
-             "python_engines": [], "packages": [], "problem": ""}
+             "python_engines": [], "engine": "", "run_type": "",
+             "packages": [], "problem": ""}
     lowered = safe_text(file_name).lower()
     if lowered.endswith(".dyf"):
         facts["is_custom_node"] = True
@@ -1201,6 +1204,9 @@ def dynamo_facts_from_text(text, file_name=""):
                     if name and name not in packages:
                         packages.append(name)
             facts["packages"] = packages
+            view = data.get("View")
+            if isinstance(view, dict) and isinstance(view.get("Dynamo"), dict):
+                facts["run_type"] = safe_text(view["Dynamo"].get("RunType")).strip()
     elif raw.startswith("<"):
         if "<Workspace" in raw[:2000]:
             facts["format"] = "1.x"
@@ -1209,9 +1215,74 @@ def dynamo_facts_from_text(text, file_name=""):
                 facts["name"] = match.group(1)
             if "PythonNode" in raw:
                 facts["python_engines"] = ["IronPython2"]
+            match = re.search(r'<Workspace[^>]*\sRunType="([^"]*)"', raw[:4000])
+            if match:
+                facts["run_type"] = match.group(1).strip()
+    facts["engine"] = dynamo_engine(facts["python_engines"])
     if facts["format"] == "unknown" and not facts["problem"]:
         facts["problem"] = "This file does not look like a Dynamo graph (.dyn)."
     return facts
+
+
+def dynamo_engine(python_engines):
+    """One verdict from the per-node engine names: the single engine the graph
+    uses, ``"mixed"`` when its Python nodes disagree, ``""`` when it has none.
+    A Python node with no ``Engine`` key is already read as ``IronPython2``,
+    which is what Dynamo falls back to."""
+    names = [safe_text(name).strip() for name in (python_engines or [])]
+    names = [name for name in names if name]
+    if not names:
+        return ""
+    if len(set(names)) == 1:
+        return names[0]
+    return "mixed"
+
+
+def dynamo_uses_cpython(facts):
+    """True when any Python node runs on CPython (``CPython3``, ``PythonNet3``)."""
+    for name in (facts or {}).get("python_engines") or []:
+        lowered = safe_text(name).lower()
+        if "cpython" in lowered or "pythonnet" in lowered:
+            return True
+    return False
+
+
+def dynamo_needs_forced_run(facts):
+    """True when the graph is saved in a run mode pyRevit will not execute.
+
+    A pyRevit push-button opens the graph through Dynamo's journal interface,
+    and a graph saved in Manual (or Periodic) run mode is opened and then never
+    run - the click does nothing at all, with no UI and no error, because
+    ``dynShowUI`` is false on a plain click.  Dynamo also re-saves a graph as
+    Manual after a crash, so this is easy to hit without knowing.  The file
+    says which mode it is in, so we can see it coming; ``force_automatic_run``
+    is what fixes it."""
+    run_type = safe_text((facts or {}).get("run_type")).strip().lower()
+    return bool(run_type) and run_type != "automatic"
+
+
+#: Matches the single ``RunType`` scalar of a 2.x graph, or the ``RunType``
+#: attribute of a 1.x ``<Workspace>``; both spellings appear once in a graph.
+_RUN_TYPE_JSON = re.compile(r'("RunType"\s*:\s*")([^"]*)(")')
+_RUN_TYPE_XML = re.compile(r'(<Workspace[^>]*?\sRunType=")([^"]*)(")')
+
+
+def force_automatic_run(text):
+    """Return ``(patched_text, changed)`` - the same graph with its run mode set
+    to Automatic, so pyRevit really runs it.  The substitution is textual and
+    touches nothing but that one value, so the copy stays byte-for-byte the
+    user's graph everywhere else; a file that does not carry exactly one
+    ``RunType`` is handed back untouched rather than rewritten by guesswork.
+    The user's own file is never the one being patched - only our copy."""
+    raw = safe_text(text)
+    for pattern in (_RUN_TYPE_JSON, _RUN_TYPE_XML):
+        found = pattern.findall(raw)
+        if len(found) != 1:
+            continue
+        if found[0][1].strip().lower() == "automatic":
+            return raw, False
+        return pattern.sub(lambda m: m.group(1) + "Automatic" + m.group(3), raw, count=1), True
+    return raw, False
 
 
 def dynamo_tags(facts):
@@ -1221,6 +1292,9 @@ def dynamo_tags(facts):
         tags.append("Dynamo 1.x graph")
     if facts.get("python_engines"):
         tags.append("contains Python nodes ({0})".format(", ".join(facts["python_engines"])))
+    if dynamo_needs_forced_run(facts):
+        tags.append("saved in {0} run mode - the button runs a copy set to Automatic, so edits "
+                    "count from the next Apply".format(safe_text(facts.get("run_type"))))
     if facts.get("packages"):
         tags.append("uses packages: {0}".format(", ".join(facts["packages"])))
     return tags
@@ -1238,12 +1312,25 @@ def dynamo_bundle_name(title, existing_names):
     return candidate
 
 
-def render_dynamo_bundle_yaml(title, tooltip, dynamo_path):
+def render_dynamo_bundle_yaml(title, tooltip, dynamo_path, clean=False):
     """The bundle.yaml of a Dynamo button.  Strings are JSON-quoted, which
     YAML reads as double-quoted scalars, so quotes, backslashes and newlines
-    in titles or paths are safe.  ``dynamo_path`` is pyRevit's own key: the
-    Dynamo engine runs that file instead of the bundle's script.dyn - so it is
-    left out when the original is gone, and the copy really does run."""
+    in titles or paths are safe (pyRevit reads YAML through YamlDotNet, whose
+    scalars are always strings, which is why ``automate: true`` unquoted still
+    satisfies its ``== 'true'`` test).
+
+    ``dynamo_path`` is pyRevit's own key: the Dynamo engine runs that file
+    instead of the bundle's script.dyn - so it is left out when the original is
+    gone, and when the original is saved in a run mode pyRevit will not execute
+    (then our patched copy is the one that must run).
+
+    ``clean`` sets pyRevit's ``dynModelShutDown``, which tears down a Dynamo
+    model left over from an earlier run before opening this graph.  It is asked
+    for only by graphs with CPython nodes, whose evaluator is the one that
+    fails - protected-memory crashes, "PythonEvaluator.Evaluate operation
+    failed" - against a model already loaded beside pyRevit's own engine
+    assemblies; pyRevit's own source notes the shutdown costs about 3x on
+    start-up, which is why an IronPython graph does not pay it."""
     lines = [
         "title: " + json.dumps(safe_text(title), ensure_ascii=False),
         "tooltip: " + json.dumps(safe_text(tooltip), ensure_ascii=False),
@@ -1251,6 +1338,8 @@ def render_dynamo_bundle_yaml(title, tooltip, dynamo_path):
         "engine:",
         "  automate: true",
     ]
+    if clean:
+        lines.append("  clean: true")
     if safe_text(dynamo_path):
         lines.append("  dynamo_path: " + json.dumps(safe_text(dynamo_path), ensure_ascii=False))
     return "\n".join(lines) + "\n"
@@ -1315,6 +1404,9 @@ def dynamo_tooltip(path, facts=None):
     parts = ["Dynamo graph: {0}".format(safe_text(path))]
     for tag in dynamo_tags(facts or {}):
         parts.append(tag[0].upper() + tag[1:])
+    if (facts or {}).get("engine") in ("IronPython2", "mixed"):
+        parts.append("IronPython2 nodes need Dynamo's DynamoIronPython2.7 package "
+                     "on Dynamo 2.7 and newer.")
     parts.append("Ctrl+click opens it in Dynamo.")
     return "\n".join(parts)
 

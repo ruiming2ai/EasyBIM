@@ -699,6 +699,24 @@ offers. Custom nodes (`.dyf`) and Python-node scripts (`.py`) are refused with a
 plain message; the window tells you whether the graph is Dynamo 1.x or 2.x,
 which Python engines its nodes use and which packages it depends on.
 
+Two things are read off the graph and acted on, because they are the difference
+between a button that runs and one that silently does nothing:
+
+- **Run mode.** pyRevit opens a graph saved in **Manual** run mode and then
+  never runs it — the click is silent, with no window and no error. (Dynamo also
+  re-saves a graph as manual after a crash, so this happens without anyone
+  choosing it.) Such a graph runs from My Ribbon's copy instead, with that one
+  value set to Automatic; your own file is never written. The cost is that edits
+  to a manual graph count from the next **Apply** rather than the next click,
+  and the picker, the source row and the tooltip all say so. A graph already set
+  to Automatic keeps running from where it lives.
+- **Python engine.** A graph with **CPython3** or **PythonNet3** nodes gets a
+  clean Dynamo model for each run (pyRevit's `clean` engine option), which is
+  where that evaluator otherwise falls over next to pyRevit's own Python. An
+  **IronPython2** graph skips that — it is about three times slower to start —
+  and its tooltip reminds you that Dynamo 2.7 and newer need the
+  `DynamoIronPython2.7` package for those nodes.
+
 ### Stacks, separators and the slide-out
 
 Panels of your own can use the ribbon's whole layout language, not just a
