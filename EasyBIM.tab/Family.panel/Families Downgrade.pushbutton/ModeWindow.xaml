@@ -2,9 +2,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Families Downgrade"
         Width="760"
-        Height="520"
+        Height="620"
         MinWidth="680"
-        MinHeight="460"
+        MinHeight="520"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
         ResizeMode="CanResizeWithGrip">
@@ -23,20 +23,29 @@
         <Border Grid.Row="1" BorderBrush="#D0D0D0" BorderThickness="1" Padding="14">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
-                    <TextBlock Text="A Revit family cannot be saved for an older release. Families Downgrade rebuilds one instead: this Revit writes a downgrade package per family (its geometry as SAT plus everything else as data), and the same button in the older Revit rebuilds native .rfa files of that release from the packages. Rebuilt solids are static - the parametric geometry does not survive - and everything a family loses on the way is listed in the report."
+                    <TextBlock Text="A Revit family cannot be saved for an older release - no version of Revit and nothing in its API can write one release's family file from another. Families Downgrade rebuilds the family instead, and the release you want has to do the writing itself. Rebuilt solids are static - the parametric geometry does not survive - and everything a family loses on the way is listed in the report next to the files."
                                FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12"/>
 
-                    <RadioButton x:Name="export_rb" GroupName="mode" IsChecked="True" Margin="0,4,0,2" Checked="mode_changed">
+                    <RadioButton x:Name="downgrade_rb" GroupName="mode" IsChecked="True" Margin="0,4,0,2" Checked="mode_changed">
+                        <TextBlock Text="Downgrade families to another Revit version" FontSize="15" FontWeight="SemiBold"/>
+                    </RadioButton>
+                    <TextBlock Margin="22,0,0,10" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"
+                               Text="Pick families, pick the Revit version you need, pick a folder. That Revit is opened in the background, rebuilds the families and closes again, and you are left with .rfa files of that version and nothing to clean up. It has to be installed on this computer."/>
+
+                    <TextBlock Text="Both halves on their own" FontSize="13" FontWeight="SemiBold" Margin="0,10,0,6"
+                               Foreground="DimGray"/>
+
+                    <RadioButton x:Name="export_rb" GroupName="mode" Margin="0,4,0,2" Checked="mode_changed">
                         <TextBlock Text="Export downgrade packages" FontSize="15" FontWeight="SemiBold"/>
                     </RadioButton>
                     <TextBlock x:Name="export_hint_tb" Margin="22,0,0,10" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"
-                               Text="Pick families from this project, opened .rfa files and Revit links, and write one package per family into a folder. Run this in the newer Revit."/>
+                               Text="Write one downgrade package per family into a folder, and stop there. For when the older Revit is on another computer: copy the folder over and use the option below there."/>
 
                     <RadioButton x:Name="rebuild_rb" GroupName="mode" Margin="0,4,0,2" Checked="mode_changed">
                         <TextBlock Text="Rebuild families from downgrade packages" FontSize="15" FontWeight="SemiBold"/>
                     </RadioButton>
                     <TextBlock Margin="22,0,0,10" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"
-                               Text="Read a folder of packages and write .rfa files of this Revit's version into a folder you choose. Run this in the older Revit - or in the same one, to check what a round trip keeps."/>
+                               Text="Read a folder of downgrade packages someone wrote elsewhere and turn them into .rfa files of this Revit's version."/>
                 </StackPanel>
             </ScrollViewer>
         </Border>

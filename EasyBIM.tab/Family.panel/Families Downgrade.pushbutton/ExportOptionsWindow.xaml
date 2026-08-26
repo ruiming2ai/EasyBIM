@@ -38,14 +38,7 @@
                     <TextBlock Text="Off: one package per family; the solids come from the family's current type and every type keeps its parameter values. On: one package per type, each with that type's exact geometry and connector positions - the right choice for MEP fittings whose sizes differ per type."
                                Margin="22,0,0,10" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
 
-                    <TextBlock Text="Geometry format" FontSize="13" Margin="0,4,0,2"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                        <RadioButton x:Name="format_sat_rb" GroupName="format" IsChecked="True" Content="SAT (default)" Margin="0,0,18,0" FontSize="13"/>
-                        <RadioButton x:Name="format_dwg_rb" GroupName="format" Content="DWG with ACIS solids" FontSize="13"/>
-                    </StackPanel>
-                    <TextBlock Text="SAT is Revit's own exchange format for solids. If the older Revit refuses the SAT files, export again with DWG: the same solids travel inside an AutoCAD 2007 file."
-                               Margin="0,0,0,4" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>
-                </StackPanel>
+</StackPanel>
             </ScrollViewer>
         </Border>
 

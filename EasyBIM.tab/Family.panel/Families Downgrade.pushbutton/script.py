@@ -5,6 +5,7 @@ here, rebuild .rfa files from packages in the older release."""
 # pylint: disable=import-error,invalid-name,broad-except
 import os
 import sys
+import time
 
 import clr
 
@@ -48,11 +49,14 @@ from easybim.family_selection_ui import LinkSelectionWindow
 from easybim.family_selection_ui import SOURCE_SELECTION_XAML
 from easybim.family_selection_ui import SourceSelectionWindow
 
+import families_downgrade_bridge as bridge
+import families_downgrade_job as fdj
 import families_downgrade_state as state
 from families_downgrade_export import export_family_packages
 from families_downgrade_rebuild import rebuild_family_packages
 from families_downgrade_revit import host_version
 from families_downgrade_revit import list_templates
+from families_downgrade_ui import DowngradeOptionsWindow
 from families_downgrade_ui import ExportOptionsWindow
 from families_downgrade_ui import ModeWindow
 from families_downgrade_ui import RebuildWindow
@@ -64,7 +68,11 @@ LOGGER = script.get_logger()
 
 MODE_XAML = "ModeWindow.xaml"
 EXPORT_OPTIONS_XAML = "ExportOptionsWindow.xaml"
+DOWNGRADE_OPTIONS_XAML = "DowngradeOptionsWindow.xaml"
 REBUILD_XAML = "RebuildWindow.xaml"
+
+RUNNER_SCRIPT = os.path.join(SCRIPT_DIR, "families_downgrade_runner.py")
+LIB_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..", "lib"))
 
 STEP_MODE = "mode"
 STEP_SOURCE = "source"
@@ -140,8 +148,185 @@ def _confirm_replacements(folder, planned_names, noun):
     return answer == "Replace them"
 
 
-def _run_export(uidoc, doc, uiapp, app, previous_options):
-    """The export half: pick families, pick a folder, write packages.
+def _with_child_progress(title, paths, total, work):
+    """Watch another Revit work. Its progress file drives the bar, so the
+    count is the child's real one rather than a spinner, and Cancel asks it
+    to stop between families instead of killing a Revit mid-save."""
+    with forms.ProgressBar(title=title + ": {value} of {max_value}",
+                           cancellable=True) as progress_bar:
+
+        def _tick(_seconds):
+            done, child_total = bridge.read_progress(paths)
+            maximum = max(child_total or total, 1)
+            progress_bar.update_progress(min(done + 1, maximum), maximum)
+            return not progress_bar.cancelled
+
+        return work(_tick)
+
+
+def _target_notes(cli_path, choices):
+    notes = []
+    if not choices:
+        notes.append("No Revit installation was found on this computer.")
+    if not cli_path:
+        notes.append(
+            "The pyRevit command line tool (pyrevit.exe) was not found, so another Revit "
+            "cannot be opened from here. Only this Revit's own version can be produced; "
+            "for the rest, use 'Write downgrade packages only' and rebuild them there.")
+    return notes
+
+
+def _rebuild_here(app, packages, output_folder):
+    """The target is the Revit we are already in: no second Revit needed."""
+    options = state.RebuildOptions("", output_folder)
+    return _with_progress(
+        "Rebuilding families",
+        lambda tick: rebuild_family_packages(app, packages, options, progress=tick),
+    )
+
+
+def _rebuild_there(app, paths, packages, options, output_folder, cli_path, installs):
+    """Hand the packages to the Revit the user picked. ``(summary, error)``."""
+    version = options.target_version
+    ok, reason = bridge.preflight(version, cli_path, installs)
+    if not ok:
+        return None, reason
+    data = fdj.build_job(
+        paths, output_folder, version,
+        script_dir=SCRIPT_DIR, lib_dir=LIB_DIR,
+        package_folders=[package.folder for package in packages],
+        source_version=host_version(app), created=time.time())
+    try:
+        fdj.write_job(paths["job_path"], data)
+    except Exception as error:
+        return None, "The job for Revit {} could not be written: {}".format(version, error)
+    # The environment variable has to survive the hop from the CLI into the
+    # Revit it starts, which is not ours to guarantee; this is the fallback.
+    bridge.write_fallback_job(data)
+
+    timeout = fdj.estimate_timeout_seconds(len(packages))
+    return _with_child_progress(
+        "Rebuilding in Revit {}".format(version), paths, len(packages),
+        lambda tick: bridge.run_downgrade(cli_path, version, RUNNER_SCRIPT, paths,
+                                          on_tick=tick, timeout_seconds=timeout),
+    )
+
+
+def _finish_downgrade(paths, output_folder, summary, failure, target_version):
+    """Clear up, then report - in that order, so the report can say where the
+    packages ended up."""
+    if failure:
+        summary.add_note(failure)
+
+    keep_run_folder = False
+    if failure or summary.failed:
+        answer = forms.alert(
+            "The downgrade packages are still on disk. Keeping them lets you open Revit {} "
+            "yourself and use 'Rebuild families from downgrade packages' on them.".format(
+                target_version),
+            title=__title__, options=["Keep the packages", "Delete them"])
+        if answer == "Keep the packages":
+            kept, note = bridge.rescue_packages(paths, output_folder)
+            if kept:
+                summary.add_note("The downgrade packages were kept at:\n{}".format(kept))
+            if note:
+                # The move failed, so they are still inside the run folder;
+                # removing it now would take away what was just promised.
+                summary.add_note(note)
+                keep_run_folder = True
+
+    if not keep_run_folder:
+        note = bridge.discard_run_folder(paths)
+        if note:
+            summary.add_note(note)
+
+    state.write_report(output_folder, summary, target_version)
+    _show_summary(summary)
+
+
+def _downgrade_step(doc, app, selected_families, previous, link_note_list):
+    """Package the families out of sight and have the chosen Revit write them.
+
+    Returns ``("back"|None, options)``.
+    """
+    cli_path = bridge.find_pyrevit_cli()
+    installs = bridge.installed_revits(cli_path)
+    host = host_version(app)
+    choices = fdj.target_choices(installs, host)
+    options = previous if isinstance(previous, state.DowngradeOptions) else state.DowngradeOptions()
+    default = fdj.default_target(choices, host)
+    if not options.target_version and default is not None:
+        options.target_version = default.version
+
+    window = DowngradeOptionsWindow(
+        DOWNGRADE_OPTIONS_XAML, len(selected_families), pick_folder, choices,
+        output_folder=options.output_folder, target_version=options.target_version,
+        split_types=options.split_types, notes=_target_notes(cli_path, choices))
+    window.ShowDialog()
+    options = state.DowngradeOptions(window.output_folder, window.target_version,
+                                     window.split_types)
+    if window.result == "back":
+        return "back", options
+    if window.result != "downgrade":
+        return None, options
+
+    if not os.path.isdir(options.output_folder):
+        try:
+            os.makedirs(options.output_folder)
+        except Exception as error:
+            forms.alert("The output folder cannot be created:\n{}".format(error), title=__title__)
+            return "back", options
+
+    try:
+        paths = bridge.create_run_folder()
+    except Exception as error:
+        forms.alert("A working folder for the downgrade could not be made:\n{}".format(error),
+                    title=__title__)
+        return "back", options
+
+    # The packages go to a private folder, never to the user's output folder:
+    # they asked for family files, not for the scaffolding.
+    export_options = state.ExportOptions(paths["package_folder"], options.split_types)
+    export_summary = _with_progress(
+        "Preparing families",
+        lambda tick: export_family_packages(doc, selected_families, export_options,
+                                            progress=tick, app=app),
+    )
+    for note in link_note_list:
+        export_summary.add_note(note)
+
+    packages = state.find_packages(paths["package_folder"])
+    if not packages:
+        bridge.discard_run_folder(paths)
+        export_summary.add_note("No family could be packaged, so nothing was rebuilt.")
+        state.write_report(options.output_folder, export_summary, host)
+        _show_summary(export_summary)
+        return None, options
+
+    planned = state.planned_rfa_filenames(packages)
+    if not _confirm_replacements(options.output_folder, planned, "file(s)"):
+        bridge.discard_run_folder(paths)
+        return "back", options
+
+    if fdj.version_number(options.target_version) == fdj.version_number(host):
+        rebuild_summary, failure = _rebuild_here(app, packages, options.output_folder), ""
+    else:
+        rebuild_summary, failure = _rebuild_there(
+            app, paths, packages, options, options.output_folder, cli_path, installs)
+
+    summary = state.combine_downgrade_summaries(
+        export_summary, rebuild_summary,
+        expected_names=[package.family_name for package in packages]
+        if rebuild_summary is not None else None)
+    _finish_downgrade(paths, options.output_folder, summary, failure, options.target_version)
+    return None, options
+
+
+def _run_export(uidoc, doc, uiapp, app, previous_options, mode="export"):
+    """Pick families, then either package them or downgrade them outright.
+
+    The selection pages are the same either way; only the last step differs,
+    so the cascade below is shared rather than copied.
 
     Returns ``"back"`` to reopen the mode page, ``None`` when finished.
     """
@@ -151,7 +336,8 @@ def _run_export(uidoc, doc, uiapp, app, previous_options):
     open_family_documents = []
     families = []
     step = STEP_SOURCE
-    options = previous_options or state.ExportOptions()
+    options = previous_options or (state.DowngradeOptions() if mode == "downgrade"
+                                   else state.ExportOptions())
 
     project_families_cache = [None]
     link_documents = [None]
@@ -329,13 +515,18 @@ def _run_export(uidoc, doc, uiapp, app, previous_options):
 
         if step == STEP_OPTIONS:
             selected_families = [family for family in families if family.is_selected]
+            if mode == "downgrade":
+                outcome, options = _downgrade_step(
+                    doc, app, selected_families, options, link_notes(_probed_links()))
+                if outcome == "back":
+                    step = STEP_SOURCE
+                    continue
+                return None
             options_window = ExportOptionsWindow(
                 EXPORT_OPTIONS_XAML, len(selected_families), pick_folder,
-                folder=options.folder, split_types=options.split_types,
-                geometry_format=options.geometry_format)
+                folder=options.folder, split_types=options.split_types)
             options_window.ShowDialog()
-            options = state.ExportOptions(options_window.folder, options_window.split_types,
-                                          options_window.geometry_format)
+            options = state.ExportOptions(options_window.folder, options_window.split_types)
             if options_window.result == "back":
                 step = STEP_SOURCE
                 continue
@@ -433,10 +624,16 @@ def _run():
         export_hint = "Open a project document to export packages."
 
     export_options = None
+    downgrade_options = None
     rebuild_state = ("", "", [])
     while True:
         mode_window = ModeWindow(MODE_XAML, host_version(app), export_available, export_hint)
         mode_window.ShowDialog()
+        if mode_window.result == "downgrade":
+            outcome = _run_export(uidoc, doc, uiapp, app, downgrade_options, "downgrade")
+            if outcome == "back":
+                continue
+            return
         if mode_window.result == "export":
             outcome = _run_export(uidoc, doc, uiapp, app, export_options)
             if outcome == "back":

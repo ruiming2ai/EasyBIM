@@ -33,6 +33,7 @@ HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",
 
 WINDOW_CLASSES = {
     "ModeWindow.xaml": "ModeWindow",
+    "DowngradeOptionsWindow.xaml": "DowngradeOptionsWindow",
     "ExportOptionsWindow.xaml": "ExportOptionsWindow",
     "RebuildWindow.xaml": "RebuildWindow",
 }
@@ -44,6 +45,9 @@ EXPECTED_MODULES = (
     "families_downgrade_export.py",
     "families_downgrade_rebuild.py",
     "families_downgrade_ui.py",
+    "families_downgrade_job.py",
+    "families_downgrade_bridge.py",
+    "families_downgrade_runner.py",
 )
 
 CONTROL_ATTRIBUTE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -226,6 +230,48 @@ class FamiliesDowngradeXamlTests(unittest.TestCase):
         self.assertIn("cannot be saved for an older release", text)
         self.assertIn("static", text)
 
+    def test_the_mode_page_offers_the_one_shot_downgrade_first(self):
+        text = (COMMAND_DIR / "ModeWindow.xaml").read_text(encoding="utf-8")
+        self.assertLess(text.index("downgrade_rb"), text.index("export_rb"))
+        self.assertIn('x:Name="downgrade_rb" GroupName="mode" IsChecked="True"', text)
+
+    def test_the_downgrade_page_asks_for_a_version_and_a_folder_and_nothing_else(self):
+        text = (COMMAND_DIR / "DowngradeOptionsWindow.xaml").read_text(encoding="utf-8")
+        self.assertIn("Target Revit version", text)
+        self.assertIn("Output folder for the .rfa files", text)
+
+    def test_no_page_offers_a_geometry_file_format(self):
+        # SAT and DWG are how solids travel between the two Revits, not what
+        # the user gets; offering the choice made the tool read as a CAD
+        # exporter. The DWG fallback is automatic and per group instead.
+        for name in ("DowngradeOptionsWindow.xaml", "ExportOptionsWindow.xaml",
+                     "RebuildWindow.xaml"):
+            text = (COMMAND_DIR / name).read_text(encoding="utf-8")
+            for banned in ("Geometry format", "format_sat_rb", "format_dwg_rb", "SAT ("):
+                self.assertNotIn(banned, text, "%s still offers %s" % (name, banned))
+
+    def test_only_the_bridge_starts_a_process_and_nothing_uses_subprocess(self):
+        # The repo's standing rule, kept as this folder grows the first
+        # first-party process launch: one module owns it, and not via
+        # Python's subprocess, which IronPython does not do reliably.
+        for name in EXPECTED_MODULES:
+            source = _code_without_prose(COMMAND_DIR / name)
+            self.assertNotIn("subprocess", source, "%s must not use subprocess" % name)
+            if name != "families_downgrade_bridge.py":
+                self.assertNotIn("System.Diagnostics", source,
+                                 "%s must leave process launching to the bridge" % name)
+
+    def test_the_runner_neither_writes_the_report_nor_deletes_anything(self):
+        # It runs in a Revit nobody is watching; tidying up is the parent's job.
+        source = (COMMAND_DIR / "families_downgrade_runner.py").read_text(encoding="utf-8")
+        for banned in ("write_report", "rmtree", "os.remove"):
+            self.assertNotIn(banned, source)
+
+    def test_the_packages_never_land_in_the_users_output_folder(self):
+        source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
+        self.assertIn('state.ExportOptions(paths["package_folder"]', source)
+        self.assertIn("discard_run_folder", source)
+
 
 class FamiliesDowngradeContractTests(unittest.TestCase):
     def test_export_writes_sat_through_a_3d_view_and_can_fall_back_to_dwg(self):
@@ -327,9 +373,10 @@ class FamiliesDowngradeContractTests(unittest.TestCase):
         self.assertIn("planned_package_folder_names", script)
         self.assertIn("planned_rfa_filenames", script)
 
-    def test_a_report_is_written_next_to_the_outputs_in_both_modes(self):
+    def test_a_report_is_written_next_to_the_outputs_in_every_mode(self):
         script = _code_without_prose(SCRIPT_MODULE)
-        self.assertEqual(2, script.count("state.write_report("))
+        # Export, rebuild, and the two endings of a downgrade run.
+        self.assertEqual(4, script.count("state.write_report("))
 
     def test_a_partial_package_never_takes_the_users_files_with_it(self):
         source = _code_without_prose(EXPORT_MODULE)

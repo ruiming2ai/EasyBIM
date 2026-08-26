@@ -37,6 +37,8 @@ GEOMETRY_FORMATS = (GEOMETRY_SAT, GEOMETRY_DWG)
 
 MODE_EXPORT = "export"
 MODE_REBUILD = "rebuild"
+# One run that packages families here and rebuilds them in another Revit.
+MODE_DOWNGRADE = "downgrade"
 
 FEET_TO_MM = 304.8
 
@@ -948,11 +950,25 @@ def owned_package_files(folder):
 
 
 class ExportOptions(object):
+    """Geometry travels as SAT and the user is not asked about it: it is how
+    solids move between the two Revits, not the file they end up with. DWG
+    stays reachable in code as the automatic fallback for a group whose SAT
+    comes out empty (see ``export_group_file``)."""
+
     def __init__(self, folder="", split_types=False, geometry_format=GEOMETRY_SAT):
         self.folder = _safe_text(folder)
         self.split_types = bool(split_types)
         self.geometry_format = (
             geometry_format if geometry_format in GEOMETRY_FORMATS else GEOMETRY_SAT)
+
+
+class DowngradeOptions(object):
+    """What the one-page downgrade asks for: which Revit, and where."""
+
+    def __init__(self, output_folder="", target_version="", split_types=False):
+        self.output_folder = _safe_text(output_folder)
+        self.target_version = _safe_text(target_version)
+        self.split_types = bool(split_types)
 
 
 class RebuildOptions(object):
@@ -1006,7 +1022,41 @@ class DowngradeSummary(object):
 
 
 def _mode_label(mode):
-    return "Rebuild" if mode == MODE_REBUILD else "Export"
+    if mode == MODE_REBUILD:
+        return "Rebuild"
+    if mode == MODE_DOWNGRADE:
+        return "Downgrade"
+    return "Export"
+
+
+def combine_downgrade_summaries(export_summary, rebuild_summary, expected_names=None):
+    """One story from the two halves of a downgrade.
+
+    The user asked for family files, not for a packaging step and a rebuilding
+    step, so the run reports as one. A family this Revit packaged that the
+    other Revit never mentioned is the case worth naming: without this it
+    would simply be absent from every list, which reads as success.
+    """
+    export_summary = export_summary or DowngradeSummary(MODE_EXPORT)
+    rebuild_summary = rebuild_summary or DowngradeSummary(MODE_REBUILD)
+    summary = DowngradeSummary(MODE_DOWNGRADE)
+    summary.cancelled = bool(export_summary.cancelled) or bool(rebuild_summary.cancelled)
+    summary.written = list(rebuild_summary.written or [])
+    summary.skipped = list(export_summary.skipped or []) + list(rebuild_summary.skipped or [])
+    summary.failed = list(export_summary.failed or []) + list(rebuild_summary.failed or [])
+
+    reported = set()
+    for group in (summary.written, summary.skipped, summary.failed):
+        for result in group:
+            reported.add(_safe_text(getattr(result, "family_name", "")).lower())
+    for name in list(expected_names or []):
+        if _safe_text(name).lower() not in reported:
+            summary.failed.append(DowngradeResult(
+                name, "", "the target Revit did not report this family"))
+
+    for note in list(export_summary.notes or []) + list(rebuild_summary.notes or []):
+        summary.add_note(note)
+    return summary
 
 
 def _append_result_lines(lines, title, results, with_notes=False, limit=SUMMARY_DISPLAY_LIMIT):

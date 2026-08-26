@@ -484,6 +484,50 @@ class ReportTests(unittest.TestCase):
         self.assertIn("    . formula on 'Depth' refused", report)
         self.assertIn("Pump: SaveAs failed: locked", report)
 
+    def test_a_downgrade_reports_its_two_halves_as_one_run(self):
+        export = state.DowngradeSummary(state.MODE_EXPORT)
+        export.skipped.append(state.DowngradeResult("Tag", "", "2D families are not carried"))
+        export.add_note("A link refused two families.")
+        rebuild = state.DowngradeSummary(state.MODE_REBUILD)
+        rebuild.written.append(state.DowngradeResult("Fan Coil", "out\\Fan Coil.rfa", "rebuilt"))
+        rebuild.failed.append(state.DowngradeResult("Pump", "", "no family template"))
+        rebuild.add_note("A link refused two families.")
+
+        summary = state.combine_downgrade_summaries(export, rebuild)
+
+        self.assertEqual(state.MODE_DOWNGRADE, summary.mode)
+        self.assertEqual(["Fan Coil"], [r.family_name for r in summary.written])
+        self.assertEqual(["Tag"], [r.family_name for r in summary.skipped])
+        self.assertEqual(["Pump"], [r.family_name for r in summary.failed])
+        # The same note from both halves is said once.
+        self.assertEqual(["A link refused two families."], summary.notes)
+        self.assertIn("Families Downgrade downgrade completed.",
+                      state.build_summary_text(summary))
+
+    def test_a_family_the_other_revit_never_mentioned_becomes_a_failure(self):
+        # Otherwise it is simply absent from every list, which reads as success.
+        rebuild = state.DowngradeSummary(state.MODE_REBUILD)
+        rebuild.written.append(state.DowngradeResult("Fan Coil", "out\\Fan Coil.rfa", "rebuilt"))
+        summary = state.combine_downgrade_summaries(
+            None, rebuild, expected_names=["Fan Coil", "Pump"])
+        self.assertEqual(["Pump"], [r.family_name for r in summary.failed])
+        self.assertIn("did not report this family", summary.failed[0].status)
+
+    def test_a_cancel_in_either_half_cancels_the_run(self):
+        export = state.DowngradeSummary(state.MODE_EXPORT)
+        export.cancelled = True
+        self.assertTrue(state.combine_downgrade_summaries(export, None).cancelled)
+        rebuild = state.DowngradeSummary(state.MODE_REBUILD)
+        rebuild.cancelled = True
+        self.assertTrue(state.combine_downgrade_summaries(None, rebuild).cancelled)
+
+    def test_no_rebuild_half_at_all_still_reports_what_was_packaged(self):
+        export = state.DowngradeSummary(state.MODE_EXPORT)
+        export.failed.append(state.DowngradeResult("Pump", "", "export failed"))
+        summary = state.combine_downgrade_summaries(export, None)
+        self.assertEqual([], summary.written)
+        self.assertEqual(["Pump"], [r.family_name for r in summary.failed])
+
     def test_cancelled_runs_say_so(self):
         summary = state.DowngradeSummary(state.MODE_EXPORT)
         summary.cancelled = True

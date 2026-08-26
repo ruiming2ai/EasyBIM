@@ -376,15 +376,29 @@ version" anywhere in Revit or its API - so this tool does not convert the
 file. It **rebuilds** the family from its geometry and data, and it says so
 on its first page.
 
-One button, two modes, and you run the same button on both sides:
+One button, one job: pick families, pick the Revit version you need, pick a
+folder, get `.rfa` files of that version.
 
-1. **Export downgrade packages** - in the newer Revit. Pick families exactly
-   as in Families Transfer (this project, opened `.rfa` files, Revit links),
-   choose a folder, and one sub-folder per family is written, named
-   `<Family>.downgrade`, holding `manifest.json` and the family's solids as
-   SAT files. Existing packages of the same name are replaced after one
-   warning.
-2. **Rebuild families from downgrade packages** - in the older Revit (or in
+1. **Downgrade families to another Revit version** - the normal way in, and
+   the default. Pick families exactly as in Families Transfer (this project,
+   opened `.rfa` files, Revit links), choose the target release from the list
+   of Revits installed on this machine, choose an output folder. That Revit is
+   opened in the background through the pyRevit command line tool, rebuilds
+   the families, and closes again; the packaging that makes it possible
+   happens in a temporary folder you never see, and is deleted afterwards.
+   Pick the target release **as high as the receiving project allows** - every
+   step further down remaps more. Releases older than 2021 are listed but
+   cannot be chosen, and the page says why. Choosing the version you are
+   already running rebuilds in place and starts no second Revit.
+
+The other two modes are the same work split in half, for when the older Revit
+is on a different computer:
+
+2. **Write downgrade packages only** - in the newer Revit. One sub-folder per
+   family is written, named `<Family>.downgrade`, holding `manifest.json` and
+   the family's solids as SAT files. Existing packages of the same name are
+   replaced after one warning. Copy the folder to the other machine.
+3. **Rebuild families from downgrade packages** - in the older Revit (or in
    the same one, to see what a round trip keeps). Point it at the folder,
    tick the packages, choose an output folder, and every package becomes a
    native `.rfa` of *that* Revit. No project needs to be open for this half.
@@ -395,7 +409,7 @@ One button, two modes, and you run the same button on both sides:
    template, a template that will not open, or the save itself leaves a
    family unwritten, and the report says which.
 
-Both modes end with a summary and write `families_downgrade_report.txt` next
+Every mode ends with a summary and writes `families_downgrade_report.txt` next
 to the outputs, listing per family everything that was not carried.
 
 ### What survives, and what does not
@@ -425,9 +439,12 @@ the family's current type and every type keeps its parameter values. On, one
 package per type, each with that type's exact geometry and connector
 positions - the right choice for MEP fittings whose sizes differ per type.
 
-**Geometry format.** SAT is Revit's own exchange format for solids and the
-default. If the older Revit refuses the SAT files, export again with **DWG
-with ACIS solids**: the same solids travel inside an AutoCAD 2007 file.
+**Nothing about file formats.** The solids travel between the two Revits as
+SAT, and if a group of solids comes out of SAT empty the same solids are sent
+again inside an AutoCAD 2007 file automatically, per group, with a line in the
+report. That used to be a choice on the page; it never was one the user could
+answer in advance, and on a page whose button said *Export* it read as though
+SAT or DWG were what you were going to get.
 
 ### How the rebuild bridges the versions
 

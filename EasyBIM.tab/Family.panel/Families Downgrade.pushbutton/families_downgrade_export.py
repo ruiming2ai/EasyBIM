@@ -928,7 +928,22 @@ def _write_package(family_doc, family_option, folder, options, exported, only_ty
         group["solid_count"] = len(group.get("element_ids") or [])
         file_name, note = export_group_file(family_doc, folder, group, options.geometry_format,
                                             view_type_id)
+        used_format = options.geometry_format
+        if not file_name and options.geometry_format == state.GEOMETRY_SAT:
+            # SAT is how solids normally travel, and the user is not asked to
+            # choose. When a group carries nothing in SAT, the same solids
+            # inside an AutoCAD 2007 file are the second chance - taken here
+            # rather than offered as an option nobody can answer in advance.
+            file_name, dwg_note = export_group_file(family_doc, folder, group,
+                                                    state.GEOMETRY_DWG, view_type_id)
+            if file_name:
+                used_format = state.GEOMETRY_DWG
+                state.add_note(manifest, "geometry group {}: SAT carried nothing ({}), so it "
+                                         "travels as DWG".format(group["index"], note))
+            else:
+                note = "{}; DWG carried nothing either ({})".format(note, dwg_note)
         group["file"] = file_name
+        group["format"] = used_format if file_name else ""
         if not file_name:
             state.add_note(manifest, "geometry group {}: {}".format(group["index"], note))
     manifest["geometry"]["groups"] = [
