@@ -789,22 +789,46 @@ class PackageInfo(object):
         return self.family_name
 
 
-def _package_folders(root):
-    root = _safe_text(root)
-    if not root or not os.path.isdir(root):
-        return []
-    found = []
+def _child_folders(root):
+    """``root``'s sub-folders, name-sorted; empty when it cannot be listed."""
     try:
         entries = sorted(os.listdir(root), key=lambda name: name.lower())
     except Exception:
         return []
+    found = []
     for name in entries:
         path = os.path.join(root, name)
-        if os.path.isdir(path) and os.path.isfile(os.path.join(path, MANIFEST_NAME)):
+        if os.path.isdir(path):
             found.append(path)
+    return found
+
+
+def _is_package_folder(folder):
+    return os.path.isfile(os.path.join(folder, MANIFEST_NAME))
+
+
+def _package_folders(root):
+    """Every package folder at or below ``root``, two levels deep.
+
+    One level is the folder an export wrote into. The second is there because
+    a picker is pointed at the parent of that folder just as often, and an
+    empty list with no reason is the worst answer the rebuild page can give.
+    """
+    root = _safe_text(root)
+    if not root or not os.path.isdir(root):
+        return []
     # A package folder chosen directly still counts.
-    if not found and os.path.isfile(os.path.join(root, MANIFEST_NAME)):
-        found.append(root)
+    if _is_package_folder(root):
+        return [root]
+    found = []
+    for child in _child_folders(root):
+        if _is_package_folder(child):
+            found.append(child)
+            continue
+        for grandchild in _child_folders(child):
+            if _is_package_folder(grandchild):
+                found.append(grandchild)
+    found.sort(key=lambda path: (os.path.basename(path).lower(), path.lower()))
     return found
 
 

@@ -192,6 +192,10 @@ class RebuildWindow(forms.WPFWindow):
         self.package_folder = _safe_text(package_folder)
         self.output_folder = _safe_text(output_folder)
         self.packages = list(packages or [])
+        if self.package_folder and not self.packages:
+            # Coming back to this page, or reopening it, must not lose the
+            # folder's contents: the list is only ever filled by a Browse.
+            self.packages = find_packages(self.package_folder)
         self._controls = []
         host_version = _safe_text(host_version)
         self.host_tb.Text = (
@@ -243,6 +247,13 @@ class RebuildWindow(forms.WPFWindow):
         if not _text_of(self.output_folder_box):
             self.output_folder_box.Text = self.package_folder
         self._populate()
+        if not self.packages:
+            forms.alert(
+                "No downgrade packages were found in:\n{}\n\nA package is a folder holding "
+                "manifest.json - the folders an export wrote, named *.downgrade. Choose the "
+                "folder the export was written into, or the folder above it.".format(
+                    self.package_folder),
+                title=TITLE)
 
     def browse_output_click(self, sender, args):
         del sender, args

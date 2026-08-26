@@ -8,9 +8,10 @@ flags, subcategories and materials, parameters through the version ladder,
 types and values, formulas, then the geometry files imported and turned into
 native FreeForm solids with their attributes, MEP connectors placed on the
 matching faces, symbolic and model lines, named reference planes, and a
-``SaveAs`` into the chosen folder. Each stage is its own transaction and its
-own try/except: a failed stage is a note on the family, only a template or
-document failure fails the family.
+``SaveAs`` into the chosen folder. Every stage is wrapped on its own: a stage
+that fails is a note on the family and the stages after it still run, so the
+family is still written. Only a missing template, a document that will not
+open, or the save itself fails a family.
 """
 
 # pylint: disable=import-error,invalid-name,broad-except
@@ -817,8 +818,19 @@ def import_group(ctx, folder, group):
                 matched = True
                 break
         if not matched:
+            # No candidate fitted. The first import was deleted on the way in,
+            # so read the file again in its own units: a wrong header beats the
+            # last candidate's scale, which fitted nothing.
+            _delete_elements(ctx.doc, [element_id])
+            element_id, error = _import_file(ctx.doc, path, view, geometry_format, "Default")
+            if element_id is None:
+                ctx.note("geometry group {}: import failed: {}".format(
+                    group.get("index"), error))
+                return []
+            instance = ctx.doc.GetElement(element_id)
+            imported_bbox = fdr.element_bbox_list(instance)
             ctx.note("geometry group {}: imported size does not match the exported one "
-                     "(ratio {:.4f}); kept as imported".format(
+                     "(ratio {:.4f}); kept in the file's own units".format(
                          group.get("index"), state.size_ratio(recorded_bbox, imported_bbox) or 0.0))
     if recorded_bbox and imported_bbox:
         offset = state.bbox_offset(recorded_bbox, imported_bbox)
@@ -942,8 +954,13 @@ def apply_group_attributes(ctx, group, elements):
 def apply_geometry(ctx, folder):
     groups = (ctx.manifest.get("geometry") or {}).get("groups") or []
     for group in groups:
-        elements = import_group(ctx, folder, group)
-        apply_group_attributes(ctx, group, elements)
+        try:
+            elements = import_group(ctx, folder, group)
+            apply_group_attributes(ctx, group, elements)
+        except Exception as error:
+            ctx.note("geometry group {}: rebuild failed: {}".format(
+                group.get("index"), exception_text(error)))
+            continue
         ctx.solid_elements.extend(elements)
     fdr.regenerate(ctx.doc)
 
@@ -956,8 +973,10 @@ def apply_geometry(ctx, folder):
 def _planar_faces(ctx):
     """``[(face, element)]`` for every planar face on the rebuilt solids."""
     faces = []
-    options = DB.Options()
-    options.ComputeReferences = True
+    options = _catch(lambda: DB.Options())
+    if options is None:
+        return faces
+    _catch(lambda: setattr(options, "ComputeReferences", True))
     for element in ctx.solid_elements:
         geometry = _catch(lambda: element.get_Geometry(options))
         if geometry is None:
@@ -1341,8 +1360,35 @@ def _save_family(doc, path):
     doc.SaveAs(path, options)
 
 
+def _rebuild_stages(package_folder):
+    """The stages one family goes through, in order, as ``(name, work)``.
+
+    Built per family rather than held at import time, so the names always
+    resolve to the functions above as they stand now.
+    """
+    return (
+        ("family settings", apply_family_record),
+        ("subcategories", apply_subcategories),
+        ("materials", apply_materials),
+        ("parameters", apply_parameters),
+        ("types", apply_types),
+        ("formulas", apply_formulas),
+        ("geometry", lambda ctx: apply_geometry(ctx, package_folder)),
+        ("connectors", apply_connectors),
+        ("lines", apply_curves),
+        ("reference planes", apply_reference_planes),
+    )
+
+
 def rebuild_one(app, package, output_path, caps, scratch, templates, options, result):
-    """Rebuild one package into ``output_path``; ``(ok, error)``."""
+    """Rebuild one package into ``output_path``; ``(ok, error)``.
+
+    Every stage runs inside its own try/except: a stage that fails leaves a
+    note on the family and the stages after it still run, so a family that
+    lost one thing is still written. Only a missing template, a document that
+    will not open, or the ``SaveAs`` itself fails a family - anything else
+    that stopped the save would leave the user with no file and no idea why.
+    """
     manifest = package.manifest
     family_record = manifest.get("family") or {}
     template_path, note = fdr.choose_template(templates, family_record, options.template_path)
@@ -1356,22 +1402,22 @@ def rebuild_one(app, package, output_path, caps, scratch, templates, options, re
         return False, "the template could not be opened: {}".format(exception_text(error))
     if doc is None:
         return False, "the template produced no document"
-    ctx = RebuildContext(doc, manifest, caps, scratch, result)
-    for note in manifest.get("notes") or []:
-        result.add_note(note)
     try:
-        apply_family_record(ctx)
-        apply_subcategories(ctx)
-        apply_materials(ctx)
-        apply_parameters(ctx)
-        apply_types(ctx)
-        apply_formulas(ctx)
-        apply_geometry(ctx, package.folder)
-        apply_connectors(ctx)
-        apply_curves(ctx)
-        apply_reference_planes(ctx)
+        ctx = RebuildContext(doc, manifest, caps, scratch, result)
+        for note in manifest.get("notes") or []:
+            result.add_note(note)
+        for stage_name, stage in _rebuild_stages(package.folder):
+            try:
+                stage(ctx)
+            except Exception as error:
+                result.add_note("the {} stage failed: {}".format(
+                    stage_name, exception_text(error)))
         fdr.regenerate(doc)
-        _save_family(doc, output_path)
+        try:
+            _save_family(doc, output_path)
+        except Exception as error:
+            return False, "the family could not be saved to {}: {}".format(
+                output_path, exception_text(error))
     except Exception as error:
         return False, exception_text(error)
     finally:
@@ -1384,6 +1430,11 @@ def rebuild_family_packages(app, packages, options, progress=None):
     summary = state.DowngradeSummary(state.MODE_REBUILD)
     packages = [package for package in list(packages or []) if package.is_usable]
     total = len(packages)
+    if not total:
+        summary.add_note("No usable downgrade packages were selected, so no family file was "
+                         "written. Point the rebuild page at the folder holding the "
+                         "*.downgrade packages and tick at least one of them.")
+        return summary
     caps = HostCapabilities(app)
     templates = fdr.list_templates(_catch(lambda: app.FamilyTemplatePath))
     if options.template_path:
