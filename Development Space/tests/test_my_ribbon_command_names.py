@@ -405,6 +405,28 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("CloneCancelled", script)
         self.assertIn("CloneAuthError", script)
 
+    def test_the_source_window_offers_only_what_is_on_this_computer(self):
+        """pyRevit's own Extensions window installs; ours only lists and picks."""
+        xaml = (COMMAND_DIR / "SourceSelectionWindow.xaml").read_text(encoding="utf-8")
+        self.assertIn("Extension &amp; Tab List", xaml)
+        for gone in ("From a GitHub link", "catalogue", "LinkBox", "BranchBox",
+                     "CatalogueList", "CatalogueSearchBox"):
+            self.assertNotIn(gone, xaml, gone)
+        flow = _function_source(SCRIPT_MODULE, "_add_source_flow")
+        for gone in ('kind == "git"', 'kind == "catalogue"', "catalogue_packages"):
+            self.assertNotIn(gone, flow, gone)
+        for kept in ('kind == "installed"', 'kind == "ribbon"', 'kind == "dynamo"'):
+            self.assertIn(kept, flow, kept)
+
+    def test_import_still_installs_what_this_computer_lacks(self):
+        """The two cards went; the code behind them is Import's, and stays."""
+        imported = _function_source(SCRIPT_MODULE, "_import")
+        self.assertIn("_download_git", imported)
+        self.assertIn("_install_from_catalogue", imported)
+        self.assertIn("catalogue_packages", imported)
+        # a source downloaded again survives a Remove staged earlier in the session
+        self.assertEqual(imported.count("_forget_pending_delete"), 2)
+
     def test_downloads_are_cancellable_and_probed_first(self):
         clone = _function_source(SCRIPT_MODULE, "_clone_with_progress")
         self.assertIn("cancellable=True", clone)

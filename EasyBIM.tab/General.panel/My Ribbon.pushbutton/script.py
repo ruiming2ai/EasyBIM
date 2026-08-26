@@ -382,7 +382,7 @@ def _pick_and_place(working, source, described):
 
 
 def _forget_pending_delete(pending_deletes, source):
-    """A source added back in the same session must not be deleted by the
+    """A source downloaded again in the same session must not be deleted by the
     Remove that came before it."""
     key = state.normalize_label(source.get("ext_name"))
     keep = [s for s in pending_deletes
@@ -393,10 +393,13 @@ def _forget_pending_delete(pending_deletes, source):
 
 
 def _add_source_flow(working, pending_deletes):
-    """Where from? -> download/parse -> Which buttons? -> Where to?"""
-    link_text, branch_text = "", ""
+    """Where from? -> parse -> Which buttons? -> Where to?
+
+    ``pending_deletes`` is untouched here now that nothing is installed from
+    this window; it stays in the signature because Import still downloads.
+    """
+    del pending_deletes
     installed = None
-    catalogue = None
     while True:
         if installed is None:
             with forms.ProgressBar(title="Reading installed extensions...", indeterminate=True):
@@ -405,17 +408,10 @@ def _add_source_flow(working, pending_deletes):
                 except Exception as ex:
                     LOGGER.debug("installed_extensions failed: %s", ex)
                     installed = []
-            try:
-                catalogue = host.catalogue_packages(
-                    installed_names=[e.get("name") for e in installed])
-            except Exception as ex:
-                LOGGER.debug("catalogue failed: %s", ex)
-                catalogue = []
         summary = my_ribbon.list_ribbon()
         linked = [s.get("ext_name") for s in working.get("sources", [])] + \
                  [s.get("label") for s in working.get("sources", [])]
-        page = SourceSelectionWindow("SourceSelectionWindow.xaml", installed, catalogue,
-                                     link_text=link_text, branch_text=branch_text,
+        page = SourceSelectionWindow("SourceSelectionWindow.xaml", installed,
                                      ribbon_tabs=_other_ribbon_tabs(summary, installed),
                                      linked_names=linked)
         page.ShowDialog()
@@ -436,23 +432,6 @@ def _add_source_flow(working, pending_deletes):
             return None
         if kind == "dynamo":
             return _add_dynamo_flow(working, page.result[1])
-        if kind == "git":
-            link_text, branch_text = page.result[1], page.result[2]
-            sources, described_by_index = _download_git(link_text, branch_text)
-            if not sources:
-                continue
-            first = None
-            for index, source in enumerate(sources):
-                entry = state.add_source(working, source)
-                _forget_pending_delete(pending_deletes, entry)
-                if first is None:
-                    first = (entry, described_by_index.get(index))
-            entry, described = first
-            notice = "Downloaded {0}. Its buttons appear on the ribbon after a pyRevit reload; you " \
-                     "can already choose where they go.".format(entry.get("label"))
-            if described and described.get("buttons"):
-                _pick_and_place(working, entry, described)
-            return notice
         if kind == "installed":
             ext = page.result[1]
             entry = state.add_source(working, {
@@ -461,18 +440,6 @@ def _add_source_flow(working, pending_deletes):
                 "hide_tab": False})
             _pick_and_place(working, entry, ext)
             return None
-        if kind == "catalogue":
-            source, described = _install_from_catalogue(page.result[1])
-            if source is None:
-                continue
-            entry = state.add_source(working, source)
-            _forget_pending_delete(pending_deletes, entry)
-            notice = None
-            if source.get("installed_by_my_ribbon"):
-                notice = "Installed {0}. Its buttons appear on the ribbon after a pyRevit " \
-                         "reload; you can already choose where they go.".format(entry.get("label"))
-            _pick_and_place(working, entry, described)
-            return notice
 
 
 def _add_dynamo_flow(working, paths):
@@ -579,7 +546,7 @@ def _export(working):
     return "Exported to {0}".format(path)
 
 
-def _import(working):
+def _import(working, pending_deletes):
     path = forms.pick_file(file_ext="json", title="Import My Ribbon settings")
     if not path:
         return None
@@ -620,6 +587,7 @@ def _import(working):
                 # a stale extra_root from the file must not survive
                 for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
                     source[field] = fresh[0].get(field)
+                _forget_pending_delete(pending_deletes, source)
                 downloaded += 1
         elif source.get("kind") == "catalogue":
             try:
@@ -633,6 +601,7 @@ def _import(working):
                 if fresh:
                     for field in ("ext_name", "tab_names", "installed_by_my_ribbon"):
                         source[field] = fresh[field]
+                    _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
     working.clear()
     working.update(result)
@@ -737,7 +706,7 @@ def _run():
             notice = _export(working)
             continue
         if result == "import":
-            notice = _import(working)
+            notice = _import(working, pending_deletes)
             continue
         if result == "apply":
             new_saved, notice, report, reloading = _apply(working, pending_deletes)

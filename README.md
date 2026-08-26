@@ -623,25 +623,27 @@ list are.
 ## My Ribbon (General)
 
 My Ribbon puts buttons from **other pyRevit extensions, Revit's own tabs, other
-add-ins and Dynamo graphs** on panels of your own. Paste a GitHub link, or pick
-an extension or tab already on the computer, or browse pyRevit's catalogue of
-community extensions, or choose `.dyn` files; tick the buttons you want; say
-where they go — any panel on the EasyBIM tab, a new panel there, a tab of your
-own, or a panel on another tab. Press **Apply** and they are there. No reload is
-needed to re-arrange; only a newly downloaded extension or a new Dynamo graph
-needs one, and My Ribbon offers it.
+add-ins and Dynamo graphs** on panels of your own. Pick an extension or a tab
+from the **Extension & Tab List** — everything already on this computer — or
+choose `.dyn` files; tick the buttons you want; say where they go — any panel on
+the EasyBIM tab, a new panel there, a tab of your own, or a panel on another
+tab. Press **Apply** and they are there. No reload is needed to re-arrange; only
+a new Dynamo graph needs one, and My Ribbon offers it.
+
+Installing an extension is pyRevit's job, not this window's: add it in
+**pyRevit ▸ Extensions**, which has both the catalogue of community extensions
+and its own "add from a git link", and it appears in the Extension & Tab List
+here. That keeps one installer on the machine instead of two that can disagree.
 
 Two things make it safe to lean on:
 
-- **A downloaded repository is installed as a normal pyRevit extension** (under
+- **A source is an ordinary installed pyRevit extension** (under
   `%APPDATA%\pyRevit\Extensions`, the folder pyRevit always scans). That is why
   **pyRevit ▸ Update** keeps it up to date, and Reload rebuilds it. My Ribbon
   runs no updater of its own — and neither does EasyBIM Auto Update, which
   updates only EasyBIM itself, so pyRevit ▸ Update is what refreshes the
   extensions you bring in here. Its original tab can stay hidden ("Hide its own
-  tab", on by default for repositories you bring in this way, off for
-  extensions that were already installed); its startup script and hooks keep
-  working.
+  tab"); its startup script and hooks keep working.
 - **A placed button is the extension's own live button**, added to your panel —
   the same trick that puts EasyBIM's Slope and Flip Multiple on Revit's Modify
   tab. It runs the same command, greys out in the same situations, and shows the
@@ -654,9 +656,11 @@ a tree of tab › panel. Every session, on the first idle moment after pyRevit h
 finished loading, My Ribbon rebuilds your panels and tabs from its settings; the
 pyRevit tab is never hidden and is never a destination, so there is always a way
 back. **Export…** writes the whole setup to a JSON file; **Import…** previews a
-Merge or a Replace, downloads what the other computer had that this one lacks,
-and stages the result for Apply. No credential is ever written to that file: a
-private repository asks for a token that lives only for that download.
+Merge or a Replace, **downloads and installs whatever the other computer had
+that this one lacks**, and stages the result for Apply. That is the one place My
+Ribbon still installs an extension itself, because an imported setup is
+worthless without the tools it names. No credential is ever written to that
+file: a private repository asks for a token that lives only for that download.
 
 Things it tells you rather than guesses: a repository with no pyRevit tools is
 deleted again with a message; a button whose extension is disabled, removed, or
@@ -678,7 +682,8 @@ leaves every file alone. **Uninstall** also deletes what My Ribbon installed for
 it - a downloaded repository, a Dynamo button - and is greyed for everything
 that was already on the computer. Both happen on Apply.
 
-The Installed card also lists **Revit's own tabs and other add-ins' tabs**.
+The **Extension & Tab List** also lists **Revit's own tabs and other add-ins'
+tabs**.
 Their buttons can be placed exactly like pyRevit's (it is the same live button
 object); galleries and drop-down lists that only work on their own panel are
 greyed with the reason. They can only ever be Removed.
