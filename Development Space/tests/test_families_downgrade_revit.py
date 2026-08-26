@@ -711,6 +711,11 @@ class FakeOptions(object):
         self.ComputeReferences = False
 
 
+class FakeSaveAsOptions(object):
+    def __init__(self):
+        self.OverwriteExistingFile = False
+
+
 def build_fake_db():
     db = types.SimpleNamespace(
         ElementId=FakeElementId,
@@ -761,7 +766,7 @@ def build_fake_db():
         ParameterUtils=FakeParameterUtils2026,
         Definition=FakeDefinition2026,
         UnitUtils=types.SimpleNamespace(),
-        SaveAsOptions=object,
+        SaveAsOptions=FakeSaveAsOptions,
         Sketch=type("Sketch", (object,), {}),
         CurveElement=type("CurveElement", (object,), {}),
         SymbolicCurve=type("SymbolicCurve", (object,), {}),
@@ -1417,3 +1422,174 @@ class HelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# the rebuild batch: the path that ends in a .rfa on disk
+# --------------------------------------------------------------------------
+
+
+class FakeRebuildDoc(object):
+    """A family document made from a template, as the rebuild half sees it.
+
+    Deliberately thin: the stages find almost nothing to work with and most of
+    them fail, which is exactly the case that used to lose the file.
+    """
+
+    def __init__(self, template_path, save_error=""):
+        self.template_path = template_path
+        self.save_error = save_error
+        self.saved = []
+        self.closed = False
+        self.OwnerFamily = FakeElement(1)
+        self.FamilyManager = FakeFamilyManager()
+
+    def SaveAs(self, path, options):
+        if self.save_error:
+            raise RuntimeError(self.save_error)
+        self.saved.append((path, getattr(options, "OverwriteExistingFile", None)))
+
+    def Close(self, _save=False):
+        self.closed = True
+
+    def Regenerate(self):
+        pass
+
+    def GetElement(self, _element_id):
+        return None
+
+    def Delete(self, _element_id):
+        pass
+
+
+class FakeApp(object):
+    """Just enough Application for the rebuild batch."""
+
+    def __init__(self, template_folder, save_error=""):
+        self.FamilyTemplatePath = template_folder
+        self.SharedParametersFilename = ""
+        self.VersionNumber = "2021"
+        self.VersionBuild = "20200806_1015"
+        self.save_error = save_error
+        self.documents = []
+
+    def NewFamilyDocument(self, template_path):
+        doc = FakeRebuildDoc(template_path, self.save_error)
+        self.documents.append(doc)
+        return doc
+
+    def OpenSharedParameterFile(self):
+        return None
+
+
+class RebuildBatchTests(unittest.TestCase):
+    """The rebuild half must leave a file behind whenever it opened a document.
+
+    Every stage below is allowed to fail; none of them may take the ``SaveAs``
+    with it. The regression these pin is a run that reported ten failures and
+    wrote nothing at all.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="fdg-rebuild-")
+        self.templates = os.path.join(self.root, "templates")
+        self.output = os.path.join(self.root, "out")
+        self.package_root = os.path.join(self.root, "packages")
+        for folder in (self.templates, self.output, self.package_root):
+            os.makedirs(folder)
+        with open(os.path.join(self.templates, "Metric Generic Model.rft"), "w") as handle:
+            handle.write("template")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _packages(self, family_name="Fan Coil", groups=None):
+        folder = os.path.join(self.package_root, state.package_folder_name(family_name))
+        os.makedirs(folder)
+        manifest = state.new_manifest(family_name, {"revit_version": "2026"})
+        manifest["family"]["category_label"] = "Generic Models"
+        manifest["geometry"]["groups"] = list(groups or [])
+        state.write_manifest(folder, manifest)
+        return state.find_packages(self.package_root)
+
+    def _run(self, packages, app=None):
+        app = app if app is not None else FakeApp(self.templates)
+        options = state.RebuildOptions(self.package_root, self.output)
+        return app, rebuild.rebuild_family_packages(app, packages, options)
+
+    def test_a_package_is_saved_as_an_rfa_next_to_its_planned_name(self):
+        app, summary = self._run(self._packages())
+        self.assertEqual([], summary.failed)
+        self.assertEqual(1, len(summary.written))
+        self.assertEqual(1, len(app.documents))
+        self.assertEqual([(os.path.join(self.output, "Fan Coil.rfa"), True)],
+                         app.documents[0].saved)
+        self.assertTrue(app.documents[0].closed)
+
+    def test_a_stage_that_raises_is_a_note_and_the_file_is_still_written(self):
+        packages = self._packages()
+
+        def explode(_ctx):
+            raise RuntimeError("parameters exploded")
+
+        original = rebuild.apply_parameters
+        rebuild.apply_parameters = explode
+        try:
+            app, summary = self._run(packages)
+        finally:
+            rebuild.apply_parameters = original
+
+        self.assertEqual(1, len(summary.written))
+        self.assertTrue(app.documents[0].saved)
+        self.assertTrue(any("the parameters stage failed" in note
+                            and "parameters exploded" in note
+                            for note in summary.written[0].notes),
+                        summary.written[0].notes)
+
+    def test_a_geometry_group_that_raises_leaves_the_others_and_the_file(self):
+        packages = self._packages(groups=[{"index": 1, "file": "g01.sat"},
+                                          {"index": 2, "file": "g02.sat"}])
+        seen = []
+
+        def import_group(_ctx, _folder, group):
+            seen.append(group["index"])
+            if group["index"] == 1:
+                raise RuntimeError("bad body")
+            return []
+
+        original = rebuild.import_group
+        rebuild.import_group = import_group
+        try:
+            app, summary = self._run(packages)
+        finally:
+            rebuild.import_group = original
+
+        self.assertEqual([1, 2], seen)
+        self.assertEqual(1, len(summary.written))
+        self.assertTrue(app.documents[0].saved)
+        self.assertTrue(any("geometry group 1" in note and "bad body" in note
+                            for note in summary.written[0].notes),
+                        summary.written[0].notes)
+
+    def test_a_save_that_fails_says_so_and_is_told_apart_from_a_stage(self):
+        app = FakeApp(self.templates, save_error="the file is open in Revit")
+        app, summary = self._run(self._packages(), app)
+        self.assertEqual([], summary.written)
+        self.assertEqual(1, len(summary.failed))
+        self.assertIn("could not be saved", summary.failed[0].status)
+        self.assertIn("the file is open in Revit", summary.failed[0].status)
+        self.assertTrue(app.documents[0].closed)
+
+    def test_a_run_with_nothing_usable_says_why_instead_of_reporting_zero(self):
+        _, summary = self._run([])
+        self.assertEqual([], summary.written)
+        self.assertEqual([], summary.failed)
+        self.assertTrue(any("No usable downgrade packages" in note
+                            for note in summary.notes), summary.notes)
+
+    def test_no_template_fails_the_family_without_opening_a_document(self):
+        os.remove(os.path.join(self.templates, "Metric Generic Model.rft"))
+        app, summary = self._run(self._packages())
+        self.assertEqual([], summary.written)
+        self.assertEqual(1, len(summary.failed))
+        self.assertEqual([], app.documents)

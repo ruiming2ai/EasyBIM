@@ -398,6 +398,23 @@ class ManifestAndPackageTests(unittest.TestCase):
         self.assertFalse(packages[0].is_selected)
         self.assertIn("cannot be read", packages[0].reason)
 
+    def test_packages_a_level_further_down_are_found_too(self):
+        # People point the picker at the folder above the one the export
+        # wrote into just as often as at the folder itself.
+        parent = os.path.join(self.root, "Downgrades", "2026 run")
+        os.makedirs(parent)
+        for name in ("Fan Coil", "Pump"):
+            folder = os.path.join(parent, "{}.downgrade".format(name))
+            os.makedirs(folder)
+            state.write_manifest(folder, state.new_manifest(name, {}))
+        os.makedirs(os.path.join(self.root, "Downgrades", "notes"))
+
+        packages = state.find_packages(os.path.join(self.root, "Downgrades"))
+        self.assertEqual(["Fan Coil", "Pump"], [p.family_name for p in packages])
+        self.assertTrue(all(p.is_usable for p in packages))
+        # Three levels down is still too far.
+        self.assertEqual([], state.find_packages(self.root))
+
     def test_a_package_folder_picked_directly_is_found(self):
         folder = os.path.join(self.root, "Only.downgrade")
         os.makedirs(folder)

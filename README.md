@@ -388,6 +388,12 @@ One button, two modes, and you run the same button on both sides:
    the same one, to see what a round trip keeps). Point it at the folder,
    tick the packages, choose an output folder, and every package becomes a
    native `.rfa` of *that* Revit. No project needs to be open for this half.
+   The folder can be the one the export was written into or the folder above
+   it, and a folder that holds no packages says so rather than showing an
+   empty list. A family that loses a stage on the way is still written: the
+   loss is a line in the report, never a missing file. Only a missing family
+   template, a template that will not open, or the save itself leaves a
+   family unwritten, and the report says which.
 
 Both modes end with a summary and write `families_downgrade_report.txt` next
 to the outputs, listing per family everything that was not carried.
