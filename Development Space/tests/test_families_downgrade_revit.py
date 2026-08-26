@@ -1245,6 +1245,33 @@ class ImportGroupTests(unittest.TestCase):
         self.assertTrue(any("kept as an import instance" in note for note in ctx.result.notes))
         self.assertEqual([], doc.deleted)
 
+    def test_a_group_that_travelled_as_dwg_is_imported_as_dwg(self):
+        # The export falls back to DWG per group when SAT carries nothing, so
+        # the group's own format has to beat the manifest-wide one.
+        with open(os.path.join(self.folder, "g05.dwg"), "wb") as handle:
+            handle.write(b"dwg")
+        doc = FakeImportDoc()
+        ctx = self._context(doc)
+        ctx.manifest["geometry"]["format"] = state.GEOMETRY_SAT
+        seen = []
+        real_import = doc.Import
+
+        def watching(path, options, view):
+            seen.append(options.__class__.__name__)
+            return real_import(path, options, view)
+
+        doc.Import = watching
+        rebuild.import_group(ctx, self.folder,
+                             {"index": 5, "file": "g05.dwg", "format": state.GEOMETRY_DWG})
+        self.assertTrue(seen)
+
+    def test_a_group_with_no_format_of_its_own_follows_the_manifest(self):
+        doc = FakeImportDoc()
+        ctx = self._context(doc)
+        ctx.manifest["geometry"]["format"] = state.GEOMETRY_SAT
+        elements = rebuild.import_group(ctx, self.folder, {"index": 1, "file": "g01.sat"})
+        self.assertTrue(elements)
+
     def test_a_missing_file_is_a_note_not_a_crash(self):
         doc = FakeImportDoc()
         ctx = self._context(doc)

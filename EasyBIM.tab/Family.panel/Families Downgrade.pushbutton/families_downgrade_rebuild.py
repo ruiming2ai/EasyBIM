@@ -791,7 +791,11 @@ def import_group(ctx, folder, group):
     if view is None:
         ctx.note("geometry group {}: no 3D view to import into".format(group.get("index")))
         return []
-    geometry_format = safe_text((ctx.manifest.get("geometry") or {}).get("format")) or state.GEOMETRY_SAT
+    # A group carries its own format: the export falls back to DWG per group
+    # when SAT came out empty, so the manifest-wide one is only the default.
+    geometry_format = (safe_text(group.get("format"))
+                       or safe_text((ctx.manifest.get("geometry") or {}).get("format"))
+                       or state.GEOMETRY_SAT)
     recorded_bbox = group.get("bbox")
 
     element_id, error = _import_file(ctx.doc, path, view, geometry_format, "Default")
