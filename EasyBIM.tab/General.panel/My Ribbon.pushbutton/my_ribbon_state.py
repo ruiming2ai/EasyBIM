@@ -1125,8 +1125,8 @@ def format_import_preview(plan):
             len(to_install), _listing(to_install)))
     not_here = plan.get("sources_not_here", [])
     if not_here:
-        lines.append("Not installed on this computer (their buttons will show as missing "
-                     "until you install them): {0}.".format(", ".join(not_here)))
+        lines.append("Not installed here — My Ribbon will try to install from "
+                     "pyRevit's catalogue: {0}.".format(", ".join(not_here)))
     dests = plan.get("destinations_added", [])
     lines.append("Panels: {0} new{1}.".format(len(dests), _listing(dests)))
     placed = plan.get("placements_added", [])

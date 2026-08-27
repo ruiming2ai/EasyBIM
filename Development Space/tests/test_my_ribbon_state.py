@@ -685,7 +685,7 @@ class ImportExportTests(unittest.TestCase):
         self.assertEqual(lines[0], "Merge the file into what you have.")
         self.assertIn("Sources: 2 new (x/y, pyRevitTools), 1 already linked (o/r).", lines)
         self.assertIn("To download and install here: 1 (x/y).", lines)
-        self.assertTrue(any(line.startswith("Not installed on this computer") for line in lines))
+        self.assertTrue(any(line.startswith("Not installed here") for line in lines))
         self.assertIn("Buttons: 3 to add (B, Z, Select).", lines)
         self.assertIn("Skipped: A (already placed).", lines)
 

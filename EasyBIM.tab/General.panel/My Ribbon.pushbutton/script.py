@@ -316,6 +316,8 @@ def _install_from_catalogue(row):
         installed_dir = getattr(package, "installed_dir", "") or None
     except Exception:
         installed_dir = None
+    if installed_dir and not os.path.isdir(installed_dir):
+        installed_dir = None
     freshly_installed = False
     if not installed_dir:
         try:
@@ -601,6 +603,7 @@ def _import(working, pending_deletes):
     # download what this computer lacks; failures leave the source in place
     # so its buttons show as missing until it is installed
     downloaded = 0
+    not_downloaded = []
     for source in list(result.get("sources", [])):
         if _source_dir(source) is not None:
             continue
@@ -627,9 +630,11 @@ def _import(working, pending_deletes):
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
         elif kind == "installed":
+            ext_label = source.get("label") or source.get("ext_name")
             try:
                 rows = host.catalogue_packages(installed_names=installed)
-            except Exception:
+            except Exception as ex:
+                LOGGER.debug("catalogue_packages failed for %s: %s", ext_label, ex)
                 rows = []
             match = [r for r in rows if state.normalize_label(r.get("name")) ==
                      state.normalize_label(source.get("ext_name"))]
@@ -648,13 +653,19 @@ def _import(working, pending_deletes):
                         source[field] = fresh[0].get(field)
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
+                    continue
+            not_downloaded.append(ext_label)
     working.clear()
     working.update(result)
-    return "Imported {0}: {1} button{2}, {3} source{4} ({5} downloaded). Press Apply to place them.".format(
+    msg = "Imported {0}: {1} button{2}, {3} source{4} ({5} downloaded). Press Apply to place them.".format(
         os.path.basename(path), len(result.get("placements", [])),
         "" if len(result.get("placements", [])) == 1 else "s",
         len(result.get("sources", [])), "" if len(result.get("sources", [])) == 1 else "s",
         downloaded)
+    if not_downloaded:
+        msg += "\nCould not install: {0}. Open pyRevit's Extensions window to install manually.".format(
+            ", ".join(not_downloaded))
+    return msg
 
 
 # -- apply -------------------------------------------------------------------------------

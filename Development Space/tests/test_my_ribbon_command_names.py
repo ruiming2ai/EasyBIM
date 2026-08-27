@@ -453,6 +453,8 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn('kind == "installed"', imported)
         # a source downloaded again survives a Remove staged earlier in the session
         self.assertEqual(imported.count("_forget_pending_delete"), 4)
+        self.assertIn("not_downloaded", imported)
+        self.assertIn("LOGGER", imported)
 
     def test_installed_sources_carry_the_git_remote_when_available(self):
         """The add and export flows read the git remote so the file is downloadable."""
