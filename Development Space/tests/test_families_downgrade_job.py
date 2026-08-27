@@ -90,6 +90,15 @@ class JobFileTests(unittest.TestCase):
         self.assertIn("no package folder",
                       job.validate_job(job.build_job({}, "out", "2022"))[1])
 
+    def test_a_picked_template_travels_to_the_other_revit(self):
+        # The target Revit is the one that has to open it, so the path is
+        # carried rather than looked up again on the other side.
+        paths = job.run_paths(self.root)
+        built = job.build_job(paths, "out", "2022",
+                              template_path="C:\\rft\\Metric Generic Model.rft")
+        self.assertEqual("C:\\rft\\Metric Generic Model.rft", built["template_path"])
+        self.assertEqual((True, ""), job.validate_job(built))
+
     def test_a_fixed_path_job_is_only_used_while_it_is_fresh(self):
         paths = job.run_paths(self.root)
         fresh = job.build_job(paths, "out", "2022", created=1000.0)

@@ -267,6 +267,19 @@ class FamiliesDowngradeXamlTests(unittest.TestCase):
         for banned in ("write_report", "rmtree", "os.remove"):
             self.assertNotIn(banned, source)
 
+    def test_a_picked_template_is_carried_into_the_job(self):
+        # It was plumbed all the way to the child and never given a value,
+        # which is how a machine with templates on disk reported none.
+        source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
+        self.assertIn("template_path=options.template_path", source)
+        self.assertIn("_ask_for_template", source)
+
+    def test_templates_are_searched_for_before_the_user_is_asked_for_one(self):
+        for name in ("script.py", "families_downgrade_rebuild.py"):
+            source = _code_without_prose(COMMAND_DIR / name)
+            self.assertIn("find_templates", source, name)
+            self.assertNotIn("FamilyTemplatePath", source, name)
+
     def test_the_packages_never_land_in_the_users_output_folder(self):
         source = (COMMAND_DIR / "script.py").read_text(encoding="utf-8")
         self.assertIn('state.ExportOptions(paths["package_folder"]', source)

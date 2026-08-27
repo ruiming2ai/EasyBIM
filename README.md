@@ -439,6 +439,17 @@ the family's current type and every type keeps its parameter values. On, one
 package per type, each with that type's exact geometry and connector
 positions - the right choice for MEP fittings whose sizes differ per type.
 
+**Nothing about family templates, normally.** A rebuild has to start from an
+`.rft`: `NewFamilyDocument` is the only API that creates a family document and
+the template is not optional, and the alternatives both need a family that
+already exists in the target release - the one thing a downgrade does not
+have. The target Revit's own templates are found for you, from its configured
+folder first and then from the standard install location
+(`%PROGRAMDATA%\Autodesk\RVT <year>\Family Templates`), because a Revit
+opened in the background does not always carry the File Locations setting even
+when the templates are sitting on disk. Only a machine that genuinely has none
+asks you for one, and it says which folders it looked in.
+
 **Nothing about file formats.** The solids travel between the two Revits as
 SAT, and if a group of solids comes out of SAT empty the same solids are sent
 again inside an AutoCAD 2007 file automatically, per group, with a line in the
