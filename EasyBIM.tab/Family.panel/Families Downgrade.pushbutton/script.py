@@ -6,6 +6,7 @@ here, rebuild .rfa files from packages in the older release."""
 import os
 import sys
 import time
+import traceback
 
 import clr
 
@@ -26,6 +27,7 @@ if SCRIPT_DIR not in sys.path:
 # The family-selection pages, collectors and link cascade are shared with
 # Families Transfer and live in lib/easybim/family_selection_*.
 from easybim.compat import safe_text as _safe_text
+from easybim.progress import ProgressSession
 from easybim.family_selection_revit import get_link_document_options
 from easybim.family_selection_revit import get_link_family_options
 from easybim.family_selection_revit import get_open_family_documents
@@ -113,21 +115,29 @@ def _show_summary(summary):
     TaskDialog.Show(__title__, state.build_summary_text(summary))
 
 
+def _note_progress(result, session):
+    """Carry "there was no progress bar" into the run's own report."""
+    if session.note and hasattr(result, "add_note"):
+        result.add_note(session.note)
+    return result
+
+
 def _with_progress(title, work):
-    """Run a batch behind a cancellable progress bar.
+    """Run a batch behind a cancellable progress bar, if this Revit has one.
 
     A family costs an EditFamily plus one geometry export per attribute
     group; a rebuild costs a template, an import and a FreeForm per body.
-    Either is minutes of a frozen Revit unless the user can see it and stop.
+    Either is minutes of a frozen Revit unless the user can see it and stop -
+    but a Revit that will not build the bar must not cost them the run, so
+    the session hands back a silent stand-in instead of raising.
     """
-    with forms.ProgressBar(title=title + ": {value} of {max_value}",
-                           cancellable=True) as progress_bar:
+    with ProgressSession(title + ": {value} of {max_value}") as session:
 
         def _tick(done, total):
-            progress_bar.update_progress(done + 1, max(total, 1))
-            return not progress_bar.cancelled
+            session.update(done + 1, max(total, 1))
+            return not session.cancelled
 
-        return work(_tick)
+        return _note_progress(work(_tick), session)
 
 
 def _confirm_replacements(folder, planned_names, noun):
@@ -149,19 +159,23 @@ def _confirm_replacements(folder, planned_names, noun):
 
 
 def _with_child_progress(title, paths, total, work):
-    """Watch another Revit work. Its progress file drives the bar, so the
-    count is the child's real one rather than a spinner, and Cancel asks it
-    to stop between families instead of killing a Revit mid-save."""
-    with forms.ProgressBar(title=title + ": {value} of {max_value}",
-                           cancellable=True) as progress_bar:
+    """Watch another Revit work; ``(summary, error, note)``.
+
+    Its progress file drives the bar, so the count is the child's real one
+    rather than a spinner, and Cancel asks it to stop between families
+    instead of killing a Revit mid-save. With no bar there is no Cancel, and
+    the timeout is then the only way the run ends early - which is why the
+    note the session leaves is worth carrying into the report.
+    """
+    with ProgressSession(title + ": {value} of {max_value}") as session:
 
         def _tick(_seconds):
             done, child_total = bridge.read_progress(paths)
             maximum = max(child_total or total, 1)
-            progress_bar.update_progress(min(done + 1, maximum), maximum)
-            return not progress_bar.cancelled
+            session.update(min(done + 1, maximum), maximum)
+            return not session.cancelled
 
-        return work(_tick)
+        return work(_tick) + (session.note,)
 
 
 def _target_notes(cli_path, choices):
@@ -205,11 +219,19 @@ def _rebuild_there(app, paths, packages, options, output_folder, cli_path, insta
     bridge.write_fallback_job(data)
 
     timeout = fdj.estimate_timeout_seconds(len(packages))
-    return _with_child_progress(
+    summary, error, note = _with_child_progress(
         "Rebuilding in Revit {}".format(version), paths, len(packages),
         lambda tick: bridge.run_downgrade(cli_path, version, RUNNER_SCRIPT, paths,
                                           on_tick=tick, timeout_seconds=timeout),
     )
+    if note:
+        # Worth saying either way: with no bar there was no Cancel, so a run
+        # that hit the timeout could not have been stopped by hand.
+        if summary is not None:
+            summary.add_note(note)
+        elif error:
+            error = "{}\n\n{}".format(error, note)
+    return summary, error
 
 
 def _finish_downgrade(paths, output_folder, summary, failure, target_version):
@@ -647,8 +669,29 @@ def _run():
         return
 
 
+def _failure_text(error):
+    """The message plus the last few frames.
+
+    Without them a failure inside a library reads as a bare sentence about
+    something the user never asked for - a window handle, a null reference -
+    with nothing to say where it came from. The full trace is in pyRevit's
+    log either way; this puts enough of it where the user can copy it.
+    """
+    lines = ["Families Downgrade failed:", _safe_text(error)]
+    try:
+        frames = [line.rstrip() for line in traceback.format_exc().splitlines()
+                  if line.strip().startswith("File ")]
+        if frames:
+            lines.append("")
+            lines.append("Where it happened (most recent last):")
+            lines.extend(frames[-4:])
+    except Exception:
+        pass
+    return "\n".join(lines)
+
+
 try:
     _run()
 except Exception as run_error:
     LOGGER.exception("Families Downgrade failed.")
-    forms.alert("Families Downgrade failed:\n{}".format(run_error), title=__title__)
+    forms.alert(_failure_text(run_error), title=__title__)
