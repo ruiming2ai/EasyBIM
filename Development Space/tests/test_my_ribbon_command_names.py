@@ -455,11 +455,14 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertEqual(imported.count("_forget_pending_delete"), 4)
 
     def test_installed_sources_carry_the_git_remote_when_available(self):
-        """The add flow reads the git remote so the export is downloadable."""
+        """The add and export flows read the git remote so the file is downloadable."""
         flow = _function_source(SCRIPT_MODULE, "_add_source_flow")
         self.assertIn("remote_url", flow)
         self.assertIn("parse_git_url", flow)
         self.assertIn('"url"', flow)
+        export = _function_source(SCRIPT_MODULE, "_export")
+        self.assertIn("remote_url", export)
+        self.assertIn("parse_git_url", export)
 
     def test_downloads_are_cancellable_and_probed_first(self):
         clone = _function_source(SCRIPT_MODULE, "_clone_with_progress")

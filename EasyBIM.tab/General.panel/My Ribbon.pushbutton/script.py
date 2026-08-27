@@ -548,6 +548,19 @@ def _export(working):
                            title="Export My Ribbon settings")
     if not path:
         return None
+    for source in working.get("sources", []):
+        if source.get("kind") == "installed" and not source.get("url"):
+            ext_dir = host.find_installed_extension_dir(source.get("ext_name"))
+            if ext_dir:
+                try:
+                    raw = host.remote_url(ext_dir)
+                except Exception:
+                    raw = None
+                if raw:
+                    ref, _ = state.parse_git_url(raw)
+                    if ref is not None:
+                        source["url"] = ref.web_url
+                        source["branch"] = ref.branch
     document = state.export_document(working)
     try:
         text = json.dumps(document, indent=2, sort_keys=True)
@@ -614,14 +627,6 @@ def _import(working, pending_deletes):
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
         elif kind == "installed":
-            if source.get("url"):
-                fresh, _ = _download_git(source["url"], source.get("branch"))
-                if fresh:
-                    for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
-                        source[field] = fresh[0].get(field)
-                    _forget_pending_delete(pending_deletes, source)
-                    downloaded += 1
-                    continue
             try:
                 rows = host.catalogue_packages(installed_names=installed)
             except Exception:
@@ -633,6 +638,14 @@ def _import(working, pending_deletes):
                 if fresh:
                     for field in ("ext_name", "tab_names", "installed_by_my_ribbon"):
                         source[field] = fresh[field]
+                    _forget_pending_delete(pending_deletes, source)
+                    downloaded += 1
+                    continue
+            if source.get("url"):
+                fresh, _ = _download_git(source["url"], source.get("branch"))
+                if fresh:
+                    for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
+                        source[field] = fresh[0].get(field)
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
     working.clear()
