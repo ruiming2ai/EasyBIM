@@ -322,6 +322,33 @@ class NewSourceKindTests(unittest.TestCase):
                          "dyn:p:\\dyn\\graph.dyn")
         self.assertEqual(self.state.normalize_path("\\\\server\\share\\x.dyn"), "\\\\server\\share\\x.dyn")
 
+    def test_installed_source_key_ignores_url(self):
+        self.assertEqual(
+            self.state.source_key({"kind": "installed", "ext_name": "pyRevitTools"}),
+            "ext:pyrevittools")
+        self.assertEqual(
+            self.state.source_key({"kind": "installed", "ext_name": "pyRevitTools",
+                                   "url": "https://github.com/eirannejad/pyRevit",
+                                   "branch": "main"}),
+            "ext:pyrevittools")
+
+    def test_installed_source_with_url_survives_import_planning(self):
+        current = {"format": 1, "sources": [], "destinations": [], "placements": [],
+                   "hidden_tabs": []}
+        incoming = {"format": 1, "sources": [], "destinations": [], "placements": [],
+                    "hidden_tabs": []}
+        self.state.add_source(incoming, {
+            "kind": "installed", "ext_name": "SomeExt", "label": "SomeExt",
+            "tab_names": ["SomeTab"], "url": "https://github.com/o/some-ext",
+            "branch": "main"})
+        plan = self.state.plan_import(current, incoming, "merge",
+                                      installed_ext_names=[])
+        self.assertIn("SomeExt", plan["sources_not_here"])
+        source = plan["result"]["sources"][0]
+        self.assertEqual(source["url"], "https://github.com/o/some-ext")
+        self.assertEqual(source["branch"], "main")
+        self.assertEqual(source["kind"], "installed")
+
     def test_imported_dynamo_sources_stay_deletable(self):
         current = {"format": 1, "sources": [], "destinations": [], "placements": [], "hidden_tabs": []}
         incoming = {"format": 1, "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "title": "G",

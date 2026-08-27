@@ -434,10 +434,23 @@ def _add_source_flow(working, pending_deletes):
             return _add_dynamo_flow(working, page.result[1])
         if kind == "installed":
             ext = page.result[1]
+            url = None
+            branch = None
+            ext_dir = ext.get("dir")
+            if ext_dir:
+                try:
+                    raw = host.remote_url(ext_dir)
+                except Exception:
+                    raw = None
+                if raw:
+                    ref, _ = state.parse_git_url(raw)
+                    if ref is not None:
+                        url = ref.web_url
+                        branch = ref.branch
             entry = state.add_source(working, {
                 "kind": "installed", "ext_name": ext.get("name"), "label": ext.get("name"),
                 "tab_names": ext.get("tab_names"), "installed_by_my_ribbon": False,
-                "hide_tab": False})
+                "hide_tab": False, "url": url, "branch": branch})
             _pick_and_place(working, entry, ext)
             return None
 
@@ -576,26 +589,45 @@ def _import(working, pending_deletes):
     # so its buttons show as missing until it is installed
     downloaded = 0
     for source in list(result.get("sources", [])):
-        if source.get("kind") == "installed":
-            continue
         if _source_dir(source) is not None:
             continue
-        if source.get("kind") == "git" and source.get("url"):
+        kind = source.get("kind")
+        if kind == "git" and source.get("url"):
             fresh, _ = _download_git(source.get("url"), source.get("branch"))
             if fresh:
-                # what a download made *here* says wins over the file, and
-                # a stale extra_root from the file must not survive
                 for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
                     source[field] = fresh[0].get(field)
                 _forget_pending_delete(pending_deletes, source)
                 downloaded += 1
-        elif source.get("kind") == "catalogue":
+        elif kind == "catalogue":
             try:
                 rows = host.catalogue_packages(installed_names=installed)
             except Exception:
                 rows = []
             match = [r for r in rows if state.normalize_label(r.get("name")) ==
                      state.normalize_label(source.get("name") or source.get("ext_name"))]
+            if match:
+                fresh, _ = _install_from_catalogue(match[0])
+                if fresh:
+                    for field in ("ext_name", "tab_names", "installed_by_my_ribbon"):
+                        source[field] = fresh[field]
+                    _forget_pending_delete(pending_deletes, source)
+                    downloaded += 1
+        elif kind == "installed":
+            if source.get("url"):
+                fresh, _ = _download_git(source["url"], source.get("branch"))
+                if fresh:
+                    for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
+                        source[field] = fresh[0].get(field)
+                    _forget_pending_delete(pending_deletes, source)
+                    downloaded += 1
+                    continue
+            try:
+                rows = host.catalogue_packages(installed_names=installed)
+            except Exception:
+                rows = []
+            match = [r for r in rows if state.normalize_label(r.get("name")) ==
+                     state.normalize_label(source.get("ext_name"))]
             if match:
                 fresh, _ = _install_from_catalogue(match[0])
                 if fresh:

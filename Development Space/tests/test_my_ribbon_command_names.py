@@ -450,8 +450,16 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("_download_git", imported)
         self.assertIn("_install_from_catalogue", imported)
         self.assertIn("catalogue_packages", imported)
+        self.assertIn('kind == "installed"', imported)
         # a source downloaded again survives a Remove staged earlier in the session
-        self.assertEqual(imported.count("_forget_pending_delete"), 2)
+        self.assertEqual(imported.count("_forget_pending_delete"), 4)
+
+    def test_installed_sources_carry_the_git_remote_when_available(self):
+        """The add flow reads the git remote so the export is downloadable."""
+        flow = _function_source(SCRIPT_MODULE, "_add_source_flow")
+        self.assertIn("remote_url", flow)
+        self.assertIn("parse_git_url", flow)
+        self.assertIn('"url"', flow)
 
     def test_downloads_are_cancellable_and_probed_first(self):
         clone = _function_source(SCRIPT_MODULE, "_clone_with_progress")
