@@ -89,6 +89,46 @@ def show_apply_results(results):
     ApplyResultsWindow("ApplyResultsDialog.xaml", results).ShowDialog()
 
 
+class _LinkResultRow(object):
+    __slots__ = ("name", "element_type", "status", "error")
+
+    def __init__(self, name, element_type, status, error):
+        self.name = name
+        self.element_type = element_type
+        self.status = status
+        self.error = error
+
+
+class ReloadLinksResultsWindow(forms.WPFWindow):
+    """Reload Links results: per-item status table."""
+
+    def __init__(self, xaml_file_name, items):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+
+        rows = [_LinkResultRow(
+            i.get("name", ""), i.get("element_type", ""),
+            i.get("status", ""), i.get("error", ""))
+            for i in (items or [])]
+
+        reloaded = sum(1 for r in rows if r.status == "Reloaded")
+        errors = sum(1 for r in rows if r.status == "Error")
+        skipped = len(rows) - reloaded - errors
+        parts = ["Reloaded: {0}".format(reloaded)]
+        if errors:
+            parts.append("Errors: {0}".format(errors))
+        if skipped:
+            parts.append("Skipped: {0}".format(skipped))
+        self.summary_tb.Text = "  |  ".join(parts)
+
+        self.results_dg.ItemsSource = rows
+        self._is_ready = True
+
+    def ok_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
 class LoadFromSourceWindow(forms.WPFWindow):
     """Shared picker for Load Sheet List / Load Print Set."""
 
