@@ -1839,9 +1839,8 @@ class SheetManagerWindow(forms.WPFWindow):
         return choice == "Reload links"
 
     def _reload_and_post_command(self, action_title, command_member_name):
-        should_reload = self._confirm_link_reload(action_title)
-
         def work(uiapp):
+            should_reload = self._confirm_link_reload(action_title)
             if should_reload:
                 link_reload.reload_loaded_manage_links(self._doc)
             try:
