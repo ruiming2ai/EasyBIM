@@ -239,6 +239,26 @@ class MainTests(unittest.TestCase):
         runner.main(self.environ)
         self.assertTrue(seen["started"])
 
+    def test_the_job_template_reaches_the_rebuild_options(self):
+        seen = {}
+        original_rebuild = runner.rebuild
+
+        def rebuild(data):
+            seen["template_path"] = data.get("template_path")
+            return state.DowngradeSummary(state.MODE_REBUILD), "2022"
+
+        job.write_job(self.paths["job_path"],
+                      job.build_job(self.paths, os.path.join(self.root, "out"), "2022",
+                                    template_path="C:\\rft\\Generic.rft",
+                                    created=time.time()))
+        runner.rebuild = rebuild
+        try:
+            runner.main(self.environ)
+        finally:
+            runner.rebuild = original_rebuild
+
+        self.assertEqual("C:\\rft\\Generic.rft", seen["template_path"])
+
     def test_a_rebuild_that_blows_up_still_leaves_a_result_and_a_log(self):
         def rebuild(_job):
             raise RuntimeError("Revit fell over")

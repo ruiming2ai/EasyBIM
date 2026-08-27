@@ -1398,8 +1398,10 @@ def rebuild_one(app, package, output_path, caps, scratch, templates, options, re
     template_path, note = fdr.choose_template(templates, family_record, options.template_path)
     result.add_note(note)
     if not template_path:
-        return False, "no family template was found in {}".format(
-            safe_text(_catch(lambda: app.FamilyTemplatePath)) or "the template folder")
+        # The batch already refused to start without templates, so reaching
+        # here means none of the ones it found fitted this family.
+        return False, "none of the {} family template(s) found would fit this family".format(
+            len(templates))
     try:
         doc = app.NewFamilyDocument(template_path)
     except Exception as error:
@@ -1440,12 +1442,14 @@ def rebuild_family_packages(app, packages, options, progress=None):
                          "*.downgrade packages and tick at least one of them.")
         return summary
     caps = HostCapabilities(app)
-    templates = fdr.list_templates(_catch(lambda: app.FamilyTemplatePath))
-    if options.template_path:
-        templates.setdefault(os.path.basename(options.template_path), options.template_path)
+    templates, searched = fdr.find_templates(app, options.template_path)
     if not templates:
-        summary.add_note("No family templates were found (Revit's family template folder is "
-                         "empty or unset); nothing could be rebuilt.")
+        # Name the folders: "the path is unset" leaves the user nowhere to go,
+        # and on a Revit started headlessly the path is unset far more often
+        # than the templates are actually missing.
+        summary.add_note("No family template (.rft) was found, so nothing could be rebuilt.\n"
+                         "Looked in:\n{}".format("\n".join(searched) or "(nowhere - this "
+                                                  "Revit reported no template folder)"))
         for package in packages:
             summary.failed.append(state.DowngradeResult(package.family_name, "", "no family template"))
         return summary
