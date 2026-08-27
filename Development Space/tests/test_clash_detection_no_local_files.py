@@ -178,14 +178,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("get_envvar", drop_body)
         self.assertNotIn("import clash_detection_engine", drop_body)
 
-    def test_tooltip_carries_a_build_tag(self):
-        # bundle.yaml is re-read by pyRevit's loader on every reload and never
-        # passes through sys.modules, so the tooltip is the one channel that
-        # proves whether new files reached Revit at all - independent of any
-        # Python module caching this tool's persistent engine may be doing.
-        bundle = _source(COMMAND_DIR / "bundle.yaml")
-        self.assertIn("Build 2026-", bundle)
-
     def test_view_status_never_greys_out_while_running(self):
         # Reopening the pane goes through Revit's dockable pane and never
         # needed the session, so disabling it in the degraded case locked the

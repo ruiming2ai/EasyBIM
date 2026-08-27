@@ -6,6 +6,7 @@ here, rebuild .rfa files from packages in the older release."""
 import os
 import sys
 import time
+import traceback
 
 import clr
 
@@ -26,6 +27,7 @@ if SCRIPT_DIR not in sys.path:
 # The family-selection pages, collectors and link cascade are shared with
 # Families Transfer and live in lib/easybim/family_selection_*.
 from easybim.compat import safe_text as _safe_text
+from easybim.progress import ProgressSession
 from easybim.family_selection_revit import get_link_document_options
 from easybim.family_selection_revit import get_link_family_options
 from easybim.family_selection_revit import get_open_family_documents
@@ -54,8 +56,8 @@ import families_downgrade_job as fdj
 import families_downgrade_state as state
 from families_downgrade_export import export_family_packages
 from families_downgrade_rebuild import rebuild_family_packages
+from families_downgrade_revit import find_templates
 from families_downgrade_revit import host_version
-from families_downgrade_revit import list_templates
 from families_downgrade_ui import DowngradeOptionsWindow
 from families_downgrade_ui import ExportOptionsWindow
 from families_downgrade_ui import ModeWindow
@@ -113,21 +115,29 @@ def _show_summary(summary):
     TaskDialog.Show(__title__, state.build_summary_text(summary))
 
 
+def _note_progress(result, session):
+    """Carry "there was no progress bar" into the run's own report."""
+    if session.note and hasattr(result, "add_note"):
+        result.add_note(session.note)
+    return result
+
+
 def _with_progress(title, work):
-    """Run a batch behind a cancellable progress bar.
+    """Run a batch behind a cancellable progress bar, if this Revit has one.
 
     A family costs an EditFamily plus one geometry export per attribute
     group; a rebuild costs a template, an import and a FreeForm per body.
-    Either is minutes of a frozen Revit unless the user can see it and stop.
+    Either is minutes of a frozen Revit unless the user can see it and stop -
+    but a Revit that will not build the bar must not cost them the run, so
+    the session hands back a silent stand-in instead of raising.
     """
-    with forms.ProgressBar(title=title + ": {value} of {max_value}",
-                           cancellable=True) as progress_bar:
+    with ProgressSession(title + ": {value} of {max_value}") as session:
 
         def _tick(done, total):
-            progress_bar.update_progress(done + 1, max(total, 1))
-            return not progress_bar.cancelled
+            session.update(done + 1, max(total, 1))
+            return not session.cancelled
 
-        return work(_tick)
+        return _note_progress(work(_tick), session)
 
 
 def _confirm_replacements(folder, planned_names, noun):
@@ -149,19 +159,23 @@ def _confirm_replacements(folder, planned_names, noun):
 
 
 def _with_child_progress(title, paths, total, work):
-    """Watch another Revit work. Its progress file drives the bar, so the
-    count is the child's real one rather than a spinner, and Cancel asks it
-    to stop between families instead of killing a Revit mid-save."""
-    with forms.ProgressBar(title=title + ": {value} of {max_value}",
-                           cancellable=True) as progress_bar:
+    """Watch another Revit work; ``(summary, error, note)``.
+
+    Its progress file drives the bar, so the count is the child's real one
+    rather than a spinner, and Cancel asks it to stop between families
+    instead of killing a Revit mid-save. With no bar there is no Cancel, and
+    the timeout is then the only way the run ends early - which is why the
+    note the session leaves is worth carrying into the report.
+    """
+    with ProgressSession(title + ": {value} of {max_value}") as session:
 
         def _tick(_seconds):
             done, child_total = bridge.read_progress(paths)
             maximum = max(child_total or total, 1)
-            progress_bar.update_progress(min(done + 1, maximum), maximum)
-            return not progress_bar.cancelled
+            session.update(min(done + 1, maximum), maximum)
+            return not session.cancelled
 
-        return work(_tick)
+        return work(_tick) + (session.note,)
 
 
 def _target_notes(cli_path, choices):
@@ -176,13 +190,46 @@ def _target_notes(cli_path, choices):
     return notes
 
 
-def _rebuild_here(app, packages, output_folder):
+def _rebuild_here(app, packages, output_folder, template_path=""):
     """The target is the Revit we are already in: no second Revit needed."""
-    options = state.RebuildOptions("", output_folder)
+    options = state.RebuildOptions("", output_folder, template_path)
     return _with_progress(
         "Rebuilding families",
         lambda tick: rebuild_family_packages(app, packages, options, progress=tick),
     )
+
+
+def _missing_template_reason(summary):
+    """The note explaining a run that failed only for want of a template.
+
+    Nothing else is worth interrupting the user for: a template is the one
+    missing piece they can hand over on the spot, and the packages are
+    already written so supplying it costs a rebuild, not a whole run.
+    """
+    if summary is None or summary.written:
+        return ""
+    for note in list(summary.notes or []):
+        if "No family template" in note:
+            return note
+    return ""
+
+
+def _ask_for_template(version, reason):
+    """Offer to pick an .rft after the target Revit found none; ``""`` to stop."""
+    answer = forms.alert(
+        "{}\n\nRevit {} can only build a family on a template, so nothing could be "
+        "rebuilt. If you have one, point at it and the rebuild will run again - the "
+        "packages are already written, so nothing has to be exported twice.\n\n"
+        "The template must be from Revit {} or older: a newer .rft cannot be opened by "
+        "it, which is the same version rule that makes this tool necessary.".format(
+            reason, version, version),
+        title=__title__,
+        options=["Choose a template (.rft)", "Give up"])
+    if answer != "Choose a template (.rft)":
+        return ""
+    picked = forms.pick_file(file_ext="rft",
+                             title="Choose a Revit {} family template (.rft)".format(version))
+    return _safe_text(picked)
 
 
 def _rebuild_there(app, paths, packages, options, output_folder, cli_path, installs):
@@ -195,6 +242,7 @@ def _rebuild_there(app, paths, packages, options, output_folder, cli_path, insta
         paths, output_folder, version,
         script_dir=SCRIPT_DIR, lib_dir=LIB_DIR,
         package_folders=[package.folder for package in packages],
+        template_path=options.template_path,
         source_version=host_version(app), created=time.time())
     try:
         fdj.write_job(paths["job_path"], data)
@@ -205,11 +253,19 @@ def _rebuild_there(app, paths, packages, options, output_folder, cli_path, insta
     bridge.write_fallback_job(data)
 
     timeout = fdj.estimate_timeout_seconds(len(packages))
-    return _with_child_progress(
+    summary, error, note = _with_child_progress(
         "Rebuilding in Revit {}".format(version), paths, len(packages),
         lambda tick: bridge.run_downgrade(cli_path, version, RUNNER_SCRIPT, paths,
                                           on_tick=tick, timeout_seconds=timeout),
     )
+    if note:
+        # Worth saying either way: with no bar there was no Cancel, so a run
+        # that hit the timeout could not have been stopped by hand.
+        if summary is not None:
+            summary.add_note(note)
+        elif error:
+            error = "{}\n\n{}".format(error, note)
+    return summary, error
 
 
 def _finish_downgrade(paths, output_folder, summary, failure, target_version):
@@ -308,11 +364,22 @@ def _downgrade_step(doc, app, selected_families, previous, link_note_list):
         bridge.discard_run_folder(paths)
         return "back", options
 
-    if fdj.version_number(options.target_version) == fdj.version_number(host):
-        rebuild_summary, failure = _rebuild_here(app, packages, options.output_folder), ""
-    else:
-        rebuild_summary, failure = _rebuild_there(
-            app, paths, packages, options, options.output_folder, cli_path, installs)
+    def _rebuild_stage():
+        if fdj.version_number(options.target_version) == fdj.version_number(host):
+            return _rebuild_here(app, packages, options.output_folder,
+                                 options.template_path), ""
+        return _rebuild_there(app, paths, packages, options, options.output_folder,
+                              cli_path, installs)
+
+    rebuild_summary, failure = _rebuild_stage()
+    reason = _missing_template_reason(rebuild_summary)
+    if reason:
+        # One retry, not a loop: a second failure with a template in hand is
+        # a different problem, and asking again would only hide it.
+        picked = _ask_for_template(options.target_version, reason)
+        if picked:
+            options.template_path = picked
+            rebuild_summary, failure = _rebuild_stage()
 
     summary = state.combine_downgrade_summaries(
         export_summary, rebuild_summary,
@@ -579,13 +646,16 @@ def _run_rebuild(app, previous):
         if not _confirm_replacements(output_folder, planned, "file(s)"):
             continue
         rebuild_options = state.RebuildOptions(package_folder, output_folder)
-        if not list_templates(getattr(app, "FamilyTemplatePath", "")):
-            # Revit's own template folder is empty or unset (some installs,
-            # some languages): ask once for a family template to build on.
+        found, searched = find_templates(app)
+        if not found:
+            # Neither Revit's configured folder nor the install locations hold
+            # one, so this really is a machine without templates: ask.
             forms.alert(
-                "Revit's family template folder is empty or not set, so there is nothing "
-                "to build the families on. Choose a family template (.rft) - Generic Model "
-                "is the safe choice - and it will be used for every package in this run.",
+                "No family template (.rft) was found, so there is nothing to build the "
+                "families on. Choose one - Generic Model is the safe choice - and it will "
+                "be used for every package in this run.\n\nLooked in:\n{}".format(
+                    "\n".join(searched) or "(nowhere - this Revit reported no template "
+                    "folder)"),
                 title=__title__)
             template_path = forms.pick_file(file_ext="rft",
                                             title="Choose a family template (.rft)")
@@ -647,8 +717,29 @@ def _run():
         return
 
 
+def _failure_text(error):
+    """The message plus the last few frames.
+
+    Without them a failure inside a library reads as a bare sentence about
+    something the user never asked for - a window handle, a null reference -
+    with nothing to say where it came from. The full trace is in pyRevit's
+    log either way; this puts enough of it where the user can copy it.
+    """
+    lines = ["Families Downgrade failed:", _safe_text(error)]
+    try:
+        frames = [line.rstrip() for line in traceback.format_exc().splitlines()
+                  if line.strip().startswith("File ")]
+        if frames:
+            lines.append("")
+            lines.append("Where it happened (most recent last):")
+            lines.extend(frames[-4:])
+    except Exception:
+        pass
+    return "\n".join(lines)
+
+
 try:
     _run()
 except Exception as run_error:
     LOGGER.exception("Families Downgrade failed.")
-    forms.alert("Families Downgrade failed:\n{}".format(run_error), title=__title__)
+    forms.alert(_failure_text(run_error), title=__title__)

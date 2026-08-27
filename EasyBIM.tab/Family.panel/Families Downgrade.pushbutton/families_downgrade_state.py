@@ -965,10 +965,14 @@ class ExportOptions(object):
 class DowngradeOptions(object):
     """What the one-page downgrade asks for: which Revit, and where."""
 
-    def __init__(self, output_folder="", target_version="", split_types=False):
+    def __init__(self, output_folder="", target_version="", split_types=False,
+                 template_path=""):
         self.output_folder = _safe_text(output_folder)
         self.target_version = _safe_text(target_version)
         self.split_types = bool(split_types)
+        # An .rft the user picked after the target Revit found none of its
+        # own; empty on every run that did not need it.
+        self.template_path = _safe_text(template_path)
 
 
 class RebuildOptions(object):

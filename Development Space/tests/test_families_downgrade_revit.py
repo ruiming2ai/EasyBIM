@@ -1353,6 +1353,73 @@ class HelperTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_the_configured_folder_leads_and_the_install_locations_follow(self):
+        app = types.SimpleNamespace(FamilyTemplatePath="C:\\office\\templates",
+                                    VersionNumber="2023")
+        environ = {"PROGRAMDATA": "C:\\ProgramData", "ALLUSERSPROFILE": "C:\\ProgramData"}
+        folders = fdr.template_search_folders(app, environ)
+
+        # An office library, when Revit knows about one, still wins.
+        self.assertEqual("C:\\office\\templates", folders[0])
+        joined = [f.replace("/", "\\") for f in folders]
+        self.assertIn("C:\\ProgramData\\Autodesk\\RVT 2023\\Family Templates", joined)
+        self.assertIn("C:\\ProgramData\\Autodesk\\RVT 2023 Release\\Family Templates",
+                      joined)
+        # ALLUSERSPROFILE repeats PROGRAMDATA on a normal Windows box.
+        self.assertEqual(len(folders), len(set(f.lower() for f in folders)))
+
+    def test_the_install_locations_are_offered_when_revit_names_no_folder(self):
+        app = types.SimpleNamespace(FamilyTemplatePath="", VersionNumber="2023")
+        folders = fdr.template_search_folders(app, {"PROGRAMDATA": "C:\\ProgramData"})
+        self.assertTrue(folders)
+        self.assertTrue(all("ProgramData" in folder for folder in folders))
+
+    def test_a_revit_that_will_not_say_is_not_a_crash(self):
+        class Angry(object):
+            VersionNumber = "2023"
+
+            @property
+            def FamilyTemplatePath(self):
+                raise RuntimeError("no settings in this session")
+
+        folders = fdr.template_search_folders(Angry(), {"PROGRAMDATA": "C:\\ProgramData"})
+        self.assertTrue(folders)
+
+    def test_templates_installed_on_disk_are_found_when_revit_names_no_folder(self):
+        # The reported failure: a headless Revit carries no File Locations
+        # setting, while its templates sit in the install folder all along.
+        root = tempfile.mkdtemp(prefix="fdg-installed-")
+        try:
+            installed = os.path.join(root, "Autodesk", "RVT 2023",
+                                     "Family Templates", "English")
+            os.makedirs(installed)
+            open(os.path.join(installed, "Metric Generic Model.rft"), "w").close()
+            app = types.SimpleNamespace(FamilyTemplatePath="", VersionNumber="2023")
+
+            templates, searched = fdr.find_templates(app, environ={"PROGRAMDATA": root})
+
+            self.assertEqual(["Metric Generic Model.rft"], sorted(templates))
+            self.assertTrue(searched)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_a_picked_template_is_added_to_whatever_was_found(self):
+        root = tempfile.mkdtemp(prefix="fdg-picked-")
+        try:
+            picked = os.path.join(root, "My Template.rft")
+            open(picked, "w").close()
+            app = types.SimpleNamespace(FamilyTemplatePath="", VersionNumber="2023")
+            templates, _searched = fdr.find_templates(app, picked, environ={})
+            self.assertEqual({"My Template.rft": picked}, templates)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_finding_nothing_still_reports_where_it_looked(self):
+        app = types.SimpleNamespace(FamilyTemplatePath="", VersionNumber="2023")
+        templates, searched = fdr.find_templates(app, environ={"PROGRAMDATA": "C:\\nope"})
+        self.assertEqual({}, templates)
+        self.assertTrue(searched)
+
     def test_run_transaction_reports_exceptions_and_rollbacks_as_failures(self):
         doc = object()
         ok, error = fdr.run_transaction(doc, "t", lambda: None)

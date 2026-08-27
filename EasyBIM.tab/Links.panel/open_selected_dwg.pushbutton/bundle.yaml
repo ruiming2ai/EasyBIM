@@ -1,0 +1,11 @@
+title: "DWG:\nOpen/Reload"
+tooltip: >-
+  Open, reload or locate a selected linked DWG in the model.
+
+  Select a linked DWG instance and click the button. Choose from
+  four actions: open the file in its default application, open its
+  containing folder, copy the file path to the clipboard, or reload
+  the DWG link in Revit.
+
+  The DWG must be linked, not imported.
+author: Erik Frits

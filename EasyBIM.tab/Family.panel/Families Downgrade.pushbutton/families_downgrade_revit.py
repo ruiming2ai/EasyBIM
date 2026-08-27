@@ -599,6 +599,69 @@ def list_templates(folder):
     return templates
 
 
+# Where Autodesk installs the family templates. Both spellings ship in the
+# wild, and the language sub-folders below them (English, English_I, Metric)
+# need no listing of their own because ``list_templates`` walks recursively.
+TEMPLATE_INSTALL_PATTERNS = (
+    os.path.join("Autodesk", "RVT {}", "Family Templates"),
+    os.path.join("Autodesk", "RVT {} Release", "Family Templates"),
+)
+
+
+def template_search_folders(app, environ=None):
+    """Every folder worth searching for ``.rft`` files, best first.
+
+    Revit's own ``FamilyTemplatePath`` leads: when it is set it is right, and
+    it is what respects an office's own template library. But it reads the
+    user's File Locations setting, and a Revit started headlessly by the
+    command line tool does not reliably carry that - which leaves a machine
+    whose templates are sitting in the install folder reporting that it has
+    none. So the install locations follow it rather than replace it.
+    """
+    environ = environ if environ is not None else os.environ
+    folders = []
+    try:
+        configured = safe_text(app.FamilyTemplatePath)
+    except Exception:
+        configured = ""
+    if configured:
+        folders.append(configured)
+    version = host_version(app)
+    if version:
+        for root in (safe_text(environ.get("PROGRAMDATA", "")),
+                     safe_text(environ.get("ALLUSERSPROFILE", ""))):
+            if not root:
+                continue
+            for pattern in TEMPLATE_INSTALL_PATTERNS:
+                folders.append(os.path.join(root, pattern.format(version)))
+    unique = []
+    seen = set()
+    for folder in folders:
+        key = os.path.normpath(folder).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(folder)
+    return unique
+
+
+def find_templates(app, extra_path="", environ=None):
+    """``(templates, searched)`` - the ``.rft`` files, and where we looked.
+
+    The folder list travels back with the result so a run that found nothing
+    can name the places it tried, rather than saying the path is unset and
+    leaving the user with nowhere to go.
+    """
+    templates = {}
+    searched = template_search_folders(app, environ)
+    for folder in searched:
+        for name, full_path in list_templates(folder).items():
+            templates.setdefault(name, full_path)
+    extra_path = safe_text(extra_path)
+    if extra_path and os.path.isfile(extra_path):
+        templates.setdefault(os.path.basename(extra_path), extra_path)
+    return templates, searched
+
+
 def choose_template(templates, family_record, fallback_path=""):
     """``(path, note)`` - the best ``.rft`` for a family record.
 
