@@ -1,15 +1,9 @@
 title: "Clash Detection\nMode"
 tooltip: >-
-  Watch for clashes created while you keep modeling. Pick the two category
-  sets once, then only clashes made from that moment on are reported -
-  existing clashes are never listed. Silent Mode keeps a live panel on the
-  right instead of popping up.
-
-
-  Build 2026-08-03e - pyRevit reads this tooltip straight from bundle.yaml
-  on every reload, never through the Python module cache. If this build tag
-  does not match the version you pulled, Revit is loading the extension from
-  a different folder than the one you updated.
+  Watch for clashes created while you keep modeling. Pick the two
+  category sets once, then only clashes made from that moment on are
+  reported - existing clashes are never listed. Silent Mode keeps a
+  live panel on the right instead of popping up.
 author: Ruiming Liu
 min_revit_version: 2023
 max_revit_version: 2027

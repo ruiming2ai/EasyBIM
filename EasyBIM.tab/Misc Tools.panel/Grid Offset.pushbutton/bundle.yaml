@@ -1,0 +1,10 @@
+title: Grid Offset
+tooltip: >-
+  Offset grid heads from a crop region or a selected scope box
+  across multiple views.
+
+  Choose out (extend past the boundary) or in (pull back inside),
+  set the offset distance, and pick which views to process. The
+  tool adjusts each grid line's view-specific endpoints by the
+  specified amount.
+author: Ruiming Liu

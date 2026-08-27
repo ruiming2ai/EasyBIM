@@ -1,5 +1,13 @@
 title: Temp Phase
-tooltip: Set a temporary phase for the active view and restore temporary view properties before closing.
+tooltip: >-
+  Set a temporary phase on the active view and restore the original
+  phase when you are done.
+
+  The window shows Apply (set the selected phase), Restore (undo the
+  active view) and Restore All Views (undo every view in the document).
+  When a file with temporary phases is closed, EasyBIM automatically
+  restores every tracked view and clears Temporary View Properties in
+  one transaction before closing.
 author: Ruiming Liu
 min_revit_version: 2015
 max_revit_version: 2027

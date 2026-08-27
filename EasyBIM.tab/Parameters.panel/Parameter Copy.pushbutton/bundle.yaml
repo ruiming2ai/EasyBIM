@@ -1,0 +1,10 @@
+title: "Parameter\nCopy"
+tooltip: >-
+  Copy one parameter's value to one or more target parameters across
+  all elements in scope.
+
+  Supports same-type copy, numeric unit conversion and any-to-text
+  copy. Use Select Compatible to auto-pick targets that match the
+  source type. Works on the current selection or every element in
+  the model.
+author: Ruiming Liu

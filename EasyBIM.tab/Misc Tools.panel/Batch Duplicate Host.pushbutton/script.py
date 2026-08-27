@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Port of the C# Batch Duplicate Host Revit add-in."""
+"""Duplicate a selected element onto multiple target host instances with offset and orientation control."""
 
 # pylint: disable=import-error,invalid-name,broad-except
 import os

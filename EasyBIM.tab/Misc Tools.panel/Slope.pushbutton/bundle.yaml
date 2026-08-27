@@ -1,1 +1,9 @@
 title: "Slope"
+tooltip: >-
+  Set the slope on selected ducts, pipes, conduit or cable tray.
+
+  Supports 12 slope units: degrees, percentage, per mille, and
+  various ratio formats. Tries a direct parameter write first; if
+  that is not enough, adjusts the element's endpoints while keeping
+  its horizontal midpoint fixed.
+author: Ruiming Liu
