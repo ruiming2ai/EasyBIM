@@ -241,6 +241,13 @@ def is_unloaded_link_element(doc, link_elem, DB=None):
     return False
 
 
+def _element_display_name(link_elem):
+    name = getattr(link_elem, "Name", None)
+    if name:
+        return str(name)
+    return type(link_elem).__name__
+
+
 def reload_link_element(doc, link_elem, revit=None, logger=None,
                         get_elementid_value=None):
     if revit is None:
@@ -249,27 +256,41 @@ def reload_link_element(doc, link_elem, revit=None, logger=None,
     get_elementid_value = get_elementid_value \
         or _get_default_elementid_value_func()
 
-    if hasattr(link_elem, "Reload"):
-        try:
-            with revit.Transaction("Reload Manage Link", doc=doc):
-                link_elem.Reload()
-            return True
-        except Exception as reload_err:
-            _log_warning(
-                logger,
-                "Failed to reload link element id %s (%s): %s",
-                get_elementid_value(link_elem.Id),
-                type(link_elem),
-                reload_err
-            )
-            return False
-    return False
+    if not hasattr(link_elem, "Reload"):
+        return (False, "No Reload method")
+
+    # Link types (RevitLinkType, CADLinkType, etc.) manage their own
+    # transactional state and must NOT be wrapped in a Transaction.
+    try:
+        link_elem.Reload()
+        return (True, None)
+    except TypeError:
+        pass
+    except Exception:
+        pass
+
+    # Table types (KeynoteTable, AssemblyCodeTable) need a Transaction
+    # and a BasicFileLocations argument (None uses the current path).
+    try:
+        with revit.Transaction("Reload Manage Link", doc=doc):
+            link_elem.Reload(None)
+        return (True, None)
+    except Exception as reload_err:
+        msg = str(reload_err)
+        _log_warning(
+            logger,
+            "Failed to reload link element id %s (%s): %s",
+            get_elementid_value(link_elem.Id),
+            type(link_elem),
+            reload_err
+        )
+        return (False, msg)
 
 
 def reload_link_elements(doc, link_elements, linked_cad_type_ids,
                          is_linked_func=None, is_unloaded_func=None,
                          reload_func=None, logger=None):
-    """Reload eligible link elements and return the same summary counts."""
+    """Reload eligible link elements and return summary counts + items."""
     is_linked_func = is_linked_func or is_linked_manage_link_element
     is_unloaded_func = is_unloaded_func or is_unloaded_link_element
     reload_func = reload_func or reload_link_element
@@ -279,19 +300,40 @@ def reload_link_elements(doc, link_elements, linked_cad_type_ids,
         "skipped_unloaded": 0,
         "skipped_imported": 0,
         "skipped_unsupported": 0,
+        "items": [],
     }
 
     for link_elem in link_elements or []:
+        name = _element_display_name(link_elem)
+        elem_type = type(link_elem).__name__
         if not is_linked_func(doc, link_elem, linked_cad_type_ids):
             summary["skipped_imported"] += 1
             continue
         if is_unloaded_func(doc, link_elem):
             summary["skipped_unloaded"] += 1
+            summary["items"].append({
+                "name": name, "element_type": elem_type,
+                "status": "Skipped (Unloaded)", "error": "",
+            })
             continue
-        if reload_func(doc, link_elem):
+        result = reload_func(doc, link_elem)
+        if isinstance(result, tuple):
+            success, error_msg = result
+        else:
+            success = bool(result)
+            error_msg = None
+        if success:
             summary["reloaded"] += 1
+            summary["items"].append({
+                "name": name, "element_type": elem_type,
+                "status": "Reloaded", "error": "",
+            })
         else:
             summary["skipped_unsupported"] += 1
+            summary["items"].append({
+                "name": name, "element_type": elem_type,
+                "status": "Error", "error": error_msg or "Unknown error",
+            })
 
     return summary
 

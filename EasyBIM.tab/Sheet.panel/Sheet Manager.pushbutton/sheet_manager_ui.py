@@ -1842,7 +1842,11 @@ class SheetManagerWindow(forms.WPFWindow):
         def work(uiapp):
             should_reload = self._confirm_link_reload(action_title)
             if should_reload:
-                link_reload.reload_loaded_manage_links(self._doc)
+                result = link_reload.reload_loaded_manage_links(self._doc)
+                items = (result or {}).get("items")
+                if items:
+                    self._show_dialog(dialogs.ReloadLinksResultsWindow(
+                        "ReloadLinksResultsDialog.xaml", items))
             try:
                 from Autodesk.Revit.UI import PostableCommand
                 command = getattr(PostableCommand, command_member_name, None)
