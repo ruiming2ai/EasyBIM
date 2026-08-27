@@ -1,1 +1,10 @@
 title: "Families\nTransfer"
+tooltip: >-
+  Export or transfer selected loadable families between documents.
+
+  Pick families from the active project, opened .rfa files or Revit
+  links, then choose an action: export to a folder as .rfa files,
+  transfer (load) into other open Revit documents, or transfer and
+  close all open .rfa documents. The tool warns before overwriting
+  an existing family in the target.
+author: Ruiming Liu

@@ -845,3 +845,236 @@ spreadsheet, where a rename and a new type are indistinguishable. Parameters
 match by that ElementId first and fall back to the name, so renaming a parameter
 in Revit does not break a workbook exported before the rename. A column matching
 nothing is reported, never guessed at.
+
+## Auto Update (Misc Tools)
+
+Auto Update pulls the latest version of the EasyBIM extension from its git
+repository and reloads pyRevit if the extension's commit has changed. It updates
+**only EasyBIM** — other pyRevit extensions are untouched, and for those you
+should use pyRevit's own **Update** command.
+
+The same check runs automatically once per Revit session, deferred to the first
+idle tick so it never blocks startup. A mutex prevents concurrent updates when
+multiple Revit instances are open at the same time: only the first instance to
+acquire the lock runs the pull, and the others skip it silently.
+
+## Excel (Misc Tools)
+
+A two-way bridge between Revit schedules and Excel workbooks. **Export** writes
+selected Revit schedules to `.xlsx` or `.xlsm` files, one file per schedule.
+Columns match the schedule's visible fields. Grey cells are not editable; yellow
+cells are type parameters — shared by every row of that type — that turn **red**
+when rows of the same type disagree on the value. A hidden `_EBIM_TypeId` column
+is internal to the tool and should be left alone.
+
+**Import** works on one schedule at a time: select the schedule, pick a workbook
+that was created by this tool, and rows are matched by ElementId. If type-
+parameter values conflict across rows, the import stops and shows a report
+instead of writing half a result. A preview window shows what will change before
+anything is written. **Family** and **Type** columns are never imported — they
+are reference-only in the export.
+
+An optional VBA sync layer turns exports into `.xlsm` files with auto-updating
+type-parameter cells, so editing one row's type value propagates to the others
+in the spreadsheet. In workshared models the export ordering step may
+temporarily borrow elements; that checkout is rolled back automatically when
+the export finishes.
+
+## Batch Duplicate Host (Misc Tools)
+
+Duplicates a selected element onto multiple target host family instances. Pick
+the source element, then choose targets from categories and types in any open
+document. Set **X**, **Y** and **Z offsets** and an **orientation alignment**
+option, and the tool places a copy at each target location.
+
+## Flip Multiple (Misc Tools)
+
+Flips selected family instances one by one. Four modes are offered:
+
+- **Front/Back**
+- **Left/Right**
+- **Up/Down**
+- **Work Plane**
+
+The first three use geometric mirroring. **Work Plane** uses the native toggle
+instead. Pick a mode, run it, and every selected instance that supports that
+flip direction is flipped.
+
+## 3D Rotate Multiple (Misc Tools)
+
+Rotates selected elements individually, each around its own centre point. Three
+rotation axes are available:
+
+- **Plan** — around the Z axis (vertical)
+- **Vertical Front/Back** — around the X axis
+- **Vertical Left/Right** — around the Y axis
+
+Enter the angle in degrees and the tool applies the rotation to every selected
+element. Pinned elements are skipped.
+
+## Slope (Misc Tools)
+
+Sets the slope on selected ducts, pipes, conduit and cable tray. Twelve slope
+units are supported: degrees, percentage, per mille and various ratios. The tool
+writes the slope parameter directly first; if that fails it falls back to
+adjusting the element's endpoints, keeping the horizontal midpoint fixed so the
+element stretches symmetrically rather than shifting to one side.
+
+## Grid Offset (Misc Tools)
+
+Offsets grid head positions from the crop region or a selected scope box across
+views. Choose **Out** or **In** for the direction, enter a distance, and the
+tool repositions the view-specific grid extents accordingly. Distance input
+supports feet-and-inches, inches or decimal feet.
+
+## Tags Sweep (Misc Tools)
+
+Finds and deletes orphaned tags — tags whose host element has been deleted or
+is otherwise lost. The scan covers **IndependentTag**, **RoomTag**, **AreaTag**
+and **SpaceTag**. Choose between scanning the **entire project** or the **active
+view only**. Results are shown in a checklist so you can selectively delete
+rather than removing them all at once.
+
+## Clash Detection Mode (Misc Tools, Revit 2023-2027)
+
+A live, forward-only interference checker. Pick two sets of categories, and from
+that point on only **new** clashes are reported — existing interferences are
+never listed, so the output stays focused on what just changed. **Silent Mode**
+keeps a live panel open that updates as you work without interrupting.
+
+The command runs in a persistent pyRevit engine because it owns live Revit
+event handlers that must outlive the click that created them. A persistent
+engine keeps its loaded modules across a pyRevit reload, so the command drops
+its own modules on each launch when no detection session is running — that is
+what lets an update take effect on the next click instead of only after a Revit
+restart. Its main window shows a **Build <timestamp>** stamp read from the files
+on disk: if that does not move after an update, Revit is still loading the old
+files from somewhere else.
+
+## Sheet Manager (Sheet)
+
+A modeless bulk editor for sheets, revisions and sheet parameters. Every project
+revision appears as a checkbox column, so toggling a revision on or off for a
+sheet is a single tick. Sheet numbers, names and other parameters are all
+editable in one grid.
+
+Nothing is written until **Apply Changes**. The window stays open while you work
+in Revit; clicking back into it re-syncs the grid with the current model state,
+so edits made in Revit between visits are not lost.
+
+## Print Sheets (Sheet)
+
+Prints sheets in order from a sheet index or schedule. The tool supports
+**combined PDF** output, **individual printing**, **variable paper sizes** per
+sheet, and a **custom naming format** built from template variables (sheet
+number, name, revision, date and others). Revision-based filtering narrows the
+set to sheets carrying a particular revision, and linked-document printing
+handles sheets coming from a Revit link.
+
+Shift-clicking the button runs a cleanup pass that strips non-printable
+characters from sheet numbers — useful when pasted or imported sheet numbers
+carry invisible formatting.
+
+## Print Set (Sheet)
+
+A pulldown with two buttons for creating or updating native Revit print sets
+(Revit 2023+). Both support revision-based filtering.
+
+- **From Excel** — import an `.xlsx` or `.xlsm` file. The tool reads the first
+  visible worksheet and takes the first two visible columns as sheet number and
+  sheet name.
+- **From Schedule** — pick a Sheet List schedule already in the model and use
+  its order.
+
+## Revision Manager (Sheet)
+
+A pulldown with four bulk-revision tools:
+
+- **Add Revisions on Sheets** — add the selected revisions to the selected
+  sheets in one pass. The tool remembers the previous selection so repeating the
+  operation on the next batch is faster.
+- **Remove Revisions on Sheets** — remove revisions from sheets. Revision
+  clouds left without a visible revision on the sheet are auto-hidden so they do
+  not appear as orphans.
+- **Hide Revision Clouds by Sequences** — hides revision clouds in all
+  non-template views, filtered by revision sequence number.
+- **Unhide Revision Clouds by Sequences** — reverses the hide, making the
+  clouds visible again by the same sequence filter.
+
+## Isolate in All (Sheet)
+
+Pick the categories you want to keep visible, and everything else is hidden
+across **every view and sheet** in the document. The tool walks the entire model
+and applies the isolation uniformly, so the result is consistent from view to
+view without visiting each one by hand.
+
+## Parameter Copy (Parameters)
+
+Copies one parameter's value to one or more target parameters across elements.
+Same-type copies go straight through; numeric values can be converted between
+units; and any value can be written as text. **Select Compatible** auto-picks
+target parameters whose storage type matches the source. The operation works on
+either the current selection or the entire model.
+
+## Parameter Combine (Parameters)
+
+Combines multiple parameter values into text target parameters using a format
+template. The template is built visually from parameter tokens and literal text
+— for example, `{Level} - {Room Name} ({Room Number})` — and the tool evaluates
+it per element and writes the result. A preview shows what every element will
+receive before anything is written. Works on the current selection or the entire
+model.
+
+## View Align (Views)
+
+Aligns viewports on sheets so that the same model coordinate appears at the same
+paper-space position across sheets. Pick a **reference viewport**, then check
+the **target viewports** to reposition. Options include matching the **viewport
+title position and length**, **viewport type**, **scope box**, **crop region**
+and **title block alignment**, so the viewports not only land at the right spot
+but look the same doing it.
+
+## View Settings Transfer (Views, Revit 2023+)
+
+Transfers view or view-template settings from one source to many targets. The
+source can be a view or a template; targets can be views, templates, or both.
+Choose **Transfer All** to copy every setting, or **Selective Transfer** to pick
+which settings to carry over from a searchable tree. Target selection uses the
+same searchable tree, so narrowing a long list of views is fast.
+
+## Keynotes (Keynote)
+
+A full keynote management window. Browse keynotes by category with a search box,
+and **add**, **edit**, **remove** or **re-key** both categories and individual
+keynotes. Keynotes can be moved between categories, and re-keying a keynote
+updates every reference in the model so nothing goes stale.
+
+**Place** puts a keynote directly into the model from the window. **Show Where
+Used** lists every element or tag that references a keynote, so nothing is
+deleted blind. Legacy `.txt` keynote files can be imported and exported for
+interoperability with older workflows.
+
+BIM360 and ACC integration is supported — the tool reads and writes the keynote
+source wherever the model's keynote table points. Shift-clicking the button
+resets the window's saved configuration (column widths, sort order, window size)
+back to defaults.
+
+## DWG: Open/Reload (Links)
+
+Select a linked DWG instance in the model and choose one of four actions:
+
+- **Open** the DWG in the default application
+- **Open Containing Folder** in Windows Explorer
+- **Copy Path** to the clipboard
+- **Reload** the DWG link from disk
+
+The DWG must be a link, not an import — imported DWGs have no external file path
+to act on, so the tool rejects them with a message.
+
+## Start Message (Message)
+
+Runs the startup workflow on demand: the **Active Workset** picker and the
+**Coordination Review** summary. This is the same sequence that runs
+automatically when a document is opened, surfaced as a button for the times you
+want to revisit the workset choice or review coordination changes without
+closing and reopening the file.

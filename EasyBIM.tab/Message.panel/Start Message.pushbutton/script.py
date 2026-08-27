@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+"""Run the startup workflow: Active Workset picker and Coordination Review."""
 
 from easybim.messages import run_start_message_workflow
 

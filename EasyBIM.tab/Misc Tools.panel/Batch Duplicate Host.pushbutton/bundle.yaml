@@ -1,1 +1,8 @@
 title: "Batch Duplicate\nHost"
+tooltip: >-
+  Duplicate a selected element onto multiple target host instances.
+
+  Pick a source element, choose target categories and family types
+  from any open document, set X/Y/Z offsets and orientation alignment,
+  then place copies at each target instance's location.
+author: Ruiming Liu

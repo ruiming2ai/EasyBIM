@@ -1,3 +1,10 @@
 title: View Align
-tooltip: Align selected target viewports to a reference viewport using model coordinates.
+tooltip: >-
+  Align placed viewports on sheets so the same model coordinate
+  appears at the same paper-space position across sheets.
+
+  Pick a reference viewport, then check the target viewports to
+  reposition. Options include matching the viewport title position,
+  title line length, viewport type, scope box, crop region and
+  title block alignment.
 author: Ruiming Liu

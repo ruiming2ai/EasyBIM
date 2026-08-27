@@ -1,0 +1,10 @@
+title: "Parameter\nCombine"
+tooltip: >-
+  Combine multiple parameter values into a text parameter using a
+  format template.
+
+  Build a format from parameter tokens and literal text, pick the
+  target text parameters, and apply to the current selection or to
+  every element in the model. A preview shows what will be written
+  before anything changes.
+author: Ruiming Liu

@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Temp Phase command entrypoint.
-
-The button and its session tracking are entirely Python-based.  Close
-recovery is handled by the companion Python hooks, so this command does not
-load a controller DLL or depend on pyRevit's C# command compiler.
-"""
+"""Set a temporary phase on the active view and restore original phases on close or on demand."""
 
 from __future__ import print_function
 

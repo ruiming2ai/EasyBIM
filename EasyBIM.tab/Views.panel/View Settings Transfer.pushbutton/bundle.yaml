@@ -1,9 +1,11 @@
 title: |-
   View Settings
   Transfer
-tooltip: |-
+tooltip: >-
   Transfer view or view template settings to views and view templates.
 
-  Choose a source view or view template, pick target views or view templates, then run Transfer All or Selective Transfer.
+  Choose a source view or view template, pick target views or view
+  templates from a searchable tree, then run Transfer All to copy
+  every setting or Selective Transfer to pick which ones to apply.
 min_revit_version: 2023
 author: Ruiming Liu

@@ -1,0 +1,8 @@
+title: Start Message
+tooltip: >-
+  Run the startup workflow on demand: Active Workset picker and
+  Coordination Review summary.
+
+  The same sequence runs automatically when a document is opened.
+  Clicking this button runs it again with the current document.
+author: Ruiming Liu

@@ -1,0 +1,8 @@
+title: Tags Sweep
+tooltip: >-
+  Find and delete orphaned tags whose host element no longer exists.
+
+  Scans for independent tags, room tags, area tags and space tags in
+  the entire project or just the active view. Results are shown in a
+  checklist so you can review before deleting.
+author: Ruiming Liu

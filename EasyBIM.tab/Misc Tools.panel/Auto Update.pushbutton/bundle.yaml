@@ -1,2 +1,12 @@
 title: "Auto\nUpdate"
 context: zero-doc
+tooltip: >-
+  Pull the latest EasyBIM changes from its git repository and reload
+  pyRevit if the extension moved.
+
+  Only the EasyBIM repository is updated - other installed extensions
+  are left alone. Use pyRevit's own Update button to refresh everything
+  else.
+
+  Also runs automatically once per Revit session at startup.
+author: Ruiming Liu

@@ -1,1 +1,8 @@
 title: "3D Rotate\nMultiple"
+tooltip: >-
+  Rotate selected elements one-by-one around each element's own center.
+
+  Three rotation modes: Plan (around Z axis), Vertical Front/Back
+  (around X axis), and Vertical Left/Right (around Y axis). Enter
+  the angle in degrees. Pinned elements are skipped.
+author: Ruiming Liu

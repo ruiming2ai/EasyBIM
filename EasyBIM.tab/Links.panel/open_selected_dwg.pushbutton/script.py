@@ -2,32 +2,7 @@
 __title__ = "DWG: Open/Reload"
 __author__ = "Erik Frits"
 __helpurl__ = "https://www.erikfrits.com/blog/open-selected-dwg/"
-__doc__ = """Version = 1.1
-Date    = 12.04.2021
-_____________________________________________________________________
-Description:
-Add-in for opening selected DWG with 3 options:
-    1) Open [.dwg file] in default application.
-    2) Open a folder where [.dwg file] is being stored.
-    3) Copy Absolute path of [.dwg file] into clipboard (ctrl+C).
-_____________________________________________________________________
-How-to:
-Select linked dwg instance and click the button.
-If ImportInstance is Linked, a dialog box will pop-up 
-to choose action, otherwise it will notify that 
-ImportInstance is not a linked one.
-_____________________________________________________________________
-Prerequisite:
-ImportInstance have to be linked and not imported!
-_____________________________________________________________________
-Last update:
-- [07.09.2021] - V 1.1
-- [07.09.2021] - Reload DWG button added.
-_____________________________________________________________________
-To-do:
-- add header logo to GUI
-_____________________________________________________________________
-"""
+__doc__ = "Open, reload or locate a selected linked DWG in the model."
 # IMPORTS
 from os import startfile
 from os.path import dirname

@@ -1,1 +1,9 @@
 title: "Flip\nMultiple"
+tooltip: >-
+  Flip selected family instances one-by-one using native Revit flip
+  actions.
+
+  Four modes: Front/Back, Left/Right, Up/Down, and Work Plane flip.
+  Pick the direction, select the elements, and each instance is
+  flipped around its own axis.
+author: Ruiming Liu
