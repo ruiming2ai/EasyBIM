@@ -1824,11 +1824,6 @@ class SheetManagerWindow(forms.WPFWindow):
             self._post_apply_refresh(results, stale)
             self._show_dialog(dialogs.ApplyResultsWindow(
                 "ApplyResultsDialog.xaml", results))
-            # Still inside Execute: the per-link reload transactions need
-            # the API context too.
-            link_reload.ask_and_reload_loaded_links(
-                self._doc, title="Sheet Manager",
-                confirm_func=self._confirm_link_reload)
 
         self._run_in_revit("Apply Changes", work, done)
 
