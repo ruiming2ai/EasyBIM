@@ -127,7 +127,7 @@
                         Content="Import from Excel"
                         Click="import_from_excel"/>
             </StackPanel>
-            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+            <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right" Orientation="Horizontal">
                 <Button x:Name="copysheetinfo_b"
                         Content="Copy Sheet Info"
                         Margin="0,0,6,0"
@@ -149,6 +149,17 @@
                         MinWidth="130"
                         FontWeight="SemiBold"
                         Click="apply_changes"/>
+            </StackPanel>
+            <StackPanel HorizontalAlignment="Center" Orientation="Horizontal">
+                <Button x:Name="pdfexport_b"
+                        Content="PDF Export"
+                        Background="#C8E6C9"
+                        Margin="0,0,6,0"
+                        Click="pdf_export"/>
+                <Button x:Name="print_b"
+                        Content="Print"
+                        Background="#C8E6C9"
+                        Click="print_sheets"/>
             </StackPanel>
         </DockPanel>
     </Grid>

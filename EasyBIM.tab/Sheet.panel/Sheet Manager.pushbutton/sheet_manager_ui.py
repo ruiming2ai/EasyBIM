@@ -224,6 +224,7 @@ class SheetManagerWindow(forms.WPFWindow):
             self.loadsheetlist_b, self.loadprintset_b, self.filterparam_b,
             self.addtbparam_b, self.addsheetparam_b, self.saveprintset_b,
             self.selecttblocks_b, self.apply_b, self.refresh_b,
+            self.pdfexport_b, self.print_b,
         ]
         if self._bridge is not None:
             self._bridge.on_error = self._on_bridge_error
@@ -1836,6 +1837,44 @@ class SheetManagerWindow(forms.WPFWindow):
             link_reload.RELOAD_PROMPT, title=title,
             options=["Reload links", "Skip"])
         return choice == "Reload links"
+
+    def _reload_and_post_command(self, action_title, command_member_name):
+        should_reload = self._confirm_link_reload(action_title)
+
+        def work(uiapp):
+            if should_reload:
+                link_reload.reload_loaded_manage_links(self._doc)
+            try:
+                from Autodesk.Revit.UI import PostableCommand
+                command = getattr(PostableCommand, command_member_name, None)
+            except Exception:
+                command = None
+            if command is None:
+                return
+            try:
+                from Autodesk.Revit.UI import RevitCommandId
+                lookup = getattr(RevitCommandId,
+                                 "LookupPostableCommandId", None)
+                if not callable(lookup):
+                    return
+                command_id = lookup(command)
+                can_post = getattr(uiapp, "CanPostCommand", None)
+                if callable(can_post) and can_post(command_id):
+                    uiapp.PostCommand(command_id)
+            except Exception:
+                pass
+
+        self._run_in_revit(action_title, work)
+
+    def pdf_export(self, sender, args):
+        del sender, args
+        self._commit_pending_edit()
+        self._reload_and_post_command("PDF Export", "ExportPDF")
+
+    def print_sheets(self, sender, args):
+        del sender, args
+        self._commit_pending_edit()
+        self._reload_and_post_command("Print", "Print")
 
 
 # ------------------------------------------------------------ launcher
