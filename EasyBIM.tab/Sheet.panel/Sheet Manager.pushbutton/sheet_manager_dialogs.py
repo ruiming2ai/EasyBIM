@@ -144,7 +144,7 @@ class LoadFromSourceWindow(forms.WPFWindow):
         else:
             self.Title = "Load Print Set"
             self.prompt_tb.Text = "Print Set:"
-            self.hide_element(self.numbersonly_cb)
+            self.show_element(self.numbersonly_cb)
         for name in names:
             self.source_cb.Items.Add(name)
         if names:
