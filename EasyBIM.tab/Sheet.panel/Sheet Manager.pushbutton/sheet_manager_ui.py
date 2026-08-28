@@ -1027,6 +1027,7 @@ class SheetManagerWindow(forms.WPFWindow):
         del sender, args
         if not getattr(self, "_is_ready", False):
             return
+        self._source_order = None
         self._source_label = "All Sheets"
         self.search_tb.Text = u""
         self._search_text = u""
@@ -1160,7 +1161,7 @@ class SheetManagerWindow(forms.WPFWindow):
             "LoadFromSourceDialog.xaml", "printset", names))
         if not dialog.result:
             return
-        name = dialog.result[0]
+        name, numbers_only = dialog.result
         sheets = smrevit.get_print_set_sheets(self._doc, name)
         if not sheets:
             self._alert(
@@ -1169,6 +1170,8 @@ class SheetManagerWindow(forms.WPFWindow):
             return
         self._source_order = [eid_to_int(sheet.Id) for sheet in sheets]
         self._source_label = u"Print Set: {0}".format(name)
+        if not numbers_only:
+            self._prefetch_filter_values()
         self._refresh_visible_rows()
 
     def filter_by_revision(self, sender, args):

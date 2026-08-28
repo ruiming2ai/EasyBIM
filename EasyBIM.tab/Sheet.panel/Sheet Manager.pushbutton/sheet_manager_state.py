@@ -179,7 +179,12 @@ def refresh_cell_state(row, column):
         return
     current = getattr(row, column.attr, None)
     original = row.original.get(column.attr)
-    if current != original:
+    if column.kind == KIND_REVISION:
+        changed = bool(current) != bool(original)
+    else:
+        changed = u"{0}".format(current or u"") \
+            != u"{0}".format(original or u"")
+    if changed:
         row.set_state(column.attr, STATE_DIRTY)
     else:
         row.set_state(column.attr, base)
