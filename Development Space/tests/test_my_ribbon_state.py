@@ -349,6 +349,29 @@ class NewSourceKindTests(unittest.TestCase):
         self.assertEqual(source["branch"], "main")
         self.assertEqual(source["kind"], "installed")
 
+    def test_only_a_ribbon_tab_that_named_a_url_is_reported_as_fetchable(self):
+        """A tab can be a pyRevit extension pyRevit did not report as loaded.
+
+        One that named a URL when it was exported can be downloaded here, so
+        it belongs in the preview; a plain Revit add-in's tab never can, and
+        listing it would promise an install that cannot happen.
+        """
+        current = {"format": 1, "sources": [], "destinations": [], "placements": [],
+                   "hidden_tabs": []}
+        incoming = {"format": 1, "sources": [], "destinations": [], "placements": [],
+                    "hidden_tabs": []}
+        self.state.add_source(incoming, {
+            "kind": "ribbon", "ext_name": "BMT", "label": "BMT (tab)",
+            "tab_names": ["BMT"], "url": "https://github.com/o/bmt", "branch": None})
+        self.state.add_source(incoming, {
+            "kind": "ribbon", "ext_name": "CTC Productivity",
+            "label": "CTC Productivity (tab)", "tab_names": ["CTC Productivity"]})
+        plan = self.state.plan_import(current, incoming, "merge", installed_ext_names=[])
+        self.assertEqual(plan["sources_not_here"], ["BMT (tab)"])
+        kept = [s for s in plan["result"]["sources"] if s["ext_name"] == "BMT"][0]
+        self.assertEqual(kept["url"], "https://github.com/o/bmt")
+        self.assertEqual(kept["kind"], "ribbon")
+
     def test_imported_dynamo_sources_stay_deletable(self):
         current = {"format": 1, "sources": [], "destinations": [], "placements": [], "hidden_tabs": []}
         incoming = {"format": 1, "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "title": "G",

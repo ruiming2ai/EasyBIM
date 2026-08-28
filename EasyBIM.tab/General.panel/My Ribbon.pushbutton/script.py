@@ -462,9 +462,14 @@ def _add_source_flow(working, pending_deletes):
                 forms.alert("No buttons could be read from the tab '{0}'.".format(tab.get("title")),
                             title=__title__)
                 continue
+            # A tab can be a pyRevit extension pyRevit did not report as loaded
+            # (disabled, or it failed to parse).  The folder is still on disk,
+            # so record where it came from - that is what makes it downloadable.
+            url, branch = _installed_source_url(tab.get("title"))
             entry = state.add_source(working, {
                 "kind": "ribbon", "ext_name": tab.get("title"), "label": "{0} (tab)".format(tab.get("title")),
-                "tab_names": [tab.get("title")], "installed_by_my_ribbon": False, "hide_tab": False})
+                "tab_names": [tab.get("title")], "installed_by_my_ribbon": False, "hide_tab": False,
+                "url": url, "branch": branch})
             _pick_and_place(working, entry, described)
             return None
         if kind == "dynamo":
@@ -577,7 +582,7 @@ def _export(working):
     # so re-exporting an old setup is enough to make it installable elsewhere.
     rows = None
     for source in working.get("sources", []):
-        if source.get("kind") != "installed" or source.get("url"):
+        if source.get("kind") not in ("installed", "ribbon") or source.get("url"):
             continue
         if rows is None:
             try:
@@ -655,8 +660,16 @@ def _import(working, pending_deletes):
                         source[field] = fresh[field]
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
-        elif kind == "installed":
+        elif kind in ("installed", "ribbon"):
             ext_label = source.get("label") or source.get("ext_name")
+            if kind == "ribbon":
+                # _source_dir never claims a tab, so check the folder here: a
+                # tab with no pyRevit extension behind it (a Revit add-in with
+                # its own installer) has nothing to fetch and is not a failure.
+                if host.find_installed_extension_dir(source.get("ext_name")):
+                    continue
+                if not source.get("url"):
+                    continue
             try:
                 rows = host.catalogue_packages(installed_names=installed)
             except Exception as ex:
@@ -664,10 +677,13 @@ def _import(working, pending_deletes):
                 rows = []
             match = [r for r in rows if state.normalize_label(r.get("name")) ==
                      state.normalize_label(source.get("ext_name"))]
+            # A ribbon source is keyed by its tab title; only an installed one
+            # renames itself to whatever the download turned out to be called.
+            named = () if kind == "ribbon" else ("ext_name",)
             if match:
                 fresh, _ = _install_from_catalogue(match[0])
                 if fresh:
-                    for field in ("ext_name", "tab_names", "installed_by_my_ribbon"):
+                    for field in named + ("tab_names", "installed_by_my_ribbon"):
                         source[field] = fresh[field]
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1
@@ -675,7 +691,7 @@ def _import(working, pending_deletes):
             if source.get("url"):
                 fresh, _ = _download_git(source["url"], source.get("branch"))
                 if fresh:
-                    for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
+                    for field in named + ("tab_names", "extra_root", "installed_by_my_ribbon"):
                         source[field] = fresh[0].get(field)
                     _forget_pending_delete(pending_deletes, source)
                     downloaded += 1

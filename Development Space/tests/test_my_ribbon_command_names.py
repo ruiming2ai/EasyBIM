@@ -450,7 +450,8 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("_download_git", imported)
         self.assertIn("_install_from_catalogue", imported)
         self.assertIn("catalogue_packages", imported)
-        self.assertIn('kind == "installed"', imported)
+        # a tab can be a pyRevit extension too, so both kinds reach the download
+        self.assertIn('kind in ("installed", "ribbon")', imported)
         # a source downloaded again survives a Remove staged earlier in the session
         self.assertEqual(imported.count("_forget_pending_delete"), 4)
         self.assertIn("not_downloaded", imported)

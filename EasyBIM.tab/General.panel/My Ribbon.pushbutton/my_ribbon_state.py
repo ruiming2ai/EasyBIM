@@ -1054,7 +1054,9 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
         name = normalize_label(source.get("ext_name"))
         kind = source.get("kind")
         if kind in ("installed", "ribbon"):
-            if name and name not in installed and kind == "installed":
+            # A tab is only worth reporting when something could fetch it: a
+            # pyRevit extension behind it named a URL when this was exported.
+            if name and name not in installed and (kind == "installed" or source.get("url")):
                 plan["sources_not_here"].append(source.get("label") or source.get("ext_name"))
         elif kind == "dynamo":
             # the graph path is checked by the host; nothing to install
