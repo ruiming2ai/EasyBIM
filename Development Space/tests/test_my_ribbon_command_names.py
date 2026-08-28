@@ -456,15 +456,19 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("not_downloaded", imported)
         self.assertIn("LOGGER", imported)
 
-    def test_installed_sources_carry_the_git_remote_when_available(self):
-        """The add and export flows read the git remote so the file is downloadable."""
-        flow = _function_source(SCRIPT_MODULE, "_add_source_flow")
-        self.assertIn("remote_url", flow)
-        self.assertIn("parse_git_url", flow)
-        self.assertIn('"url"', flow)
-        export = _function_source(SCRIPT_MODULE, "_export")
-        self.assertIn("remote_url", export)
-        self.assertIn("parse_git_url", export)
+    def test_installed_sources_carry_a_download_handle_when_available(self):
+        """Add and export both record where an installed extension came from.
+
+        A cloned extension has a git remote; one placed by pyRevit's own
+        installer has none, and then only the catalogue can name it - so the
+        helper must try both or built-in extensions export with no handle.
+        """
+        helper = _function_source(SCRIPT_MODULE, "_installed_source_url")
+        self.assertIn("host.remote_url(", helper)
+        self.assertIn("state.parse_git_url(", helper)
+        self.assertIn("host.catalogue_packages(", helper)
+        for name in ("_add_source_flow", "_export"):
+            self.assertIn("_installed_source_url", _function_source(SCRIPT_MODULE, name), name)
 
     def test_downloads_are_cancellable_and_probed_first(self):
         clone = _function_source(SCRIPT_MODULE, "_clone_with_progress")

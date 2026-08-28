@@ -308,6 +308,41 @@ def _download_git(link, branch):
     return sources, described_by_index
 
 
+def _installed_source_url(ext_name, ext_dir=None, catalogue_rows=None):
+    """Where an installed extension could be fetched from again, as
+    ``(url, branch)``.  Its own git remote when it was cloned; otherwise
+    pyRevit's catalogue entry, which is the only handle a built-in or
+    installer-placed extension has.  ``(None, None)`` when neither knows it."""
+    if ext_dir is None:
+        ext_dir = host.find_installed_extension_dir(ext_name)
+    if ext_dir:
+        try:
+            raw = host.remote_url(ext_dir)
+        except Exception as ex:
+            LOGGER.debug("remote_url failed for %s: %s", ext_name, ex)
+            raw = None
+        if raw:
+            ref, _ = state.parse_git_url(raw)
+            if ref is not None:
+                return ref.web_url, ref.branch
+    if catalogue_rows is None:
+        try:
+            catalogue_rows = host.catalogue_packages()
+        except Exception as ex:
+            LOGGER.debug("catalogue_packages failed for %s: %s", ext_name, ex)
+            catalogue_rows = []
+    wanted = state.normalize_label(ext_name)
+    for row in catalogue_rows:
+        if state.normalize_label(row.get("name")) != wanted:
+            continue
+        raw = row.get("url")
+        if not raw:
+            continue
+        ref, _ = state.parse_git_url(raw)
+        return (ref.web_url, ref.branch) if ref is not None else (raw, None)
+    return None, None
+
+
 def _install_from_catalogue(row):
     """Install (or reuse) a catalogue entry; returns ``(source, described)``."""
     package = row.get("package")
@@ -436,19 +471,7 @@ def _add_source_flow(working, pending_deletes):
             return _add_dynamo_flow(working, page.result[1])
         if kind == "installed":
             ext = page.result[1]
-            url = None
-            branch = None
-            ext_dir = ext.get("dir")
-            if ext_dir:
-                try:
-                    raw = host.remote_url(ext_dir)
-                except Exception:
-                    raw = None
-                if raw:
-                    ref, _ = state.parse_git_url(raw)
-                    if ref is not None:
-                        url = ref.web_url
-                        branch = ref.branch
+            url, branch = _installed_source_url(ext.get("name"), ext_dir=ext.get("dir"))
             entry = state.add_source(working, {
                 "kind": "installed", "ext_name": ext.get("name"), "label": ext.get("name"),
                 "tab_names": ext.get("tab_names"), "installed_by_my_ribbon": False,
@@ -550,19 +573,22 @@ def _export(working):
                            title="Export My Ribbon settings")
     if not path:
         return None
+    # Backfill the download handle for sources added before it was recorded,
+    # so re-exporting an old setup is enough to make it installable elsewhere.
+    rows = None
     for source in working.get("sources", []):
-        if source.get("kind") == "installed" and not source.get("url"):
-            ext_dir = host.find_installed_extension_dir(source.get("ext_name"))
-            if ext_dir:
-                try:
-                    raw = host.remote_url(ext_dir)
-                except Exception:
-                    raw = None
-                if raw:
-                    ref, _ = state.parse_git_url(raw)
-                    if ref is not None:
-                        source["url"] = ref.web_url
-                        source["branch"] = ref.branch
+        if source.get("kind") != "installed" or source.get("url"):
+            continue
+        if rows is None:
+            try:
+                rows = host.catalogue_packages()
+            except Exception as ex:
+                LOGGER.debug("catalogue_packages failed during export: %s", ex)
+                rows = []
+        url, branch = _installed_source_url(source.get("ext_name"), catalogue_rows=rows)
+        if url:
+            source["url"] = url
+            source["branch"] = branch
     document = state.export_document(working)
     try:
         text = json.dumps(document, indent=2, sort_keys=True)
