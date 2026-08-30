@@ -86,22 +86,22 @@
             </DataGrid.Columns>
         </DataGrid>
         <DockPanel Grid.Row="3" Margin="0,10,0,0" LastChildFill="False">
+            <Button x:Name="cancel_b"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Height="28"
+                    MinWidth="90"
+                    DockPanel.Dock="Right"
+                    Click="cancel_clicked"/>
             <Button x:Name="ok_b"
                     Content="Stage Replacements"
                     IsDefault="True"
                     IsEnabled="False"
                     Height="28"
                     MinWidth="130"
-                    DockPanel.Dock="Right"
-                    Click="ok_clicked"/>
-            <Button x:Name="cancel_b"
-                    Content="Cancel"
-                    IsCancel="True"
-                    Height="28"
-                    MinWidth="90"
                     Margin="0,0,8,0"
                     DockPanel.Dock="Right"
-                    Click="cancel_clicked"/>
+                    Click="ok_clicked"/>
         </DockPanel>
     </Grid>
 </Window>
