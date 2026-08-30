@@ -20,6 +20,42 @@ from easybim import print_sets
 LOGGER = script.get_logger()
 
 
+class _LinkResultRow(object):
+    __slots__ = ("name", "element_type", "status", "error")
+
+    def __init__(self, name, element_type, status, error):
+        self.name = name
+        self.element_type = element_type
+        self.status = status
+        self.error = error
+
+
+class _ReloadLinksResultsWindow(forms.WPFWindow):
+    def __init__(self, xaml_file_name, items):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+
+        rows = [_LinkResultRow(
+            i.get("name", ""), i.get("element_type", ""),
+            i.get("status", ""), i.get("error", ""))
+            for i in (items or [])]
+
+        reloaded = sum(1 for r in rows if r.status == "Reloaded")
+        errors = sum(1 for r in rows if r.status == "Error")
+        skipped = len(rows) - reloaded - errors
+        parts = ["Reloaded: {0}".format(reloaded)]
+        if errors:
+            parts.append("Errors: {0}".format(errors))
+        if skipped:
+            parts.append("Skipped: {0}".format(skipped))
+        self.summary_tb.Text = "  |  ".join(parts)
+
+        self.results_dg.ItemsSource = rows
+
+    def ok_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
 class UpdatePrintSetFromScheduleWindow(forms.WPFWindow):
     def __init__(self, xaml_file_name):
         forms.WPFWindow.__init__(self, xaml_file_name)
@@ -274,10 +310,15 @@ class UpdatePrintSetFromScheduleWindow(forms.WPFWindow):
             )
             return
 
-        link_reload.ask_and_reload_loaded_links(
+        summary = link_reload.ask_and_reload_loaded_links(
             revit.doc,
             title="Update Print Set From Schedule"
         )
+        if summary:
+            items = summary.get("items")
+            if items:
+                _ReloadLinksResultsWindow(
+                    "ReloadLinksResultsDialog.xaml", items).ShowDialog()
 
         message = [
             "Print set updated: {}".format(print_set_name),

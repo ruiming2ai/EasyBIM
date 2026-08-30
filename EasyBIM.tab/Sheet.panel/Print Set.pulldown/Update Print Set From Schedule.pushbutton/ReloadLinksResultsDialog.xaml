@@ -1,0 +1,78 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Reload Links Results"
+        Height="480"
+        Width="780"
+        MinHeight="320"
+        MinWidth="560"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Reload Links Results"
+                   FontSize="18"
+                   FontWeight="SemiBold"
+                   Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="1"
+                   x:Name="summary_tb"
+                   Margin="0,0,0,10"/>
+
+        <DataGrid Grid.Row="2"
+                  x:Name="results_dg"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  RowHeaderWidth="0"
+                  CanUserSortColumns="False"
+                  BorderThickness="0"
+                  HorizontalGridLinesBrush="#dedede"
+                  VerticalGridLinesBrush="#dedede"
+                  EnableColumnVirtualization="True"
+                  EnableRowVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling">
+            <DataGrid.RowStyle>
+                <Style TargetType="{x:Type DataGridRow}">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding status}" Value="Error">
+                            <Setter Property="Foreground" Value="#c00000"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name"
+                                    Binding="{Binding name}"
+                                    Width="220"/>
+                <DataGridTextColumn Header="Type"
+                                    Binding="{Binding element_type}"
+                                    Width="140"/>
+                <DataGridTextColumn Header="Status"
+                                    Binding="{Binding status}"
+                                    Width="130"/>
+                <DataGridTextColumn Header="Message"
+                                    Binding="{Binding error}"
+                                    Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <Button Grid.Row="3"
+                x:Name="ok_b"
+                Content="OK"
+                Height="30"
+                MinWidth="110"
+                Margin="0,10,0,0"
+                HorizontalAlignment="Right"
+                IsDefault="True"
+                IsCancel="True"
+                Click="ok_clicked"/>
+    </Grid>
+</Window>
