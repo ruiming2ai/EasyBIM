@@ -17,21 +17,21 @@
                   Content="Load only Sheet Numbers &amp; Names"
                   ToolTip="When off, the sheet list's visible columns and values are added to the table as well. Revision columns always remain."/>
         <DockPanel Margin="0,16,0,0" LastChildFill="False">
-            <Button x:Name="ok_b"
-                    Content="Load"
-                    IsDefault="True"
-                    Height="28"
-                    MinWidth="90"
-                    DockPanel.Dock="Right"
-                    Click="ok_clicked"/>
             <Button x:Name="cancel_b"
                     Content="Cancel"
                     IsCancel="True"
                     Height="28"
                     MinWidth="90"
-                    Margin="0,0,8,0"
                     DockPanel.Dock="Right"
                     Click="cancel_clicked"/>
+            <Button x:Name="ok_b"
+                    Content="Load"
+                    IsDefault="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
         </DockPanel>
     </StackPanel>
 </Window>

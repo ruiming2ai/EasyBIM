@@ -76,21 +76,21 @@
                     Margin="8,0,0,0"
                     DockPanel.Dock="Left"
                     Click="clear_all_clicked"/>
-            <Button x:Name="ok_b"
-                    Content="Save"
-                    IsDefault="True"
-                    Height="28"
-                    MinWidth="90"
-                    DockPanel.Dock="Right"
-                    Click="ok_clicked"/>
             <Button x:Name="cancel_b"
                     Content="Cancel"
                     IsCancel="True"
                     Height="28"
                     MinWidth="90"
-                    Margin="0,0,8,0"
                     DockPanel.Dock="Right"
                     Click="cancel_clicked"/>
+            <Button x:Name="ok_b"
+                    Content="Save"
+                    IsDefault="True"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Right"
+                    Click="ok_clicked"/>
         </DockPanel>
     </Grid>
 </Window>
