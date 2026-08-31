@@ -372,6 +372,40 @@ class NewSourceKindTests(unittest.TestCase):
         self.assertEqual(kept["url"], "https://github.com/o/bmt")
         self.assertEqual(kept["kind"], "ribbon")
 
+    def test_import_report_leads_with_what_went_wrong(self):
+        """Failures come first: they are the only rows the user must act on."""
+        outcome = {"downloaded": [{"label": "BMT", "detail": "https://github.com/o/bmt"}],
+                   "failed": [{"label": "CTC", "reason": "No download link."}],
+                   "already_here": [{"label": "pyRevitTools"}]}
+        report = {"added": ["Purge+"], "missing": [{"title": "Quick Select",
+                                                    "reason": "source not installed"}],
+                  "hidden_tabs": ["BMT"], "errors": []}
+        rows, summary = self.state.build_import_report(outcome, report)
+        self.assertEqual(rows[0]["status"], "Error")
+        self.assertEqual(rows[0]["name"], "CTC")
+        # BMT is two rows on purpose: the extension installed, and its tab hidden
+        statuses = dict(((r["name"], r["kind"]), r["status"]) for r in rows)
+        self.assertEqual(statuses[("BMT", "Extension")], "Installed")
+        self.assertEqual(statuses[("BMT", "Tab")], "Hidden")
+        self.assertEqual(statuses[("pyRevitTools", "Extension")], "Already here")
+        self.assertEqual(statuses[("Quick Select", "Button")], "Error")
+        self.assertIn("Installed: 1", summary)
+        self.assertIn("Failed: 1", summary)
+        self.assertIn("Buttons placed: 1", summary)
+        self.assertIn("Buttons missing: 1", summary)
+
+    def test_import_report_of_a_clean_run_names_no_failures(self):
+        rows, summary = self.state.build_import_report(
+            {"downloaded": [], "failed": [], "already_here": []},
+            {"added": ["A", "B"], "missing": [], "hidden_tabs": [], "errors": []})
+        self.assertEqual([r["status"] for r in rows], ["Placed", "Placed"])
+        self.assertEqual(summary, ["Installed: 0", "Buttons placed: 2"])
+
+    def test_import_report_survives_a_cancelled_or_empty_run(self):
+        rows, summary = self.state.build_import_report(None, None)
+        self.assertEqual(rows, [])
+        self.assertEqual(summary, ["Installed: 0", "Buttons placed: 0"])
+
     def test_imported_dynamo_sources_stay_deletable(self):
         current = {"format": 1, "sources": [], "destinations": [], "placements": [], "hidden_tabs": []}
         incoming = {"format": 1, "sources": [{"id": "s1", "kind": "dynamo", "path": "P:/g.dyn", "title": "G",

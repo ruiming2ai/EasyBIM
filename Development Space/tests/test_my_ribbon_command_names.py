@@ -38,6 +38,7 @@ WINDOW_CLASSES = {
     "CredentialsWindow.xaml": "CredentialsWindow",
     "TabVisibilityWindow.xaml": "TabVisibilityWindow",
     "DynamoButtonWindow.xaml": "DynamoButtonWindow",
+    "ImportResultsDialog.xaml": "ImportResultsWindow",
 }
 
 EXPECTED_MODULES = (
@@ -401,9 +402,11 @@ class MyRibbonContractTests(unittest.TestCase):
 
     def test_reload_only_after_the_window_closed_and_only_from_the_main_loop(self):
         script = _code_without_prose(SCRIPT_MODULE)
-        self.assertEqual(script.count("host.reload_pyrevit()"), 1)
         run = _function_source(SCRIPT_MODULE, "_run")
-        self.assertIn("host.reload_pyrevit()", run)
+        # Apply reloads, and so does Import now that it applies itself. Both
+        # calls belong to the main loop; a window or _apply must never reload.
+        self.assertEqual(script.count("host.reload_pyrevit()"), 2)
+        self.assertEqual(run.count("host.reload_pyrevit()"), 2)
         self.assertLess(run.index("window.ShowDialog()"), run.index("host.reload_pyrevit()"))
         self.assertNotIn("reload_pyrevit", _function_source(SCRIPT_MODULE, "_apply"))
         self.assertNotIn("reload_pyrevit", _code_without_prose(UI_MODULE))
@@ -446,16 +449,20 @@ class MyRibbonContractTests(unittest.TestCase):
 
     def test_import_still_installs_what_this_computer_lacks(self):
         """The two cards went; the code behind them is Import's, and stays."""
-        imported = _function_source(SCRIPT_MODULE, "_import")
-        self.assertIn("_download_git", imported)
-        self.assertIn("_install_from_catalogue", imported)
-        self.assertIn("catalogue_packages", imported)
-        # a tab can be a pyRevit extension too, so both kinds reach the download
-        self.assertIn('kind in ("installed", "ribbon")', imported)
+        one = _function_source(SCRIPT_MODULE, "_download_one")
+        self.assertIn("_download_git(", one)
+        self.assertIn("_install_from_catalogue(", one)
+        self.assertIn("host.catalogue_packages(", one)
         # a source downloaded again survives a Remove staged earlier in the session
-        self.assertEqual(imported.count("_forget_pending_delete"), 4)
-        self.assertIn("not_downloaded", imported)
-        self.assertIn("LOGGER", imported)
+        self.assertEqual(one.count("_forget_pending_delete"), 3)
+        # every path ends in the report: installed, or named with a reason
+        self.assertEqual(one.count('outcome["downloaded"]'), 3)
+        self.assertEqual(one.count('outcome["failed"]'), 2)
+        imported = _function_source(SCRIPT_MODULE, "_import")
+        self.assertIn("_download_one(", imported)
+        self.assertIn("forms.ProgressBar(", imported)
+        # a tab can be a pyRevit extension too, so both kinds reach the download
+        self.assertIn('kind == "ribbon"', _function_source(SCRIPT_MODULE, "_needs_download"))
 
     def test_installed_sources_carry_a_download_handle_when_available(self):
         """Add and export both record where an installed extension came from.

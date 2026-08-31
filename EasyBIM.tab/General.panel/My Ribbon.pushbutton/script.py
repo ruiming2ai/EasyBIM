@@ -24,6 +24,7 @@ from my_ribbon_ui import (  # noqa: E402
     DestinationWindow,
     DynamoButtonWindow,
     ImportPreviewWindow,
+    ImportResultsWindow,
     MyRibbonWindow,
     SourceSelectionWindow,
 )
@@ -633,89 +634,97 @@ def _import(working, pending_deletes):
 
     # download what this computer lacks; failures leave the source in place
     # so its buttons show as missing until it is installed
-    downloaded = 0
-    not_downloaded = []
-    for source in list(result.get("sources", [])):
-        if _source_dir(source) is not None:
-            continue
-        kind = source.get("kind")
-        if kind == "git" and source.get("url"):
-            fresh, _ = _download_git(source.get("url"), source.get("branch"))
-            if fresh:
-                for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
-                    source[field] = fresh[0].get(field)
-                _forget_pending_delete(pending_deletes, source)
-                downloaded += 1
-        elif kind == "catalogue":
-            try:
-                rows = host.catalogue_packages(installed_names=installed)
-            except Exception:
-                rows = []
-            match = [r for r in rows if state.normalize_label(r.get("name")) ==
-                     state.normalize_label(source.get("name") or source.get("ext_name"))]
-            if match:
-                fresh, _ = _install_from_catalogue(match[0])
-                if fresh:
-                    for field in ("ext_name", "tab_names", "installed_by_my_ribbon"):
-                        source[field] = fresh[field]
-                    _forget_pending_delete(pending_deletes, source)
-                    downloaded += 1
-        elif kind in ("installed", "ribbon"):
-            ext_label = source.get("label") or source.get("ext_name")
-            if kind == "ribbon":
-                # _source_dir never claims a tab, so check the folder here: a
-                # tab with no pyRevit extension behind it (a Revit add-in with
-                # its own installer) has nothing to fetch and is not a failure.
-                if host.find_installed_extension_dir(source.get("ext_name")):
-                    continue
-                if not source.get("url"):
-                    continue
-            try:
-                rows = host.catalogue_packages(installed_names=installed)
-            except Exception as ex:
-                LOGGER.debug("catalogue_packages failed for %s: %s", ext_label, ex)
-                rows = []
-            match = [r for r in rows if state.normalize_label(r.get("name")) ==
-                     state.normalize_label(source.get("ext_name"))]
-            # A ribbon source is keyed by its tab title; only an installed one
-            # renames itself to whatever the download turned out to be called.
-            named = () if kind == "ribbon" else ("ext_name",)
-            if match:
-                fresh, _ = _install_from_catalogue(match[0])
-                if fresh:
-                    for field in named + ("tab_names", "installed_by_my_ribbon"):
-                        source[field] = fresh[field]
-                    _forget_pending_delete(pending_deletes, source)
-                    downloaded += 1
-                    continue
-            if source.get("url"):
-                fresh, _ = _download_git(source["url"], source.get("branch"))
-                if fresh:
-                    for field in named + ("tab_names", "extra_root", "installed_by_my_ribbon"):
-                        source[field] = fresh[0].get(field)
-                    _forget_pending_delete(pending_deletes, source)
-                    downloaded += 1
-                    continue
-            not_downloaded.append(ext_label)
+    outcome = {"downloaded": [], "failed": [], "already_here": []}
+    wanted = [s for s in result.get("sources", []) if _needs_download(s)]
+    step = 0
+    with forms.ProgressBar(title="Installing {value} of {max_value}...",
+                           max_value=max(len(wanted), 1)) as bar:
+        for source in wanted:
+            step += 1
+            bar.update_progress(step, max(len(wanted), 1))
+            _download_one(source, installed, pending_deletes, outcome)
     working.clear()
     working.update(result)
-    msg = "Imported {0}: {1} button{2}, {3} source{4} ({5} downloaded). Press Apply to place them.".format(
-        os.path.basename(path), len(result.get("placements", [])),
-        "" if len(result.get("placements", [])) == 1 else "s",
-        len(result.get("sources", [])), "" if len(result.get("sources", [])) == 1 else "s",
-        downloaded)
-    if not_downloaded:
-        msg += "\nCould not install: {0}. Open pyRevit's Extensions window to install manually.".format(
-            ", ".join(not_downloaded))
-    return msg
+    return outcome
+
+
+def _needs_download(source):
+    """Whether this source has nothing on disk behind it yet."""
+    if _source_dir(source) is not None:
+        return False
+    kind = source.get("kind")
+    if kind == "git":
+        return bool(source.get("url"))
+    if kind == "catalogue":
+        return True
+    if kind == "installed":
+        return True
+    if kind == "ribbon":
+        # a tab with no pyRevit extension behind it (a Revit add-in with its
+        # own installer) has nothing to fetch and is not a failure
+        return bool(source.get("url")) and \
+            not host.find_installed_extension_dir(source.get("ext_name"))
+    return False
+
+
+def _download_one(source, installed, pending_deletes, outcome):
+    """Install one missing source, recording what happened in ``outcome``."""
+    kind = source.get("kind")
+    label = source.get("label") or source.get("ext_name")
+    if kind == "git":
+        fresh, _ = _download_git(source.get("url"), source.get("branch"))
+        if fresh:
+            for field in ("ext_name", "tab_names", "extra_root", "installed_by_my_ribbon"):
+                source[field] = fresh[0].get(field)
+            _forget_pending_delete(pending_deletes, source)
+            outcome["downloaded"].append({"label": label, "detail": source.get("url")})
+            return
+        outcome["failed"].append({"label": label, "reason": "The download failed."})
+        return
+    try:
+        rows = host.catalogue_packages(installed_names=installed)
+    except Exception as ex:
+        LOGGER.debug("catalogue_packages failed for %s: %s", label, ex)
+        rows = []
+    wanted = source.get("name") if kind == "catalogue" else source.get("ext_name")
+    match = [r for r in rows if state.normalize_label(r.get("name")) ==
+             state.normalize_label(wanted or source.get("ext_name"))]
+    # A ribbon source is keyed by its tab title; only the others rename
+    # themselves to whatever the download turned out to be called.
+    named = () if kind == "ribbon" else ("ext_name",)
+    if match:
+        fresh, _ = _install_from_catalogue(match[0])
+        if fresh:
+            for field in named + ("tab_names", "installed_by_my_ribbon"):
+                source[field] = fresh[field]
+            _forget_pending_delete(pending_deletes, source)
+            outcome["downloaded"].append({"label": label,
+                                          "detail": "Installed from pyRevit's catalogue."})
+            return
+    if source.get("url"):
+        fresh, _ = _download_git(source["url"], source.get("branch"))
+        if fresh:
+            for field in named + ("tab_names", "extra_root", "installed_by_my_ribbon"):
+                source[field] = fresh[0].get(field)
+            _forget_pending_delete(pending_deletes, source)
+            outcome["downloaded"].append({"label": label, "detail": source.get("url")})
+            return
+    outcome["failed"].append({
+        "label": label,
+        "reason": "Not in pyRevit's catalogue and no download link was stored."})
 
 
 # -- apply -------------------------------------------------------------------------------
 
 
-def _apply(working, pending_deletes):
+def _apply(working, pending_deletes, announce=True, ask_reload=True):
     """Save, delete what was removed, apply, and offer a reload when needed.
-    Returns ``(saved, notice, report, reloading)``."""
+    Returns ``(saved, notice, report, reloading)``.
+
+    Import applies itself and reports in its own window, so it passes
+    ``announce=False`` (no alert) and ``ask_reload=False`` (reload without
+    asking); ``reloading`` then simply says whether one is needed.
+    """
     problems = []
     # Dynamo buttons are bundles My Ribbon writes itself: name them uniquely
     # (this can rename a source's bundle and placements, so it runs before the
@@ -756,17 +765,20 @@ def _apply(working, pending_deletes):
     if report.get("errors"):
         parts.append("; ".join(report["errors"]))
     notice = ", ".join(parts) + "."
-    if report.get("missing") or problems or report.get("errors"):
+    if announce and (report.get("missing") or problems or report.get("errors")):
         # the window closes after Apply, so anything off is said now
         details = [u"{0}: {1}".format(m.get("title"), m.get("reason")) for m in report.get("missing", [])]
         details += problems + list(report.get("errors", []))
         forms.alert(notice, title=__title__, expanded="\n".join(details), warn_icon=bool(problems))
-    reloading = False
-    if needs_reload:
-        if forms.alert("Some tools need a pyRevit reload before they appear (or disappear). "
-                       "Your placements are saved and are applied automatically after the reload.\n\n"
-                       "Reload pyRevit now?", title=__title__, yes=True, no=True):
-            reloading = True
+    if problems:
+        report = dict(report)
+        report["errors"] = list(report.get("errors", [])) + problems
+    reloading = needs_reload
+    if needs_reload and ask_reload:
+        reloading = bool(forms.alert(
+            "Some tools need a pyRevit reload before they appear (or disappear). "
+            "Your placements are saved and are applied automatically after the reload.\n\n"
+            "Reload pyRevit now?", title=__title__, yes=True, no=True))
     return saved, notice, report, reloading
 
 
@@ -804,8 +816,20 @@ def _run():
             notice = _export(working)
             continue
         if result == "import":
-            notice = _import(working, pending_deletes)
-            continue
+            outcome = _import(working, pending_deletes)
+            if outcome is None:
+                continue
+            # The preview window is where the import was confirmed, so it
+            # applies itself.  Apply before the reload: it writes the hidden-tab
+            # state, so a tab the file marks hidden never shows even briefly.
+            new_saved, _applied, report, _needed = _apply(
+                working, pending_deletes, announce=False, ask_reload=False)
+            if new_saved is None:
+                continue  # the save failed; the window returns with work staged
+            rows, summary = state.build_import_report(outcome, report)
+            ImportResultsWindow("ImportResultsDialog.xaml", rows, summary).ShowDialog()
+            host.reload_pyrevit()
+            return
         if result == "apply":
             new_saved, notice, report, reloading = _apply(working, pending_deletes)
             if new_saved is None:

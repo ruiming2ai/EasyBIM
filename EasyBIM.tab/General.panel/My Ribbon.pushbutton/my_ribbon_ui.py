@@ -1200,6 +1200,36 @@ class ImportPreviewWindow(forms.WPFWindow):
         self.Close()
 
 
+class _ImportResultRow(object):
+    """One grid line.  The names are what ImportResultsDialog.xaml binds to."""
+
+    __slots__ = ("name", "kind", "status", "detail")
+
+    def __init__(self, name, kind, status, detail):
+        self.name = name
+        self.kind = kind
+        self.status = status
+        self.detail = detail
+
+
+class ImportResultsWindow(forms.WPFWindow):
+    """What an import installed and changed: one line per extension and setting."""
+
+    def __init__(self, xaml_file_name, rows, summary):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.results_dg.ItemsSource = [
+            _ImportResultRow(_safe_text(r.get("name")), _safe_text(r.get("kind")),
+                             _safe_text(r.get("status")), _safe_text(r.get("detail")))
+            for r in (rows or [])]
+        self.summary_tb.Text = "  |  ".join(summary or [])
+        self._is_ready = True
+
+    def ok_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
 # -- credentials -------------------------------------------------------------------
 
 

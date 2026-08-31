@@ -1142,6 +1142,55 @@ def format_import_preview(plan):
     return lines
 
 
+def build_import_report(outcome, report=None):
+    """Rows and summary for the Import results window.
+
+    ``outcome`` is what ``_import`` collected while downloading; ``report`` is
+    what ``my_ribbon.apply`` returned.  Returns ``(rows, summary)`` of plain
+    dicts and strings, so the window itself holds no logic.  Extensions come
+    first and failures lead them - what went wrong is what the user must act on.
+    """
+    outcome = outcome or {}
+    report = report or {}
+    rows = []
+    for item in outcome.get("failed", []):
+        rows.append({"name": safe_text(item.get("label")), "kind": "Extension",
+                     "status": "Error",
+                     "detail": safe_text(item.get("reason")) or
+                     "Not found in pyRevit's catalogue and no download link was stored."})
+    for item in outcome.get("downloaded", []):
+        rows.append({"name": safe_text(item.get("label")), "kind": "Extension",
+                     "status": "Installed",
+                     "detail": safe_text(item.get("detail"))})
+    for item in outcome.get("already_here", []):
+        rows.append({"name": safe_text(item.get("label")), "kind": "Extension",
+                     "status": "Already here", "detail": "Nothing was downloaded."})
+    for miss in report.get("missing", []):
+        rows.append({"name": safe_text(miss.get("title")), "kind": "Button",
+                     "status": "Error", "detail": safe_text(miss.get("reason"))})
+    for message in report.get("errors", []):
+        rows.append({"name": "", "kind": "Setting", "status": "Error",
+                     "detail": safe_text(message)})
+    for title in report.get("added", []):
+        rows.append({"name": safe_text(title), "kind": "Button", "status": "Placed",
+                     "detail": ""})
+    for tab in report.get("hidden_tabs", []):
+        rows.append({"name": safe_text(tab), "kind": "Tab", "status": "Hidden",
+                     "detail": "Hidden by the imported settings."})
+    installed = len(outcome.get("downloaded", []))
+    failed = len(outcome.get("failed", []))
+    placed = len(report.get("added", []))
+    summary = ["Installed: {0}".format(installed)]
+    if failed:
+        summary.append("Failed: {0}".format(failed))
+    summary.append("Buttons placed: {0}".format(placed))
+    if report.get("missing"):
+        summary.append("Buttons missing: {0}".format(len(report["missing"])))
+    if report.get("hidden_tabs"):
+        summary.append("Tabs hidden: {0}".format(len(report["hidden_tabs"])))
+    return rows, summary
+
+
 def _listing(items, limit=6):
     if not items:
         return ""
