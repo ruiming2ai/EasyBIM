@@ -288,11 +288,6 @@ class MyRibbonWindow(forms.WPFWindow):
         has_source = source is not None
         kind = source.get("kind") if has_source else None
         self.remove_source_btn.IsEnabled = has_source
-        self.uninstall_btn.IsEnabled = bool(has_source and source.get("installed_by_my_ribbon"))
-        self.uninstall_btn.ToolTip = (
-            "Remove it and delete the files My Ribbon installed for it (on Apply)."
-            if self.uninstall_btn.IsEnabled else
-            "Only what My Ribbon installed itself can be uninstalled here.")
         self.open_folder_btn.IsEnabled = has_source and self.open_folder is not None \
             and kind != "ribbon"
         self.locate_btn.Visibility = Windows.Visibility.Visible if kind == "dynamo" \
@@ -387,36 +382,14 @@ class MyRibbonWindow(forms.WPFWindow):
         elif source.get("kind") == "ribbon":
             message += "\n\nThe tab itself is not touched."
         else:
-            message += "\n\nThe extension stays installed (use Uninstall to delete it)."
+            message += "\n\nThe extension stays installed; pyRevit's Extensions window " \
+                       "is where it can be uninstalled."
         if not forms.alert(message, title=TITLE, yes=True, no=True):
             return
         state.remove_source(self.working, source.get("id"))
         if source.get("kind") == "dynamo" and source.get("installed_by_my_ribbon"):
             # a Dynamo button is nothing but the bundle My Ribbon wrote
             self.pending_deletes.append(source)
-        self._selected_source_id = None
-        self._rebuild()
-
-    def uninstall_source_click(self, sender, args):
-        del sender, args
-        source = state.find_source_by_id(self.working, self._selected_source_id)
-        if source is None or not source.get("installed_by_my_ribbon"):
-            return
-        message = "Uninstall {0}?".format(source.get("label") or source.get("ext_name"))
-        message += self._placed_count_text(source)
-        if source.get("kind") == "dynamo":
-            message += "\n\nThe button My Ribbon created is deleted when you press Apply; the graph " \
-                       "file stays where it is."
-        elif source.get("extra_root"):
-            message += "\n\nThe downloaded repository folder is deleted when you press Apply " \
-                       "(unless another source still uses it)."
-        else:
-            message += "\n\nThe extension folder My Ribbon downloaded is deleted when you press " \
-                       "Apply. pyRevit needs a reload afterwards."
-        if not forms.alert(message, title=TITLE, yes=True, no=True):
-            return
-        state.remove_source(self.working, source.get("id"))
-        self.pending_deletes.append(source)
         self._selected_source_id = None
         self._rebuild()
 

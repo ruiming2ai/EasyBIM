@@ -314,16 +314,18 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("set_tabs_hidden", _function_source(STATE_MODULE, "set_hide_tab"))
         self.assertIn("replace_hidden_tabs", _function_source(UI_MODULE, "show_hide_tabs_click"))
 
-    def test_remove_keeps_files_and_uninstall_stages_the_delete(self):
+    def test_remove_keeps_files_and_only_a_dynamo_button_is_deleted(self):
         remove = _function_source(UI_MODULE, "remove_source_click")
-        uninstall = _function_source(UI_MODULE, "uninstall_source_click")
         # Remove stages a delete only for a Dynamo button, which is nothing but
         # the bundle My Ribbon wrote
         self.assertEqual(remove.count("pending_deletes.append"), 1)
         self.assertIn('source.get("kind") == "dynamo"', remove)
-        self.assertIn("pending_deletes.append(source)", uninstall)
-        self.assertIn('installed_by_my_ribbon', uninstall)
-        self.assertIn("installed_by_my_ribbon", _function_source(UI_MODULE, "_refresh_buttons"))
+        # Uninstalling an extension belongs to pyRevit's Extensions window, so
+        # neither the button nor its handler may come back here
+        self.assertEqual(_function_source(UI_MODULE, "uninstall_source_click"), u"")
+        self.assertNotIn("uninstall_btn", _code_without_prose(UI_MODULE))
+        xaml = (COMMAND_DIR / "MyRibbonWindow.xaml").read_text(encoding="utf-8")
+        self.assertNotIn("uninstall", xaml.lower())
 
     def test_a_manual_graph_is_the_one_case_that_runs_from_our_copy(self):
         """pyRevit opens a graph saved in Manual run mode and never runs it, so

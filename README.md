@@ -702,7 +702,7 @@ too new for this Revit is marked missing on its row; a repository already
 installed here is reused instead of downloaded twice; a download you cancel
 leaves nothing behind.
 
-### Tabs, Uninstall, Revit's own buttons, Dynamo graphs
+### Tabs, Revit's own buttons, Dynamo graphs
 
 **Show/Hide tabs...** (on the My buttons side) lists every ribbon tab with a
 tick. EasyBIM stays on (this button lives there, so there is always a way back)
@@ -712,9 +712,10 @@ there) - can be hidden. Confirm stages, **Apply** makes it real and closes the
 window.
 
 On the Sources side, **Remove** forgets a source and its placed buttons and
-leaves every file alone. **Uninstall** also deletes what My Ribbon installed for
-it - a downloaded repository, a Dynamo button - and is greyed for everything
-that was already on the computer. Both happen on Apply.
+leaves every file alone - the one exception is a Dynamo button, which is nothing
+but the bundle My Ribbon wrote, so that bundle goes too. It happens on Apply.
+Uninstalling an extension itself belongs to pyRevit's own **Extensions** window,
+which is also where extensions are installed.
 
 The **Extension & Tab List** also lists **Revit's own tabs and other add-ins'
 tabs**.

@@ -55,14 +55,12 @@
                                  SelectionChanged="sources_selection_changed"/>
                     </Border>
 
-                    <!-- A WrapPanel: five buttons do not fit the column at its
+                    <!-- A WrapPanel: four buttons do not fit the column at its
                          minimum width, and a clipped button is worse than a
                          second row. -->
                     <WrapPanel Grid.Row="2">
                         <Button x:Name="remove_source_btn" Content="Remove" Width="80" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="remove_source_click"
                                 ToolTip="Forget this source and its placed buttons. Files stay."/>
-                        <Button x:Name="uninstall_btn" Content="Uninstall" Width="80" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="uninstall_source_click"
-                                ToolTip="Remove it and delete the files My Ribbon installed for it (on Apply)."/>
                         <Button x:Name="open_folder_btn" Content="Open folder" Width="95" Height="30" Margin="0,0,8,4" IsEnabled="False" Click="open_folder_click"/>
                         <Button x:Name="locate_btn" Content="Locate graph..." Width="110" Height="30" Margin="0,0,8,4" Visibility="Collapsed" Click="locate_click"
                                 ToolTip="Point this Dynamo button at the graph file again (moved or renamed)."/>
