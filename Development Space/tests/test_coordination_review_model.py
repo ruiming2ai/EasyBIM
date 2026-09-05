@@ -174,6 +174,20 @@ class CoordinationReviewModelTests(unittest.TestCase):
         self.assertTrue(model["is_empty"])
         self.assertTrue(model["detection_error"])
 
+    def test_instance_rows_carry_view_issues_label(self):
+        """The per-link button opens Revit's Coordination Review; it is
+        labelled View Issues so nobody expects it to zoom to the element."""
+        module = _load_module()
+        links = module.build_problem_link_records(_make_report())
+
+        labels = set()
+        for link in links:
+            for issue in link["issues"]:
+                for row in issue["instance_rows"]:
+                    labels.add(row["show_label"])
+
+        self.assertEqual(labels, {"View Issues"})
+
 
 if __name__ == "__main__":
     unittest.main()

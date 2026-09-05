@@ -1091,8 +1091,9 @@ automatically when a document is opened, surfaced as a button for the times you
 want to revisit the workset choice or review coordination changes without
 closing and reopening the file.
 
-In the Coordination Review summary, each listed link has a **Show** button.
-Clicking it selects that Revit link in the active view, zooms to it, closes the
-summary, and opens Revit's built-in **Coordination Review** window
-(Collaborate > Coordinate > Coordination Review > Select Link) for that link.
-If Revit asks you to pick a link, click the highlighted one.
+In the Coordination Review summary, each listed link has a **View Issues**
+button. Clicking it selects that Revit link, closes the summary, and opens
+Revit's built-in **Coordination Review** window (Collaborate > Coordinate >
+Coordination Review > Select Link) for that link. It does not zoom or open
+views. Start Message can be run again afterwards and shows the same issue list
+until the document is closed.

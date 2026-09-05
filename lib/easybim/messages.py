@@ -307,9 +307,9 @@ def _process_startup_job(uiapp, job, now):
         return False
 
     if stage == "run_report":
-        # Marked done before the modal report for the same reason.  A second
-        # pass would also report a bogus detection error, because the first one
-        # consumes the recorded warnings.
+        # Marked done before the modal report for the same reason: a
+        # re-entrant Idling pass behind the dialog must not stack a second
+        # report window.
         job["stage"] = "done"
         if job.get("run_coord_report_after", False):
             report_doc = target_doc
@@ -851,7 +851,9 @@ def _print_coordination_review_report(doc):
     try:
         try:
             from easybim.coordination_review_passive import build_passive_coordination_report
-            report = build_passive_coordination_report(doc, consume=True)
+            # Keep the captured warnings: Start Message can be re-run and must
+            # show the same issues.  hooks/doc-closing.py clears them on close.
+            report = build_passive_coordination_report(doc, consume=False)
         except Exception:
             report = _build_coordination_detection_error_report(doc)
 

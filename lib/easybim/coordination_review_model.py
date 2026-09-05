@@ -68,7 +68,7 @@ def _build_issue_record(issue_text, row, instance_cap):
             {
                 "instance_id": instance_id,
                 "label": str(instance_id),
-                "show_label": "Show",
+                "show_label": "View Issues",
             }
             for instance_id in visible_ids
         ],

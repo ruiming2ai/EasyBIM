@@ -163,6 +163,30 @@ class StartupJobStageOrderingTests(unittest.TestCase):
             # Must not raise.
             self.messages._print_coordination_review_report(self.doc)
 
+    def test_report_keeps_captured_warnings_for_reruns(self):
+        """Start Message can be re-run: the report must read the passively
+        captured warnings without consuming them, or the second run shows a
+        bogus Detection Error.  hooks/doc-closing.py clears them on close."""
+        calls = []
+        fake_passive = types.ModuleType("easybim.coordination_review_passive")
+
+        def _build(doc, consume=True):
+            calls.append(consume)
+            return {"doc_title": "sample.rvt"}
+
+        fake_passive.build_passive_coordination_report = _build
+        fake_passive.unregister_passive_detector = lambda: None
+
+        with mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_show_coordination_review_dialog", return_value=True
+        ):
+            self.messages._print_coordination_review_report(self.doc)
+            self.messages._print_coordination_review_report(self.doc)
+
+        self.assertEqual(calls, [False, False])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,7 @@ from easybim import coordination_review_show
 LOGGER = script.get_logger()
 XAML_PATH = os.path.join(os.path.dirname(__file__), "ui", "coordination_review.xaml")
 DEFAULT_STATUS_TEXT = (
-    "Ready. Review the full issue list below, or click Show to select a link "
+    "Ready. Review the full issue list below, or click View Issues to select a link "
     "and open Revit's Coordination Review for it."
 )
 
@@ -89,6 +89,9 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self._issue_expansion_state = {}
         self._visible_link_keys = []
         self._visible_issue_keys = []
+        # Element id chosen with View Issues; acted on by the caller once this
+        # modal window has closed (see show_coordination_review_dialog).
+        self.pending_view_issues = None
 
         self._populate_summary()
         self._refresh_content()
@@ -159,10 +162,10 @@ class CoordinationReviewWindow(forms.WPFWindow):
 
         return _handler
 
-    def _make_show_handler(self, instance_id):
+    def _make_view_issues_handler(self, instance_id):
         def _handler(sender, args):
             del sender, args
-            self._show_instance(instance_id)
+            self._view_issues(instance_id)
 
         return _handler
 
@@ -177,13 +180,13 @@ class CoordinationReviewWindow(forms.WPFWindow):
         row_panel = DockPanel()
         row_panel.LastChildFill = True
 
-        show_btn = Button()
-        show_btn.Content = _safe_text(instance_row.get("show_label")) or "Show"
-        show_btn.Width = 80
-        show_btn.Height = 28
-        DockPanel.SetDock(show_btn, Dock.Right)
-        show_btn.Click += self._make_show_handler(instance_row.get("instance_id"))
-        row_panel.Children.Add(show_btn)
+        view_btn = Button()
+        view_btn.Content = _safe_text(instance_row.get("show_label")) or "View Issues"
+        view_btn.Width = 100
+        view_btn.Height = 28
+        DockPanel.SetDock(view_btn, Dock.Right)
+        view_btn.Click += self._make_view_issues_handler(instance_row.get("instance_id"))
+        row_panel.Children.Add(view_btn)
 
         label = TextBlock()
         label.Text = "Element Id {}".format(instance_row.get("label", ""))
@@ -298,40 +301,33 @@ class CoordinationReviewWindow(forms.WPFWindow):
 
         self.status_tb.Text = "Showing all issues across {} problem link(s).".format(len(visible_links))
 
-    def _show_instance(self, instance_id):
+    def _view_issues(self, instance_id):
         element_id_int = _safe_int(instance_id)
         if element_id_int is None:
             self.status_tb.Text = "Could not resolve the selected instance id."
             return
 
         if not self.uidoc or not self.doc:
-            self.status_tb.Text = "Show is unavailable because there is no active Revit UI document."
+            self.status_tb.Text = (
+                "View Issues is unavailable because there is no active Revit UI document."
+            )
             return
 
         active_doc = getattr(self.uidoc, "Document", None)
         if not _same_doc(active_doc, self.doc):
-            self.status_tb.Text = "Show is only available when the report document is the active Revit document."
-            return
-
-        try:
-            result = coordination_review_show.show_link_coordination_review(
-                self.uiapp,
-                self.uidoc,
-                self.doc,
-                element_id_int,
-            )
-        except Exception as ex:
-            self.status_tb.Text = "Show failed for element {}: {}".format(
-                element_id_int,
-                _safe_text(ex) or "Unknown error",
+            self.status_tb.Text = (
+                "View Issues is only available when the report document is the active "
+                "Revit document."
             )
             return
 
-        self.status_tb.Text = _safe_text(result.get("message")) or DEFAULT_STATUS_TEXT
-        if result.get("ok"):
-            # Revit only runs the posted Coordination Review command once this
-            # modal window returns control to it, so close now.
-            self.Close()
+        # Revit runs a posted command only after control returns from the API
+        # context, and this window is modal, so close first.  The caller then
+        # selects the link and posts Coordination Review (see
+        # show_coordination_review_dialog).
+        self.pending_view_issues = element_id_int
+        self.status_tb.Text = "Opening Coordination Review for element {}.".format(element_id_int)
+        self.Close()
 
     def expand_all_click(self, sender, args):
         del sender, args
@@ -354,11 +350,50 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self.Close()
 
 
+def _open_link_coordination_review(window, element_id_int):
+    """Select the chosen link and post Revit's Coordination Review command.
+
+    Runs after the modal window has closed, in the caller's API context
+    (pyRevit command or Idling delegate), so Revit executes the posted
+    command as soon as that context returns control.
+    """
+    try:
+        result = coordination_review_show.show_link_coordination_review(
+            window.uiapp,
+            window.uidoc,
+            window.doc,
+            element_id_int,
+        )
+    except Exception as ex:
+        result = {
+            "ok": False,
+            "message": "View Issues failed for element {}: {}".format(
+                element_id_int,
+                _safe_text(ex) or "Unknown error",
+            ),
+        }
+
+    if result.get("ok"):
+        return True
+
+    message = _safe_text(result.get("message")) or "Could not open Coordination Review."
+    LOGGER.warning("Coordination Review View Issues failed: %s", message)
+    try:
+        forms.alert(message, title="Coordination Review")
+    except Exception:
+        pass
+    return False
+
+
 def show_coordination_review_dialog(report, doc=None, uiapp=None):
     try:
         window = CoordinationReviewWindow(report, doc=doc, uiapp=uiapp)
         window.ShowDialog()
-        return True
     except Exception as ex:
         LOGGER.warning("Coordination Review window failed: %s", ex)
         return False
+
+    element_id_int = getattr(window, "pending_view_issues", None)
+    if element_id_int is not None:
+        _open_link_coordination_review(window, element_id_int)
+    return True

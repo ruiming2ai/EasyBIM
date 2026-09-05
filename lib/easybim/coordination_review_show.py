@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 """Open Revit's built-in Coordination Review for one linked model.
 
-Backs the ``Show`` button in the EasyBIM Coordination Review window.  The
-button resolves the recorded element to a ``RevitLinkInstance`` in the active
-document, selects it, zooms to it, and then posts the native
+Backs the ``View Issues`` button in the EasyBIM Coordination Review window.
+The button resolves the recorded element to a ``RevitLinkInstance`` in the
+active document, selects it, and posts the native
 ``Collaborate > Coordinate > Coordination Review > Select Link`` command.
+Nothing here zooms or opens views.
+
 Revit runs posted commands only after control returns from the API context,
-so the caller closes the modal EasyBIM window once the command is posted.
+so the window closes itself first and the caller invokes
+:func:`show_link_coordination_review` once ``ShowDialog`` has returned.
 
 The Revit API is imported lazily (and can be injected) so the module loads
 standalone under CPython for the unit tests.
 """
 
-# ``PostableCommand`` members, most specific first.  ``SelectLink`` is the
-# native "Coordination Review > Select Link" command (Revit 2014+).
-COORDINATION_REVIEW_COMMANDS = ("SelectLink",)
+# ``PostableCommand`` members for "Coordination Review > Select Link", most
+# recent first.  Revit 2022 renamed ``SelectLink`` to ``CoordinationSelectLink``
+# (plain ``SelectLink`` no longer exists there); Revit 2021 and earlier only
+# know ``SelectLink``.
+COORDINATION_REVIEW_COMMANDS = ("CoordinationSelectLink", "SelectLink")
 
 
 def _safe_text(value):
@@ -150,7 +155,7 @@ def resolve_link_instance(doc, element_id_int, db=None):
     if element_id_int is None:
         return None, "Could not resolve the selected instance id."
     if doc is None:
-        return None, "Show is unavailable because there is no active Revit document."
+        return None, "View Issues is unavailable because there is no active Revit document."
 
     db = db if db is not None else _import_revit_db()
     element_id = _make_element_id(getattr(db, "ElementId", None), element_id_int)
@@ -189,23 +194,16 @@ def _element_id_list(element_id, db):
         return [element_id]
 
 
-def select_and_show(uidoc, link_instance, db=None):
-    """Select ``link_instance`` in Revit and zoom the active view to it."""
+def select_link(uidoc, link_instance, db=None):
+    """Make ``link_instance`` the current Revit selection (no zoom)."""
     if uidoc is None or link_instance is None:
         return False
     db = db if db is not None else _import_revit_db()
     try:
-        ids = _element_id_list(link_instance.Id, db)
-        uidoc.Selection.SetElementIds(ids)
+        uidoc.Selection.SetElementIds(_element_id_list(link_instance.Id, db))
+        return True
     except Exception:
         return False
-    try:
-        uidoc.ShowElements(ids)
-    except Exception:
-        # Zooming is best-effort; the selection alone is enough for Revit's
-        # command to act on the link.
-        pass
-    return True
 
 
 def resolve_coordination_review_command(ui=None):
@@ -230,28 +228,36 @@ def resolve_coordination_review_command(ui=None):
     return None, ""
 
 
+def _can_post(uiapp, command_id):
+    can_post = getattr(uiapp, "CanPostCommand", None)
+    if not callable(can_post):
+        return True
+    try:
+        return bool(can_post(command_id))
+    except Exception:
+        return True
+
+
 def post_coordination_review_command(uiapp, ui=None):
     """Post the native Coordination Review > Select Link command.
 
-    Returns ``(posted, error_message)``.
+    The post is always attempted; ``CanPostCommand`` only sharpens the
+    message when Revit refuses it.  Returns ``(posted, error_message)``.
     """
     if uiapp is None:
-        return False, "Show is unavailable because there is no Revit application."
+        return False, "View Issues is unavailable because there is no Revit application."
     command_id, member_name = resolve_coordination_review_command(ui)
     if command_id is None:
         return False, "Revit's Coordination Review command is not available in this version."
     try:
-        can_post = getattr(uiapp, "CanPostCommand", None)
-        if callable(can_post) and not bool(can_post(command_id)):
-            return False, "Revit cannot open Coordination Review right now."
-    except Exception:
-        pass
-    try:
         uiapp.PostCommand(command_id)
     except Exception as ex:
-        return False, "Could not open Coordination Review ({}): {}".format(
-            member_name, _safe_text(ex) or "Unknown error"
-        )
+        reason = _safe_text(ex) or "Unknown error"
+        if not _can_post(uiapp, command_id):
+            return False, "Revit cannot open Coordination Review right now ({}): {}".format(
+                member_name, reason
+            )
+        return False, "Could not open Coordination Review ({}): {}".format(member_name, reason)
     return True, ""
 
 
@@ -259,8 +265,8 @@ def show_link_coordination_review(uiapp, uidoc, doc, element_id_int, db=None, ui
     """Select the recorded link and open Revit's Coordination Review for it.
 
     Returns a dict with ``ok``, ``selected``, ``posted``, ``link_name`` and
-    ``message``.  ``posted`` means the native command is queued; it runs once
-    the caller returns control to Revit (i.e. closes the modal window).
+    ``message``.  ``posted`` means the native command is queued; Revit runs
+    it once the calling API context returns control.
     """
     result = {"ok": False, "selected": False, "posted": False, "link_name": "", "message": ""}
 
@@ -270,7 +276,7 @@ def show_link_coordination_review(uiapp, uidoc, doc, element_id_int, db=None, ui
         return result
     result["link_name"] = _safe_text(getattr(link_instance, "Name", ""))
 
-    result["selected"] = select_and_show(uidoc, link_instance, db=db)
+    result["selected"] = select_link(uidoc, link_instance, db=db)
     if not result["selected"]:
         result["message"] = "Could not select link {} in Revit.".format(
             result["link_name"] or _safe_text(element_id_int)

@@ -18,7 +18,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Coordination Review" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="All linked-model Coordination Review issues are shown together so users can review the full problem list at once. Click Show to select that link in Revit and open the built-in Coordination Review window for it."
+            <TextBlock Text="All linked-model Coordination Review issues are shown together so users can review the full problem list at once. Click View Issues to select that link in Revit and open the built-in Coordination Review window for it."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
