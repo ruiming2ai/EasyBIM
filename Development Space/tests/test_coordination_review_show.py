@@ -33,6 +33,11 @@ class FakeElementId(object):
         return hash(int(self))
 
 
+class FakeBoundingBox(object):
+    Min = "bbox-min"
+    Max = "bbox-max"
+
+
 class RevitLinkInstance(object):
     def __init__(self, element_id, name, type_id):
         self.Id = FakeElementId(element_id)
@@ -50,9 +55,13 @@ class RevitLinkType(object):
 
 
 class Wall(object):
-    def __init__(self, element_id):
+    def __init__(self, element_id, visible=True):
         self.Id = FakeElementId(element_id)
         self.Name = "Wall"
+        self._visible = visible
+
+    def get_BoundingBox(self, view):
+        return FakeBoundingBox() if self._visible else None
 
 
 class FakeCollector(object):
@@ -91,82 +100,42 @@ class FakeSelection(object):
         self.ids = list(ids)
 
 
-class FakeUIDocument(object):
-    """Selection only: the View Issues flow must never zoom or open views, so
-    there is deliberately no ``ShowElements`` here."""
+class FakeView(object):
+    def __init__(self, element_id):
+        self.Id = FakeElementId(element_id)
 
-    def __init__(self, fail_select=False):
+
+class FakeUIView(object):
+    def __init__(self, view_id, fail_zoom=False):
+        self.ViewId = FakeElementId(view_id)
+        self.zoomed = None
+        self._fail_zoom = fail_zoom
+
+    def ZoomAndCenterRectangle(self, corner_a, corner_b):
+        if self._fail_zoom:
+            raise RuntimeError("zoom failed")
+        self.zoomed = (corner_a, corner_b)
+
+
+ACTIVE_VIEW_ID = 100
+
+
+class FakeUIDocument(object):
+    """Selection, active view and open UI views only: Show must never open
+    or search other views, so there is deliberately no ``ShowElements``."""
+
+    def __init__(self, fail_select=False, ui_view=None):
         self.Selection = FakeSelection()
+        self.ActiveView = FakeView(ACTIVE_VIEW_ID)
+        self.ui_view = FakeUIView(ACTIVE_VIEW_ID) if ui_view is None else ui_view
         if fail_select:
             self.Selection.SetElementIds = self._raise
 
     def _raise(self, *args):
         raise RuntimeError("selection failed")
 
-
-class FakeUIApplication(object):
-    def __init__(self, can_post=True, fail_post=False):
-        self.posted = []
-        self._can_post = can_post
-        self._fail_post = fail_post
-
-    def CanPostCommand(self, command_id):
-        return self._can_post
-
-    def PostCommand(self, command_id):
-        if self._fail_post:
-            raise RuntimeError("post failed")
-        self.posted.append(command_id)
-
-
-class FakeUIApplicationWithoutCanPost(object):
-    def __init__(self):
-        self.posted = []
-
-    def PostCommand(self, command_id):
-        self.posted.append(command_id)
-
-
-class FakeRevitCommandId(object):
-    @staticmethod
-    def LookupPostableCommandId(member):
-        return ("command-id", member)
-
-
-class ModernUI(object):
-    """Revit 2022+: CoordinationSelectLink; plain SelectLink no longer exists."""
-
-    class PostableCommand(object):
-        CoordinationSelectLink = "PostableCommand.CoordinationSelectLink"
-        CoordinationReviewUseCurrentProject = "PostableCommand.CoordinationReviewUseCurrentProject"
-        CopyMonitorSelectLink = "PostableCommand.CopyMonitorSelectLink"
-
-    RevitCommandId = FakeRevitCommandId
-
-
-class LegacyUI(object):
-    """Revit 2021 and earlier: SelectLink / UseCurrentProject."""
-
-    class PostableCommand(object):
-        SelectLink = "PostableCommand.SelectLink"
-        UseCurrentProject = "PostableCommand.UseCurrentProject"
-
-    RevitCommandId = FakeRevitCommandId
-
-
-class UIWithBothNames(object):
-    class PostableCommand(object):
-        SelectLink = "PostableCommand.SelectLink"
-        CoordinationSelectLink = "PostableCommand.CoordinationSelectLink"
-
-    RevitCommandId = FakeRevitCommandId
-
-
-class UIWithoutCoordinationReview(object):
-    class PostableCommand(object):
-        CopyMonitorSelectLink = "PostableCommand.CopyMonitorSelectLink"
-
-    RevitCommandId = FakeRevitCommandId
+    def GetOpenUIViews(self):
+        return [self.ui_view]
 
 
 def _fixture():
@@ -174,7 +143,8 @@ def _fixture():
     instance = RevitLinkInstance(11, "ARCH.rvt : 1", 10)
     orphan_type = RevitLinkType(20, "MEP.rvt")
     wall = Wall(30)
-    doc = FakeDocument([link_type, instance, orphan_type, wall])
+    hidden_wall = Wall(31, visible=False)
+    doc = FakeDocument([link_type, instance, orphan_type, wall, hidden_wall])
     return doc, link_type, instance, orphan_type, wall
 
 
@@ -219,157 +189,66 @@ class ResolveLinkInstanceTests(unittest.TestCase):
         self.assertIn("no active Revit document", error)
 
 
-class CommandResolutionTests(unittest.TestCase):
+class ElementFromIdTests(unittest.TestCase):
     def setUp(self):
         self.module = _load_module()
+        self.doc, _, _, _, self.wall = _fixture()
 
-    def test_command_order_is_modern_name_first(self):
-        self.assertEqual(
-            self.module.COORDINATION_REVIEW_COMMANDS,
-            ("CoordinationSelectLink", "SelectLink"),
-        )
+    def test_returns_element(self):
+        self.assertIs(self.module.element_from_id(self.doc, "30", db=FakeDB), self.wall)
 
-    def test_revit_2022_plus_uses_coordination_select_link(self):
-        command_id, member = self.module.resolve_coordination_review_command(ui=ModernUI)
-        self.assertEqual(member, "CoordinationSelectLink")
-        self.assertEqual(
-            command_id, ("command-id", ModernUI.PostableCommand.CoordinationSelectLink)
-        )
-
-    def test_legacy_revit_falls_back_to_select_link(self):
-        command_id, member = self.module.resolve_coordination_review_command(ui=LegacyUI)
-        self.assertEqual(member, "SelectLink")
-        self.assertEqual(command_id, ("command-id", LegacyUI.PostableCommand.SelectLink))
-
-    def test_modern_name_wins_when_both_exist(self):
-        command_id, member = self.module.resolve_coordination_review_command(ui=UIWithBothNames)
-        self.assertEqual(member, "CoordinationSelectLink")
-
-    def test_copy_monitor_command_is_never_used(self):
-        command_id, member = self.module.resolve_coordination_review_command(
-            ui=UIWithoutCoordinationReview
-        )
-        self.assertIsNone(command_id)
-        self.assertEqual(member, "")
-
-    def test_missing_ui_api_yields_none(self):
-        class EmptyUI(object):
-            pass
-
-        command_id, member = self.module.resolve_coordination_review_command(ui=EmptyUI)
-        self.assertIsNone(command_id)
-        self.assertEqual(member, "")
+    def test_missing_or_invalid(self):
+        self.assertIsNone(self.module.element_from_id(self.doc, 999, db=FakeDB))
+        self.assertIsNone(self.module.element_from_id(self.doc, "x", db=FakeDB))
+        self.assertIsNone(self.module.element_from_id(None, 30, db=FakeDB))
 
 
-class ShowLinkCoordinationReviewTests(unittest.TestCase):
+class SelectElementTests(unittest.TestCase):
     def setUp(self):
         self.module = _load_module()
-        self.doc, self.link_type, self.instance, self.orphan_type, self.wall = _fixture()
+        self.doc, _, _, _, self.wall = _fixture()
         self.uidoc = FakeUIDocument()
-        self.uiapp = FakeUIApplication()
 
-    def _show(self, element_id, uiapp=None, uidoc=None, ui=ModernUI):
-        return self.module.show_link_coordination_review(
-            uiapp or self.uiapp,
-            uidoc or self.uidoc,
-            self.doc,
-            element_id,
-            db=FakeDB,
-            ui=ui,
-        )
-
-    def test_selects_link_and_posts_coordination_review(self):
-        result = self._show(11)
-        self.assertTrue(result["ok"])
+    def test_selects_and_frames_in_current_view(self):
+        result = self.module.select_element(self.uidoc, self.wall, db=FakeDB)
         self.assertTrue(result["selected"])
-        self.assertTrue(result["posted"])
-        self.assertEqual(result["link_name"], "ARCH.rvt : 1")
-        self.assertEqual([int(i) for i in self.uidoc.Selection.ids], [11])
-        self.assertEqual(
-            self.uiapp.posted,
-            [("command-id", ModernUI.PostableCommand.CoordinationSelectLink)],
-        )
-        self.assertIn("Opening Coordination Review for ARCH.rvt : 1", result["message"])
+        self.assertTrue(result["visible"])
+        self.assertTrue(result["framed"])
+        self.assertEqual([int(i) for i in self.uidoc.Selection.ids], [30])
+        self.assertEqual(self.uidoc.ui_view.zoomed, ("bbox-min", "bbox-max"))
+        self.assertIn("selected and framed", result["message"])
 
-    def test_never_zooms_or_opens_views(self):
+    def test_never_opens_or_searches_other_views(self):
         self.assertFalse(hasattr(self.uidoc, "ShowElements"))
-        result = self._show(11)
-        self.assertTrue(result["ok"])
-        self.assertNotIn("ShowElements", open(str(MODULE_PATH)).read())
+        self.assertNotIn("ShowElements", MODULE_PATH.read_text())
 
-    def test_legacy_revit_posts_select_link(self):
-        result = self._show(11, ui=LegacyUI)
-        self.assertTrue(result["ok"])
-        self.assertEqual(self.uiapp.posted, [("command-id", LegacyUI.PostableCommand.SelectLink)])
+    def test_hidden_element_is_selected_with_a_hint(self):
+        hidden = self.doc.GetElement(FakeElementId(31))
+        result = self.module.select_element(self.uidoc, hidden, db=FakeDB)
+        self.assertTrue(result["selected"])
+        self.assertFalse(result["visible"])
+        self.assertFalse(result["framed"])
+        self.assertIsNone(self.uidoc.ui_view.zoomed)
+        self.assertIn("not visible in the current view", result["message"])
 
-    def test_link_type_id_selects_its_instance(self):
-        result = self._show(10)
-        self.assertTrue(result["ok"])
-        self.assertEqual([int(i) for i in self.uidoc.Selection.ids], [11])
-        self.assertEqual(len(self.uiapp.posted), 1)
+    def test_zoom_failure_keeps_selection(self):
+        uidoc = FakeUIDocument(ui_view=FakeUIView(ACTIVE_VIEW_ID, fail_zoom=True))
+        result = self.module.select_element(uidoc, self.wall, db=FakeDB)
+        self.assertTrue(result["selected"])
+        self.assertTrue(result["visible"])
+        self.assertFalse(result["framed"])
+        self.assertIn("Element 30 selected.", result["message"])
 
-    def test_unresolvable_element_does_not_touch_revit(self):
-        result = self._show(30)
-        self.assertFalse(result["ok"])
-        self.assertFalse(result["selected"])
-        self.assertFalse(result["posted"])
-        self.assertIsNone(self.uidoc.Selection.ids)
-        self.assertEqual(self.uiapp.posted, [])
-        self.assertIn("not a Revit link", result["message"])
-
-    def test_selection_failure_skips_post(self):
+    def test_selection_failure_is_reported(self):
         uidoc = FakeUIDocument(fail_select=True)
-        result = self._show(11, uidoc=uidoc)
-        self.assertFalse(result["ok"])
+        result = self.module.select_element(uidoc, self.wall, db=FakeDB)
         self.assertFalse(result["selected"])
-        self.assertFalse(result["posted"])
-        self.assertEqual(self.uiapp.posted, [])
-        self.assertIn("Could not select link", result["message"])
+        self.assertIn("Could not select element 30", result["message"])
 
-    def test_post_is_attempted_without_can_post_command(self):
-        uiapp = FakeUIApplicationWithoutCanPost()
-        result = self._show(11, uiapp=uiapp)
-        self.assertTrue(result["ok"])
-        self.assertEqual(len(uiapp.posted), 1)
-
-    def test_post_is_attempted_even_when_can_post_says_no(self):
-        uiapp = FakeUIApplication(can_post=False)
-        result = self._show(11, uiapp=uiapp)
-        self.assertTrue(result["ok"])
-        self.assertEqual(len(uiapp.posted), 1)
-
-    def test_refused_post_explains_revit_cannot_run_it(self):
-        uiapp = FakeUIApplication(can_post=False, fail_post=True)
-        result = self._show(11, uiapp=uiapp)
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["selected"])
-        self.assertFalse(result["posted"])
-        self.assertIn("cannot open Coordination Review right now", result["message"])
-        self.assertIn("post failed", result["message"])
-        self.assertIn("link is selected", result["message"])
-
-    def test_post_exception_is_reported(self):
-        uiapp = FakeUIApplication(fail_post=True)
-        result = self._show(11, uiapp=uiapp)
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["selected"])
-        self.assertFalse(result["posted"])
-        self.assertIn("Could not open Coordination Review", result["message"])
-        self.assertIn("post failed", result["message"])
-
-    def test_missing_command_member_is_reported(self):
-        result = self._show(11, ui=UIWithoutCoordinationReview)
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["selected"])
-        self.assertIn("not available in this version", result["message"])
-
-    def test_missing_uiapp_is_reported(self):
-        result = self.module.show_link_coordination_review(
-            None, self.uidoc, self.doc, 11, db=FakeDB, ui=ModernUI
-        )
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["selected"])
-        self.assertIn("no Revit application", result["message"])
+    def test_missing_uidoc_is_reported(self):
+        result = self.module.select_element(None, self.wall, db=FakeDB)
+        self.assertFalse(result["selected"])
+        self.assertIn("no active Revit UI document", result["message"])
 
 
 if __name__ == "__main__":

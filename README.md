@@ -1092,8 +1092,22 @@ want to revisit the workset choice or review coordination changes without
 closing and reopening the file.
 
 In the Coordination Review summary, each listed link has a **View Issues**
-button. Clicking it selects that Revit link, closes the summary, and opens
-Revit's built-in **Coordination Review** window (Collaborate > Coordinate >
-Coordination Review > Select Link) for that link. It does not zoom or open
-views. Start Message can be run again afterwards and shows the same issue list
-until the document is closed.
+button. Revit's own Coordination Review dialog cannot be opened for a chosen
+link or read through the API, so EasyBIM computes the differences itself and
+shows them in its own **Coordination Review Issues** window for that link:
+
+- Every element of this model that monitors the link (Copy/Monitor) is
+  compared with the link's current contents, in host coordinates.
+- Levels and grids are matched by name (a Copy/Monitor prefix or suffix is
+  tolerated) and reported as moved, deleted in the link, or renamed. Link
+  levels and grids that nothing monitors are listed for information.
+- Columns, walls, floors, openings and MEP fixtures are matched to the nearest
+  link element of the same category and reported as moved, deleted in the
+  link, or type changed. These rows are estimates and are badged as such.
+- **Show** selects the host element and frames it in the current view (no other
+  views are opened). **Refresh** recomputes after you change the model.
+
+Revit's own Coordination Review remains the place to Accept, Modify, Postpone
+or Reject a difference. The comparison runs only when you click View Issues,
+so Start Message stays fast, and Start Message can be run again afterwards
+and shows the same link list until the document is closed.

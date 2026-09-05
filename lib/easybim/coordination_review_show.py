@@ -1,25 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Open Revit's built-in Coordination Review for one linked model.
+"""Resolve and select Revit elements for the EasyBIM Coordination Review windows.
 
-Backs the ``View Issues`` button in the EasyBIM Coordination Review window.
-The button resolves the recorded element to a ``RevitLinkInstance`` in the
-active document, selects it, and posts the native
-``Collaborate > Coordinate > Coordination Review > Select Link`` command.
-Nothing here zooms or opens views.
-
-Revit runs posted commands only after control returns from the API context,
-so the window closes itself first and the caller invokes
-:func:`show_link_coordination_review` once ``ShowDialog`` has returned.
+``resolve_link_instance`` maps the element id recorded by passive detection
+(usually the ``RevitLinkInstance``, sometimes its ``RevitLinkType``) to the
+placed link instance.  ``select_element`` makes an element the current
+selection and frames it in the *current* view only; it never opens or
+searches other views.
 
 The Revit API is imported lazily (and can be injected) so the module loads
 standalone under CPython for the unit tests.
 """
-
-# ``PostableCommand`` members for "Coordination Review > Select Link", most
-# recent first.  Revit 2022 renamed ``SelectLink`` to ``CoordinationSelectLink``
-# (plain ``SelectLink`` no longer exists there); Revit 2021 and earlier only
-# know ``SelectLink``.
-COORDINATION_REVIEW_COMMANDS = ("CoordinationSelectLink", "SelectLink")
 
 
 def _safe_text(value):
@@ -73,15 +63,6 @@ def _import_revit_db():
         from Autodesk.Revit import DB
 
         return DB
-    except Exception:
-        return None
-
-
-def _import_revit_ui():
-    try:
-        from Autodesk.Revit import UI
-
-        return UI
     except Exception:
         return None
 
@@ -144,6 +125,21 @@ def _instance_for_type(doc, link_type, db):
     return None
 
 
+def element_from_id(doc, element_id_int, db=None):
+    """``doc.GetElement`` for a Python int id, across Revit versions."""
+    element_id_int = _safe_int(element_id_int)
+    if doc is None or element_id_int is None:
+        return None
+    db = db if db is not None else _import_revit_db()
+    element_id = _make_element_id(getattr(db, "ElementId", None), element_id_int)
+    if element_id is None:
+        element_id = element_id_int
+    try:
+        return doc.GetElement(element_id)
+    except Exception:
+        return None
+
+
 def resolve_link_instance(doc, element_id_int, db=None):
     """Map a recorded element id to a ``RevitLinkInstance`` in ``doc``.
 
@@ -158,14 +154,7 @@ def resolve_link_instance(doc, element_id_int, db=None):
         return None, "View Issues is unavailable because there is no active Revit document."
 
     db = db if db is not None else _import_revit_db()
-    element_id = _make_element_id(getattr(db, "ElementId", None), element_id_int)
-    if element_id is None:
-        element_id = element_id_int
-
-    try:
-        element = doc.GetElement(element_id)
-    except Exception:
-        element = None
+    element = element_from_id(doc, element_id_int, db)
     if element is None:
         return None, "Element {} is no longer available.".format(element_id_int)
 
@@ -194,103 +183,108 @@ def _element_id_list(element_id, db):
         return [element_id]
 
 
-def select_link(uidoc, link_instance, db=None):
-    """Make ``link_instance`` the current Revit selection (no zoom)."""
-    if uidoc is None or link_instance is None:
-        return False
-    db = db if db is not None else _import_revit_db()
-    try:
-        uidoc.Selection.SetElementIds(_element_id_list(link_instance.Id, db))
-        return True
-    except Exception:
-        return False
-
-
-def resolve_coordination_review_command(ui=None):
-    """Return ``(command_id, member_name)`` for the native Select Link command."""
-    ui = ui if ui is not None else _import_revit_ui()
-    if ui is None:
-        return None, ""
-    postable = getattr(ui, "PostableCommand", None)
-    lookup = getattr(getattr(ui, "RevitCommandId", None), "LookupPostableCommandId", None)
-    if postable is None or not callable(lookup):
-        return None, ""
-    for member_name in COORDINATION_REVIEW_COMMANDS:
-        member = getattr(postable, member_name, None)
-        if member is None:
-            continue
+def _bounding_box_in_view(element, view):
+    getter = getattr(element, "get_BoundingBox", None)
+    if callable(getter):
         try:
-            command_id = lookup(member)
+            return getter(view)
         except Exception:
-            command_id = None
-        if command_id is not None:
-            return command_id, member_name
-    return None, ""
-
-
-def _can_post(uiapp, command_id):
-    can_post = getattr(uiapp, "CanPostCommand", None)
-    if not callable(can_post):
-        return True
+            return None
     try:
-        return bool(can_post(command_id))
+        return element.BoundingBox[view]
     except Exception:
-        return True
+        return None
 
 
-def post_coordination_review_command(uiapp, ui=None):
-    """Post the native Coordination Review > Select Link command.
-
-    The post is always attempted; ``CanPostCommand`` only sharpens the
-    message when Revit refuses it.  Returns ``(posted, error_message)``.
-    """
-    if uiapp is None:
-        return False, "View Issues is unavailable because there is no Revit application."
-    command_id, member_name = resolve_coordination_review_command(ui)
-    if command_id is None:
-        return False, "Revit's Coordination Review command is not available in this version."
+def _ui_view_for(uidoc, view):
+    view_id = _element_id_int(getattr(view, "Id", None))
+    if view_id is None:
+        return None
     try:
-        uiapp.PostCommand(command_id)
-    except Exception as ex:
-        reason = _safe_text(ex) or "Unknown error"
-        if not _can_post(uiapp, command_id):
-            return False, "Revit cannot open Coordination Review right now ({}): {}".format(
-                member_name, reason
-            )
-        return False, "Could not open Coordination Review ({}): {}".format(member_name, reason)
-    return True, ""
+        ui_views = list(uidoc.GetOpenUIViews())
+    except Exception:
+        return None
+    for ui_view in ui_views:
+        try:
+            if _element_id_int(ui_view.ViewId) == view_id:
+                return ui_view
+        except Exception:
+            continue
+    return None
 
 
-def show_link_coordination_review(uiapp, uidoc, doc, element_id_int, db=None, ui=None):
-    """Select the recorded link and open Revit's Coordination Review for it.
+def frame_element_in_active_view(uidoc, element):
+    """Zoom the *current* view to ``element``; never open other views.
 
-    Returns a dict with ``ok``, ``selected``, ``posted``, ``link_name`` and
-    ``message``.  ``posted`` means the native command is queued; Revit runs
-    it once the calling API context returns control.
+    Returns ``{"visible", "framed", "reason"}``.  ``visible`` is False when
+    the element has no geometry in the active view (hidden, cropped out, or
+    a sheet/schedule is active); ``framed`` is False when the zoom itself was
+    unavailable.
     """
-    result = {"ok": False, "selected": False, "posted": False, "link_name": "", "message": ""}
+    outcome = {"visible": False, "framed": False, "reason": ""}
+    if uidoc is None or element is None:
+        outcome["reason"] = "no active Revit UI document"
+        return outcome
 
-    link_instance, error = resolve_link_instance(doc, element_id_int, db=db)
-    if link_instance is None:
-        result["message"] = error
+    try:
+        view = uidoc.ActiveView
+    except Exception:
+        view = None
+    if view is None:
+        outcome["reason"] = "no active view"
+        return outcome
+
+    bbox = _bounding_box_in_view(element, view)
+    if bbox is None:
+        outcome["reason"] = "not visible in the current view"
+        return outcome
+    outcome["visible"] = True
+
+    ui_view = _ui_view_for(uidoc, view)
+    if ui_view is None:
+        outcome["reason"] = "current view window not found"
+        return outcome
+    try:
+        ui_view.ZoomAndCenterRectangle(bbox.Min, bbox.Max)
+    except Exception as ex:
+        outcome["reason"] = "zoom failed: {}".format(_safe_text(ex) or "Unknown error")
+        return outcome
+
+    outcome["framed"] = True
+    return outcome
+
+
+def select_element(uidoc, element, db=None):
+    """Select ``element`` in Revit and frame it in the current view.
+
+    Returns ``{"selected", "visible", "framed", "message"}``.
+    """
+    result = {"selected": False, "visible": False, "framed": False, "message": ""}
+    if uidoc is None or element is None:
+        result["message"] = "Show is unavailable because there is no active Revit UI document."
         return result
-    result["link_name"] = _safe_text(getattr(link_instance, "Name", ""))
 
-    result["selected"] = select_link(uidoc, link_instance, db=db)
-    if not result["selected"]:
-        result["message"] = "Could not select link {} in Revit.".format(
-            result["link_name"] or _safe_text(element_id_int)
+    db = db if db is not None else _import_revit_db()
+    element_id_int = _element_id_int(getattr(element, "Id", None))
+    try:
+        uidoc.Selection.SetElementIds(_element_id_list(element.Id, db))
+        result["selected"] = True
+    except Exception as ex:
+        result["message"] = "Could not select element {}: {}".format(
+            element_id_int, _safe_text(ex) or "Unknown error"
         )
         return result
 
-    posted, error = post_coordination_review_command(uiapp, ui=ui)
-    result["posted"] = posted
-    if not posted:
-        result["message"] = "{} The link is selected in Revit.".format(error)
-        return result
-
-    result["ok"] = True
-    result["message"] = "Opening Coordination Review for {}.".format(
-        result["link_name"] or "the selected link"
-    )
+    frame = frame_element_in_active_view(uidoc, element)
+    result["visible"] = bool(frame.get("visible"))
+    result["framed"] = bool(frame.get("framed"))
+    if result["framed"]:
+        result["message"] = "Element {} selected and framed in the current view.".format(element_id_int)
+    elif result["visible"]:
+        result["message"] = "Element {} selected.".format(element_id_int)
+    else:
+        result["message"] = (
+            "Element {} selected; it is not visible in the current view, so switch to a view "
+            "that shows it."
+        ).format(element_id_int)
     return result

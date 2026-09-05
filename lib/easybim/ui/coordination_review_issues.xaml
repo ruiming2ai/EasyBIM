@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Coordination Review"
+        Title="Coordination Review Issues"
         Height="760"
         Width="980"
         MinHeight="620"
@@ -17,8 +17,9 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
-            <TextBlock Text="Coordination Review" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="All linked-model Coordination Review issues are shown together so users can review the full problem list at once. Click View Issues to see the differences EasyBIM found between this model's monitored elements and that link."
+            <TextBlock Text="Coordination Review Issues" FontSize="30" FontWeight="SemiBold"/>
+            <TextBlock x:Name="note_tb"
+                       Text="Differences EasyBIM found by comparing the elements of this model that monitor the link with the link's current contents. Levels and grids are matched by name; other elements by the nearest element of the same category (estimated). Revit's own Coordination Review remains the place to Accept, Modify, Postpone or Reject."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -35,28 +36,29 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                    <TextBlock Text="Document" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
-                    <TextBlock x:Name="doc_title_tb" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock Text="Link" FontSize="11" FontWeight="SemiBold" Foreground="DimGray"/>
+                    <TextBlock x:Name="link_name_tb" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="doc_title_tb" FontSize="12" Foreground="DimGray" TextWrapping="Wrap" Margin="0,4,0,0"/>
                 </StackPanel>
 
                 <Border Grid.Column="1" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10" Margin="0,0,10,0">
                     <StackPanel>
-                        <TextBlock Text="Warnings" FontSize="11" Foreground="DimGray"/>
-                        <TextBlock x:Name="matching_warnings_tb" FontSize="22" FontWeight="SemiBold"/>
+                        <TextBlock Text="Monitored Elements" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="monitored_tb" FontSize="22" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Column="2" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10" Margin="0,0,10,0">
                     <StackPanel>
-                        <TextBlock Text="Problem Links" FontSize="11" Foreground="DimGray"/>
-                        <TextBlock x:Name="problem_links_tb" FontSize="22" FontWeight="SemiBold"/>
+                        <TextBlock Text="Issues" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="issues_tb" FontSize="22" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Column="3" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10">
                     <StackPanel>
-                        <TextBlock Text="Assignments" FontSize="11" Foreground="DimGray"/>
-                        <TextBlock x:Name="assignments_tb" FontSize="22" FontWeight="SemiBold"/>
+                        <TextBlock Text="Unchanged" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="unchanged_tb" FontSize="22" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Border>
             </Grid>
@@ -95,9 +97,10 @@
                            TextWrapping="Wrap"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button x:Name="expand_all_btn" Content="Expand All" Width="120" Height="36" Margin="0,0,8,0" Click="expand_all_click"/>
-                    <Button x:Name="collapse_all_btn" Content="Collapse All" Width="120" Height="36" Margin="0,0,8,0" Click="collapse_all_click"/>
-                    <Button x:Name="close_btn" Content="Close" Width="120" Height="36" Click="close_click"/>
+                    <Button x:Name="refresh_btn" Content="Refresh" Width="110" Height="36" Margin="0,0,8,0" Click="refresh_click"/>
+                    <Button x:Name="expand_all_btn" Content="Expand All" Width="110" Height="36" Margin="0,0,8,0" Click="expand_all_click"/>
+                    <Button x:Name="collapse_all_btn" Content="Collapse All" Width="110" Height="36" Margin="0,0,8,0" Click="collapse_all_click"/>
+                    <Button x:Name="close_btn" Content="Close" Width="110" Height="36" Click="close_click"/>
                 </StackPanel>
             </Grid>
         </Border>
