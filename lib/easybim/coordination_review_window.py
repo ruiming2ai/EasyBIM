@@ -9,21 +9,21 @@ clr.AddReference("PresentationFramework")
 clr.AddReference("PresentationCore")
 clr.AddReference("WindowsBase")
 
-from pyrevit import DB
 from pyrevit import forms
 from pyrevit import script
-from System.Collections.Generic import List as ClrList
 from System.Windows import CornerRadius, FontWeights, TextWrapping, Thickness, Visibility
 from System.Windows.Controls import Border, Button, Dock, DockPanel, Expander, StackPanel, TextBlock
 from System.Windows.Media import Brushes
 
 from easybim import coordination_review_model
+from easybim import coordination_review_show
 
 
 LOGGER = script.get_logger()
 XAML_PATH = os.path.join(os.path.dirname(__file__), "ui", "coordination_review.xaml")
 DEFAULT_STATUS_TEXT = (
-    "Ready. Review the full issue list below, or click Show to focus an instance in Revit."
+    "Ready. Review the full issue list below, or click Show to select a link "
+    "and open Revit's Coordination Review for it."
 )
 
 
@@ -314,32 +314,24 @@ class CoordinationReviewWindow(forms.WPFWindow):
             return
 
         try:
-            try:
-                element_id = DB.ElementId(int(element_id_int))
-            except Exception:
-                # Revit 2026 removed ElementId(Int32); retry with Int64.
-                import System
-                element_id = DB.ElementId(System.Int64(int(element_id_int)))
-            element = self.doc.GetElement(element_id)
-        except Exception:
-            element = None
-            element_id = None
-
-        if element is None or element_id is None:
-            self.status_tb.Text = "Element {} is no longer available.".format(element_id_int)
-            return
-
-        try:
-            element_ids = ClrList[DB.ElementId]()
-            element_ids.Add(element_id)
-            self.uidoc.Selection.SetElementIds(element_ids)
-            self.uidoc.ShowElements(element_ids)
-            self.status_tb.Text = "Showing element {} in Revit.".format(element_id_int)
+            result = coordination_review_show.show_link_coordination_review(
+                self.uiapp,
+                self.uidoc,
+                self.doc,
+                element_id_int,
+            )
         except Exception as ex:
             self.status_tb.Text = "Show failed for element {}: {}".format(
                 element_id_int,
                 _safe_text(ex) or "Unknown error",
             )
+            return
+
+        self.status_tb.Text = _safe_text(result.get("message")) or DEFAULT_STATUS_TEXT
+        if result.get("ok"):
+            # Revit only runs the posted Coordination Review command once this
+            # modal window returns control to it, so close now.
+            self.Close()
 
     def expand_all_click(self, sender, args):
         del sender, args
