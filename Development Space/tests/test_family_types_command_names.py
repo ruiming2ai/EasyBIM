@@ -27,6 +27,7 @@ LOAD_OPTIONS_MODULE = LIB_DIR / "family_load_options.py"
 
 MAIN_XAML = COMMAND_DIR / "FamilyTypesWindow.xaml"
 IMPORT_XAML = COMMAND_DIR / "ImportTypesDialog.xaml"
+PICKER_XAML = COMMAND_DIR / "FamilyPickerWindow.xaml"
 
 X_NAME = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
 HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",
@@ -35,6 +36,7 @@ HANDLER_ATTRS = ("Click", "Checked", "Unchecked", "SelectionChanged",
 WINDOWS = (
     (MAIN_XAML, "FamilyTypesWindow"),
     (IMPORT_XAML, "ImportTypesDialog"),
+    (PICKER_XAML, "FamilyPickerWindow"),
 )
 
 EXPECTED_FILES = (
@@ -48,6 +50,7 @@ EXPECTED_FILES = (
     "family_types_xlsx.py",
     "FamilyTypesWindow.xaml",
     "ImportTypesDialog.xaml",
+    "FamilyPickerWindow.xaml",
 )
 
 
@@ -252,8 +255,22 @@ class DesignDecisionTests(unittest.TestCase):
             source)
         self.assertIn(
             "from easybim.family_selection_revit import edit_family", source)
-        self.assertIn("forms.SelectFromList.show",
+        self.assertIn("is_transferable_family",
                       _code_without_prose(SCRIPT_MODULE))
+
+    def test_the_family_picker_can_open_a_listed_family_or_pick_one_in_model(self):
+        source = _code_without_prose(SCRIPT_MODULE)
+        self.assertIn("FamilyPickerWindow", source)
+        self.assertIn("FamilySelectionFilter", source)
+        self.assertIn("PickObject", source)
+        self.assertIn("Select in Model", PICKER_XAML.read_text(encoding="utf-8"))
+
+        picker = _xaml_root(PICKER_XAML)
+        self.assertEqual(
+            {"search_changed", "category_changed", "open_clicked",
+             "select_in_model_clicked", "cancel_clicked"},
+            _xaml_handlers(picker),
+        )
 
     def test_a_family_can_never_be_left_without_a_type(self):
         source = STATE_MODULE.read_text(encoding="utf-8")

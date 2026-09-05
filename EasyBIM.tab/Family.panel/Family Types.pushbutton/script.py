@@ -14,6 +14,13 @@ from __future__ import print_function
 import os
 import sys
 
+import clr
+
+clr.AddReference("RevitAPIUI")
+
+from Autodesk.Revit.Exceptions import OperationCanceledException
+from Autodesk.Revit.UI.Selection import ObjectType
+
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
@@ -29,6 +36,8 @@ from easybim.family_selection_revit import application_from
 from easybim.family_selection_revit import close_family_doc
 from easybim.family_selection_revit import collect_families
 from easybim.family_selection_revit import edit_family
+from easybim.family_selection_revit import FamilySelectionFilter
+from easybim.family_selection_revit import family_from_element
 from easybim.family_selection_revit import is_family_document
 from easybim.family_selection_revit import is_transferable_family
 
@@ -79,13 +88,9 @@ def _family_document_is_open(doc, family_name):
     return False
 
 
-def _pick_family(doc):
-    """Group every editable family by category and let the user pick one.
-
-    forms.SelectFromList already gives a grouped, searchable, single-select
-    list, so there is no window to write here.
-    """
-    options = {}
+def _family_options(doc):
+    """Every editable loaded family, labelled for the picker."""
+    options = []
     by_label = {}
     for family in collect_families(doc):
         if not is_transferable_family(family):
@@ -99,24 +104,62 @@ def _pick_family(doc):
         if label in by_label:
             label = u"{0}  ({1})".format(name, category)
         by_label[label] = family
-        options.setdefault(category, []).append(label)
+        options.append((label, category, family))
+
+    return sorted(options, key=lambda item: (item[1].lower(),
+                                               item[0].lower()))
+
+
+def _is_cancelled_pick(error):
+    if isinstance(error, OperationCanceledException):
+        return True
+    return "cancel" in safe_text(error).lower()
+
+
+def _pick_family_in_model(doc, uidoc):
+    """Click one eligible element and return its editable loadable family."""
+    try:
+        reference = uidoc.Selection.PickObject(
+            ObjectType.Element,
+            FamilySelectionFilter(),
+            "Select one element to edit its family types",
+        )
+    except Exception as error:
+        if _is_cancelled_pick(error):
+            return None
+        forms.alert("Could not select an element in the model.",
+                    title=__title__, expanded=safe_text(error))
+        return None
+
+    if reference is None:
+        return None
+    try:
+        element = doc.GetElement(reference.ElementId)
+    except Exception:
+        element = None
+    return family_from_element(element)
+
+
+def _pick_family(doc, uidoc):
+    """Choose a loaded family or click one element in the active project."""
+    options = _family_options(doc)
 
     if not options:
         forms.alert("This project has no editable loadable families.",
                     title=__title__)
         return None
-    for category in options:
-        options[category] = sorted(options[category], key=lambda t: t.lower())
 
-    chosen = forms.SelectFromList.show(
-        options, title="Pick a family to edit its types",
-        button_name="Open Family Types", multiselect=False,
-        group_selector_title="Category")
-    if not chosen:
-        return None
-    if isinstance(chosen, list):
-        chosen = chosen[0] if chosen else None
-    return by_label.get(chosen)
+    while True:
+        window = ftui.FamilyPickerWindow(ftui.PICKER_XAML, options)
+        window.ShowDialog()
+        if window.result == "open":
+            return window.selected_family
+        if window.result != "model":
+            return None
+
+        family = _pick_family_in_model(doc, uidoc)
+        if family is not None:
+            return family
 
 
 def _open_window(family_doc, family_name, context_text):
@@ -188,7 +231,7 @@ def main():
             pass
         return
 
-    family = _pick_family(doc)
+    family = _pick_family(doc, revit.uidoc)
     if family is None:
         return
     family_name = safe_text(getattr(family, "Name", u""))

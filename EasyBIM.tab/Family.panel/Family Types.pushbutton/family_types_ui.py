@@ -45,6 +45,7 @@ from System.Windows import TextTrimming
 from System.Windows.Media import Brushes
 from System.Windows.Media import VisualTreeHelper
 
+from easybim.compat import safe_text
 from easybim import excel_workbook
 
 import family_types_state as state
@@ -57,6 +58,7 @@ LOGGER = script.get_logger()
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MAIN_XAML = os.path.join(SCRIPT_DIR, "FamilyTypesWindow.xaml")
 IMPORT_XAML = os.path.join(SCRIPT_DIR, "ImportTypesDialog.xaml")
+PICKER_XAML = os.path.join(SCRIPT_DIR, "FamilyPickerWindow.xaml")
 
 _XNS = ('xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" '
         'xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"')
@@ -193,6 +195,73 @@ class ImportEntryRow(forms.Reactive):
     def set_selected(self, value):
         self.is_selected = bool(value) and self.can_select
         self.notify("is_selected")
+
+
+class FamilyPickerItem(object):
+    """One editable loaded family in the Family Types launcher list."""
+
+    def __init__(self, label, category, family):
+        self.label = label
+        self.category = category
+        self.family = family
+
+
+class FamilyPickerWindow(forms.WPFWindow):
+    """Choose a loaded family or leave this window to pick one in Revit."""
+
+    def __init__(self, xaml_file_name, family_options):
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.result = None
+        self.selected_family = None
+        self._items = [FamilyPickerItem(*option)
+                       for option in list(family_options or [])]
+        self._categories = sorted(set(item.category for item in self._items),
+                                  key=lambda value: value.lower())
+        self.category_cb.Items.Add(u"All Categories")
+        for category in self._categories:
+            self.category_cb.Items.Add(category)
+        self.category_cb.SelectedIndex = 0
+        self._refresh_families()
+
+    def _refresh_families(self):
+        search = safe_text(self.search_tb.Text).strip().lower()
+        category = safe_text(self.category_cb.SelectedItem)
+        self.family_lb.Items.Clear()
+        for item in self._items:
+            if (category and category != u"All Categories"
+                    and item.category != category):
+                continue
+            if search and search not in item.label.lower():
+                continue
+            self.family_lb.Items.Add(item)
+
+    def search_changed(self, sender, args):
+        del sender, args
+        self._refresh_families()
+
+    def category_changed(self, sender, args):
+        del sender, args
+        self._refresh_families()
+
+    def open_clicked(self, sender, args):
+        del sender, args
+        item = self.family_lb.SelectedItem
+        self.selected_family = getattr(item, "family", None)
+        if self.selected_family is None:
+            forms.alert("Select a family to open its types.", title=TITLE)
+            return
+        self.result = "open"
+        self.Close()
+
+    def select_in_model_clicked(self, sender, args):
+        del sender, args
+        self.result = "model"
+        self.Close()
+
+    def cancel_clicked(self, sender, args):
+        del sender, args
+        self.result = "cancel"
+        self.Close()
 
 
 class ImportTypesDialog(forms.WPFWindow):

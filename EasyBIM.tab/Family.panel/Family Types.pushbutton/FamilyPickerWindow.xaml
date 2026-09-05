@@ -1,0 +1,47 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Family Types"
+        Width="560"
+        Height="500"
+        MinWidth="480"
+        MinHeight="380"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Pick a family to edit its types" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="Choose a loaded family, or select one element in the model."
+                       Margin="0,4,0,0" Foreground="DimGray" TextWrapping="Wrap"/>
+        </StackPanel>
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="180"/>
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="search_tb" Height="28" Margin="0,0,8,0"
+                     VerticalContentAlignment="Center" Padding="6,0,6,0"
+                     TextChanged="search_changed"/>
+            <ComboBox x:Name="category_cb" Grid.Column="1" Height="28"
+                      VerticalContentAlignment="Center"
+                      SelectionChanged="category_changed"/>
+        </Grid>
+        <ListBox x:Name="family_lb" Grid.Row="2" DisplayMemberPath="label"
+                 BorderBrush="#D0D0D0" BorderThickness="1"/>
+        <StackPanel Grid.Row="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Open Family Types" Width="140" Height="32"
+                    Margin="0,0,8,0" IsDefault="True" Click="open_clicked"/>
+            <Button Content="Select in Model" Width="120" Height="32"
+                    Margin="0,0,8,0" Click="select_in_model_clicked"/>
+            <Button Content="Cancel" Width="90" Height="32" IsCancel="True"
+                    Click="cancel_clicked"/>
+        </StackPanel>
+    </Grid>
+</Window>
