@@ -23,7 +23,8 @@ LOGGER = script.get_logger()
 XAML_PATH = os.path.join(os.path.dirname(__file__), "ui", "coordination_review.xaml")
 DEFAULT_STATUS_TEXT = (
     "Ready. Review the full issue list below, or click View Issues to select a link "
-    "and open Revit's Coordination Review for it."
+    "and open Revit's Coordination Review for it (Revit asks for one click on the "
+    "highlighted link)."
 )
 
 
@@ -357,12 +358,25 @@ def _open_link_coordination_review(window, element_id_int):
     (pyRevit command or Idling delegate), so Revit executes the posted
     command as soon as that context returns control.
     """
+    def _warn_about_pick(result):
+        # Revit's Select Link command waits for one click on the linked model
+        # in the drawing area; the status-bar prompt alone is easy to miss.
+        link_name = _safe_text(result.get("link_name")) or "the highlighted link"
+        forms.alert(
+            "Revit will now ask you to click the highlighted link.\n\n"
+            "Click {} in the drawing area to open Coordination Review for it.".format(
+                link_name
+            ),
+            title="Coordination Review",
+        )
+
     try:
         result = coordination_review_show.show_link_coordination_review(
             window.uiapp,
             window.uidoc,
             window.doc,
             element_id_int,
+            before_post=_warn_about_pick,
         )
     except Exception as ex:
         result = {

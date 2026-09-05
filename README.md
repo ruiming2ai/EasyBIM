@@ -1092,8 +1092,11 @@ want to revisit the workset choice or review coordination changes without
 closing and reopening the file.
 
 In the Coordination Review summary, each listed link has a **View Issues**
-button. Clicking it selects that Revit link, closes the summary, and opens
-Revit's built-in **Coordination Review** window (Collaborate > Coordinate >
-Coordination Review > Select Link) for that link. It does not zoom or open
-views. Start Message can be run again afterwards and shows the same issue list
-until the document is closed.
+button. Clicking it selects that Revit link, frames it in the current view (no
+other views are opened), closes the summary, and starts Revit's built-in
+**Coordination Review > Select Link** command. Revit then asks for one click:
+click the highlighted link in the drawing area and the Coordination Review
+window opens for it. If the link is not visible in the current view, EasyBIM
+says so; switch to a view that shows the link and click View Issues again.
+Start Message can be run again afterwards and shows the same issue list until
+the document is closed.

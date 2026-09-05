@@ -33,14 +33,23 @@ class FakeElementId(object):
         return hash(int(self))
 
 
+class FakeBoundingBox(object):
+    Min = "bbox-min"
+    Max = "bbox-max"
+
+
 class RevitLinkInstance(object):
-    def __init__(self, element_id, name, type_id):
+    def __init__(self, element_id, name, type_id, visible=True):
         self.Id = FakeElementId(element_id)
         self.Name = name
         self._type_id = FakeElementId(type_id)
+        self._visible = visible
 
     def GetTypeId(self):
         return self._type_id
+
+    def get_BoundingBox(self, view):
+        return FakeBoundingBox() if self._visible else None
 
 
 class RevitLinkType(object):
@@ -91,24 +100,52 @@ class FakeSelection(object):
         self.ids = list(ids)
 
 
-class FakeUIDocument(object):
-    """Selection only: the View Issues flow must never zoom or open views, so
-    there is deliberately no ``ShowElements`` here."""
+class FakeView(object):
+    def __init__(self, element_id):
+        self.Id = FakeElementId(element_id)
 
-    def __init__(self, fail_select=False):
+
+class FakeUIView(object):
+    def __init__(self, view_id, fail_zoom=False):
+        self.ViewId = FakeElementId(view_id)
+        self.zoomed = None
+        self._fail_zoom = fail_zoom
+
+    def ZoomAndCenterRectangle(self, corner_a, corner_b):
+        if self._fail_zoom:
+            raise RuntimeError("zoom failed")
+        self.zoomed = (corner_a, corner_b)
+
+
+ACTIVE_VIEW_ID = 100
+
+
+class FakeUIDocument(object):
+    """Selection, active view and open UI views only: the View Issues flow
+    must never open or search other views, so there is deliberately no
+    ``ShowElements`` here."""
+
+    def __init__(self, fail_select=False, ui_view=None, ui_views=None):
         self.Selection = FakeSelection()
+        self.ActiveView = FakeView(ACTIVE_VIEW_ID)
+        self.ui_view = FakeUIView(ACTIVE_VIEW_ID) if ui_view is None else ui_view
+        self._ui_views = [self.ui_view] if ui_views is None else list(ui_views)
         if fail_select:
             self.Selection.SetElementIds = self._raise
 
     def _raise(self, *args):
         raise RuntimeError("selection failed")
 
+    def GetOpenUIViews(self):
+        return list(self._ui_views)
+
 
 class FakeUIApplication(object):
-    def __init__(self, can_post=True, fail_post=False):
+    def __init__(self, can_post=True, fail_post=False, events=None):
         self.posted = []
         self._can_post = can_post
         self._fail_post = fail_post
+        self._events = events
 
     def CanPostCommand(self, command_id):
         return self._can_post
@@ -117,6 +154,8 @@ class FakeUIApplication(object):
         if self._fail_post:
             raise RuntimeError("post failed")
         self.posted.append(command_id)
+        if self._events is not None:
+            self._events.append("post")
 
 
 class FakeUIApplicationWithoutCanPost(object):
@@ -173,8 +212,10 @@ def _fixture():
     link_type = RevitLinkType(10, "ARCH.rvt")
     instance = RevitLinkInstance(11, "ARCH.rvt : 1", 10)
     orphan_type = RevitLinkType(20, "MEP.rvt")
+    hidden_type = RevitLinkType(40, "STR.rvt")
+    hidden_instance = RevitLinkInstance(41, "STR.rvt : 1", 40, visible=False)
     wall = Wall(30)
-    doc = FakeDocument([link_type, instance, orphan_type, wall])
+    doc = FakeDocument([link_type, instance, orphan_type, hidden_type, hidden_instance, wall])
     return doc, link_type, instance, orphan_type, wall
 
 
@@ -261,6 +302,46 @@ class CommandResolutionTests(unittest.TestCase):
         self.assertEqual(member, "")
 
 
+class FrameLinkInActiveViewTests(unittest.TestCase):
+    def setUp(self):
+        self.module = _load_module()
+        self.doc, self.link_type, self.instance, self.orphan_type, self.wall = _fixture()
+
+    def test_zooms_current_view_to_link_bounding_box(self):
+        uidoc = FakeUIDocument()
+        outcome = self.module.frame_link_in_active_view(uidoc, self.instance)
+        self.assertTrue(outcome["visible"])
+        self.assertTrue(outcome["framed"])
+        self.assertEqual(uidoc.ui_view.zoomed, ("bbox-min", "bbox-max"))
+
+    def test_hidden_link_is_not_visible_and_not_zoomed(self):
+        uidoc = FakeUIDocument()
+        hidden = self.doc.GetElement(FakeElementId(41))
+        outcome = self.module.frame_link_in_active_view(uidoc, hidden)
+        self.assertFalse(outcome["visible"])
+        self.assertFalse(outcome["framed"])
+        self.assertIn("not visible in the current view", outcome["reason"])
+        self.assertIsNone(uidoc.ui_view.zoomed)
+
+    def test_zoom_failure_keeps_link_visible(self):
+        uidoc = FakeUIDocument(ui_view=FakeUIView(ACTIVE_VIEW_ID, fail_zoom=True))
+        outcome = self.module.frame_link_in_active_view(uidoc, self.instance)
+        self.assertTrue(outcome["visible"])
+        self.assertFalse(outcome["framed"])
+        self.assertIn("zoom failed", outcome["reason"])
+
+    def test_missing_ui_view_for_active_view_keeps_link_visible(self):
+        uidoc = FakeUIDocument(ui_views=[FakeUIView(999)])
+        outcome = self.module.frame_link_in_active_view(uidoc, self.instance)
+        self.assertTrue(outcome["visible"])
+        self.assertFalse(outcome["framed"])
+
+    def test_no_uidoc_is_not_visible(self):
+        outcome = self.module.frame_link_in_active_view(None, self.instance)
+        self.assertFalse(outcome["visible"])
+        self.assertFalse(outcome["framed"])
+
+
 class ShowLinkCoordinationReviewTests(unittest.TestCase):
     def setUp(self):
         self.module = _load_module()
@@ -268,7 +349,7 @@ class ShowLinkCoordinationReviewTests(unittest.TestCase):
         self.uidoc = FakeUIDocument()
         self.uiapp = FakeUIApplication()
 
-    def _show(self, element_id, uiapp=None, uidoc=None, ui=ModernUI):
+    def _show(self, element_id, uiapp=None, uidoc=None, ui=ModernUI, before_post=None):
         return self.module.show_link_coordination_review(
             uiapp or self.uiapp,
             uidoc or self.uidoc,
@@ -276,26 +357,74 @@ class ShowLinkCoordinationReviewTests(unittest.TestCase):
             element_id,
             db=FakeDB,
             ui=ui,
+            before_post=before_post,
         )
 
-    def test_selects_link_and_posts_coordination_review(self):
+    def test_selects_frames_and_posts_coordination_review(self):
         result = self._show(11)
         self.assertTrue(result["ok"])
         self.assertTrue(result["selected"])
+        self.assertTrue(result["visible"])
+        self.assertTrue(result["framed"])
         self.assertTrue(result["posted"])
         self.assertEqual(result["link_name"], "ARCH.rvt : 1")
         self.assertEqual([int(i) for i in self.uidoc.Selection.ids], [11])
+        self.assertEqual(self.uidoc.ui_view.zoomed, ("bbox-min", "bbox-max"))
         self.assertEqual(
             self.uiapp.posted,
             [("command-id", ModernUI.PostableCommand.CoordinationSelectLink)],
         )
-        self.assertIn("Opening Coordination Review for ARCH.rvt : 1", result["message"])
+        self.assertIn("click the highlighted link ARCH.rvt : 1", result["message"])
 
-    def test_never_zooms_or_opens_views(self):
+    def test_never_opens_or_searches_other_views(self):
         self.assertFalse(hasattr(self.uidoc, "ShowElements"))
         result = self._show(11)
         self.assertTrue(result["ok"])
         self.assertNotIn("ShowElements", open(str(MODULE_PATH)).read())
+
+    def test_link_hidden_in_current_view_is_selected_but_not_posted(self):
+        result = self._show(41)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["selected"])
+        self.assertFalse(result["visible"])
+        self.assertFalse(result["posted"])
+        self.assertEqual([int(i) for i in self.uidoc.Selection.ids], [41])
+        self.assertEqual(self.uiapp.posted, [])
+        self.assertIn("not visible in the current view", result["message"])
+        self.assertIn("click View Issues again", result["message"])
+
+    def test_before_post_runs_after_framing_and_before_posting(self):
+        events = []
+        uiapp = FakeUIApplication(events=events)
+
+        def _before_post(result):
+            events.append(("before_post", result["link_name"], result["framed"]))
+
+        result = self._show(11, uiapp=uiapp, before_post=_before_post)
+        self.assertTrue(result["ok"])
+        self.assertEqual(events, [("before_post", "ARCH.rvt : 1", True), "post"])
+
+    def test_before_post_is_skipped_when_link_is_hidden(self):
+        events = []
+        result = self._show(41, before_post=lambda result: events.append("before_post"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(events, [])
+
+    def test_before_post_exception_does_not_block_post(self):
+        def _boom(result):
+            raise RuntimeError("alert failed")
+
+        result = self._show(11, before_post=_boom)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(self.uiapp.posted), 1)
+
+    def test_zoom_failure_still_posts(self):
+        uidoc = FakeUIDocument(ui_view=FakeUIView(ACTIVE_VIEW_ID, fail_zoom=True))
+        result = self._show(11, uidoc=uidoc)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["visible"])
+        self.assertFalse(result["framed"])
+        self.assertEqual(len(self.uiapp.posted), 1)
 
     def test_legacy_revit_posts_select_link(self):
         result = self._show(11, ui=LegacyUI)
@@ -314,6 +443,7 @@ class ShowLinkCoordinationReviewTests(unittest.TestCase):
         self.assertFalse(result["selected"])
         self.assertFalse(result["posted"])
         self.assertIsNone(self.uidoc.Selection.ids)
+        self.assertIsNone(self.uidoc.ui_view.zoomed)
         self.assertEqual(self.uiapp.posted, [])
         self.assertIn("not a Revit link", result["message"])
 

@@ -3,9 +3,13 @@
 
 Backs the ``View Issues`` button in the EasyBIM Coordination Review window.
 The button resolves the recorded element to a ``RevitLinkInstance`` in the
-active document, selects it, and posts the native
-``Collaborate > Coordinate > Coordination Review > Select Link`` command.
-Nothing here zooms or opens views.
+active document, selects it, frames it in the *current* view, and posts the
+native ``Collaborate > Coordinate > Coordination Review > Select Link``
+command.  That Revit command always waits for one click on the linked model
+in the drawing area (it ignores the current selection, and the API cannot
+perform a pick), so the caller warns the user through ``before_post`` and the
+link is framed where that click has to land.  Nothing here opens or searches
+other views.
 
 Revit runs posted commands only after control returns from the API context,
 so the window closes itself first and the caller invokes
@@ -195,7 +199,7 @@ def _element_id_list(element_id, db):
 
 
 def select_link(uidoc, link_instance, db=None):
-    """Make ``link_instance`` the current Revit selection (no zoom)."""
+    """Make ``link_instance`` the current Revit selection."""
     if uidoc is None or link_instance is None:
         return False
     db = db if db is not None else _import_revit_db()
@@ -204,6 +208,78 @@ def select_link(uidoc, link_instance, db=None):
         return True
     except Exception:
         return False
+
+
+def _bounding_box_in_view(element, view):
+    getter = getattr(element, "get_BoundingBox", None)
+    if callable(getter):
+        try:
+            return getter(view)
+        except Exception:
+            return None
+    try:
+        return element.BoundingBox[view]
+    except Exception:
+        return None
+
+
+def _ui_view_for(uidoc, view):
+    view_id = _element_id_int(getattr(view, "Id", None))
+    if view_id is None:
+        return None
+    try:
+        ui_views = list(uidoc.GetOpenUIViews())
+    except Exception:
+        return None
+    for ui_view in ui_views:
+        try:
+            if _element_id_int(ui_view.ViewId) == view_id:
+                return ui_view
+        except Exception:
+            continue
+    return None
+
+
+def frame_link_in_active_view(uidoc, link_instance):
+    """Zoom the *current* view to ``link_instance``; never open other views.
+
+    Returns ``{"visible", "framed", "reason"}``.  ``visible`` is False when
+    the link has no geometry in the active view (hidden, cropped out, or a
+    sheet/schedule is active) - Revit's pick cannot land there.  ``framed``
+    is False when the zoom itself was unavailable; the pick still works if
+    the user can see the link.
+    """
+    outcome = {"visible": False, "framed": False, "reason": ""}
+    if uidoc is None or link_instance is None:
+        outcome["reason"] = "no active Revit UI document"
+        return outcome
+
+    try:
+        view = uidoc.ActiveView
+    except Exception:
+        view = None
+    if view is None:
+        outcome["reason"] = "no active view"
+        return outcome
+
+    bbox = _bounding_box_in_view(link_instance, view)
+    if bbox is None:
+        outcome["reason"] = "not visible in the current view"
+        return outcome
+    outcome["visible"] = True
+
+    ui_view = _ui_view_for(uidoc, view)
+    if ui_view is None:
+        outcome["reason"] = "current view window not found"
+        return outcome
+    try:
+        ui_view.ZoomAndCenterRectangle(bbox.Min, bbox.Max)
+    except Exception as ex:
+        outcome["reason"] = "zoom failed: {}".format(_safe_text(ex) or "Unknown error")
+        return outcome
+
+    outcome["framed"] = True
+    return outcome
 
 
 def resolve_coordination_review_command(ui=None):
@@ -261,20 +337,35 @@ def post_coordination_review_command(uiapp, ui=None):
     return True, ""
 
 
-def show_link_coordination_review(uiapp, uidoc, doc, element_id_int, db=None, ui=None):
-    """Select the recorded link and open Revit's Coordination Review for it.
+def show_link_coordination_review(
+    uiapp, uidoc, doc, element_id_int, db=None, ui=None, before_post=None
+):
+    """Select the recorded link, frame it, and start Revit's Coordination Review.
 
-    Returns a dict with ``ok``, ``selected``, ``posted``, ``link_name`` and
-    ``message``.  ``posted`` means the native command is queued; Revit runs
-    it once the calling API context returns control.
+    Returns a dict with ``ok``, ``selected``, ``visible``, ``framed``,
+    ``posted``, ``link_name`` and ``message``.  The command is posted only
+    when the link is visible in the current view, because Revit's Select
+    Link command then asks for one click on the link in the drawing area.
+    ``before_post(result)`` runs just before posting so the caller can warn
+    the user about that click; ``posted`` means the native command is
+    queued and runs once the calling API context returns control.
     """
-    result = {"ok": False, "selected": False, "posted": False, "link_name": "", "message": ""}
+    result = {
+        "ok": False,
+        "selected": False,
+        "visible": False,
+        "framed": False,
+        "posted": False,
+        "link_name": "",
+        "message": "",
+    }
 
     link_instance, error = resolve_link_instance(doc, element_id_int, db=db)
     if link_instance is None:
         result["message"] = error
         return result
     result["link_name"] = _safe_text(getattr(link_instance, "Name", ""))
+    link_label = result["link_name"] or "the selected link"
 
     result["selected"] = select_link(uidoc, link_instance, db=db)
     if not result["selected"]:
@@ -283,6 +374,23 @@ def show_link_coordination_review(uiapp, uidoc, doc, element_id_int, db=None, ui
         )
         return result
 
+    frame = frame_link_in_active_view(uidoc, link_instance)
+    result["visible"] = bool(frame.get("visible"))
+    result["framed"] = bool(frame.get("framed"))
+    if not result["visible"]:
+        result["message"] = (
+            "Link {} is not visible in the current view, so Revit cannot pick it "
+            "there. Open a view where the link is visible and click View Issues "
+            "again. The link is selected in Revit."
+        ).format(link_label)
+        return result
+
+    if callable(before_post):
+        try:
+            before_post(result)
+        except Exception:
+            pass
+
     posted, error = post_coordination_review_command(uiapp, ui=ui)
     result["posted"] = posted
     if not posted:
@@ -290,7 +398,8 @@ def show_link_coordination_review(uiapp, uidoc, doc, element_id_int, db=None, ui
         return result
 
     result["ok"] = True
-    result["message"] = "Opening Coordination Review for {}.".format(
-        result["link_name"] or "the selected link"
-    )
+    result["message"] = (
+        "Revit is asking you to click the highlighted link {} to open "
+        "Coordination Review for it."
+    ).format(link_label)
     return result
