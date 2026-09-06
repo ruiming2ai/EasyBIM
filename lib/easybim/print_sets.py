@@ -385,6 +385,31 @@ def _find_print_set_by_name(doc, DB, framework, print_set_name):
     return None
 
 
+def set_in_session_print_set(doc, sheets, DB, host_app):
+    """Set the current non-persistent ordered sheet set for native output."""
+    if not supports_ordered_print_sets(host_app):
+        raise UnsupportedRevitVersion(
+            "Ordered print sets require Revit 2023 or newer."
+        )
+    sheets = list(sheets or [])
+    if not sheets:
+        raise ValueError("No printable sheets were provided.")
+
+    from System.Collections.Generic import List as ClrList
+
+    ordered_views = ClrList[DB.View]()
+    for sheet in sheets:
+        ordered_views.Add(sheet)
+
+    print_mgr = doc.PrintManager
+    print_mgr.PrintRange = DB.PrintRange.Select
+    current_set = print_mgr.ViewSheetSetting.CurrentViewSheetSet
+    current_set.IsAutomatic = False
+    current_set.OrderedViewList = ordered_views
+    print_mgr.Apply()
+    return current_set
+
+
 def save_ordered_print_set(doc, print_set_name, printable_rows, DB, framework,
                            revit, host_app):
     """Create or update a native ordered ViewSheetSet and make it current."""
