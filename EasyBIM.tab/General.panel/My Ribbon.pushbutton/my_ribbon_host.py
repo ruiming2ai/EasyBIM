@@ -25,6 +25,7 @@ from my_ribbon_state import (
     is_bundle_folder_name,
     normalize_label,
     render_dynamo_bundle_yaml,
+    run_type_in_text,
     safe_text,
     strip_extension_suffix,
     unique_dynamo_bundles,
@@ -839,6 +840,25 @@ def read_dynamo_facts(path):
     return dynamo_facts_from_text(text, os.path.basename(safe_text(path)))
 
 
+def read_dynamo_run_type(path):
+    """The run mode a graph file names (``run_type_in_text``), or ``""`` when
+    it names none or cannot be read.  This is the one reading the bundle is
+    verified against, so it goes straight to the text."""
+    try:
+        with io.open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            return run_type_in_text(handle.read())
+    except Exception:
+        return ""
+
+
+def _names_a_run_mode_other_than_automatic(path):
+    """True when the file says it runs Manual or Periodic - the one thing that
+    makes a pyRevit Dynamo button do nothing.  A file that names no run mode
+    is left alone: there is nothing to change and nothing to report."""
+    run_type = read_dynamo_run_type(path)
+    return bool(run_type) and run_type.lower() != "automatic"
+
+
 def new_dynamo_bundle_name(title, root=None):
     return dynamo_bundle_name(title, existing_dynamo_bundle_names(root))
 
@@ -919,16 +939,24 @@ def refresh_dynamo_copy(source, root=None, facts=None):
     path = safe_text(source.get("path"))
     target = os.path.join(bundle, "script.dyn")
     if not path or not os.path.isfile(path):
+        # the last copy is all there is; it is ours, so it can still be made
+        # to run
+        if os.path.isfile(target) and _names_a_run_mode_other_than_automatic(target):
+            _write_forced_copy(target, target)
         return "missing"
     if facts is None:
         facts = read_dynamo_facts(path)
     patching = dynamo_needs_forced_run(facts)
     try:
-        if os.path.isfile(target) and os.path.getmtime(target) >= os.path.getmtime(path) \
-                and (patching or os.path.getsize(target) == os.path.getsize(path)):
-            # a patched copy is deliberately a different size from the original,
-            # so only its date can say whether it is still current
-            return "current"
+        if os.path.isfile(target) and os.path.getmtime(target) >= os.path.getmtime(path):
+            if not patching and os.path.getsize(target) == os.path.getsize(path):
+                return "current"
+            # a patched copy is deliberately a different size from the
+            # original, so its date alone cannot vouch for it: an unpatched
+            # copy left by an earlier write has the same date and still says
+            # Manual.  Read the one value back instead.
+            if patching and not _names_a_run_mode_other_than_automatic(target):
+                return "current"
     except Exception:
         pass
     if patching and _write_forced_copy(path, target):
@@ -1048,17 +1076,20 @@ def sync_dynamo_bundles(registry, pending_deletes=(), root=None):
                 report["missing_graph"].append(source.get("id"))
             else:
                 report["current"].append(source.get("title") or source.get("label"))
-            # the copy is what pyRevit runs for a manual graph, so read it back:
-            # a run mode we could not change is a button that will do nothing,
-            # and the user has to hear that rather than find it out by clicking
-            if graph_exists and dynamo_needs_forced_run(facts) and \
-                    dynamo_needs_forced_run(read_dynamo_facts(os.path.join(bundle, "script.dyn"))):
+            # pyRevit runs exactly one file for this button: the original while
+            # bundle.yaml names it, else the copy.  Whatever decided that above,
+            # read *that* file back - not the facts it was decided from.  A run
+            # mode we could not change is a button that will do nothing, and
+            # the user has to hear that rather than find it out by clicking.
+            runs = source.get("path") if "dynamo_path:" in (_read_text(yaml_path) or "") \
+                else os.path.join(bundle, "script.dyn")
+            run_type = read_dynamo_run_type(runs)
+            if run_type and run_type.lower() != "automatic":
                 report["errors"].append(
                     "{0}: the graph is saved in {1} run mode, and My Ribbon could not set its "
                     "copy to Automatic. Open the graph in Dynamo and set Run to Automatic, or "
                     "the button will do nothing.".format(
-                        source.get("title") or source.get("label"),
-                        safe_text(facts.get("run_type")) or "Manual"))
+                        source.get("title") or source.get("label"), run_type))
         except Exception as ex:
             report["errors"].append("{0}: {1}".format(source.get("title") or source.get("label"),
                                                       _short_error(ex)))

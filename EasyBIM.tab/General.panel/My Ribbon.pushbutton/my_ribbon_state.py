@@ -1258,6 +1258,30 @@ def dynamo_facts_from_text(text, file_name=""):
             view = data.get("View")
             if isinstance(view, dict) and isinstance(view.get("Dynamo"), dict):
                 facts["run_type"] = safe_text(view["Dynamo"].get("RunType")).strip()
+        elif '"Uuid"' in raw[:4000] and '"Nodes"' in raw:
+            # json.loads would not take it - IronPython's decoder is not
+            # CPython's - but it is plainly a graph, and refusing it would
+            # only mean a button that cannot be added.  Read what the bundle
+            # needs by eye instead.
+            facts["format"] = "2.x"
+            head = raw[:raw.find('"Nodes"')]
+            match = re.search(r'"Name"\s*:\s*"([^"]*)"', head)
+            if match:
+                facts["name"] = match.group(1).strip()
+            if re.search(r'"IsCustomNode"\s*:\s*true', head):
+                facts["is_custom_node"] = True
+                if not facts["problem"]:
+                    facts["problem"] = "This graph is saved as a custom node; it cannot run on its own."
+            engines = []
+            for engine in re.findall(r'"Engine"\s*:\s*"([^"]*)"', raw):
+                engine = engine.strip() or "IronPython2"
+                if engine not in engines:
+                    engines.append(engine)
+            facts["python_engines"] = engines
+        if facts["format"] == "2.x" and not facts["run_type"]:
+            # the run mode decides whether the button runs at all, so it is
+            # read the way the patch reads it - never left to one JSON path
+            facts["run_type"] = run_type_in_text(raw)
     elif raw.startswith("<"):
         if "<Workspace" in raw[:2000]:
             facts["format"] = "1.x"
@@ -1316,6 +1340,21 @@ def dynamo_needs_forced_run(facts):
 #: attribute of a 1.x ``<Workspace>``; both spellings appear once in a graph.
 _RUN_TYPE_JSON = re.compile(r'("RunType"\s*:\s*")([^"]*)(")')
 _RUN_TYPE_XML = re.compile(r'(<Workspace[^>]*?\sRunType=")([^"]*)(")')
+
+
+def run_type_in_text(text):
+    """The run mode a graph file names, read off its text with the same
+    patterns ``force_automatic_run`` patches by - so what is detected and what
+    can be patched can never disagree.  The first match wins: a file that says
+    Manual anywhere must be treated as Manual even when it says it twice, since
+    that is the case the patch has to refuse and the user has to hear about.
+    ``""`` when the file names no run mode."""
+    raw = safe_text(text)
+    for pattern in (_RUN_TYPE_JSON, _RUN_TYPE_XML):
+        match = pattern.search(raw)
+        if match:
+            return match.group(2).strip()
+    return ""
 
 
 def force_automatic_run(text):

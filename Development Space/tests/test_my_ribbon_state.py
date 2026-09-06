@@ -525,6 +525,48 @@ class DynamoHelperTests(unittest.TestCase):
         self.assertFalse(self.state.dynamo_needs_forced_run(auto_2x))
         self.assertFalse(self.state.dynamo_needs_forced_run({}))
 
+    def test_the_run_mode_is_read_the_way_it_is_patched(self):
+        """One reading for detection and patching: a file that names Manual
+        anywhere is Manual, whatever json.loads made of it."""
+        read = self.state.run_type_in_text
+        self.assertEqual(read(DYN_2X_MANUAL), "Manual")
+        self.assertEqual(read(DYN_1X_MANUAL), "Manual")
+        self.assertEqual(read(DYN_2X), "")
+        self.assertEqual(read("garbage"), "")
+        # two answers: the first stands, so forcing is attempted - and refused
+        # loudly by force_automatic_run, which is the report the user needs
+        twice = DYN_2X_MANUAL.replace('"Id": "a"', '"Id": "a", "RunType": "Periodic"')
+        self.assertEqual(read(twice), "Periodic")
+        self.assertEqual(self.state.force_automatic_run(twice), (twice, False))
+
+    def test_a_manual_graph_is_seen_even_when_json_does_not_walk_to_it(self):
+        """RunType kept, but not under View > Dynamo where the JSON walk looks."""
+        elsewhere = DYN_2X_MANUAL.replace(
+            '"Dynamo": {"ScaleFactor": 1.0, "HasRunWithoutCrash": true, "RunType": "Manual", "RunPeriod": "1000"}',
+            '"Dynamo": {"ScaleFactor": 1.0}, "RunType": "Manual"')
+        self.assertIn('"RunType": "Manual"', elsewhere)
+        __import__("json").loads(elsewhere)  # still valid JSON
+        facts = self.state.dynamo_facts_from_text(elsewhere, "g.dyn")
+        self.assertEqual((facts["format"], facts["run_type"]), ("2.x", "Manual"))
+        self.assertTrue(self.state.dynamo_needs_forced_run(facts))
+
+    def test_a_graph_json_will_not_parse_is_still_a_graph(self):
+        """IronPython's json is not CPython's: a real graph it rejects must
+        still be addable, and must still get its run mode patched."""
+        broken = DYN_2X_MANUAL.replace('"Id": "a"}', '"Id": "a",}')  # a trailing comma
+        with self.assertRaises(ValueError):
+            __import__("json").loads(broken)
+        facts = self.state.dynamo_facts_from_text(broken, "g.dyn")
+        self.assertEqual(facts["format"], "2.x")
+        self.assertEqual(facts["name"], "Manual Graph")
+        self.assertEqual(facts["python_engines"], ["IronPython2"])
+        self.assertEqual(facts["run_type"], "Manual")
+        self.assertEqual(facts["problem"], "")
+        self.assertTrue(self.state.dynamo_needs_forced_run(facts))
+        # text that is not a graph at all still says so
+        self.assertIn("does not look like",
+                      self.state.dynamo_facts_from_text("{garbage", "x.dyn")["problem"])
+
     def test_forcing_automatic_run_changes_that_one_value_and_nothing_else(self):
         for text in (DYN_2X_MANUAL, DYN_1X_MANUAL):
             patched, changed = self.state.force_automatic_run(text)

@@ -346,6 +346,18 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("len(found) != 1", force)
         self.assertNotIn("json.dumps", force)
 
+    def test_the_run_mode_is_verified_on_the_file_pyrevit_runs(self):
+        """Detection, patching and verification read the same text, so a wrong
+        verdict upstream can never be silent."""
+        self.assertIn("run_type_in_text(", _function_source(STATE_MODULE, "dynamo_facts_from_text"))
+        refresh = _function_source(HOST_MODULE, "refresh_dynamo_copy")
+        # the date alone never vouches for a copy that had to be patched
+        self.assertIn("if patching and not _names_a_run_mode_other_than_automatic(target)", refresh)
+        sync = _function_source(HOST_MODULE, "sync_dynamo_bundles")
+        self.assertIn("read_dynamo_run_type(runs)", sync)
+        # the report must not be gated on the facts it is there to check
+        self.assertNotIn("dynamo_needs_forced_run(facts) and", sync)
+
     def test_the_clean_engine_is_asked_for_by_cpython_graphs_only(self):
         desired = _function_source(HOST_MODULE, "desired_dynamo_yaml")
         self.assertIn("clean=dynamo_uses_cpython", desired)
