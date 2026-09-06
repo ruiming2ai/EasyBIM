@@ -177,8 +177,21 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn("read_visible_excel_rows", ui_source)
         self.assertIn("ExcelPrintSetSession", ui_source)
         self.assertIn("LoadCustomizedExcelWindow", ui_source)
-        self.assertIn("def skip_number_discrepancies", dialogs_source)
-        self.assertIn("def skip_name_discrepancies", dialogs_source)
+        self.assertIn("def skip_discrepancies", dialogs_source)
+
+    def test_customized_excel_uses_one_combined_skip_button(self):
+        xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
+            encoding="utf-8")
+        dialogs_source = (COMMAND_DIR / "sheet_manager_dialogs.py").read_text(
+            encoding="utf-8")
+        self.assertIn('x:Name="skipdiscrepancies_b"', xaml)
+        self.assertIn('Content="Skip Discrepancies"', xaml)
+        self.assertIn('Click="skip_discrepancies"', xaml)
+        self.assertNotIn("skipnumbers_b", xaml)
+        self.assertNotIn("skipnames_b", xaml)
+        self.assertIn("def skip_discrepancies", dialogs_source)
+        self.assertNotIn("def skip_number_discrepancies", dialogs_source)
+        self.assertNotIn("def skip_name_discrepancies", dialogs_source)
 
     def test_pdf_export_and_print_post_checked_visible_rows_as_in_session_set(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(

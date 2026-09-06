@@ -191,10 +191,9 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             self._validation.number_discrepancies
         self.name_discrepancies_dg.ItemsSource = \
             self._validation.name_discrepancies
-        self.skipnumbers_b.IsEnabled = bool(
-            self._validation.number_discrepancies)
-        self.skipnames_b.IsEnabled = bool(
-            self._validation.name_discrepancies)
+        self.skipdiscrepancies_b.IsEnabled = bool(
+            self._validation.number_discrepancies
+            or self._validation.name_discrepancies)
 
         self.summary_tb.Text = (
             u"{0} visible Excel row(s), {1} matching sheet row(s) ready to load."
@@ -216,14 +215,10 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
                 u"No matching sheets are available to load."
             self.show_element(self.errormsg_block)
 
-    def skip_number_discrepancies(self, sender, args):
+    def skip_discrepancies(self, sender, args):
         del sender, args
         self._session.skip_number_discrepancies(
             self._validation.number_discrepancies)
-        self._refresh_validation()
-
-    def skip_name_discrepancies(self, sender, args):
-        del sender, args
         self._session.skip_name_discrepancies(
             self._validation.name_discrepancies)
         self._refresh_validation()
