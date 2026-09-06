@@ -180,6 +180,28 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn("def skip_number_discrepancies", dialogs_source)
         self.assertIn("def skip_name_discrepancies", dialogs_source)
 
+    def test_print_posts_checked_visible_rows_as_revit_selection(self):
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        revit_source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
+            encoding="utf-8")
+        print_body = ui_source.split("    def print_sheets(", 1)[1]\
+            .split("\n\n\n# ------------------------------------------------------------ launcher", 1)[0]
+        post_body = ui_source.split("    def _reload_and_post_command(", 1)[1]\
+            .split("\n    def pdf_export(", 1)[0]
+        self.assertIn("row for row in self._visible_rows", print_body)
+        self.assertIn("row.is_selected", print_body)
+        self.assertIn("row.is_pending", print_body)
+        self.assertIn("row.is_missing", print_body)
+        self.assertIn("Check at least one sheet row first", print_body)
+        self.assertIn("_reload_and_post_command(\"Print\", \"Print\", sheet_ids)",
+                      print_body)
+        self.assertIn("smrevit.select_elements(element_ids, uidoc)",
+                      post_body)
+        self.assertLess(post_body.index("smrevit.select_elements"),
+                        post_body.index("uiapp.PostCommand"))
+        self.assertIn("for element_id in element_ids", revit_source)
+
     def test_revision_template_binds_generated_attrs_only(self):
         source = (COMMAND_DIR / "sheet_manager_ui.py")\
             .read_text(encoding="utf-8")

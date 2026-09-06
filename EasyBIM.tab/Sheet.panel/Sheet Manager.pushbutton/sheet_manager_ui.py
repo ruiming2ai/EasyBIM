@@ -1883,7 +1883,8 @@ class SheetManagerWindow(forms.WPFWindow):
             options=["Reload links", "Skip"])
         return choice == "Reload links"
 
-    def _reload_and_post_command(self, action_title, command_member_name):
+    def _reload_and_post_command(self, action_title, command_member_name,
+                                 element_ids=None):
         def work(uiapp):
             should_reload = self._confirm_link_reload(action_title)
             if should_reload:
@@ -1892,6 +1893,9 @@ class SheetManagerWindow(forms.WPFWindow):
                 if items:
                     self._show_dialog(dialogs.ReloadLinksResultsWindow(
                         "ReloadLinksResultsDialog.xaml", items))
+            if element_ids is not None:
+                uidoc = self._require_doc(uiapp, must_be_active=True)
+                smrevit.select_elements(element_ids, uidoc)
             try:
                 from Autodesk.Revit.UI import PostableCommand
                 command = getattr(PostableCommand, command_member_name, None)
@@ -1922,7 +1926,17 @@ class SheetManagerWindow(forms.WPFWindow):
     def print_sheets(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        self._reload_and_post_command("Print", "Print")
+        checked = [row for row in self._visible_rows
+                   if row.is_selected and not row.is_pending
+                   and not row.is_missing
+                   and row.sheet_id in self._sheets_by_id]
+        if not checked:
+            self._alert(
+                "Check at least one sheet row first (checkbox column).",
+                title="Print")
+            return
+        sheet_ids = [self._sheets_by_id[row.sheet_id].Id for row in checked]
+        self._reload_and_post_command("Print", "Print", sheet_ids)
 
 
 # ------------------------------------------------------------ launcher
