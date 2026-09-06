@@ -1,9 +1,0 @@
-title: |-
-  Update Print Set
-  From Schedule
-tooltip: |-
-  Create or update a native Revit print set from a Sheet List.
-
-  The saved print set uses the Sheet List order and can be used by Revit's native PDF/print tools.
-min_revit_version: 2023
-author: Ruiming Liu

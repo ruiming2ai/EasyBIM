@@ -974,30 +974,6 @@ Nothing is written until **Apply Changes**. The window stays open while you work
 in Revit; clicking back into it re-syncs the grid with the current model state,
 so edits made in Revit between visits are not lost.
 
-## Print Sheets (Sheet)
-
-Prints sheets in order from a sheet index or schedule. The tool supports
-**combined PDF** output, **individual printing**, **variable paper sizes** per
-sheet, and a **custom naming format** built from template variables (sheet
-number, name, revision, date and others). Revision-based filtering narrows the
-set to sheets carrying a particular revision, and linked-document printing
-handles sheets coming from a Revit link.
-
-Shift-clicking the button runs a cleanup pass that strips non-printable
-characters from sheet numbers — useful when pasted or imported sheet numbers
-carry invisible formatting.
-
-## Print Set (Sheet)
-
-A pulldown with two buttons for creating or updating native Revit print sets
-(Revit 2023+). Both support revision-based filtering.
-
-- **From Excel** — import an `.xlsx` or `.xlsm` file. The tool reads the first
-  visible worksheet and takes the first two visible columns as sheet number and
-  sheet name.
-- **From Schedule** — pick a Sheet List schedule already in the model and use
-  its order.
-
 ## Revision Manager (Sheet)
 
 A pulldown with four bulk-revision tools:

@@ -134,11 +134,12 @@ class LinkedSheetsTransferBundleTests(unittest.TestCase):
         layout = (PANEL_DIR / "bundle.yaml").read_text(encoding="utf-8")
         self.assertIn("Linked Sheets Transfer", layout)
 
-    def test_panel_layout_still_lists_every_sibling_button(self):
+    def test_panel_layout_lists_only_current_sheet_tools(self):
         layout = (PANEL_DIR / "bundle.yaml").read_text(encoding="utf-8")
-        for sibling in ("Sheet Manager", "Revision Manager", "Print Set",
-                        "Print Sheets", "Isolate"):
+        for sibling in ("Sheet Manager", "Revision Manager", "Isolate"):
             self.assertIn(sibling, layout)
+        self.assertNotIn("Print Set", layout)
+        self.assertNotIn("Print Sheets", layout)
 
     def test_bundle_yaml_carries_the_ribbon_title(self):
         bundle = (COMMAND_DIR / "bundle.yaml").read_text(encoding="utf-8")
