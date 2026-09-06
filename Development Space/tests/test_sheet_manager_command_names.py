@@ -14,6 +14,7 @@ MAIN_XAML = COMMAND_DIR / "SheetManagerWindow.xaml"
 DIALOG_XAMLS = [
     "ApplyResultsDialog.xaml",
     "LoadFromSourceDialog.xaml",
+    "LoadCustomizedExcelDialog.xaml",
     "FilterByRevisionDialog.xaml",
     "FilterByParameterDialog.xaml",
     "SortDialog.xaml",
@@ -85,7 +86,8 @@ class SheetManagerBundleTests(unittest.TestCase):
         names = _xaml_names(root)
         required = {
             "search_tb", "sheets_dg", "status_tb", "source_tb",
-            "loadall_b", "loadsheetlist_b", "loadprintset_b",
+            "loadall_b", "loadcustomexcel_b", "loadsheetlist_b",
+            "loadprintset_b",
             "filterrev_b", "filterparam_b", "sort_b",
             "addtbparam_b", "addsheetparam_b",
             "export_b", "import_b", "copysheetinfo_b",
@@ -94,6 +96,13 @@ class SheetManagerBundleTests(unittest.TestCase):
         }
         missing = required - names
         self.assertFalse(missing, "missing x:Name(s): %s" % missing)
+
+    def test_customized_excel_button_sits_between_all_sheets_and_sheet_list(self):
+        xaml = MAIN_XAML.read_text(encoding="utf-8")
+        self.assertLess(xaml.index('x:Name="loadall_b"'),
+                        xaml.index('x:Name="loadcustomexcel_b"'))
+        self.assertLess(xaml.index('x:Name="loadcustomexcel_b"'),
+                        xaml.index('x:Name="loadsheetlist_b"'))
 
     def test_main_window_handlers_exist_in_ui_module(self):
         root = ET.parse(str(MAIN_XAML)).getroot()
@@ -158,6 +167,18 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertNotIn("pending_selection_ids", ui_source)
         # Selection happens silently: no prompt asking to close.
         self.assertNotIn("Close and select", ui_source)
+
+    def test_customized_excel_load_stays_a_sheet_table_source(self):
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        dialogs_source = (COMMAND_DIR / "sheet_manager_dialogs.py").read_text(
+            encoding="utf-8")
+        self.assertIn("def load_customized_excel", ui_source)
+        self.assertIn("read_visible_excel_rows", ui_source)
+        self.assertIn("ExcelPrintSetSession", ui_source)
+        self.assertIn("LoadCustomizedExcelWindow", ui_source)
+        self.assertIn("def skip_number_discrepancies", dialogs_source)
+        self.assertIn("def skip_name_discrepancies", dialogs_source)
 
     def test_revision_template_binds_generated_attrs_only(self):
         source = (COMMAND_DIR / "sheet_manager_ui.py")\

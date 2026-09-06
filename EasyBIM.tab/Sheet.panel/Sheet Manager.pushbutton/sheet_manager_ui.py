@@ -9,6 +9,7 @@ interactivity is wired at grid level or on programmatically built headers.
 
 from __future__ import print_function
 
+import os
 import time
 
 import clr
@@ -221,7 +222,8 @@ class SheetManagerWindow(forms.WPFWindow):
         self._last_sync = time.time()
         self._editing_row = None
         self._revit_buttons = [
-            self.loadsheetlist_b, self.loadprintset_b, self.filterparam_b,
+            self.loadcustomexcel_b, self.loadsheetlist_b, self.loadprintset_b,
+            self.filterparam_b,
             self.addtbparam_b, self.addsheetparam_b, self.saveprintset_b,
             self.selecttblocks_b, self.apply_b, self.refresh_b,
             self.pdfexport_b, self.print_b,
@@ -1031,6 +1033,51 @@ class SheetManagerWindow(forms.WPFWindow):
         self._source_label = "All Sheets"
         self.search_tb.Text = u""
         self._search_text = u""
+        self._refresh_visible_rows()
+
+    def load_customized_excel(self, sender, args):
+        del sender, args
+        self._commit_pending_edit()
+        self._run_in_revit(
+            "Load Customized Excel", self._load_customized_excel_work)
+
+    def _load_customized_excel_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
+        excel_path = forms.pick_file(
+            files_filter=(
+                "Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm|"
+                "All files (*.*)|*.*"),
+            restore_dir=True,
+            multi_file=False)
+        if not excel_path:
+            return
+        try:
+            read_result = excel_print_sets.read_visible_excel_rows(excel_path)
+        except excel_print_sets.UnsupportedExcelFile as error:
+            self._alert(str(error), title="Load Customized Excel")
+            return
+        except Exception as error:
+            LOGGER.debug("Failed to read customized Excel: %s", error)
+            self._alert("Failed to import the Excel file.",
+                        expanded=str(error), title="Load Customized Excel")
+            return
+
+        session = excel_print_sets.ExcelPrintSetSession(
+            read_result.rows, smrevit.collect_sheets(self._doc))
+        dialog = self._show_dialog(dialogs.LoadCustomizedExcelWindow(
+            "LoadCustomizedExcelDialog.xaml", excel_path, session,
+            read_result.warning))
+        if not dialog.result:
+            return
+        source_order = [eid_to_int(row.revit_sheet.Id)
+                        for row in dialog.result]
+        if not source_order:
+            self._alert("No matching sheets are available to load.",
+                        title="Load Customized Excel")
+            return
+        self._source_order = source_order
+        self._source_label = u"Customized Excel: {0}".format(
+            os.path.basename(excel_path))
         self._refresh_visible_rows()
 
     def load_sheet_list(self, sender, args):

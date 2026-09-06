@@ -52,6 +52,9 @@
             <Button x:Name="loadall_b"
                     Content="Load All Sheets"
                     Click="load_all_sheets"/>
+            <Button x:Name="loadcustomexcel_b"
+                    Content="Load Customized Excel"
+                    Click="load_customized_excel"/>
             <Button x:Name="loadsheetlist_b"
                     Content="Load Sheet List"
                     Click="load_sheet_list"/>

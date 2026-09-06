@@ -1,0 +1,82 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Load Customized Excel"
+        Height="570"
+        Width="900"
+        MinHeight="420"
+        MinWidth="680"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock Text="Load sheets from a customized Excel file" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="The first visible worksheet and its first two visible columns are read as sheet number and sheet name. No header row is skipped."
+                       Margin="0,5,0,0" Foreground="DimGray" TextWrapping="Wrap"/>
+            <TextBlock x:Name="file_tb" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="warning_tb" Margin="0,5,0,0" Foreground="#A15C00"
+                       TextWrapping="Wrap" Visibility="Collapsed"/>
+            <TextBlock x:Name="summary_tb" Margin="0,8,0,0" TextWrapping="Wrap"/>
+            <Border x:Name="errormsg_block" Background="#C00000" Padding="5"
+                    Margin="0,8,0,0" Visibility="Collapsed">
+                <TextBlock x:Name="errormsg_tb" Foreground="White" TextWrapping="Wrap"/>
+            </Border>
+        </StackPanel>
+
+        <Grid DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="skipnumbers_b" Grid.Column="0" Height="32" MinWidth="220"
+                    Content="Skip Number Discrepancies" Click="skip_number_discrepancies"/>
+            <Button x:Name="skipnames_b" Grid.Column="2" Height="32" MinWidth="220"
+                    Content="Skip Name Discrepancies" Click="skip_name_discrepancies"/>
+            <Button x:Name="load_b" Grid.Column="3" Height="32" MinWidth="90" Margin="12,0,8,0"
+                    Content="Load" IsDefault="True" Click="load_clicked"/>
+            <Button x:Name="cancel_b" Grid.Column="4" Height="32" MinWidth="90"
+                    Content="Cancel" IsCancel="True" Click="cancel_clicked"/>
+        </Grid>
+
+        <Grid Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Missing / Duplicate Sheet Numbers"
+                       FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <TextBlock Grid.Row="0" Grid.Column="2" Text="Missing / Mismatched Sheet Names"
+                       FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <DataGrid x:Name="number_discrepancies_dg" Grid.Row="1" Grid.Column="0"
+                      AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"
+                      CanUserSortColumns="False" Foreground="#C00000"
+                      HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="70" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="105" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Name" Binding="{Binding name}" Width="*" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Reason" Binding="{Binding reason}" Width="150" IsReadOnly="True"/>
+                </DataGrid.Columns>
+            </DataGrid>
+            <DataGrid x:Name="name_discrepancies_dg" Grid.Row="1" Grid.Column="2"
+                      AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"
+                      CanUserSortColumns="False" Foreground="#C00000"
+                      HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="70" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="105" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Name" Binding="{Binding name}" Width="*" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Reason" Binding="{Binding reason}" Width="150" IsReadOnly="True"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </DockPanel>
+</Window>

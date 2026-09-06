@@ -166,6 +166,81 @@ class LoadFromSourceWindow(forms.WPFWindow):
         self.Close()
 
 
+class LoadCustomizedExcelWindow(forms.WPFWindow):
+    """Resolve Excel discrepancies before loading its matching sheet rows."""
+
+    def __init__(self, xaml_file_name, excel_path, session, warning=None):
+        self._is_ready = False
+        self.result = None
+        self._session = session
+        self._warning = warning
+        self._validation = None
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.file_tb.Text = excel_path
+        self.warning_tb.Text = warning or u""
+        if warning:
+            self.show_element(self.warning_tb)
+        else:
+            self.hide_element(self.warning_tb)
+        self._is_ready = True
+        self._refresh_validation()
+
+    def _refresh_validation(self):
+        self._validation = self._session.validate()
+        self.number_discrepancies_dg.ItemsSource = \
+            self._validation.number_discrepancies
+        self.name_discrepancies_dg.ItemsSource = \
+            self._validation.name_discrepancies
+        self.skipnumbers_b.IsEnabled = bool(
+            self._validation.number_discrepancies)
+        self.skipnames_b.IsEnabled = bool(
+            self._validation.name_discrepancies)
+
+        self.summary_tb.Text = (
+            u"{0} visible Excel row(s), {1} matching sheet row(s) ready to load."
+        ).format(len(self._validation.visible_rows),
+                 len(self._validation.final_rows))
+        can_load = bool(self._validation.can_continue
+                        and self._validation.final_rows)
+        self.load_b.IsEnabled = can_load
+        if can_load:
+            self.hide_element(self.errormsg_block)
+            self.errormsg_tb.Text = u""
+        elif self._validation.number_discrepancies \
+                or self._validation.name_discrepancies:
+            self.errormsg_tb.Text = \
+                u"Skip the visible discrepancies or cancel this load."
+            self.show_element(self.errormsg_block)
+        else:
+            self.errormsg_tb.Text = \
+                u"No matching sheets are available to load."
+            self.show_element(self.errormsg_block)
+
+    def skip_number_discrepancies(self, sender, args):
+        del sender, args
+        self._session.skip_number_discrepancies(
+            self._validation.number_discrepancies)
+        self._refresh_validation()
+
+    def skip_name_discrepancies(self, sender, args):
+        del sender, args
+        self._session.skip_name_discrepancies(
+            self._validation.name_discrepancies)
+        self._refresh_validation()
+
+    def load_clicked(self, sender, args):
+        del sender, args
+        self._refresh_validation()
+        if not self.load_b.IsEnabled:
+            return
+        self.result = list(self._validation.final_rows)
+        self.Close()
+
+    def cancel_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
 class RevisionFilterRow(object):
     def __init__(self, revision, is_selected):
         self.revision_id = revision.get("id")
