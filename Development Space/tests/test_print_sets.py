@@ -55,7 +55,9 @@ class _FakeCurrentViewSheetSet(object):
 
 class _FakeViewSheetSetting(object):
     def __init__(self):
-        self.CurrentViewSheetSet = _FakeCurrentViewSheetSet()
+        self.saved_set = _FakeCurrentViewSheetSet()
+        self.InSession = _FakeCurrentViewSheetSet()
+        self.CurrentViewSheetSet = self.saved_set
 
 
 class _FakePrintManager(object):
@@ -131,7 +133,7 @@ class PrintSetsTests(unittest.TestCase):
         self.assertEqual([row.key for row in printable_rows], ["A", "C"])
         self.assertEqual(skipped_count, 1)
 
-    def test_in_session_print_set_uses_select_range_and_input_order(self):
+    def test_in_session_print_set_becomes_current_and_uses_input_order(self):
         module = _load_module()
         system = types.ModuleType("System")
         collections = types.ModuleType("System.Collections")
@@ -161,11 +163,15 @@ class PrintSetsTests(unittest.TestCase):
                 else:
                     sys.modules[name] = previous
 
-        current = doc.PrintManager.ViewSheetSetting.CurrentViewSheetSet
+        setting = doc.PrintManager.ViewSheetSetting
+        current = setting.CurrentViewSheetSet
         self.assertIs(result, current)
+        self.assertIs(current, setting.InSession)
+        self.assertIsNot(current, setting.saved_set)
         self.assertEqual(doc.PrintManager.PrintRange, "select")
         self.assertFalse(current.IsAutomatic)
         self.assertEqual(current.OrderedViewList, [second, first])
+        self.assertIsNone(setting.saved_set.OrderedViewList)
         self.assertEqual(doc.PrintManager.apply_count, 1)
 
 

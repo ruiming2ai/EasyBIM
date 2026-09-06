@@ -403,7 +403,9 @@ def set_in_session_print_set(doc, sheets, DB, host_app):
 
     print_mgr = doc.PrintManager
     print_mgr.PrintRange = DB.PrintRange.Select
-    current_set = print_mgr.ViewSheetSetting.CurrentViewSheetSet
+    view_sheet_setting = print_mgr.ViewSheetSetting
+    view_sheet_setting.CurrentViewSheetSet = view_sheet_setting.InSession
+    current_set = view_sheet_setting.CurrentViewSheetSet
     current_set.IsAutomatic = False
     current_set.OrderedViewList = ordered_views
     print_mgr.Apply()

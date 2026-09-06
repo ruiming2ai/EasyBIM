@@ -204,6 +204,8 @@ class SheetManagerBundleTests(unittest.TestCase):
                         post_body.index("uiapp.PostCommand"))
         self.assertIn("OrderedViewList", print_sets_source)
         self.assertIn("PrintRange.Select", print_sets_source)
+        self.assertIn("CurrentViewSheetSet = view_sheet_setting.InSession",
+                      print_sets_source)
 
     def test_revision_template_binds_generated_attrs_only(self):
         source = (COMMAND_DIR / "sheet_manager_ui.py")\
