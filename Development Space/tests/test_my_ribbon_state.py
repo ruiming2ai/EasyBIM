@@ -1,5 +1,6 @@
 """My Ribbon pure logic: git links, folder names, staged registry edits,
 picker tags, and the import/export planner.  Desktop Python only."""
+import copy
 import importlib.util
 import pathlib
 import unittest
@@ -372,39 +373,168 @@ class NewSourceKindTests(unittest.TestCase):
         self.assertEqual(kept["url"], "https://github.com/o/bmt")
         self.assertEqual(kept["kind"], "ribbon")
 
-    def test_import_report_leads_with_what_went_wrong(self):
-        """Failures come first: they are the only rows the user must act on."""
-        outcome = {"downloaded": [{"label": "BMT", "detail": "https://github.com/o/bmt"}],
-                   "failed": [{"label": "CTC", "reason": "No download link."}],
-                   "already_here": [{"label": "pyRevitTools"}]}
-        report = {"added": ["Purge+"], "missing": [{"title": "Quick Select",
-                                                    "reason": "source not installed"}],
+    def _registry(self):
+        return {"format": 1, "sources": [], "destinations": [], "placements": [], "hidden_tabs": []}
+
+    def _dyn(self, path, title):
+        return {"kind": "dynamo", "path": path, "title": title, "label": title,
+                "bundle": title + ".pushbutton", "ext_name": "EasyBIM_MyRibbon",
+                "tab_names": ["My Ribbon Library"], "installed_by_my_ribbon": True}
+
+    def test_one_graph_is_one_source_whatever_the_file_says(self):
+        """A stale session's save can leave two entries for one graph; the
+        registry folds them and re-points the second's buttons at the first."""
+        registry = self._registry()
+        first = self.state.add_source(registry, self._dyn("P:/g.dyn", "G"))
+        dest = self.state.add_destination(registry, "T", "P")
+        registry["sources"].append(dict(self._dyn("p:\\G.DYN", "G 2"), id="s9"))
+        self.state.add_placement(registry, "s9", dest["id"], _button("G 2"))
+        collapsed = self.state.dedupe_registry(registry)
+        self.assertEqual([s["id"] for s in registry["sources"]], [first["id"]])
+        self.assertEqual([p["source"] for p in registry["placements"]], [first["id"]])
+        self.assertEqual(collapsed, ["G 2"])
+
+    def test_dedupe_folds_one_button_placed_twice_on_one_panel(self):
+        registry = self._registry()
+        source = self.state.add_source(registry, self._dyn("P:/g.dyn", "G"))
+        dest = self.state.add_destination(registry, "T", "P")
+        self.state.add_placement(registry, source["id"], dest["id"], _button("G"))
+        registry["placements"].append(dict(registry["placements"][0], id="p9"))
+        self.state.dedupe_registry(registry)
+        self.assertEqual(len(registry["placements"]), 1)
+
+    def _two_sessions(self):
+        """The file as both windows loaded it: graph G on panel T > P."""
+        saved = self._registry()
+        g = self.state.add_source(saved, self._dyn("P:/g.dyn", "G"))
+        dest = self.state.add_destination(saved, "T", "P")
+        self.state.add_placement(saved, g["id"], dest["id"], _button("G"))
+        return saved
+
+    def test_an_outdated_window_keeps_what_another_session_added(self):
+        saved = self._two_sessions()
+        disk = copy.deepcopy(saved)   # session A added H and applied
+        h = self.state.add_source(disk, self._dyn("P:/h.dyn", "H"))
+        self.state.add_placement(disk, h["id"], disk["destinations"][0]["id"], _button("H"))
+        working = copy.deepcopy(saved)   # session B never saw H, added K
+        k = self.state.add_source(working, self._dyn("P:/k.dyn", "K"))
+        self.state.add_placement(working, k["id"], working["destinations"][0]["id"], _button("K"))
+        merged, conflicts = self.state.replay_changes(disk, saved, working)
+        self.assertEqual(sorted(s["title"] for s in merged["sources"]), ["G", "H", "K"])
+        self.assertEqual(sorted(p["title"] for p in merged["placements"]), ["G", "H", "K"])
+        self.assertEqual(conflicts, [])
+
+    def test_a_removal_is_never_undone_by_an_outdated_window_and_is_reported(self):
+        saved = self._two_sessions()
+        # A removed G; B, outdated, renamed G's button meanwhile
+        disk = copy.deepcopy(saved)
+        self.state.remove_source(disk, disk["sources"][0]["id"])
+        working = copy.deepcopy(saved)
+        working["placements"][0]["title"] = "G renamed"
+        merged, conflicts = self.state.replay_changes(disk, saved, working)
+        self.assertEqual(merged["sources"], [])
+        self.assertTrue(any("removed in another Revit session" in c for c in conflicts), conflicts)
+        # and the other way round: B removed G while A moved its button
+        disk = copy.deepcopy(saved)
+        other = self.state.add_destination(disk, "T", "Q")
+        disk["placements"][0]["dest"] = other["id"]
+        working = copy.deepcopy(saved)
+        self.state.remove_source(working, working["sources"][0]["id"])
+        merged, conflicts = self.state.replay_changes(disk, saved, working)
+        self.assertEqual(merged["sources"], [])
+        self.assertTrue(any("you removed it here" in c for c in conflicts), conflicts)
+
+    def test_replay_is_identity_when_the_file_did_not_move(self):
+        saved = self._two_sessions()
+        working = copy.deepcopy(saved)
+        self.state.set_tabs_hidden(working, ["Foo"], True)
+        merged, conflicts = self.state.replay_changes(copy.deepcopy(saved), saved, working)
+        self.assertEqual(self.state.registry_fingerprint(merged),
+                         self.state.registry_fingerprint(working))
+        self.assertEqual(conflicts, [])
+
+    def test_a_hide_toggle_and_a_move_made_here_survive_the_merge(self):
+        saved = self._two_sessions()
+        disk = copy.deepcopy(saved)
+        self.state.add_source(disk, self._dyn("P:/h.dyn", "H"))
+        working = copy.deepcopy(saved)
+        self.state.set_tabs_hidden(working, ["Foo"], True)
+        moved_to = self.state.add_destination(working, "T", "Q")
+        working["placements"][0]["dest"] = moved_to["id"]
+        merged, conflicts = self.state.replay_changes(disk, saved, working)
+        self.assertTrue(self.state.is_tab_hidden(merged, "Foo"))
+        self.assertEqual(len(merged["sources"]), 2)
+        g = [p for p in merged["placements"] if p["title"] == "G"][0]
+        self.assertEqual(self.state.dest_label(merged, g["dest"]), "T > Q")
+        self.assertEqual(conflicts, [])
+
+    def test_import_moves_a_button_the_file_puts_elsewhere_and_says_so(self):
+        current = self._registry()
+        g = self.state.add_source(current, self._dyn("P:/g.dyn", "G"))
+        here = self.state.add_destination(current, "T", "P")
+        self.state.add_placement(current, g["id"], here["id"], _button("G"))
+        incoming = self._registry()
+        g2 = self.state.add_source(incoming, self._dyn("P:/g.dyn", "G"))
+        there = self.state.add_destination(incoming, "T", "Q")
+        self.state.add_placement(incoming, g2["id"], there["id"], _button("G"))
+        plan = self.state.plan_import(current, incoming, "merge")
+        self.assertEqual(plan["placements_moved"], [{"title": "G", "from": "T > P", "to": "T > Q"}])
+        self.assertEqual(plan["placements_added"], [])
+        moved = plan["result"]["placements"][0]
+        self.assertEqual(self.state.dest_label(plan["result"], moved["dest"]), "T > Q")
+        # the same panel is no change at all, and is not reported as one
+        plan = self.state.plan_import(current, copy.deepcopy(current), "merge")
+        self.assertEqual(plan["placements_moved"], [])
+        self.assertEqual(plan["placements_skipped"], ["G (already placed)"])
+
+    def test_replace_mode_names_what_the_file_drops(self):
+        current = self._registry()
+        g = self.state.add_source(current, self._dyn("P:/g.dyn", "G"))
+        here = self.state.add_destination(current, "T", "P")
+        self.state.add_placement(current, g["id"], here["id"], _button("G"))
+        self.state.set_tabs_hidden(current, ["Foo"], True)
+        plan = self.state.plan_import(current, self._registry(), "replace")
+        self.assertEqual(plan["sources_removed"], ["G"])
+        self.assertEqual(plan["destinations_removed"], ["T > P"])
+        self.assertEqual(plan["placements_removed"], ["G"])
+        self.assertEqual(plan["tabs_shown"], ["Foo"])
+
+    def test_import_report_shows_only_changes_by_name_and_by_kind(self):
+        plan = {"sources_added": ["BMT", "x/y"], "sources_removed": ["Old"],
+                "placements_added_to": [{"title": "Purge+", "to": "T > P"}],
+                "placements_moved": [{"title": "Match", "from": "T > P", "to": "T > Q"}],
+                "placements_removed": ["Gone"],
+                "placements_skipped": ["Same (already placed)",
+                                       "Lost (its source or panel is missing from the file)"],
+                "destinations_added": ["T > Q"], "destinations_removed": [],
+                "tabs_hidden": ["BMT"], "tabs_shown": ["CTC"], "duplicates_collapsed": []}
+        outcome = {"downloaded": [{"label": "BMT", "detail": "Installed from pyRevit's catalogue."}],
+                   "failed": [{"label": "x/y", "reason": "No download link."}]}
+        report = {"added": ["p1", "p2"],
+                  "missing": [{"title": "Quick Select", "reason": "not on the ribbon"}],
                   "hidden_tabs": ["BMT"], "errors": []}
-        rows, summary = self.state.build_import_report(outcome, report)
-        self.assertEqual(rows[0]["status"], "Error")
-        self.assertEqual(rows[0]["name"], "CTC")
-        # BMT is two rows on purpose: the extension installed, and its tab hidden
-        statuses = dict(((r["name"], r["kind"]), r["status"]) for r in rows)
-        self.assertEqual(statuses[("BMT", "Extension")], "Installed")
-        self.assertEqual(statuses[("BMT", "Tab")], "Hidden")
-        self.assertEqual(statuses[("pyRevitTools", "Extension")], "Already here")
-        self.assertEqual(statuses[("Quick Select", "Button")], "Error")
-        self.assertIn("Installed: 1", summary)
-        self.assertIn("Failed: 1", summary)
-        self.assertIn("Buttons placed: 1", summary)
-        self.assertIn("Buttons missing: 1", summary)
+        results = self.state.build_import_report(plan, outcome, report, ["G was removed elsewhere."])
+        self.assertEqual([(r["name"], r["change"]) for r in results["extensions"]],
+                         [("x/y", "Error"), ("BMT", "Installed"), ("Old", "Removed")])
+        self.assertEqual([(r["name"], r["change"]) for r in results["buttons"]],
+                         [("Quick Select", "Error"), ("Purge+", "Added"), ("Match", "Moved"),
+                          ("Gone", "Removed")])
+        self.assertEqual([(r["name"], r["change"]) for r in results["tabs"]],
+                         [("BMT", "Hidden"), ("CTC", "Shown")])
+        self.assertEqual([(r["name"], r["change"]) for r in results["panels"]], [("T > Q", "Added")])
+        self.assertEqual([r["change"] for r in results["settings"]], ["Conflict", "Skipped"])
+        # a placement id never reaches the user, and an unchanged button is no row
+        text = " ".join(r["name"] + " " + r["detail"] for key in ("extensions", "buttons", "tabs",
+                        "panels", "settings") for r in results[key])
+        self.assertNotIn("p1", text)
+        self.assertNotIn("Same", text)
+        self.assertEqual(results["summary"],
+                         ["Extensions: 3", "Buttons: 4", "Tabs: 2", "Panels: 1", "Settings: 2"])
 
-    def test_import_report_of_a_clean_run_names_no_failures(self):
-        rows, summary = self.state.build_import_report(
-            {"downloaded": [], "failed": [], "already_here": []},
-            {"added": ["A", "B"], "missing": [], "hidden_tabs": [], "errors": []})
-        self.assertEqual([r["status"] for r in rows], ["Placed", "Placed"])
-        self.assertEqual(summary, ["Installed: 0", "Buttons placed: 2"])
-
-    def test_import_report_survives_a_cancelled_or_empty_run(self):
-        rows, summary = self.state.build_import_report(None, None)
-        self.assertEqual(rows, [])
-        self.assertEqual(summary, ["Installed: 0", "Buttons placed: 0"])
+    def test_import_report_of_nothing_says_so(self):
+        results = self.state.build_import_report({}, None, None)
+        self.assertEqual(results["summary"], ["Nothing changed."])
+        self.assertEqual(results["buttons"], [])
 
     def test_imported_dynamo_sources_stay_deletable(self):
         current = {"format": 1, "sources": [], "destinations": [], "placements": [], "hidden_tabs": []}
@@ -492,7 +622,7 @@ class DynamoHelperTests(unittest.TestCase):
         facts = self.state.dynamo_facts_from_text(DYN_1X, "old.dyn")
         self.assertEqual((facts["format"], facts["name"], facts["python_engines"]),
                          ("1.x", "Old Graph", ["IronPython2"]))
-        self.assertEqual(self.state.dynamo_tags(facts)[0], "Dynamo 1.x graph")
+        self.assertEqual(self.state.dynamo_tags(facts)[0], "Dynamo 1.x")
         self.assertIn("custom node", self.state.dynamo_facts_from_text(DYN_2X, "node.dyf")["problem"])
         self.assertIn("Python script", self.state.dynamo_facts_from_text("print(1)", "x.py")["problem"])
         self.assertIn("does not look like", self.state.dynamo_facts_from_text("garbage", "x.dyn")["problem"])
@@ -533,11 +663,10 @@ class DynamoHelperTests(unittest.TestCase):
         self.assertEqual(read(DYN_1X_MANUAL), "Manual")
         self.assertEqual(read(DYN_2X), "")
         self.assertEqual(read("garbage"), "")
-        # two answers: the first stands, so forcing is attempted - and refused
-        # loudly by force_automatic_run, which is the report the user needs
+        # two answers: the first stands, and forcing then sets both
         twice = DYN_2X_MANUAL.replace('"Id": "a"', '"Id": "a", "RunType": "Periodic"')
         self.assertEqual(read(twice), "Periodic")
-        self.assertEqual(self.state.force_automatic_run(twice), (twice, False))
+        self.assertTrue(self.state.force_automatic_run(twice)[1])
 
     def test_a_manual_graph_is_seen_even_when_json_does_not_walk_to_it(self):
         """RunType kept, but not under View > Dynamo where the JSON walk looks."""
@@ -578,10 +707,19 @@ class DynamoHelperTests(unittest.TestCase):
             # running it again is a no-op
             self.assertEqual(self.state.force_automatic_run(patched), (patched, False))
 
-    def test_a_graph_that_cannot_be_patched_confidently_is_handed_back_untouched(self):
-        for text in ("garbage", DYN_2X,
-                     DYN_2X_MANUAL + DYN_2X_MANUAL):  # two RunType values, no single answer
+    def test_every_run_mode_a_file_names_is_set_to_automatic(self):
+        """A Dynamo 3.x graph can name RunType more than once; demanding exactly
+        one left a button that did nothing.  A run-mode key can only mean run
+        mode, so every one of them is set - and a file naming none is left be."""
+        for text in ("garbage", DYN_2X):
             self.assertEqual(self.state.force_automatic_run(text), (text, False))
+        twice = DYN_2X_MANUAL.replace('"Id": "a"', '"Id": "a", "RunType": "Periodic"')
+        patched, changed = self.state.force_automatic_run(twice)
+        self.assertTrue(changed)
+        self.assertEqual(patched.count('"RunType": "Automatic"'), 2)
+        self.assertNotIn('"RunType": "Manual"', patched)
+        self.assertNotIn('"RunType": "Periodic"', patched)
+        self.assertEqual(self.state.force_automatic_run(patched), (patched, False))
 
     def test_the_bundle_yaml_asks_for_a_clean_engine_only_for_cpython(self):
         plain = self.state.render_dynamo_bundle_yaml("T", "tip", "C:\\g.dyn")
@@ -635,11 +773,11 @@ class DynamoHelperTests(unittest.TestCase):
     def test_bundle_name_and_yaml(self):
         self.assertEqual(self.state.dynamo_bundle_name("Renumber: Sheets?", []), "Renumber_ Sheets_.pushbutton")
         self.assertEqual(self.state.dynamo_bundle_name("A", ["a.pushbutton"]), "A 2.pushbutton")
-        yaml = self.state.render_dynamo_bundle_yaml(u'Re "numb"\ner', "Dynamo graph: P:\\x.dyn",
+        yaml = self.state.render_dynamo_bundle_yaml(u'Re "numb"\ner', "Dynamo: P:\\x.dyn",
                                                     "P:\\Dyn\\x y.dyn")
         self.assertEqual(yaml.splitlines(), [
             'title: "Re \\"numb\\"\\ner"',
-            'tooltip: "Dynamo graph: P:\\\\x.dyn"',
+            'tooltip: "Dynamo: P:\\\\x.dyn"',
             'author: "EasyBIM My Ribbon"',
             "engine:",
             "  automate: true",
@@ -647,7 +785,7 @@ class DynamoHelperTests(unittest.TestCase):
         ])
         tooltip = self.state.dynamo_tooltip("P:\\x.dyn", {"format": "2.x", "python_engines": ["CPython3"],
                                                            "packages": []})
-        self.assertEqual(tooltip.splitlines(), ["Dynamo graph: P:\\x.dyn",
+        self.assertEqual(tooltip.splitlines(), ["Dynamo: P:\\x.dyn",
                                                 "Contains Python nodes (CPython3)",
                                                 "Ctrl+click opens it in Dynamo."])
 

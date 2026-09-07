@@ -32,6 +32,7 @@ from __future__ import print_function
 import io
 import json
 import os
+import time
 
 
 try:
@@ -302,6 +303,8 @@ def save_registry(registry, path=None):
         except Exception:
             pass
         return False, "Could not write {0}: {1}".format(path, ex)
+    # this session is about to apply what it just wrote: the watch need not
+    _set_envvar(STAMP_ENVVAR, registry_stamp(path))
     return True, ""
 
 
@@ -354,7 +357,55 @@ def has_pending_startup_apply():
 def run_pending_startup_apply(**kwargs):
     """Consume the pending flag and apply the saved registry once."""
     _set_envvar(PENDING_ENVVAR, None)
+    _set_envvar(STAMP_ENVVAR, registry_stamp(kwargs.get("path")))
     return apply_saved(**kwargs)
+
+
+# -- other Revit sessions ---------------------------------------------------
+
+#: The registry file as this session last applied it (its date and size).
+STAMP_ENVVAR = "EASYBIM_MYRIBBON_STAMP"
+#: When this session last looked, so the look costs one stat every few seconds
+#: of idle time and nothing more.
+WATCHED_ENVVAR = "EASYBIM_MYRIBBON_WATCHED_AT"
+WATCH_INTERVAL = 3.0
+
+
+def registry_stamp(path=None):
+    """A cheap identity for the file on disk: ``""`` when there is none."""
+    path = path or registry_path()
+    if not path:
+        return ""
+    try:
+        info = os.stat(path)
+    except Exception:
+        return ""
+    return "{0}:{1}".format(repr(info.st_mtime), info.st_size)
+
+
+def watch_registry(now=None, path=None, **kwargs):
+    """Re-apply the saved registry when another Revit session changed it.
+
+    No session can reach into another, so this is pull, not push: each open
+    session looks at the file's date on Idling and, when it moved, applies
+    what is there - which places buttons and hides tabs that already exist in
+    its own ribbon.  A bundle or extension pyRevit has not loaded yet still
+    needs that session's reload; the caller reads the report for that.
+    Returns the apply report, or ``None`` when nothing was done.
+    """
+    now = time.time() if now is None else now
+    try:
+        last = float(_get_envvar(WATCHED_ENVVAR, 0) or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if now - last < WATCH_INTERVAL:
+        return None
+    _set_envvar(WATCHED_ENVVAR, now)
+    stamp = registry_stamp(path)
+    if not stamp or stamp == (_get_envvar(STAMP_ENVVAR, "") or ""):
+        return None
+    _set_envvar(STAMP_ENVVAR, stamp)
+    return apply_saved(path=path, **kwargs)
 
 
 # -- apply engine -----------------------------------------------------------

@@ -1,13 +1,39 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Import Results"
-        Height="480"
-        Width="780"
-        MinHeight="320"
-        MinWidth="560"
+        Height="520"
+        Width="820"
+        MinHeight="340"
+        MinWidth="600"
         ShowInTaskbar="False"
         ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style x:Key="ResultsGridStyle" TargetType="{x:Type DataGrid}">
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="RowHeaderWidth" Value="0"/>
+            <Setter Property="CanUserSortColumns" Value="False"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#dedede"/>
+            <Setter Property="VerticalGridLinesBrush" Value="#dedede"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode"
+                    Value="Recycling"/>
+        </Style>
+        <Style x:Key="ResultsRowStyle" TargetType="{x:Type DataGridRow}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding change}" Value="Error">
+                    <Setter Property="Foreground" Value="#c00000"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding change}" Value="Conflict">
+                    <Setter Property="Foreground" Value="#b06000"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -26,43 +52,63 @@
                    x:Name="summary_tb"
                    Margin="0,0,0,10"/>
 
-        <DataGrid Grid.Row="2"
-                  x:Name="results_dg"
-                  AutoGenerateColumns="False"
-                  IsReadOnly="True"
-                  RowHeaderWidth="0"
-                  CanUserSortColumns="False"
-                  BorderThickness="0"
-                  HorizontalGridLinesBrush="#dedede"
-                  VerticalGridLinesBrush="#dedede"
-                  EnableColumnVirtualization="True"
-                  EnableRowVirtualization="True"
-                  VirtualizingPanel.IsVirtualizing="True"
-                  VirtualizingPanel.VirtualizationMode="Recycling">
-            <DataGrid.RowStyle>
-                <Style TargetType="{x:Type DataGridRow}">
-                    <Style.Triggers>
-                        <DataTrigger Binding="{Binding status}" Value="Error">
-                            <Setter Property="Foreground" Value="#c00000"/>
-                        </DataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </DataGrid.RowStyle>
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Name"
-                                    Binding="{Binding name}"
-                                    Width="220"/>
-                <DataGridTextColumn Header="Kind"
-                                    Binding="{Binding kind}"
-                                    Width="120"/>
-                <DataGridTextColumn Header="Status"
-                                    Binding="{Binding status}"
-                                    Width="130"/>
-                <DataGridTextColumn Header="Detail"
-                                    Binding="{Binding detail}"
-                                    Width="*"/>
-            </DataGrid.Columns>
-        </DataGrid>
+        <TabControl Grid.Row="2">
+            <TabItem x:Name="extensions_tab" Header="Extensions">
+                <DataGrid x:Name="extensions_dg"
+                          Style="{StaticResource ResultsGridStyle}"
+                          RowStyle="{StaticResource ResultsRowStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Extension" Binding="{Binding name}" Width="240"/>
+                        <DataGridTextColumn Header="Change" Binding="{Binding change}" Width="110"/>
+                        <DataGridTextColumn Header="Detail" Binding="{Binding detail}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="buttons_tab" Header="Buttons">
+                <DataGrid x:Name="buttons_dg"
+                          Style="{StaticResource ResultsGridStyle}"
+                          RowStyle="{StaticResource ResultsRowStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Button" Binding="{Binding name}" Width="240"/>
+                        <DataGridTextColumn Header="Change" Binding="{Binding change}" Width="110"/>
+                        <DataGridTextColumn Header="Where" Binding="{Binding detail}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="tabs_tab" Header="Tabs">
+                <DataGrid x:Name="tabs_dg"
+                          Style="{StaticResource ResultsGridStyle}"
+                          RowStyle="{StaticResource ResultsRowStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Tab" Binding="{Binding name}" Width="240"/>
+                        <DataGridTextColumn Header="Change" Binding="{Binding change}" Width="110"/>
+                        <DataGridTextColumn Header="Detail" Binding="{Binding detail}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="panels_tab" Header="Panels">
+                <DataGrid x:Name="panels_dg"
+                          Style="{StaticResource ResultsGridStyle}"
+                          RowStyle="{StaticResource ResultsRowStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Panel" Binding="{Binding name}" Width="240"/>
+                        <DataGridTextColumn Header="Change" Binding="{Binding change}" Width="110"/>
+                        <DataGridTextColumn Header="Detail" Binding="{Binding detail}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="settings_tab" Header="Settings">
+                <DataGrid x:Name="settings_dg"
+                          Style="{StaticResource ResultsGridStyle}"
+                          RowStyle="{StaticResource ResultsRowStyle}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Item" Binding="{Binding name}" Width="200"/>
+                        <DataGridTextColumn Header="Change" Binding="{Binding change}" Width="110"/>
+                        <DataGridTextColumn Header="Message" Binding="{Binding detail}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+        </TabControl>
 
         <Button Grid.Row="3"
                 x:Name="ok_b"

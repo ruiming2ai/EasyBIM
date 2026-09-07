@@ -343,7 +343,8 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertNotIn("io.open(path, \"w", forced)
         # and the patch is one textual substitution, never a re-serialisation
         force = _function_source(STATE_MODULE, "force_automatic_run")
-        self.assertIn("len(found) != 1", force)
+        # every run-mode value the file names is set, never just the first
+        self.assertIn("pattern.sub(_patch, raw)", force)
         self.assertNotIn("json.dumps", force)
 
     def test_the_run_mode_is_verified_on_the_file_pyrevit_runs(self):
@@ -357,6 +358,30 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("read_dynamo_run_type(runs)", sync)
         # the report must not be gated on the facts it is there to check
         self.assertNotIn("dynamo_needs_forced_run(facts) and", sync)
+
+    def test_apply_reads_the_file_first_and_never_keeps_a_ghost_bundle(self):
+        """An outdated window replays only its own changes onto the file as it
+        is now; a bundle no source claims goes; a replace-mode import is the
+        one write that means to overwrite."""
+        apply_body = _function_source(SCRIPT_MODULE, "_apply")
+        self.assertIn("my_ribbon.load_registry()", apply_body)
+        self.assertIn("state.replay_changes(", apply_body)
+        self.assertLess(apply_body.index("replay_changes("), apply_body.index("sync_dynamo_bundles("))
+        self.assertLess(apply_body.index("dedupe_registry("), apply_body.index("save_registry("))
+        run = _function_source(SCRIPT_MODULE, "_run")
+        self.assertIn('merge_with_disk=(outcome.get("mode") != "replace")', run)
+        self.assertIn("state.dedupe_registry(saved)", run)
+        sync = _function_source(HOST_MODULE, "sync_dynamo_bundles")
+        self.assertIn('"orphan: {0}"', sync)
+        consumers = _function_source(IDLING_MODULE, "_run_consumers")
+        self.assertLess(consumers.index("_run_my_ribbon_apply"), consumers.index("_run_my_ribbon_watch"))
+        self.assertLess(consumers.index("_run_my_ribbon_watch"), consumers.index("_run_auto_update"))
+        xaml = (COMMAND_DIR / "ImportResultsDialog.xaml").read_text(encoding="utf-8")
+        for name in ("extensions", "buttons", "tabs", "panels", "settings"):
+            self.assertIn('x:Name="{0}_tab"'.format(name), xaml)
+            self.assertIn('x:Name="{0}_dg"'.format(name), xaml)
+        for name in ("SourceSelectionWindow.xaml", "MyRibbonWindow.xaml", "bundle.yaml"):
+            self.assertNotIn("Dynamo graph", (COMMAND_DIR / name).read_text(encoding="utf-8"), name)
 
     def test_the_clean_engine_is_asked_for_by_cpython_graphs_only(self):
         desired = _function_source(HOST_MODULE, "desired_dynamo_yaml")

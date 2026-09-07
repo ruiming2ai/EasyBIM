@@ -924,6 +924,303 @@ def count_changes(saved, working):
     return changes
 
 
+# -- identity and other Revit sessions -------------------------------------------
+
+
+#: What a source may legitimately change between two saves: these follow
+#: this window's edit when another session saved in between.
+EDITABLE_SOURCE_FIELDS = ("label", "title", "path", "icon", "bundle", "tab_names", "hide_tab")
+
+
+def _dest_key(dest):
+    return (normalize_label(dest.get("tab")), normalize_label(dest.get("panel")))
+
+
+def _dest_by_id(registry, dest_id):
+    for dest in registry.get("destinations", []):
+        if dest.get("id") == dest_id:
+            return dest
+    return None
+
+
+def dest_label(registry, dest_id):
+    dest = _dest_by_id(registry, dest_id)
+    if dest is None:
+        return ""
+    return u"{0} > {1}".format(safe_text(dest.get("tab")), safe_text(dest.get("panel")))
+
+
+def _placement_identity(registry, placement):
+    """What makes two placements the same button: its source and its path.
+    ``None`` for a layout marker or an orphan."""
+    if is_marker(placement):
+        return None
+    source = find_source_by_id(registry, placement.get("source"))
+    if source is None:
+        return None
+    return placement_key(source_key(source), placement.get("path"))
+
+
+def registry_fingerprint(registry):
+    """Everything that matters about a registry, with ids left out - so two
+    registries read from the same file, or one and its in-memory twin, compare
+    equal even when ids or key order differ."""
+    sources = []
+    for source in registry.get("sources", []):
+        fields = tuple(json.dumps(source.get(f), sort_keys=True) for f in EDITABLE_SOURCE_FIELDS)
+        sources.append((source_key(source), fields))
+    dests = sorted(_dest_key(d) + (bool(d.get("own_tab")),) for d in registry.get("destinations", []))
+    placements = []
+    for placement in registry.get("placements", []):
+        ident = _placement_identity(registry, placement)
+        if ident is None:
+            continue
+        placements.append((ident, _dest_key(_dest_by_id(registry, placement.get("dest")) or {}),
+                           placement.get("order", 0), safe_text(placement.get("stack")),
+                           safe_text(placement.get("title"))))
+    tabs = sorted(normalize_label(n) for n in registry.get("hidden_tabs") or [])
+    return (sorted(sources), dests, sorted(placements), tabs)
+
+
+def same_registry(one, other):
+    return registry_fingerprint(one) == registry_fingerprint(other)
+
+
+def dedupe_registry(registry):
+    """One key, one item - the invariant a registry holds before it is saved
+    or applied.  Two sources with one ``source_key`` (one graph added from two
+    Revit sessions, say) collapse into the first and the second's placements
+    are re-pointed at it; two panels with one name collapse the same way; two
+    placements of one button on one panel collapse into the first; a placement
+    whose source or panel is gone is dropped.  Returns the labels collapsed."""
+    collapsed = []
+    kept_by_key = {}
+    source_map = {}
+    sources = []
+    for source in registry.get("sources", []):
+        key = source_key(source)
+        kept = kept_by_key.get(key)
+        if kept is None:
+            kept_by_key[key] = source
+            sources.append(source)
+            continue
+        source_map[source.get("id")] = kept.get("id")
+        collapsed.append(source.get("label") or source.get("title") or source.get("ext_name"))
+    registry["sources"] = sources
+    kept_dests = {}
+    dest_map = {}
+    dests = []
+    for dest in registry.get("destinations", []):
+        key = _dest_key(dest)
+        kept = kept_dests.get(key)
+        if kept is None:
+            kept_dests[key] = dest
+            dests.append(dest)
+            continue
+        dest_map[dest.get("id")] = kept.get("id")
+    registry["destinations"] = dests
+    source_ids = set(s.get("id") for s in sources)
+    dest_ids = set(d.get("id") for d in dests)
+    seen = set()
+    placements = []
+    for placement in registry.get("placements", []):
+        placement["source"] = source_map.get(placement.get("source"), placement.get("source"))
+        placement["dest"] = dest_map.get(placement.get("dest"), placement.get("dest"))
+        if placement.get("dest") not in dest_ids:
+            continue
+        if is_marker(placement):
+            placements.append(placement)
+            continue
+        if placement.get("source") not in source_ids:
+            continue
+        key = (placement.get("dest"), _placement_identity(registry, placement))
+        if key in seen:
+            collapsed.append(placement.get("title"))
+            continue
+        seen.add(key)
+        placements.append(placement)
+    registry["placements"] = placements
+    renumber(registry)
+    sync_source_hide_flags(registry)
+    return collapsed
+
+
+def replay_changes(base, saved, working, pending_deletes=()):
+    """This window's changes, replayed onto the file as it is *now*.
+
+    ``saved`` is the file as this window loaded it, ``working`` what the window
+    holds, ``base`` the file as another Revit session has since left it.  Only
+    the difference ``saved -> working`` is this window's; everything else in
+    ``base`` is someone else's and survives.  The one rule: an outdated view
+    never restores what another session removed - their removal wins over an
+    edit made here, and that is reported rather than silently lost.  Returns
+    ``(merged, conflicts)``; when the file did not move, ``merged`` is simply
+    ``working``.
+    """
+    if same_registry(base, saved):
+        return copy.deepcopy(working), []
+    conflicts = []
+    merged = copy.deepcopy(base)
+    merged.setdefault("hidden_tabs", [])
+
+    # -- sources ------------------------------------------------------------
+    saved_sources = dict((source_key(s), s) for s in saved.get("sources", []))
+    working_sources = dict((source_key(s), s) for s in working.get("sources", []))
+    removed_here = set(saved_sources) - set(working_sources)
+    for source in pending_deletes or []:
+        removed_here.add(source_key(source))
+    for key in removed_here:
+        existing = _source_by_key(merged, key)
+        if existing is None:
+            continue
+        if key in saved_sources and _source_view(merged, key) != _source_view(saved, key):
+            conflicts.append(u"{0} was changed in another Revit session, but you removed it "
+                             u"here; it stays removed.".format(_source_name(existing)))
+        remove_source(merged, existing["id"])
+    source_map = {}
+    for key, source in working_sources.items():
+        existing = _source_by_key(merged, key)
+        before = saved_sources.get(key)
+        if existing is None:
+            if before is not None:
+                # another session removed it since this window loaded it
+                if source != before:
+                    conflicts.append(u"{0} was removed in another Revit session; your changes "
+                                     u"to it were dropped.".format(_source_name(source)))
+                continue
+            entry = add_source(merged, dict(source, id=None))
+            source_map[source.get("id")] = entry["id"]
+            continue
+        source_map[source.get("id")] = existing["id"]
+        if before is not None:
+            for field in EDITABLE_SOURCE_FIELDS:
+                if source.get(field) != before.get(field):
+                    existing[field] = copy.deepcopy(source.get(field))
+
+    # -- panels -------------------------------------------------------------
+    saved_dests = dict((_dest_key(d), d) for d in saved.get("destinations", []))
+    working_dests = dict((_dest_key(d), d) for d in working.get("destinations", []))
+    saved_idents = set(i for i in (_placement_identity(saved, p) for p in saved.get("placements", [])) if i)
+    for key in set(saved_dests) - set(working_dests):
+        existing = find_destination(merged, key[0], key[1])
+        if existing is None:
+            continue
+        theirs = [p.get("title") for p in merged.get("placements", [])
+                  if p.get("dest") == existing["id"] and not is_marker(p)
+                  and _placement_identity(merged, p) not in saved_idents]
+        if theirs:
+            conflicts.append(u"You removed the panel {0}; {1} button{2} another Revit session put "
+                             u"there went with it: {3}.".format(
+                                 dest_label(merged, existing["id"]), len(theirs),
+                                 "" if len(theirs) == 1 else "s", ", ".join(safe_text(t) for t in theirs)))
+        merged["placements"] = [p for p in merged.get("placements", []) if p.get("dest") != existing["id"]]
+        merged["destinations"] = [d for d in merged.get("destinations", []) if d.get("id") != existing["id"]]
+    dest_map = {}
+    new_dest_ids = set()
+    for key, dest in working_dests.items():
+        existing = find_destination(merged, dest.get("tab"), dest.get("panel"))
+        if existing is None:
+            existing = add_destination(merged, dest.get("tab"), dest.get("panel"), dest.get("own_tab"))
+            new_dest_ids.add(existing["id"])
+        dest_map[dest.get("id")] = existing["id"]
+
+    # -- buttons ------------------------------------------------------------
+    saved_pl = dict((_placement_identity(saved, p), p) for p in saved.get("placements", []))
+    saved_pl.pop(None, None)
+    working_pl = dict((_placement_identity(working, p), p) for p in working.get("placements", []))
+    working_pl.pop(None, None)
+    for ident in set(saved_pl) - set(working_pl):
+        target = _placement_by_identity(merged, ident)
+        if target is not None:
+            merged["placements"] = [p for p in merged["placements"] if p is not target]
+    stack_map = {}
+    for ident, placement in working_pl.items():
+        before = saved_pl.get(ident)
+        source_id = source_map.get(placement.get("source"))
+        dest_id = dest_map.get(placement.get("dest"))
+        target = _placement_by_identity(merged, ident)
+        if source_id is None or dest_id is None:
+            if before is None:
+                conflicts.append(u"{0} could not be placed: its source or panel was removed in "
+                                 u"another Revit session.".format(safe_text(placement.get("title"))))
+            elif placement != before:
+                conflicts.append(u"{0} was removed in another Revit session; your change to it "
+                                 u"was dropped.".format(safe_text(placement.get("title"))))
+            continue
+        if target is None:
+            if before is not None:
+                if placement != before:
+                    conflicts.append(u"{0} was removed in another Revit session; your move of it "
+                                     u"was dropped.".format(safe_text(placement.get("title"))))
+                continue
+            target = add_placement(merged, source_id, dest_id, placement)
+        elif before is not None and (placement.get("dest") != before.get("dest")
+                                     or placement.get("order") != before.get("order")
+                                     or placement.get("stack") != before.get("stack")
+                                     or placement.get("title") != before.get("title")):
+            target["dest"] = dest_id
+            target["order"] = placement.get("order", target.get("order", 0))
+            target["title"] = safe_text(placement.get("title")) or target.get("title")
+        else:
+            continue
+        stack = safe_text(placement.get("stack"))
+        if stack:
+            if stack not in stack_map:
+                stack_map[stack] = new_id("k", _stack_ids(merged) + list(stack_map.values()))
+            target["stack"] = stack_map[stack]
+        else:
+            target["stack"] = ""
+    # layout markers travel only with panels this window created, the way an
+    # import carries them: a panel another session already has keeps its layout
+    for placement in working.get("placements", []):
+        if is_marker(placement) and dest_map.get(placement.get("dest")) in new_dest_ids:
+            _add_marker(merged, dest_map[placement.get("dest")], safe_text(placement.get("kind")))
+
+    # -- hidden tabs --------------------------------------------------------
+    saved_tabs = set(normalize_label(n) for n in saved.get("hidden_tabs") or [])
+    working_tabs = set(normalize_label(n) for n in working.get("hidden_tabs") or [])
+    set_tabs_hidden(merged, [n for n in working.get("hidden_tabs") or []
+                             if normalize_label(n) not in saved_tabs], True)
+    set_tabs_hidden(merged, [n for n in saved.get("hidden_tabs") or []
+                             if normalize_label(n) not in working_tabs], False)
+    dedupe_registry(merged)
+    return merged, conflicts
+
+
+def _source_by_key(registry, key):
+    for source in registry.get("sources", []):
+        if source_key(source) == key:
+            return source
+    return None
+
+
+def _source_view(registry, key):
+    """Everything a registry says about one source - its own fields and where
+    its buttons sit - so a change made to it elsewhere can be told apart from
+    none at all."""
+    source = _source_by_key(registry, key)
+    if source is None:
+        return None
+    fields = tuple(json.dumps(source.get(f), sort_keys=True) for f in EDITABLE_SOURCE_FIELDS)
+    buttons = sorted(
+        (path_key(p.get("path")), _dest_key(_dest_by_id(registry, p.get("dest")) or {}),
+         safe_text(p.get("stack")), safe_text(p.get("title")))
+        for p in registry.get("placements", [])
+        if p.get("source") == source.get("id") and not is_marker(p))
+    return (fields, buttons)
+
+
+def _source_name(source):
+    return safe_text(source.get("label") or source.get("title") or source.get("ext_name"))
+
+
+def _placement_by_identity(registry, ident):
+    for placement in registry.get("placements", []):
+        if _placement_identity(registry, placement) == ident:
+            return placement
+    return None
+
+
 def status_line(registry, changes):
     parts = summarize(registry)
     text = "{0} source{1} · {2} button{3}".format(
@@ -1023,8 +1320,15 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
         "sources_not_here": [],
         "destinations_added": [],
         "placements_added": [],
+        "placements_added_to": [],
+        "placements_moved": [],
+        "placements_removed": [],
         "placements_skipped": [],
+        "sources_removed": [],
+        "destinations_removed": [],
         "tabs_hidden": [],
+        "tabs_shown": [],
+        "duplicates_collapsed": [],
     }
     if mode == "replace":
         result = {"format": current.get("format", 1), "sources": [],
@@ -1091,10 +1395,27 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
             plan["placements_skipped"].append(
                 "{0} (its source or panel is missing from the file)".format(placement.get("title")))
             continue
-        if find_placement(result, source_id, placement.get("path")) is not None:
-            plan["placements_skipped"].append("{0} (already placed)".format(placement.get("title")))
+        existing = find_placement(result, source_id, placement.get("path"))
+        if existing is not None:
+            # The same button, already here.  On the same panel that is no
+            # change at all.  On another panel, and placed exactly once, the
+            # file is saying where it should be: move it rather than keep two.
+            wanted = path_key(placement.get("path"))
+            copies = [p for p in result.get("placements", [])
+                      if p.get("source") == source_id and path_key(p.get("path")) == wanted]
+            if existing.get("dest") == dest_id or len(copies) != 1:
+                plan["placements_skipped"].append("{0} (already placed)".format(placement.get("title")))
+                continue
+            moved_from = dest_label(result, existing.get("dest"))
+            existing["dest"] = dest_id
+            existing["order"] = 10 ** 6  # last on its new panel; renumber tidies
+            plan["placements_moved"].append({
+                "title": safe_text(existing.get("title")), "from": moved_from,
+                "to": dest_label(result, dest_id)})
             continue
         entry = add_placement(result, source_id, dest_id, placement)
+        plan["placements_added_to"].append({"title": safe_text(entry.get("title")),
+                                            "to": dest_label(result, dest_id)})
         # stacks come along, under fresh ids so two registries never collide
         incoming_stack = safe_text(placement.get("stack"))
         if incoming_stack:
@@ -1103,10 +1424,21 @@ def plan_import(current, incoming, mode="merge", installed_ext_names=None):
                     "k", _stack_ids(result) + list(stack_map.values()))
             entry["stack"] = stack_map[incoming_stack]
         plan["placements_added"].append(entry.get("title"))
-    renumber(result)
-    sync_source_hide_flags(result)
+    plan["duplicates_collapsed"] = dedupe_registry(result)
     # reported last: sources added above may hide their own tabs too
     plan["tabs_hidden"] = [n for n in result["hidden_tabs"] if normalize_label(n) not in before_hidden]
+    if mode == "replace":
+        # what the file does not carry goes: say so by name
+        kept_sources = set(source_key(s) for s in result.get("sources", []))
+        plan["sources_removed"] = [_source_name(s) for s in current.get("sources", [])
+                                   if source_key(s) not in kept_sources]
+        kept_dests = set(_dest_key(d) for d in result.get("destinations", []))
+        plan["destinations_removed"] = [dest_label(current, d.get("id")) for d in current.get("destinations", [])
+                                        if _dest_key(d) not in kept_dests]
+        kept_idents = set(i for i in (_placement_identity(result, p) for p in result.get("placements", [])) if i)
+        plan["placements_removed"] = [safe_text(p.get("title")) for p in current.get("placements", [])
+                                      if _placement_identity(current, p) not in (kept_idents | set([None]))]
+        plan["tabs_shown"] = [n for n in current.get("hidden_tabs") or [] if not is_tab_hidden(result, n)]
     plan["result"] = result
     return plan
 
@@ -1142,53 +1474,78 @@ def format_import_preview(plan):
     return lines
 
 
-def build_import_report(outcome, report=None):
-    """Rows and summary for the Import results window.
+def build_import_report(plan, outcome=None, report=None, conflicts=None):
+    """What an import *changed*, one list per tab of the results window.
 
-    ``outcome`` is what ``_import`` collected while downloading; ``report`` is
-    what ``my_ribbon.apply`` returned.  Returns ``(rows, summary)`` of plain
-    dicts and strings, so the window itself holds no logic.  Extensions come
-    first and failures lead them - what went wrong is what the user must act on.
-    """
+    ``plan`` is what ``plan_import`` decided, ``outcome`` what the download
+    loop did, ``report`` what ``my_ribbon.apply`` returned and ``conflicts``
+    what the merge with another session's file could not keep.  Only changes
+    appear - nothing "already here", nothing "placed" that was placed before -
+    and buttons are named, never numbered.  Failures lead each list, since
+    those are the rows the user must act on.  Returns a dict with ``extensions``,
+    ``buttons``, ``tabs``, ``panels``, ``settings`` (rows of ``name``, ``change``,
+    ``detail``) and ``summary``."""
+    plan = plan or {}
     outcome = outcome or {}
     report = report or {}
-    rows = []
+    extensions, buttons, tabs, panels, settings = [], [], [], [], []
+
+    def row(name, change, detail=""):
+        return {"name": safe_text(name), "change": change, "detail": safe_text(detail)}
+
+    handled = set()
     for item in outcome.get("failed", []):
-        rows.append({"name": safe_text(item.get("label")), "kind": "Extension",
-                     "status": "Error",
-                     "detail": safe_text(item.get("reason")) or
-                     "Not found in pyRevit's catalogue and no download link was stored."})
+        handled.add(normalize_label(item.get("label")))
+        extensions.append(row(item.get("label"), "Error", item.get("reason") or
+                              "Not in pyRevit's catalogue and no download link was stored."))
     for item in outcome.get("downloaded", []):
-        rows.append({"name": safe_text(item.get("label")), "kind": "Extension",
-                     "status": "Installed",
-                     "detail": safe_text(item.get("detail"))})
-    for item in outcome.get("already_here", []):
-        rows.append({"name": safe_text(item.get("label")), "kind": "Extension",
-                     "status": "Already here", "detail": "Nothing was downloaded."})
+        handled.add(normalize_label(item.get("label")))
+        extensions.append(row(item.get("label"), "Installed", item.get("detail")))
+    for label in plan.get("sources_added", []):
+        if normalize_label(label) not in handled:
+            extensions.append(row(label, "Added", "Already on this computer."))
+    for label in plan.get("sources_removed", []):
+        extensions.append(row(label, "Removed"))
+
     for miss in report.get("missing", []):
-        rows.append({"name": safe_text(miss.get("title")), "kind": "Button",
-                     "status": "Error", "detail": safe_text(miss.get("reason"))})
+        buttons.append(row(miss.get("title"), "Error", miss.get("reason")))
+    for item in plan.get("placements_added_to", []):
+        buttons.append(row(item.get("title"), "Added", u"→ {0}".format(safe_text(item.get("to")))))
+    for item in plan.get("placements_moved", []):
+        buttons.append(row(item.get("title"), "Moved",
+                           u"{0} → {1}".format(safe_text(item.get("from")), safe_text(item.get("to")))))
+    for title in plan.get("placements_removed", []):
+        buttons.append(row(title, "Removed"))
+
+    for name in plan.get("tabs_hidden", []):
+        tabs.append(row(name, "Hidden"))
+    for name in plan.get("tabs_shown", []):
+        tabs.append(row(name, "Shown"))
+
+    for name in plan.get("destinations_added", []):
+        panels.append(row(name, "Added"))
+    for name in plan.get("destinations_removed", []):
+        panels.append(row(name, "Removed"))
+
     for message in report.get("errors", []):
-        rows.append({"name": "", "kind": "Setting", "status": "Error",
-                     "detail": safe_text(message)})
-    for title in report.get("added", []):
-        rows.append({"name": safe_text(title), "kind": "Button", "status": "Placed",
-                     "detail": ""})
-    for tab in report.get("hidden_tabs", []):
-        rows.append({"name": safe_text(tab), "kind": "Tab", "status": "Hidden",
-                     "detail": "Hidden by the imported settings."})
-    installed = len(outcome.get("downloaded", []))
-    failed = len(outcome.get("failed", []))
-    placed = len(report.get("added", []))
-    summary = ["Installed: {0}".format(installed)]
-    if failed:
-        summary.append("Failed: {0}".format(failed))
-    summary.append("Buttons placed: {0}".format(placed))
-    if report.get("missing"):
-        summary.append("Buttons missing: {0}".format(len(report["missing"])))
-    if report.get("hidden_tabs"):
-        summary.append("Tabs hidden: {0}".format(len(report["hidden_tabs"])))
-    return rows, summary
+        settings.append(row("", "Error", message))
+    for message in conflicts or []:
+        settings.append(row("", "Conflict", message))
+    for text in plan.get("placements_skipped", []):
+        if "(already placed)" not in safe_text(text):
+            settings.append(row("", "Skipped", text))
+    for label in plan.get("duplicates_collapsed", []):
+        settings.append(row(label, "Merged", "Two entries for one thing were folded into one."))
+
+    summary = []
+    for label, rows in (("Extensions", extensions), ("Buttons", buttons), ("Tabs", tabs),
+                        ("Panels", panels), ("Settings", settings)):
+        if rows:
+            summary.append("{0}: {1}".format(label, len(rows)))
+    if not summary:
+        summary.append("Nothing changed.")
+    return {"extensions": extensions, "buttons": buttons, "tabs": tabs, "panels": panels,
+            "settings": settings, "summary": summary}
 
 
 def _listing(items, limit=6):
@@ -1295,7 +1652,7 @@ def dynamo_facts_from_text(text, file_name=""):
                 facts["run_type"] = match.group(1).strip()
     facts["engine"] = dynamo_engine(facts["python_engines"])
     if facts["format"] == "unknown" and not facts["problem"]:
-        facts["problem"] = "This file does not look like a Dynamo graph (.dyn)."
+        facts["problem"] = "This file does not look like a Dynamo file (.dyn)."
     return facts
 
 
@@ -1360,26 +1717,31 @@ def run_type_in_text(text):
 def force_automatic_run(text):
     """Return ``(patched_text, changed)`` - the same graph with its run mode set
     to Automatic, so pyRevit really runs it.  The substitution is textual and
-    touches nothing but that one value, so the copy stays byte-for-byte the
-    user's graph everywhere else; a file that does not carry exactly one
-    ``RunType`` is handed back untouched rather than rewritten by guesswork.
-    The user's own file is never the one being patched - only our copy."""
+    touches nothing but run-mode values, so the copy stays byte-for-byte the
+    user's graph everywhere else.  *Every* ``RunType`` that is not Automatic is
+    set - a run-mode key can only ever mean run mode, so patching all of them
+    cannot corrupt a file, and a Dynamo 3.x graph that names it twice must run
+    too.  A file that names none is handed back untouched.  The user's own file
+    is never the one being patched - only our copy."""
     raw = safe_text(text)
+    changed = [False]
+
+    def _patch(match):
+        if match.group(2).strip().lower() == "automatic":
+            return match.group(0)
+        changed[0] = True
+        return match.group(1) + "Automatic" + match.group(3)
+
     for pattern in (_RUN_TYPE_JSON, _RUN_TYPE_XML):
-        found = pattern.findall(raw)
-        if len(found) != 1:
-            continue
-        if found[0][1].strip().lower() == "automatic":
-            return raw, False
-        return pattern.sub(lambda m: m.group(1) + "Automatic" + m.group(3), raw, count=1), True
-    return raw, False
+        raw = pattern.sub(_patch, raw)
+    return raw, changed[0]
 
 
 def dynamo_tags(facts):
     """Short labels for the picker/confirmation from ``dynamo_facts_from_text``."""
     tags = []
     if facts.get("format") == "1.x":
-        tags.append("Dynamo 1.x graph")
+        tags.append("Dynamo 1.x")
     if facts.get("python_engines"):
         tags.append("contains Python nodes ({0})".format(", ".join(facts["python_engines"])))
     if dynamo_needs_forced_run(facts):
@@ -1491,7 +1853,7 @@ DYNAMO_LIBRARY_PANEL = "Dynamo"
 
 
 def dynamo_tooltip(path, facts=None):
-    parts = ["Dynamo graph: {0}".format(safe_text(path))]
+    parts = ["Dynamo: {0}".format(safe_text(path))]
     for tag in dynamo_tags(facts or {}):
         parts.append(tag[0].upper() + tag[1:])
     if (facts or {}).get("engine") in ("IronPython2", "mixed"):

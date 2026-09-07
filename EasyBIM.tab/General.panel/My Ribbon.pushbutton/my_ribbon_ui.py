@@ -180,7 +180,7 @@ class MyRibbonWindow(forms.WPFWindow):
         if not count:
             item = Windows.Controls.ListBoxItem()
             item.Content = _text_block("No sources yet. Press Add source... to pick an installed "
-                                       "extension, a tab already on the ribbon, or a Dynamo graph.",
+                                       "extension, a tab already on the ribbon, or a Dynamo.",
                                        grey=True)
             item.IsEnabled = False
             self.SourcesList.Items.Add(item)
@@ -196,7 +196,7 @@ class MyRibbonWindow(forms.WPFWindow):
         elif kind == "ribbon":
             origin = "tab on the ribbon: " + _safe_text(source.get("ext_name"))
         elif kind == "dynamo":
-            origin = "Dynamo graph: " + _safe_text(source.get("path"))
+            origin = "Dynamo: " + _safe_text(source.get("path"))
         else:
             origin = "installed extension: " + _safe_text(source.get("ext_name"))
         status = self.source_status.get(source.get("id"), "")
@@ -637,7 +637,7 @@ class MyRibbonWindow(forms.WPFWindow):
 
 class SourceSelectionWindow(forms.WPFWindow):
     """Two cards: what is already on this computer (pyRevit extensions, Revit's
-    own tabs and other add-ins) and Dynamo graphs.  An extension this computer
+    own tabs and other add-ins) and Dynamo.  An extension this computer
     does not have yet is installed in pyRevit's own Extensions window first.
 
     ``result`` is ``("installed", ext)``, ``("ribbon", tab)``,
@@ -726,7 +726,7 @@ class SourceSelectionWindow(forms.WPFWindow):
     def add_dynamo_click(self, sender, args):
         del sender, args
         picked = forms.pick_file(file_ext="dyn", multi_file=True,
-                                 title="Choose Dynamo graphs (.dyn)")
+                                 title="Choose Dynamo (.dyn)")
         if not picked:
             return
         if isinstance(picked, type(u"")) or isinstance(picked, str):
@@ -1176,26 +1176,41 @@ class ImportPreviewWindow(forms.WPFWindow):
 class _ImportResultRow(object):
     """One grid line.  The names are what ImportResultsDialog.xaml binds to."""
 
-    __slots__ = ("name", "kind", "status", "detail")
+    __slots__ = ("name", "change", "detail")
 
-    def __init__(self, name, kind, status, detail):
+    def __init__(self, name, change, detail):
         self.name = name
-        self.kind = kind
-        self.status = status
+        self.change = change
         self.detail = detail
 
 
-class ImportResultsWindow(forms.WPFWindow):
-    """What an import installed and changed: one line per extension and setting."""
+#: One tab per kind of thing an import can change, in the order shown.
+IMPORT_RESULT_TABS = (("extensions", "Extensions"), ("buttons", "Buttons"), ("tabs", "Tabs"),
+                      ("panels", "Panels"), ("settings", "Settings"))
 
-    def __init__(self, xaml_file_name, rows, summary):
+
+class ImportResultsWindow(forms.WPFWindow):
+    """What an import changed, one tab per kind: extensions, buttons, tabs,
+    panels, settings.  ``results`` is what ``state.build_import_report``
+    returns; the first tab with anything in it is the one shown."""
+
+    def __init__(self, xaml_file_name, results):
         self._is_ready = False
         forms.WPFWindow.__init__(self, xaml_file_name)
-        self.results_dg.ItemsSource = [
-            _ImportResultRow(_safe_text(r.get("name")), _safe_text(r.get("kind")),
-                             _safe_text(r.get("status")), _safe_text(r.get("detail")))
-            for r in (rows or [])]
-        self.summary_tb.Text = "  |  ".join(summary or [])
+        results = results or {}
+        first = None
+        for key, label in IMPORT_RESULT_TABS:
+            rows = [_ImportResultRow(_safe_text(r.get("name")), _safe_text(r.get("change")),
+                                     _safe_text(r.get("detail")))
+                    for r in (results.get(key) or [])]
+            getattr(self, key + "_dg").ItemsSource = rows
+            tab = getattr(self, key + "_tab")
+            tab.Header = "{0} ({1})".format(label, len(rows))
+            if rows and first is None:
+                first = tab
+        if first is not None:
+            first.IsSelected = True
+        self.summary_tb.Text = "  |  ".join(results.get("summary") or [])
         self._is_ready = True
 
     def ok_clicked(self, sender, args):
@@ -1353,9 +1368,9 @@ class DynamoButtonWindow(forms.WPFWindow):
         fmt = (facts or {}).get("format")
         lines = []
         if fmt == "2.x":
-            lines.append("Dynamo 2.x graph" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
+            lines.append("Dynamo 2.x" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
         elif fmt == "1.x":
-            lines.append("Dynamo 1.x graph" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
+            lines.append("Dynamo 1.x" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
         for tag in tags:
             if not tag.startswith("Dynamo 1.x"):
                 lines.append(tag[0].upper() + tag[1:])

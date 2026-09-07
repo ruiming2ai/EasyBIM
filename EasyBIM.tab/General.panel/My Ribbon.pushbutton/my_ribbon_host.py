@@ -1093,6 +1093,20 @@ def sync_dynamo_bundles(registry, pending_deletes=(), root=None):
         except Exception as ex:
             report["errors"].append("{0}: {1}".format(source.get("title") or source.get("label"),
                                                       _short_error(ex)))
+    # Every folder in the library panel was written by My Ribbon, so one that
+    # no source claims is a leftover - a graph added from a second Revit
+    # session whose save then lost this one's source, say.  Left alone it is
+    # a ghost button and the next add of that graph gets a " 2" name.
+    claimed = set(normalize_label(s.get("bundle")) for s in registry.get("sources", [])
+                  if s.get("kind") == "dynamo")
+    for name in existing_dynamo_bundle_names(root):
+        if normalize_label(name) in claimed:
+            continue
+        ok, message = delete_dynamo_bundle({"bundle": name}, root=root)
+        if ok:
+            report["deleted"].append("orphan: {0}".format(name))
+        else:
+            report["errors"].append(message)
     return report
 
 

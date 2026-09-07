@@ -17,7 +17,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="My Ribbon" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Pick buttons from other pyRevit extensions, Revit's own tabs, other add-ins or Dynamo graphs, and put them on panels of your own. Updates come from pyRevit ▸ Update (and EasyBIM Auto Update); Apply closes this window."
+            <TextBlock Text="Pick buttons from other pyRevit extensions, Revit's own tabs, other add-ins or Dynamo, and put them on panels of your own. Updates come from pyRevit ▸ Update (and EasyBIM Auto Update); Apply closes this window."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"

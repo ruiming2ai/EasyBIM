@@ -17,7 +17,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Where are the tools?" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="Installed pyRevit extensions, Revit's own tabs, other add-ins and Dynamo graphs can be used as they are. To add an extension this computer does not have yet, install it in pyRevit's own Extensions window first - it then appears in the list below."
+            <TextBlock Text="Installed pyRevit extensions, Revit's own tabs, other add-ins and Dynamo can be used as they are. To add an extension this computer does not have yet, install it in pyRevit's own Extensions window first - it then appears in the list below."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -56,7 +56,7 @@
 
             <Border Grid.Row="2" BorderBrush="#D0D0D0" BorderThickness="1" Padding="12">
                 <DockPanel LastChildFill="True">
-                    <Button x:Name="add_dynamo_btn" DockPanel.Dock="Right" Content="Add Dynamo graph..." Width="170" Height="30" Margin="8,0,0,0" VerticalAlignment="Top" Click="add_dynamo_click"/>
+                    <Button x:Name="add_dynamo_btn" DockPanel.Dock="Right" Content="Add Dynamo..." Width="170" Height="30" Margin="8,0,0,0" VerticalAlignment="Top" Click="add_dynamo_click"/>
                     <StackPanel>
                         <TextBlock Text="Dynamo" FontSize="15" FontWeight="Bold" Foreground="#1A1A1A" TextTrimming="CharacterEllipsis"/>
                         <TextBlock Text="Pick one or more .dyn files. Each becomes a button that runs the graph where it lives (edits count next time); the icon is Dynamo's own unless you choose a PNG. A graph saved in Manual run mode runs from a copy set to Automatic, because pyRevit will not run a manual graph at all. Needs one pyRevit reload." Margin="0,4,0,0" FontSize="13" Foreground="DimGray" TextWrapping="Wrap"/>

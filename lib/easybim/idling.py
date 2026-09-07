@@ -270,10 +270,39 @@ def _run_my_ribbon_apply(sender):
     my_ribbon.run_pending_startup_apply()
 
 
+def _run_my_ribbon_watch(sender):
+    """Another Revit session saved My Ribbon's settings: apply them here too.
+
+    Runs after the startup apply (which records the file it applied) and
+    before the auto-update.  Placing and hiding happen at once; a bundle or
+    extension this session has not loaded yet needs its reload, and that is
+    said once per change rather than done to a Revit someone is working in.
+    """
+    del sender
+    if my_ribbon is None or my_ribbon.has_pending_startup_apply():
+        return
+    report = my_ribbon.watch_registry()
+    if not report:
+        return
+    stale = [m for m in report.get("missing", []) if "not on the ribbon" in str(m.get("reason", ""))]
+    if stale:
+        _notify("My Ribbon changed in another Revit session; {0} button{1} need a pyRevit "
+                "reload here.".format(len(stale), "" if len(stale) == 1 else "s"))
+
+
+def _notify(message):
+    try:
+        from pyrevit import forms
+        forms.toast(message, title="EasyBIM")
+    except Exception:
+        _log(message)
+
+
 def _run_consumers(sender):
     _guarded("StartupJobs", _run_startup_jobs, sender)
     _guarded("TempPhaseCloseRecovery", _run_temp_phase_close, sender)
     _guarded("MyRibbonApply", _run_my_ribbon_apply, sender)
+    _guarded("MyRibbonWatch", _run_my_ribbon_watch, sender)
     _guarded("StartupAutoUpdate", _run_auto_update, sender)
 
 

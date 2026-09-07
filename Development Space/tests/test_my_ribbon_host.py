@@ -732,14 +732,40 @@ class DynamoBundleTests(unittest.TestCase):
 
     def test_a_graph_whose_run_mode_cannot_be_forced_is_reported_not_hidden(self):
         """The copy is still written, but the button will not run: say so."""
-        # a second "RunType" anywhere in the file means there is no single
-        # answer, so nothing is rewritten by guesswork
-        _touch(self.graph, DYN_JSON_MANUAL.replace(
-            '"Engine": "IronPython2"', '"Engine": "IronPython2", "RunType": "Manual"'))
-        registry = {"sources": [self.source], "placements": []}
-        report = self.host.sync_dynamo_bundles(registry, root=self.root)
+        _touch(self.graph, DYN_JSON_MANUAL)
+        patch = self.host.force_automatic_run
+        self.host.force_automatic_run = lambda text: (text, False)  # nothing could be set
+        try:
+            report = self.host.sync_dynamo_bundles({"sources": [self.source], "placements": []},
+                                                   root=self.root)
+        finally:
+            self.host.force_automatic_run = patch
         self.assertTrue(any("Manual run mode" in message for message in report["errors"]),
                         report["errors"])
+
+    def test_a_bundle_no_source_claims_is_removed_on_sync(self):
+        """A second Revit session's save can drop this one's source while its
+        folder stays: a ghost button, and the next add gets a ' 2' name."""
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        ghost = os.path.join(os.path.dirname(self._bundle()), "Renumber Sheets 2.pushbutton")
+        os.makedirs(ghost)
+        _touch(os.path.join(ghost, "bundle.yaml"), "title: ghost\n")
+        report = self.host.sync_dynamo_bundles({"sources": [self.source], "placements": []},
+                                               root=self.root)
+        self.assertFalse(os.path.isdir(ghost))
+        self.assertTrue(os.path.isdir(self._bundle()))
+        self.assertIn("orphan: Renumber Sheets 2.pushbutton", report["deleted"])
+        self.assertEqual(report["errors"], [])
+
+    def test_a_claimed_bundle_is_never_taken_for_an_orphan(self):
+        other = dict(self.source, id="s2", path=os.path.join(self.tmp, "graphs", "Other.dyn"),
+                     title="Other", label="Other", bundle="Other.pushbutton")
+        _touch(other["path"], DYN_JSON)
+        registry = {"sources": [self.source, other], "placements": []}
+        self.host.sync_dynamo_bundles(registry, root=self.root)
+        self.host.sync_dynamo_bundles(registry, root=self.root)
+        self.assertEqual(sorted(self.host.existing_dynamo_bundle_names(self.root)),
+                         ["Other.pushbutton", "Renumber Sheets.pushbutton"])
 
     def test_delete_bundle_only_inside_the_library(self):
         self.host.write_dynamo_bundle(self.source, root=self.root)

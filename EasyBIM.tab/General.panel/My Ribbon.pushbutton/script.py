@@ -119,7 +119,7 @@ def _dynamo_described(source):
     title = source.get("title") or source.get("label") or name
     button = {
         "kind": "button", "name": name, "title": title,
-        "tooltip": "Dynamo graph: {0}".format(source.get("path")),
+        "tooltip": "Dynamo: {0}".format(source.get("path")),
         "icon": source.get("icon") or host.DEFAULT_DYNAMO_ICON,
         "control_id": "CustomCtrl_%CustomCtrl_%{0}%{1}%{2}".format(
             my_ribbon.LIBRARY_TAB, my_ribbon.LIBRARY_DYNAMO_PANEL, name),
@@ -532,7 +532,7 @@ def _add_dynamo_flow(working, paths):
         for entry in added:
             button = _dynamo_described(entry)["buttons"][0]
             state.add_placement(working, entry["id"], dest["id"], button)
-    return "Added {0} Dynamo graph{1}. Press Apply; the button{1} appear after a pyRevit " \
+    return "Added {0} Dynamo button{1}. Press Apply; the button{1} appear after a pyRevit " \
            "reload.".format(len(added), "" if len(added) == 1 else "s")
 
 
@@ -634,7 +634,8 @@ def _import(working, pending_deletes):
 
     # download what this computer lacks; failures leave the source in place
     # so its buttons show as missing until it is installed
-    outcome = {"downloaded": [], "failed": [], "already_here": []}
+    outcome = {"downloaded": [], "failed": [], "already_here": [],
+               "mode": window.result, "plan": plan}
     wanted = [s for s in result.get("sources", []) if _needs_download(s)]
     step = 0
     with forms.ProgressBar(title="Installing {value} of {max_value}...",
@@ -717,19 +718,39 @@ def _download_one(source, installed, pending_deletes, outcome):
 # -- apply -------------------------------------------------------------------------------
 
 
-def _apply(working, pending_deletes, announce=True, ask_reload=True):
+def _apply(working, pending_deletes, saved=None, announce=True, ask_reload=True,
+           merge_with_disk=True):
     """Save, delete what was removed, apply, and offer a reload when needed.
     Returns ``(saved, notice, report, reloading)``.
+
+    The file is read again first: another Revit session may have saved since
+    this window opened, and an outdated window must never write over what it
+    never saw.  Only this window's own changes (``saved`` -> ``working``) are
+    replayed onto the file as it is now; what could not be kept is reported.
+    An import in replace mode passes ``merge_with_disk=False`` - replacing the
+    whole file is the user's explicit choice.
 
     Import applies itself and reports in its own window, so it passes
     ``announce=False`` (no alert) and ``ask_reload=False`` (reload without
     asking); ``reloading`` then simply says whether one is needed.
     """
     problems = []
+    conflicts = []
+    merged_from_disk = False
+    if merge_with_disk and saved is not None:
+        disk, error = my_ribbon.load_registry()
+        if not error and not state.same_registry(disk, saved):
+            merged, conflicts = state.replay_changes(disk, saved, working, pending_deletes)
+            working.clear()
+            working.update(merged)
+            merged_from_disk = True
+    # one graph, one source, one bundle - whatever the two sessions did
+    state.dedupe_registry(working)
     # Dynamo buttons are bundles My Ribbon writes itself: name them uniquely
     # (this can rename a source's bundle and placements, so it runs before the
     # save), create what is missing, rewrite what changed, refresh stale
-    # copies, delete the bundles of removed graphs
+    # copies, delete the bundles of removed graphs and any folder no source
+    # claims (which is why it runs only after the merge above)
     sync = host.sync_dynamo_bundles(working, pending_deletes)
     problems.extend(sync.get("errors", []))
     ok, error = my_ribbon.save_registry(working)
@@ -760,18 +781,23 @@ def _apply(working, pending_deletes, announce=True, ask_reload=True):
         parts.append("{0} missing".format(len(report["missing"])))
     if report.get("hidden_tabs"):
         parts.append("hidden: {0}".format(", ".join(report["hidden_tabs"])))
+    if merged_from_disk:
+        parts.append("merged with changes another Revit session saved meanwhile")
+    if conflicts:
+        parts.append("{0} conflict{1}".format(len(conflicts), "" if len(conflicts) == 1 else "s"))
     if problems:
         parts.append("; ".join(problems))
     if report.get("errors"):
         parts.append("; ".join(report["errors"]))
     notice = ", ".join(parts) + "."
-    if announce and (report.get("missing") or problems or report.get("errors")):
+    if announce and (report.get("missing") or problems or report.get("errors") or conflicts):
         # the window closes after Apply, so anything off is said now
         details = [u"{0}: {1}".format(m.get("title"), m.get("reason")) for m in report.get("missing", [])]
-        details += problems + list(report.get("errors", []))
+        details += problems + list(report.get("errors", [])) + list(conflicts)
         forms.alert(notice, title=__title__, expanded="\n".join(details), warn_icon=bool(problems))
+    report = dict(report)
+    report["conflicts"] = list(conflicts)
     if problems:
-        report = dict(report)
         report["errors"] = list(report.get("errors", [])) + problems
     reloading = needs_reload
     if needs_reload and ask_reload:
@@ -790,6 +816,7 @@ def _run():
     if error:
         forms.alert("{0}\n\nMy Ribbon starts empty; pressing Apply will overwrite that file."
                     .format(error), title=__title__)
+    state.dedupe_registry(saved)
     working = copy.deepcopy(saved)
     pending_deletes = []
     notice = None
@@ -823,15 +850,17 @@ def _run():
             # applies itself.  Apply before the reload: it writes the hidden-tab
             # state, so a tab the file marks hidden never shows even briefly.
             new_saved, _applied, report, _needed = _apply(
-                working, pending_deletes, announce=False, ask_reload=False)
+                working, pending_deletes, saved, announce=False, ask_reload=False,
+                merge_with_disk=(outcome.get("mode") != "replace"))
             if new_saved is None:
                 continue  # the save failed; the window returns with work staged
-            rows, summary = state.build_import_report(outcome, report)
-            ImportResultsWindow("ImportResultsDialog.xaml", rows, summary).ShowDialog()
+            results = state.build_import_report(outcome.get("plan"), outcome, report,
+                                                report.get("conflicts"))
+            ImportResultsWindow("ImportResultsDialog.xaml", results).ShowDialog()
             host.reload_pyrevit()
             return
         if result == "apply":
-            new_saved, notice, report, reloading = _apply(working, pending_deletes)
+            new_saved, notice, report, reloading = _apply(working, pending_deletes, saved)
             if new_saved is None:
                 # the save failed; the window comes back with everything staged
                 continue

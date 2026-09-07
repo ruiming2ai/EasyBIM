@@ -657,12 +657,12 @@ list are.
 ## My Ribbon (General)
 
 My Ribbon puts buttons from **other pyRevit extensions, Revit's own tabs, other
-add-ins and Dynamo graphs** on panels of your own. Pick an extension or a tab
+add-ins and Dynamo** on panels of your own. Pick an extension or a tab
 from the **Extension & Tab List** — everything already on this computer — or
 choose `.dyn` files; tick the buttons you want; say where they go — any panel on
 the EasyBIM tab, a new panel there, a tab of your own, or a panel on another
 tab. Press **Apply** and they are there. No reload is needed to re-arrange; only
-a new Dynamo graph needs one, and My Ribbon offers it.
+a new Dynamo needs one, and My Ribbon offers it.
 
 Installing an extension is pyRevit's job, not this window's: add it in
 **pyRevit ▸ Extensions**, which has both the catalogue of community extensions
@@ -702,7 +702,7 @@ too new for this Revit is marked missing on its row; a repository already
 installed here is reused instead of downloaded twice; a download you cancel
 leaves nothing behind.
 
-### Tabs, Revit's own buttons, Dynamo graphs
+### Tabs, Revit's own buttons, Dynamo
 
 **Show/Hide tabs...** (on the My buttons side) lists every ribbon tab with a
 tick. EasyBIM stays on (this button lives there, so there is always a way back)
@@ -723,7 +723,7 @@ Their buttons can be placed exactly like pyRevit's (it is the same live button
 object); galleries and drop-down lists that only work on their own panel are
 greyed with the reason. They can only ever be Removed.
 
-**Add Dynamo graph...** makes a button out of a `.dyn` file. The button runs
+**Add Dynamo...** makes a button out of a `.dyn` file. The button runs
 the graph from where the file is, so later edits count the next time you click
 (Ctrl+click opens it in Dynamo instead); its icon is Revit's own Dynamo icon
 unless you pick a PNG; the title is yours. My Ribbon keeps a copy of the graph
@@ -751,6 +751,25 @@ between a button that runs and one that silently does nothing:
   **IronPython2** graph skips that — it is about three times slower to start —
   and its tooltip reminds you that Dynamo 2.7 and newer need the
   `DynamoIronPython2.7` package for those nodes.
+
+### Several Revit sessions at once
+
+**Apply reads the settings file again before it saves.** If another Revit
+session saved since this window opened, only this window's own changes are
+replayed onto that file: what the other session added stays, what it removed
+stays removed, and anything that could not be kept is listed as a conflict. An
+outdated window never writes over what it never saw.
+
+Every open session watches the file while Revit is idle and re-places buttons
+and re-hides tabs as soon as it changes, with no reload. A new Dynamo button or
+a newly installed extension still needs a pyRevit reload in that session, and
+it says so once rather than reloading a Revit someone is working in.
+
+One graph is one source and one bundle. A duplicate left by an older session is
+folded in on the next Apply, and a bundle folder no source claims is removed.
+
+An import's results window lists only what changed - extensions, buttons,
+tabs, panels and settings on their own tabs, buttons by name.
 
 ### Stacks, separators and the slide-out
 
