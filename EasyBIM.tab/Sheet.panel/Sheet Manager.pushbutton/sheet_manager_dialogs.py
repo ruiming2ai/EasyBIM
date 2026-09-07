@@ -170,7 +170,8 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
     """Resolve Excel discrepancies before loading its matching sheet rows."""
 
     def __init__(self, xaml_file_name, excel_path, session, warning=None,
-                 template_options=None, create_callback=None):
+                 template_options=None, create_callback=None,
+                 rename_callback=None):
         self._is_ready = False
         self.result = None
         self._session = session
@@ -178,6 +179,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         self._validation = None
         self._template_options = list(template_options or [])
         self._create_callback = create_callback
+        self._rename_callback = rename_callback
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.file_tb.Text = excel_path
         self.warning_tb.Text = warning or u""
@@ -198,6 +200,10 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             self._template_options and any(
                 row.can_create
                 for row in self._validation.number_discrepancies))
+        self.rename_selected_b.IsEnabled = bool(
+            self._rename_callback is not None and any(
+                row.can_rename
+                for row in self._validation.name_discrepancies))
 
         self.summary_tb.Text = (
             u"{0} visible Excel row(s), {1} matching sheet row(s) ready to load."
@@ -253,6 +259,34 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         forms.alert("\n".join(message),
                     expanded="\n".join(failures) or None,
                     title="Create Selected Sheets")
+
+    def rename_selected_sheets(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.name_discrepancies
+            if row.can_rename and row.rename_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one sheet name to rename.",
+                        title="Rename to Match Excel")
+            return
+        if self._rename_callback is None:
+            forms.alert("Sheet-name renaming is unavailable.",
+                        title="Rename to Match Excel")
+            return
+        try:
+            renamed, failures = self._rename_callback(selected)
+        except Exception as err:
+            forms.alert("Could not rename the selected sheets.",
+                        expanded=str(err), title="Rename to Match Excel")
+            return
+        self._refresh_validation()
+        message = ["Renamed sheets: {0}".format(len(renamed))]
+        if failures:
+            message.append("Failed sheets: {0}".format(len(failures)))
+        forms.alert("\n".join(message),
+                    expanded="\n".join(failures) or None,
+                    title="Rename to Match Excel")
 
     def load_clicked(self, sender, args):
         del sender, args

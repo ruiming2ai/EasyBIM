@@ -1074,10 +1074,18 @@ class SheetManagerWindow(forms.WPFWindow):
                 self._sync_done(self._sync_work(uiapp))
             return created, failures
 
+        def rename_sheets_to_excel(discrepancy_rows):
+            renamed, failures = smrevit.rename_sheets_to_excel(
+                self._doc, discrepancy_rows)
+            if renamed:
+                session.set_model_sheets(smrevit.collect_sheets(self._doc))
+                self._sync_done(self._sync_work(uiapp))
+            return renamed, failures
+
         dialog = self._show_dialog(dialogs.LoadCustomizedExcelWindow(
             "LoadCustomizedExcelDialog.xaml", excel_path, session,
             read_result.warning, template_options,
-            create_sheets_from_template))
+            create_sheets_from_template, rename_sheets_to_excel))
         if not dialog.result:
             return
         source_order = [eid_to_int(row.revit_sheet.Id)

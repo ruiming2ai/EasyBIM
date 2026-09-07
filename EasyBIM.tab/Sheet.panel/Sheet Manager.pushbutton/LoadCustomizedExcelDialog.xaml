@@ -29,9 +29,6 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <Button x:Name="create_selected_b" Grid.Column="0" Height="32" MinWidth="180"
-                    HorizontalAlignment="Left"
-                    Content="Create Selected Sheets" Click="create_selected_sheets"/>
             <Button x:Name="load_b" Grid.Column="1" Height="32" MinWidth="90" Margin="12,0,8,0"
                     Content="Load" IsDefault="True" Click="load_clicked"/>
             <Button x:Name="cancel_b" Grid.Column="2" Height="32" MinWidth="90"
@@ -52,37 +49,64 @@
                        FontWeight="SemiBold" Margin="0,0,0,6"/>
             <TextBlock Grid.Row="0" Grid.Column="2" Text="Sheet Names Discrepancy"
                        FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <DataGrid x:Name="number_discrepancies_dg" Grid.Row="1" Grid.Column="0"
-                      AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"
-                      CanUserSortColumns="False" Foreground="#C00000"
-                      HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
-                <DataGrid.Columns>
-                    <DataGridTemplateColumn Header="Create" Width="55">
-                        <DataGridTemplateColumn.CellTemplate>
-                            <DataTemplate>
-                                <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          IsChecked="{Binding create_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                          IsEnabled="{Binding can_create}"/>
-                            </DataTemplate>
-                        </DataGridTemplateColumn.CellTemplate>
-                    </DataGridTemplateColumn>
-                    <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="70" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="105" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Name" Binding="{Binding name}" Width="*" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Reason" Binding="{Binding reason}" Width="150" IsReadOnly="True"/>
-                </DataGrid.Columns>
-            </DataGrid>
-            <DataGrid x:Name="name_discrepancies_dg" Grid.Row="1" Grid.Column="2"
-                      AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"
-                      CanUserSortColumns="False" Foreground="#C00000"
-                      HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
-                <DataGrid.Columns>
-                    <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="65" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="90" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Name (Excel)" Binding="{Binding excel_name}" Width="*" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Name (Revit)" Binding="{Binding revit_name}" Width="*" IsReadOnly="True"/>
-                </DataGrid.Columns>
-            </DataGrid>
+            <Grid Grid.Row="1" Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <DataGrid x:Name="number_discrepancies_dg" Grid.Row="0"
+                          AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"
+                          CanUserSortColumns="False" Foreground="#C00000"
+                          HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Create" Width="55">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              IsChecked="{Binding create_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEnabled="{Binding can_create}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="70" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="105" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Name" Binding="{Binding name}" Width="*" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Reason" Binding="{Binding reason}" Width="150" IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <Button x:Name="create_selected_b" Grid.Row="1" Height="32" MinWidth="180"
+                        Margin="0,8,0,0" HorizontalAlignment="Left"
+                        Content="Create Selected Sheets" Click="create_selected_sheets"/>
+            </Grid>
+            <Grid Grid.Row="1" Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <DataGrid x:Name="name_discrepancies_dg" Grid.Row="0"
+                          AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"
+                          CanUserSortColumns="False" Foreground="#C00000"
+                          HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Rename" Width="60">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              IsChecked="{Binding rename_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEnabled="{Binding can_rename}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="65" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="90" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Name (Excel)" Binding="{Binding excel_name}" Width="*" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="Sheet Name (Revit)" Binding="{Binding revit_name}" Width="*" IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <Button x:Name="rename_selected_b" Grid.Row="1" Height="32" MinWidth="180"
+                        Margin="0,8,0,0" HorizontalAlignment="Left"
+                        Content="Rename to Match Excel" Click="rename_selected_sheets"/>
+            </Grid>
         </Grid>
     </DockPanel>
 </Window>

@@ -193,6 +193,10 @@ class ExcelPrintSetsTests(unittest.TestCase):
              for row in result.name_discrepancies],
             [("Detail A", "Detail B"), ("", "Detail C")]
         )
+        self.assertTrue(result.name_discrepancies[0].can_rename)
+        self.assertFalse(result.name_discrepancies[0].rename_selected)
+        self.assertFalse(result.name_discrepancies[1].can_rename)
+        self.assertFalse(result.name_discrepancies[1].rename_selected)
         self.assertEqual(
             [row.number for row in result.final_rows], ["A001", "A002"])
 

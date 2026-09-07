@@ -240,6 +240,42 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
     return created, failures
 
 
+def rename_sheets_to_excel(doc, discrepancy_rows):
+    """Rename selected matched sheets to their nonblank Excel names.
+
+    Returns ``(renamed_sheets, failure_messages)``. Each rename has an
+    independent subtransaction so a rejected Revit name leaves other selected
+    discrepancy rows available for the same attempt.
+    """
+    renamed = []
+    failures = []
+    with revit.Transaction("Sheet Manager - Rename Excel Sheet Names",
+                           doc=doc):
+        for discrepancy in discrepancy_rows or []:
+            subtransaction = DB.SubTransaction(doc)
+            try:
+                subtransaction.Start()
+                sheet = getattr(discrepancy, "revit_sheet", None)
+                excel_name = u"{0}".format(
+                    getattr(discrepancy, "excel_name", u"") or u"").strip()
+                if sheet is None:
+                    raise ValueError("Matched sheet is no longer available.")
+                if not excel_name:
+                    raise ValueError("Excel sheet name is blank.")
+                sheet.Name = excel_name
+                subtransaction.Commit()
+                renamed.append(sheet)
+            except Exception as err:
+                try:
+                    subtransaction.RollBack()
+                except Exception:
+                    pass
+                failures.append(u"{0}: {1}".format(
+                    getattr(discrepancy, "number", u""),
+                    exception_text(err)))
+    return renamed, failures
+
+
 def read_light_snapshot(doc, known_ids):
     """Cheap re-read for the focus-return sync.
 

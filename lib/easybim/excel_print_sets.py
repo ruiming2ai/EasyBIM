@@ -68,6 +68,9 @@ class DiscrepancyRow(object):
         self.revit_sheet = revit_sheet
         self.can_create = bool(can_create)
         self.create_selected = False
+        self.can_rename = bool(
+            revit_sheet is not None and normalize_key(self.excel_name))
+        self.rename_selected = False
 
 
 class ExcelPrintSetRow(object):
