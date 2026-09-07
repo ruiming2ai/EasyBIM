@@ -59,7 +59,11 @@ class DiscrepancyRow(object):
         self.source_row = import_row
         self.excel_row = getattr(import_row, "excel_row", 0)
         self.number = getattr(import_row, "sheet_number", "")
-        self.name = getattr(import_row, "sheet_name", "")
+        self.excel_name = _safe_text(
+            getattr(import_row, "sheet_name", ""))
+        self.revit_name = _safe_text(
+            getattr(revit_sheet, "Name", ""))
+        self.name = self.excel_name
         self.reason = reason
         self.revit_sheet = revit_sheet
         self.can_create = bool(can_create)

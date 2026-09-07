@@ -200,6 +200,10 @@ class SheetManagerBundleTests(unittest.TestCase):
 
         self.assertIn('Text="Sheet Names Discrepancy"', xaml)
         self.assertNotIn('Text="Missing Sheet Names"', xaml)
+        self.assertIn('Header="Sheet Name (Excel)"', xaml)
+        self.assertIn('Binding="{Binding excel_name}"', xaml)
+        self.assertIn('Header="Sheet Name (Revit)"', xaml)
+        self.assertIn('Binding="{Binding revit_name}"', xaml)
 
     def test_customized_excel_can_create_selected_missing_sheets(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
@@ -232,15 +236,90 @@ class SheetManagerBundleTests(unittest.TestCase):
             "_copy_writable_parameter_values(\n                    template_sheet")
         titleblock_values = creation_body.index(
             "_copy_writable_parameter_values(template_tblock")
-        excel_number = creation_body.rindex(
+        first_excel_number = creation_body.index(
             "sheet.SheetNumber = import_row.sheet_number")
-        excel_name = creation_body.rindex(
+        first_excel_name = creation_body.index(
+            "sheet.Name = import_row.sheet_name")
+        last_excel_number = creation_body.rindex(
+            "sheet.SheetNumber = import_row.sheet_number")
+        last_excel_name = creation_body.rindex(
             "sheet.Name = import_row.sheet_name")
 
-        self.assertLess(sheet_values, excel_number)
-        self.assertLess(titleblock_values, excel_number)
-        self.assertLess(sheet_values, excel_name)
-        self.assertLess(titleblock_values, excel_name)
+        self.assertLess(first_excel_number, sheet_values)
+        self.assertLess(first_excel_name, sheet_values)
+        self.assertLess(sheet_values, last_excel_number)
+        self.assertLess(titleblock_values, last_excel_number)
+        self.assertLess(sheet_values, last_excel_name)
+        self.assertLess(titleblock_values, last_excel_name)
+        self.assertNotEqual(first_excel_number, last_excel_number)
+        self.assertNotEqual(first_excel_name, last_excel_name)
+        copy_body = source.split("def _copy_writable_parameter_values", 1)[1]\
+            .split("\ndef create_sheets_from_template", 1)[0]
+        self.assertIn("target_param_id = eid_to_int(target_param.Id)",
+                      copy_body)
+        self.assertIn("if target_param_id in excluded_ids:", copy_body)
+
+    def test_parameter_copy_does_not_overwrite_target_sheet_identity(self):
+        source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_copy_writable_parameter_values")
+        namespace = {
+            "DB": type("DB", (), {
+                "StorageType": type("StorageType", (), {
+                    "String": "String",
+                    "Integer": "Integer",
+                    "Double": "Double",
+                    "ElementId": "ElementId",
+                })
+            }),
+            "eid_to_int": lambda element_id: element_id,
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]),
+                     "sheet_manager_revit.py", "exec"), namespace)
+        copy_values = namespace["_copy_writable_parameter_values"]
+
+        class Definition(object):
+            Name = "Sheet Number"
+
+        class Parameter(object):
+            IsReadOnly = False
+            StorageType = "String"
+
+            def __init__(self, param_id, value):
+                self.Id = param_id
+                self.Definition = Definition()
+                self.value = value
+
+            def AsString(self):
+                return self.value
+
+            def Set(self, value):
+                self.value = value
+
+        class Element(object):
+            def __init__(self, parameters, lookup):
+                self.Parameters = parameters
+                self._lookup = lookup
+
+            def LookupParameter(self, name):
+                if name == "Sheet Number":
+                    return self._lookup
+                return None
+
+        template_number = Parameter(101, "Template A101")
+        target_number = Parameter(-1006202, "Excel E1")
+
+        copied = copy_values(
+            Element([template_number], None),
+            Element([], target_number),
+            set([-1006202]))
+
+        self.assertEqual(copied, 0)
+        self.assertEqual(target_number.value, "Excel E1")
 
     def test_pdf_export_and_print_post_checked_visible_rows_as_in_session_set(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(

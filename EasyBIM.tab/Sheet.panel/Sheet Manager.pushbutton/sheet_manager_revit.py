@@ -156,6 +156,9 @@ def _copy_writable_parameter_values(source, target, excluded_ids=None):
             target_param = target.LookupParameter(name)
             if target_param is None or target_param.IsReadOnly:
                 continue
+            target_param_id = eid_to_int(target_param.Id)
+            if target_param_id in excluded_ids:
+                continue
             if target_param.StorageType != storage:
                 continue
             if storage == DB.StorageType.String:
@@ -204,6 +207,8 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
             try:
                 subtransaction.Start()
                 sheet = DB.ViewSheet.Create(doc, titleblock_type_id)
+                sheet.SheetNumber = import_row.sheet_number
+                sheet.Name = import_row.sheet_name
                 _copy_writable_parameter_values(
                     template_sheet, sheet, _EXCLUDED_SHEET_PARAM_IDS)
                 doc.Regenerate()

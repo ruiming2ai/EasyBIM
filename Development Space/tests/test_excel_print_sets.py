@@ -189,6 +189,11 @@ class ExcelPrintSetsTests(unittest.TestCase):
             ]
         )
         self.assertEqual(
+            [(row.excel_name, row.revit_name)
+             for row in result.name_discrepancies],
+            [("Detail A", "Detail B"), ("", "Detail C")]
+        )
+        self.assertEqual(
             [row.number for row in result.final_rows], ["A001", "A002"])
 
         session.skip_number_discrepancies(result.number_discrepancies)

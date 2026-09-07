@@ -79,10 +79,10 @@
                       CanUserSortColumns="False" Foreground="#C00000"
                       HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="70" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="105" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Sheet Name" Binding="{Binding name}" Width="*" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Reason" Binding="{Binding reason}" Width="150" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="65" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="90" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Name (Excel)" Binding="{Binding excel_name}" Width="*" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Sheet Name (Revit)" Binding="{Binding revit_name}" Width="*" IsReadOnly="True"/>
                 </DataGrid.Columns>
             </DataGrid>
         </Grid>
