@@ -103,9 +103,10 @@ class StartupJobStageOrderingTests(unittest.TestCase):
         job = self._job("run_report")
         observed = {}
 
-        def _report(doc):
+        def _report(doc, uiapp=None):
             del doc
             observed["stage_during_modal"] = job["stage"]
+            observed["uiapp"] = uiapp
 
         with mock.patch.object(
             self.messages, "_print_coordination_review_report", side_effect=_report
@@ -119,6 +120,8 @@ class StartupJobStageOrderingTests(unittest.TestCase):
             self.messages._process_startup_job(self.uiapp, job, self.NOW)
 
         self.assertEqual("done", observed["stage_during_modal"])
+        # The Idling sender is the only live UIApplication in that engine.
+        self.assertIs(self.uiapp, observed["uiapp"])
 
     def test_file_open_trigger_is_consumed_before_the_alert_opens(self):
         observed = {}
@@ -186,6 +189,89 @@ class StartupJobStageOrderingTests(unittest.TestCase):
             self.messages._print_coordination_review_report(self.doc)
 
         self.assertEqual(calls, [False, False])
+
+
+class FakeControlledApp(object):
+    """pyRevit's ``__revit__`` in the startup/Idling engine: no ActiveUIDocument."""
+
+
+class LiveUiappForReportTests(unittest.TestCase):
+    """At file open the report is raised from the Idling delegate, where the
+    module-level ``__revit__`` is a UIControlledApplication.  The window must
+    get the live UIApplication (the Idling sender / hook ``__revit__``), or
+    View Issues sees no UI document until Start Message is pressed again."""
+
+    def setUp(self):
+        self.messages = _load_messages()
+        self.doc = FakeDocument()
+        self.uiapp = FakeUiapp(self.doc)
+        self.messages._LIVE_UIAPP = None
+
+    def _with_controlled_revit(self):
+        import builtins
+
+        return mock.patch.object(builtins, "__revit__", FakeControlledApp(), create=True)
+
+    def test_get_uiapp_prefers_the_remembered_live_application(self):
+        with self._with_controlled_revit():
+            self.messages._remember_live_uiapp(self.uiapp)
+            self.assertIs(self.uiapp, self.messages._get_uiapp())
+
+    def test_get_uiapp_falls_back_to_revit_when_nothing_usable_exists(self):
+        with self._with_controlled_revit():
+            import builtins
+
+            self.assertIs(builtins.__revit__, self.messages._get_uiapp())
+
+    def test_controlled_application_is_never_remembered(self):
+        self.assertIsNone(self.messages._remember_live_uiapp(FakeControlledApp()))
+        self.assertIsNone(self.messages._LIVE_UIAPP)
+
+    def test_report_hands_the_live_application_to_the_window(self):
+        observed = {}
+        fake_passive = types.ModuleType("easybim.coordination_review_passive")
+        fake_passive.build_passive_coordination_report = lambda doc, consume=True: {}
+        fake_passive.unregister_passive_detector = lambda: None
+
+        def _dialog(report, doc=None, uiapp=None):
+            observed["uiapp"] = uiapp
+            return True
+
+        with self._with_controlled_revit(), mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_show_coordination_review_dialog", side_effect=_dialog
+        ):
+            self.messages._print_coordination_review_report(self.doc, uiapp=self.uiapp)
+
+        self.assertIs(self.uiapp, observed["uiapp"])
+
+    def test_dialog_wrapper_replaces_a_controlled_application(self):
+        observed = {}
+        fake_window = types.ModuleType("easybim.coordination_review_window")
+
+        def _show(report, doc=None, uiapp=None):
+            observed["uiapp"] = uiapp
+            return True
+
+        fake_window.show_coordination_review_dialog = _show
+        with self._with_controlled_revit(), mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_window": fake_window}
+        ):
+            self.messages._remember_live_uiapp(self.uiapp)
+            self.messages._show_coordination_review_dialog({}, doc=self.doc, uiapp=FakeControlledApp())
+
+        self.assertIs(self.uiapp, observed["uiapp"])
+
+    def test_process_startup_jobs_remembers_the_sender(self):
+        with mock.patch.object(
+            self.messages, "_process_file_open_trigger_pending"
+        ), mock.patch.object(
+            self.messages, "_load_startup_state", return_value={"next_id": 1, "jobs": []}
+        ):
+            self.messages.process_startup_jobs(self.uiapp)
+
+        self.assertIs(self.uiapp, self.messages._LIVE_UIAPP)
 
 
 if __name__ == "__main__":

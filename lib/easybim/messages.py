@@ -128,6 +128,7 @@ def run_pending_file_open_startup(uiapp=None):
     same trigger through ``process_startup_jobs``; whichever fires first
     wins, and the consumed flag makes the other a no-op.
     """
+    _remember_live_uiapp(uiapp)
     _process_file_open_trigger_pending(uiapp=uiapp)
 
 
@@ -191,6 +192,7 @@ def _run_startup_actions_now(doc, open_worksets_after, run_coord_report_after):
 
 def process_startup_jobs(uiapp=None):
     """Process queued startup jobs. Called from the easybim.idling delegate."""
+    _remember_live_uiapp(uiapp)
     uiapp = uiapp or _get_uiapp()
     if not uiapp:
         return
@@ -315,7 +317,7 @@ def _process_startup_job(uiapp, job, now):
             report_doc = target_doc
             if not _is_doc_valid(report_doc) and not has_identity:
                 report_doc = active_doc
-            _print_coordination_review_report(report_doc)
+            _print_coordination_review_report(report_doc, uiapp=uiapp)
         return True
 
     return True
@@ -425,6 +427,7 @@ def _process_file_open_trigger_pending(uiapp=None):
         _disable_passive_coordination_review_detector()
         return
 
+    _remember_live_uiapp(uiapp)
     uiapp = uiapp or _get_uiapp()
     if not uiapp:
         return
@@ -847,7 +850,7 @@ def _show_workset_picker_dialog_wpfwindow(context):
     return True, None
 
 
-def _print_coordination_review_report(doc):
+def _print_coordination_review_report(doc, uiapp=None):
     try:
         try:
             from easybim.coordination_review_passive import build_passive_coordination_report
@@ -857,7 +860,7 @@ def _print_coordination_review_report(doc):
         except Exception:
             report = _build_coordination_detection_error_report(doc)
 
-        if _show_coordination_review_dialog(report, doc=doc):
+        if _show_coordination_review_dialog(report, doc=doc, uiapp=uiapp):
             return
 
         output = _get_output_window()
@@ -892,14 +895,17 @@ def _disable_passive_coordination_review_detector():
         pass
 
 
-def _show_coordination_review_dialog(report, doc=None):
+def _show_coordination_review_dialog(report, doc=None, uiapp=None):
     try:
         from easybim.coordination_review_window import show_coordination_review_dialog
     except Exception:
         return False
 
+    # Prefer the live UIApplication of the entry point; the module-level
+    # ``__revit__`` is a UIControlledApplication in the startup/Idling engine.
+    uiapp = _usable_uiapp(uiapp) or _get_uiapp()
     try:
-        return bool(show_coordination_review_dialog(report, doc=doc, uiapp=_get_uiapp()))
+        return bool(show_coordination_review_dialog(report, doc=doc, uiapp=uiapp))
     except Exception:
         return False
 
@@ -1328,14 +1334,51 @@ def _get_logger():
         return None
 
 
-def _get_uiapp():
+#: The live ``UIApplication`` handed to the last file-open entry point (the
+#: Idling sender or a hook's ``__revit__``).  The module-level ``__revit__``
+#: seen from the startup/Idling engine is a ``UIControlledApplication`` with
+#: no ``ActiveUIDocument``, which left the Coordination Review window without
+#: a UI document at file open while the Start Message button (a command
+#: engine, full ``UIApplication``) worked.
+_LIVE_UIAPP = None
+
+
+def _usable_uiapp(candidate):
+    """``candidate`` when it exposes ``ActiveUIDocument`` (a UIApplication)."""
+    if candidate is None:
+        return None
     try:
-        return __revit__
+        if hasattr(candidate, "ActiveUIDocument"):
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
+def _remember_live_uiapp(uiapp):
+    global _LIVE_UIAPP
+    usable = _usable_uiapp(uiapp)
+    if usable is not None:
+        _LIVE_UIAPP = usable
+    return usable
+
+
+def _get_uiapp():
+    candidates = [_LIVE_UIAPP]
+    try:
+        candidates.append(__revit__)
+    except Exception:
+        pass
+    try:
+        from pyrevit import HOST_APP
+        candidates.append(HOST_APP.uiapp)
     except Exception:
         pass
 
-    try:
-        from pyrevit import HOST_APP
-        return HOST_APP.uiapp
-    except Exception:
-        return None
+    for candidate in candidates:
+        if _usable_uiapp(candidate) is not None:
+            return candidate
+    for candidate in candidates:
+        if candidate is not None:
+            return candidate
+    return None

@@ -306,6 +306,10 @@ class CoordinationReviewWindow(forms.WPFWindow):
             self.status_tb.Text = "Could not resolve the selected instance id."
             return
 
+        # Resolve the UI document now, not at construction: at file open the
+        # window is raised from the Idling delegate, whose application object
+        # may be a UIControlledApplication without an ActiveUIDocument.
+        self.uidoc = coordination_review_show.resolve_uidoc(self.uiapp, self.doc)
         if not self.uidoc or not self.doc:
             self.status_tb.Text = (
                 "View Issues is unavailable because there is no active Revit UI document."

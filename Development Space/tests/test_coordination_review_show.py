@@ -203,6 +203,57 @@ class ElementFromIdTests(unittest.TestCase):
         self.assertIsNone(self.module.element_from_id(None, 30, db=FakeDB))
 
 
+class FakeUIDocumentFromDoc(object):
+    """Stand-in for the public ``UIDocument(Document)`` constructor."""
+
+    def __init__(self, doc):
+        self.Document = doc
+
+
+class FakeUI(object):
+    UIDocument = FakeUIDocumentFromDoc
+
+
+class FakeUIApplication(object):
+    def __init__(self, uidoc):
+        self.ActiveUIDocument = uidoc
+
+
+class FakeControlledApplication(object):
+    """No ActiveUIDocument, like pyRevit's ``__revit__`` in the startup engine."""
+
+
+class ResolveUidocTests(unittest.TestCase):
+    def setUp(self):
+        self.module = _load_module()
+        self.doc, _, _, _, _ = _fixture()
+
+    def test_active_ui_document_is_used_when_present(self):
+        uidoc = FakeUIDocument()
+        resolved = self.module.resolve_uidoc(FakeUIApplication(uidoc), self.doc, ui=FakeUI)
+        self.assertIs(uidoc, resolved)
+
+    def test_controlled_application_falls_back_to_uidocument_from_doc(self):
+        resolved = self.module.resolve_uidoc(FakeControlledApplication(), self.doc, ui=FakeUI)
+        self.assertIsInstance(resolved, FakeUIDocumentFromDoc)
+        self.assertIs(self.doc, resolved.Document)
+
+    def test_application_without_active_document_also_falls_back(self):
+        resolved = self.module.resolve_uidoc(FakeUIApplication(None), self.doc, ui=FakeUI)
+        self.assertIsInstance(resolved, FakeUIDocumentFromDoc)
+
+    def test_no_application_still_resolves_from_doc(self):
+        resolved = self.module.resolve_uidoc(None, self.doc, ui=FakeUI)
+        self.assertIs(self.doc, resolved.Document)
+
+    def test_nothing_to_resolve_from(self):
+        class EmptyUI(object):
+            pass
+
+        self.assertIsNone(self.module.resolve_uidoc(None, None, ui=FakeUI))
+        self.assertIsNone(self.module.resolve_uidoc(FakeControlledApplication(), self.doc, ui=EmptyUI))
+
+
 class SelectElementTests(unittest.TestCase):
     def setUp(self):
         self.module = _load_module()

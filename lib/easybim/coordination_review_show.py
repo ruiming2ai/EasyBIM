@@ -140,6 +140,45 @@ def element_from_id(doc, element_id_int, db=None):
         return None
 
 
+def _import_revit_ui():
+    try:
+        from Autodesk.Revit import UI
+
+        return UI
+    except Exception:
+        return None
+
+
+def resolve_uidoc(uiapp, doc, ui=None):
+    """Return a ``UIDocument`` for ``doc``, resolved now rather than earlier.
+
+    ``uiapp.ActiveUIDocument`` is used when the application exposes one (a
+    real ``UIApplication``).  From the startup/Idling engine ``uiapp`` can be
+    a ``UIControlledApplication`` with no active UI document, so fall back to
+    the public ``UIDocument(Document)`` constructor.  Returns None when
+    neither route works.
+    """
+    uidoc = None
+    if uiapp is not None:
+        try:
+            uidoc = getattr(uiapp, "ActiveUIDocument", None)
+        except Exception:
+            uidoc = None
+    if uidoc is not None:
+        return uidoc
+    if doc is None:
+        return None
+
+    ui = ui if ui is not None else _import_revit_ui()
+    uidoc_type = getattr(ui, "UIDocument", None) if ui is not None else None
+    if uidoc_type is None:
+        return None
+    try:
+        return uidoc_type(doc)
+    except Exception:
+        return None
+
+
 def resolve_link_instance(doc, element_id_int, db=None):
     """Map a recorded element id to a ``RevitLinkInstance`` in ``doc``.
 
