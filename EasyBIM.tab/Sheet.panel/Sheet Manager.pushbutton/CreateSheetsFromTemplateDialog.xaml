@@ -1,0 +1,22 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Create Sheets from Template"
+        Height="210"
+        Width="500"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner">
+    <StackPanel Margin="12">
+        <TextBlock x:Name="targets_tb" FontWeight="SemiBold" TextWrapping="Wrap"/>
+        <TextBlock Margin="0,12,0,4" Text="Sheet template:"/>
+        <ComboBox x:Name="source_cb" Height="26"/>
+        <TextBlock Margin="0,10,0,0" Foreground="DimGray" TextWrapping="Wrap"
+                   Text="Creates empty sheets using the template title block, revisions, and writable sheet and title-block values. Sheet number and name come from Excel."/>
+        <DockPanel Margin="0,16,0,0" LastChildFill="False">
+            <Button x:Name="cancel_b" Content="Cancel" IsCancel="True" Height="28" MinWidth="90"
+                    DockPanel.Dock="Right" Click="cancel_clicked"/>
+            <Button x:Name="create_b" Content="Create" IsDefault="True" Height="28" MinWidth="90"
+                    Margin="0,0,8,0" DockPanel.Dock="Right" Click="create_clicked"/>
+        </DockPanel>
+    </StackPanel>
+</Window>

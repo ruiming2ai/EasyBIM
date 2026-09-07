@@ -158,16 +158,20 @@ class ExcelPrintSetsTests(unittest.TestCase):
         )
         self.assertEqual([row.index for row in result.final_rows], [1, 2, 3])
 
-    def test_discrepancies_block_next_until_skipped(self):
+    def test_matched_name_discrepancies_block_loading_without_flagging_duplicates(self):
         module = _load_module()
         rows = [
-            module.ExcelImportRow(1, "A001", "First"),
-            module.ExcelImportRow(2, "A999", "Missing"),
-            module.ExcelImportRow(3, "A002", "Wrong Name"),
+            module.ExcelImportRow(1, "A001", "Details"),
+            module.ExcelImportRow(2, "A002", "Details"),
+            module.ExcelImportRow(3, "A003", "Detail A"),
+            module.ExcelImportRow(4, "A004", ""),
+            module.ExcelImportRow(5, "A999", "Missing"),
         ]
         sheets = [
-            _FakeSheet("A001", "First"),
-            _FakeSheet("A002", "Second"),
+            _FakeSheet("A001", "Details"),
+            _FakeSheet("A002", "Details"),
+            _FakeSheet("A003", "Detail B"),
+            _FakeSheet("A004", "Detail C"),
         ]
         session = module.ExcelPrintSetSession(rows, sheets)
 
@@ -179,8 +183,13 @@ class ExcelPrintSetsTests(unittest.TestCase):
         )
         self.assertEqual(
             [row.reason for row in result.name_discrepancies],
-            ["Sheet name does not match the model sheet name."]
+            [
+                "Sheet name does not match the model sheet name.",
+                "Sheet name does not match the model sheet name.",
+            ]
         )
+        self.assertEqual(
+            [row.number for row in result.final_rows], ["A001", "A002"])
 
         session.skip_number_discrepancies(result.number_discrepancies)
         result = session.validate()
@@ -189,7 +198,8 @@ class ExcelPrintSetsTests(unittest.TestCase):
         result = session.validate()
 
         self.assertTrue(result.can_continue)
-        self.assertEqual([row.number for row in result.final_rows], ["A001"])
+        self.assertEqual(
+            [row.number for row in result.final_rows], ["A001", "A002"])
 
     def test_duplicate_excel_sheet_numbers_are_number_discrepancies(self):
         module = _load_module()
@@ -215,6 +225,43 @@ class ExcelPrintSetsTests(unittest.TestCase):
             set(row.reason for row in result.number_discrepancies),
             set(["Duplicate imported sheet number."])
         )
+
+    def test_only_unique_missing_rows_with_names_can_be_selected_to_create(self):
+        module = _load_module()
+        rows = [
+            module.ExcelImportRow(1, "A900", "New Sheet"),
+            module.ExcelImportRow(2, "A901", ""),
+            module.ExcelImportRow(3, "A902", "First Duplicate"),
+            module.ExcelImportRow(4, "A902", "Second Duplicate"),
+            module.ExcelImportRow(5, "", "No Number"),
+            module.ExcelImportRow(6, "A001", "Existing"),
+        ]
+        session = module.ExcelPrintSetSession(
+            rows, [_FakeSheet("A001", "Existing")])
+
+        result = session.validate()
+        by_number = {
+            row.number: row for row in result.number_discrepancies
+        }
+
+        self.assertTrue(by_number["A900"].can_create)
+        self.assertFalse(by_number["A900"].create_selected)
+        self.assertFalse(by_number["A901"].can_create)
+        self.assertFalse(by_number["A902"].can_create)
+        self.assertFalse(by_number[""].can_create)
+
+    def test_replacing_model_sheets_turns_created_rows_into_matches(self):
+        module = _load_module()
+        session = module.ExcelPrintSetSession(
+            [module.ExcelImportRow(1, "A900", "New Sheet")], [])
+        discrepancy = session.validate().number_discrepancies[0]
+        discrepancy.create_selected = True
+
+        session.set_model_sheets([_FakeSheet("A900", "New Sheet")])
+        result = session.validate()
+
+        self.assertTrue(result.can_continue)
+        self.assertEqual([row.number for row in result.final_rows], ["A900"])
 
     def test_revision_filter_hides_unresolved_rows_and_preserves_matching_order(self):
         module = _load_module()

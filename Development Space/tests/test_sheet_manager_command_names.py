@@ -15,6 +15,7 @@ DIALOG_XAMLS = [
     "ApplyResultsDialog.xaml",
     "LoadFromSourceDialog.xaml",
     "LoadCustomizedExcelDialog.xaml",
+    "CreateSheetsFromTemplateDialog.xaml",
     "FilterByRevisionDialog.xaml",
     "FilterByParameterDialog.xaml",
     "SortDialog.xaml",
@@ -192,6 +193,54 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn("def skip_discrepancies", dialogs_source)
         self.assertNotIn("def skip_number_discrepancies", dialogs_source)
         self.assertNotIn("def skip_name_discrepancies", dialogs_source)
+
+    def test_customized_excel_lists_sheet_name_discrepancies(self):
+        xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
+            encoding="utf-8")
+
+        self.assertIn('Text="Sheet Names Discrepancy"', xaml)
+        self.assertNotIn('Text="Missing Sheet Names"', xaml)
+
+    def test_customized_excel_can_create_selected_missing_sheets(self):
+        xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
+            encoding="utf-8")
+        dialogs_source = (COMMAND_DIR / "sheet_manager_dialogs.py").read_text(
+            encoding="utf-8")
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        revit_source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
+            encoding="utf-8")
+        self.assertIn('x:Name="create_selected_b"', xaml)
+        self.assertIn('Content="Create Selected Sheets"', xaml)
+        self.assertIn('Click="create_selected_sheets"', xaml)
+        self.assertIn('Header="Create"', xaml)
+        self.assertIn("can_create", xaml)
+        self.assertIn("CreateSheetsFromTemplateWindow", dialogs_source)
+        self.assertIn("def create_selected_sheets", dialogs_source)
+        self.assertIn("create_sheets_from_template", ui_source)
+        self.assertIn("def collect_sheet_template_options", revit_source)
+        self.assertIn("DB.ViewSheet.Create", revit_source)
+        self.assertIn("GetAdditionalRevisionIds", revit_source)
+        self.assertIn("_copy_writable_parameter_values", revit_source)
+
+    def test_created_sheet_identity_is_reapplied_after_template_values(self):
+        source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
+            encoding="utf-8")
+        creation_body = source.split("def create_sheets_from_template", 1)[1]\
+            .split("\ndef read_light_snapshot", 1)[0]
+        sheet_values = creation_body.index(
+            "_copy_writable_parameter_values(\n                    template_sheet")
+        titleblock_values = creation_body.index(
+            "_copy_writable_parameter_values(template_tblock")
+        excel_number = creation_body.rindex(
+            "sheet.SheetNumber = import_row.sheet_number")
+        excel_name = creation_body.rindex(
+            "sheet.Name = import_row.sheet_name")
+
+        self.assertLess(sheet_values, excel_number)
+        self.assertLess(titleblock_values, excel_number)
+        self.assertLess(sheet_values, excel_name)
+        self.assertLess(titleblock_values, excel_name)
 
     def test_pdf_export_and_print_post_checked_visible_rows_as_in_session_set(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
