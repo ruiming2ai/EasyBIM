@@ -158,18 +158,20 @@ class ExcelPrintSetsTests(unittest.TestCase):
         )
         self.assertEqual([row.index for row in result.final_rows], [1, 2, 3])
 
-    def test_only_blank_names_block_loading_and_repeated_names_remain_valid(self):
+    def test_matched_name_discrepancies_block_loading_without_flagging_duplicates(self):
         module = _load_module()
         rows = [
             module.ExcelImportRow(1, "A001", "Details"),
-            module.ExcelImportRow(2, "A999", "Missing"),
-            module.ExcelImportRow(3, "A002", ""),
-            module.ExcelImportRow(4, "A003", "Details"),
+            module.ExcelImportRow(2, "A002", "Details"),
+            module.ExcelImportRow(3, "A003", "Detail A"),
+            module.ExcelImportRow(4, "A004", ""),
+            module.ExcelImportRow(5, "A999", "Missing"),
         ]
         sheets = [
-            _FakeSheet("A001", "First"),
-            _FakeSheet("A002", "Second"),
-            _FakeSheet("A003", "Third"),
+            _FakeSheet("A001", "Details"),
+            _FakeSheet("A002", "Details"),
+            _FakeSheet("A003", "Detail B"),
+            _FakeSheet("A004", "Detail C"),
         ]
         session = module.ExcelPrintSetSession(rows, sheets)
 
@@ -181,10 +183,13 @@ class ExcelPrintSetsTests(unittest.TestCase):
         )
         self.assertEqual(
             [row.reason for row in result.name_discrepancies],
-            ["Sheet name is blank."]
+            [
+                "Sheet name does not match the model sheet name.",
+                "Sheet name does not match the model sheet name.",
+            ]
         )
         self.assertEqual(
-            [row.number for row in result.final_rows], ["A001", "A003"])
+            [row.number for row in result.final_rows], ["A001", "A002"])
 
         session.skip_number_discrepancies(result.number_discrepancies)
         result = session.validate()
@@ -194,7 +199,7 @@ class ExcelPrintSetsTests(unittest.TestCase):
 
         self.assertTrue(result.can_continue)
         self.assertEqual(
-            [row.number for row in result.final_rows], ["A001", "A003"])
+            [row.number for row in result.final_rows], ["A001", "A002"])
 
     def test_duplicate_excel_sheet_numbers_are_number_discrepancies(self):
         module = _load_module()

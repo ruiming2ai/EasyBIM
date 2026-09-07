@@ -194,12 +194,12 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertNotIn("def skip_number_discrepancies", dialogs_source)
         self.assertNotIn("def skip_name_discrepancies", dialogs_source)
 
-    def test_customized_excel_lists_only_missing_sheet_names(self):
+    def test_customized_excel_lists_sheet_name_discrepancies(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
             encoding="utf-8")
 
-        self.assertIn('Text="Missing Sheet Names"', xaml)
-        self.assertNotIn('Missing / Mismatched Sheet Names', xaml)
+        self.assertIn('Text="Sheet Names Discrepancy"', xaml)
+        self.assertNotIn('Text="Missing Sheet Names"', xaml)
 
     def test_customized_excel_can_create_selected_missing_sheets(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
