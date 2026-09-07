@@ -28,12 +28,15 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <Button x:Name="skipdiscrepancies_b" Grid.Column="0" Height="32" MinWidth="220"
                     Content="Skip Discrepancies" Click="skip_discrepancies"/>
-            <Button x:Name="load_b" Grid.Column="1" Height="32" MinWidth="90" Margin="12,0,8,0"
+            <Button x:Name="create_selected_b" Grid.Column="1" Height="32" MinWidth="180" Margin="12,0,0,0"
+                    Content="Create Selected Sheets" Click="create_selected_sheets"/>
+            <Button x:Name="load_b" Grid.Column="2" Height="32" MinWidth="90" Margin="12,0,8,0"
                     Content="Load" IsDefault="True" Click="load_clicked"/>
-            <Button x:Name="cancel_b" Grid.Column="2" Height="32" MinWidth="90"
+            <Button x:Name="cancel_b" Grid.Column="3" Height="32" MinWidth="90"
                     Content="Cancel" IsCancel="True" Click="cancel_clicked"/>
         </Grid>
 
@@ -56,6 +59,15 @@
                       CanUserSortColumns="False" Foreground="#C00000"
                       HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
                 <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="Create" Width="55">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          IsChecked="{Binding create_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          IsEnabled="{Binding can_create}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Excel Row" Binding="{Binding excel_row}" Width="70" IsReadOnly="True"/>
                     <DataGridTextColumn Header="Sheet Number" Binding="{Binding number}" Width="105" IsReadOnly="True"/>
                     <DataGridTextColumn Header="Sheet Name" Binding="{Binding name}" Width="*" IsReadOnly="True"/>

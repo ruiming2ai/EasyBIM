@@ -169,12 +169,15 @@ class LoadFromSourceWindow(forms.WPFWindow):
 class LoadCustomizedExcelWindow(forms.WPFWindow):
     """Resolve Excel discrepancies before loading its matching sheet rows."""
 
-    def __init__(self, xaml_file_name, excel_path, session, warning=None):
+    def __init__(self, xaml_file_name, excel_path, session, warning=None,
+                 template_options=None, create_callback=None):
         self._is_ready = False
         self.result = None
         self._session = session
         self._warning = warning
         self._validation = None
+        self._template_options = list(template_options or [])
+        self._create_callback = create_callback
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.file_tb.Text = excel_path
         self.warning_tb.Text = warning or u""
@@ -194,6 +197,10 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         self.skipdiscrepancies_b.IsEnabled = bool(
             self._validation.number_discrepancies
             or self._validation.name_discrepancies)
+        self.create_selected_b.IsEnabled = bool(
+            self._template_options and any(
+                row.can_create
+                for row in self._validation.number_discrepancies))
 
         self.summary_tb.Text = (
             u"{0} visible Excel row(s), {1} matching sheet row(s) ready to load."
@@ -223,12 +230,76 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             self._validation.name_discrepancies)
         self._refresh_validation()
 
+    def create_selected_sheets(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.number_discrepancies
+            if row.can_create and row.create_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one missing sheet to create.",
+                        title="Create Selected Sheets")
+            return
+        if not self._template_options or self._create_callback is None:
+            forms.alert("No usable sheet templates are available.",
+                        title="Create Selected Sheets")
+            return
+        dialog = CreateSheetsFromTemplateWindow(
+            "CreateSheetsFromTemplateDialog.xaml", self._template_options,
+            len(selected))
+        dialog.ShowDialog()
+        if dialog.result is None:
+            return
+        try:
+            created, failures = self._create_callback(
+                dialog.result, [row.source_row for row in selected])
+        except Exception as err:
+            forms.alert("Could not create the selected sheets.",
+                        expanded=str(err), title="Create Selected Sheets")
+            return
+        self._refresh_validation()
+        message = ["Created sheets: {0}".format(len(created))]
+        if failures:
+            message.append("Failed sheets: {0}".format(len(failures)))
+        forms.alert("\n".join(message),
+                    expanded="\n".join(failures) or None,
+                    title="Create Selected Sheets")
+
     def load_clicked(self, sender, args):
         del sender, args
         self._refresh_validation()
         if not self.load_b.IsEnabled:
             return
         self.result = list(self._validation.final_rows)
+        self.Close()
+
+    def cancel_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
+class CreateSheetsFromTemplateWindow(forms.WPFWindow):
+    """Pick the existing sheet used to create empty Excel sheets."""
+
+    def __init__(self, xaml_file_name, template_options, target_count):
+        self._is_ready = False
+        self.result = None
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.targets_tb.Text = (
+            "Create {0} selected sheet(s) from this template."
+        ).format(target_count)
+        for sheet_id, label in template_options:
+            _add_combo_item(self.source_cb, label, sheet_id)
+        if self.source_cb.Items.Count:
+            self.source_cb.SelectedIndex = 0
+        self._is_ready = True
+
+    def create_clicked(self, sender, args):
+        del sender, args
+        source_id = _combo_key(self.source_cb)
+        if source_id is None:
+            return
+        self.result = source_id
         self.Close()
 
     def cancel_clicked(self, sender, args):

@@ -115,6 +115,123 @@ def build_rows(doc, row_factory):
     return rows, tb_map, sheets_by_id
 
 
+def collect_sheet_template_options(doc):
+    """Usable empty-sheet templates as ``(sheet_id, label)`` pairs."""
+    tblock_map = collect_titleblock_map(doc)
+    options = []
+    for sheet in collect_sheets(doc):
+        try:
+            if bool(sheet.IsPlaceholder):
+                continue
+        except Exception:
+            pass
+        sheet_id = eid_to_int(sheet.Id)
+        if len(tblock_map.get(sheet_id) or []) != 1:
+            continue
+        number = getattr(sheet, "SheetNumber", u"") or u""
+        name = getattr(sheet, "Name", u"") or u""
+        options.append((sheet_id, u"{0} - {1}".format(number, name)))
+    return options
+
+
+def _copy_writable_parameter_values(source, target, excluded_ids=None):
+    """Copy compatible String/Integer/Double instance values by name."""
+    excluded_ids = set(excluded_ids or [])
+    copied = 0
+    try:
+        source_params = source.Parameters
+    except Exception:
+        return copied
+    for source_param in source_params:
+        try:
+            if source_param.IsReadOnly:
+                continue
+            param_id = eid_to_int(source_param.Id)
+            if param_id in excluded_ids:
+                continue
+            storage = source_param.StorageType
+            if storage == DB.StorageType.ElementId:
+                continue
+            name = source_param.Definition.Name
+            target_param = target.LookupParameter(name)
+            if target_param is None or target_param.IsReadOnly:
+                continue
+            if target_param.StorageType != storage:
+                continue
+            if storage == DB.StorageType.String:
+                target_param.Set(source_param.AsString() or u"")
+            elif storage == DB.StorageType.Integer:
+                target_param.Set(source_param.AsInteger())
+            elif storage == DB.StorageType.Double:
+                target_param.Set(source_param.AsDouble())
+            else:
+                continue
+            copied += 1
+        except Exception:
+            continue
+    return copied
+
+
+def create_sheets_from_template(doc, template_sheet_id, import_rows):
+    """Create empty sheets from one template.
+
+    Returns ``(created_sheets, failure_messages)``. Each candidate has an
+    independent subtransaction so one invalid Excel row cannot leave a
+    partially-created sheet or block other selected rows.
+    """
+    sheets_by_id = dict(
+        (eid_to_int(sheet.Id), sheet) for sheet in collect_sheets(doc))
+    template_sheet = sheets_by_id.get(template_sheet_id)
+    tblock_map = collect_titleblock_map(doc)
+    template_tblocks = tblock_map.get(template_sheet_id) or []
+    if template_sheet is None or len(template_tblocks) != 1:
+        raise ValueError("The selected sheet template is no longer usable.")
+    try:
+        if bool(template_sheet.IsPlaceholder):
+            raise ValueError("Placeholder sheets cannot be used as templates.")
+    except ValueError:
+        raise
+    except Exception:
+        pass
+
+    template_tblock = template_tblocks[0]
+    titleblock_type_id = template_tblock.GetTypeId()
+    created = []
+    failures = []
+    with revit.Transaction("Sheet Manager - Create Excel Sheets", doc=doc):
+        for import_row in import_rows or []:
+            subtransaction = DB.SubTransaction(doc)
+            try:
+                subtransaction.Start()
+                sheet = DB.ViewSheet.Create(doc, titleblock_type_id)
+                sheet.SheetNumber = import_row.sheet_number
+                sheet.Name = import_row.sheet_name
+                _copy_writable_parameter_values(
+                    template_sheet, sheet, _EXCLUDED_SHEET_PARAM_IDS)
+                doc.Regenerate()
+                new_tblocks = collect_titleblock_map(doc).get(
+                    eid_to_int(sheet.Id)) or []
+                if len(new_tblocks) != 1:
+                    raise ValueError("The new sheet has no single title block.")
+                _copy_writable_parameter_values(template_tblock,
+                                                 new_tblocks[0])
+                revision_ids = clr_id_list_factory()()
+                for revision_id in template_sheet.GetAdditionalRevisionIds():
+                    revision_ids.Add(revision_id)
+                sheet.SetAdditionalRevisionIds(revision_ids)
+                subtransaction.Commit()
+                created.append(sheet)
+            except Exception as err:
+                try:
+                    subtransaction.RollBack()
+                except Exception:
+                    pass
+                failures.append(u"{0}: {1}".format(
+                    getattr(import_row, "sheet_number", u""),
+                    exception_text(err)))
+    return created, failures
+
+
 def read_light_snapshot(doc, known_ids):
     """Cheap re-read for the focus-return sync.
 

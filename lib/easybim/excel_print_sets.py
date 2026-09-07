@@ -54,13 +54,16 @@ class ExcelReadResult(object):
 class DiscrepancyRow(object):
     """Validation row shown in the missing-number/name tables."""
 
-    def __init__(self, import_row, reason, revit_sheet=None):
+    def __init__(self, import_row, reason, revit_sheet=None,
+                 can_create=False):
         self.source_row = import_row
         self.excel_row = getattr(import_row, "excel_row", 0)
         self.number = getattr(import_row, "sheet_number", "")
         self.name = getattr(import_row, "sheet_name", "")
         self.reason = reason
         self.revit_sheet = revit_sheet
+        self.can_create = bool(can_create)
+        self.create_selected = False
 
 
 class ExcelPrintSetRow(object):
@@ -95,8 +98,12 @@ class ExcelPrintSetSession(object):
 
     def __init__(self, rows, model_sheets):
         self.rows = list(rows or [])
-        self.model_sheets = list(model_sheets or [])
         self.skipped_row_ids = set()
+        self.set_model_sheets(model_sheets)
+
+    def set_model_sheets(self, model_sheets):
+        """Replace the model snapshot after immediate sheet creation."""
+        self.model_sheets = list(model_sheets or [])
         self._sheet_by_number = _build_sheet_index(self.model_sheets)
 
     def validate(self, selected_revision_ids=None):
@@ -147,7 +154,8 @@ class ExcelPrintSetSession(object):
                 number_discrepancies.append(
                     DiscrepancyRow(
                         import_row,
-                        "Sheet number was not found in the model."
+                        "Sheet number was not found in the model.",
+                        can_create=bool(normalize_key(import_row.sheet_name))
                     )
                 )
                 continue

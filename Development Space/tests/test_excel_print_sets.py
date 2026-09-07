@@ -216,6 +216,43 @@ class ExcelPrintSetsTests(unittest.TestCase):
             set(["Duplicate imported sheet number."])
         )
 
+    def test_only_unique_missing_rows_with_names_can_be_selected_to_create(self):
+        module = _load_module()
+        rows = [
+            module.ExcelImportRow(1, "A900", "New Sheet"),
+            module.ExcelImportRow(2, "A901", ""),
+            module.ExcelImportRow(3, "A902", "First Duplicate"),
+            module.ExcelImportRow(4, "A902", "Second Duplicate"),
+            module.ExcelImportRow(5, "", "No Number"),
+            module.ExcelImportRow(6, "A001", "Existing"),
+        ]
+        session = module.ExcelPrintSetSession(
+            rows, [_FakeSheet("A001", "Existing")])
+
+        result = session.validate()
+        by_number = {
+            row.number: row for row in result.number_discrepancies
+        }
+
+        self.assertTrue(by_number["A900"].can_create)
+        self.assertFalse(by_number["A900"].create_selected)
+        self.assertFalse(by_number["A901"].can_create)
+        self.assertFalse(by_number["A902"].can_create)
+        self.assertFalse(by_number[""].can_create)
+
+    def test_replacing_model_sheets_turns_created_rows_into_matches(self):
+        module = _load_module()
+        session = module.ExcelPrintSetSession(
+            [module.ExcelImportRow(1, "A900", "New Sheet")], [])
+        discrepancy = session.validate().number_discrepancies[0]
+        discrepancy.create_selected = True
+
+        session.set_model_sheets([_FakeSheet("A900", "New Sheet")])
+        result = session.validate()
+
+        self.assertTrue(result.can_continue)
+        self.assertEqual([row.number for row in result.final_rows], ["A900"])
+
     def test_revision_filter_hides_unresolved_rows_and_preserves_matching_order(self):
         module = _load_module()
         rows = [

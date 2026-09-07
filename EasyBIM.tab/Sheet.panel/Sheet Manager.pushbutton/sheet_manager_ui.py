@@ -1064,9 +1064,20 @@ class SheetManagerWindow(forms.WPFWindow):
 
         session = excel_print_sets.ExcelPrintSetSession(
             read_result.rows, smrevit.collect_sheets(self._doc))
+        template_options = smrevit.collect_sheet_template_options(self._doc)
+
+        def create_sheets_from_template(template_sheet_id, import_rows):
+            created, failures = smrevit.create_sheets_from_template(
+                self._doc, template_sheet_id, import_rows)
+            if created:
+                session.set_model_sheets(smrevit.collect_sheets(self._doc))
+                self._sync_done(self._sync_work(uiapp))
+            return created, failures
+
         dialog = self._show_dialog(dialogs.LoadCustomizedExcelWindow(
             "LoadCustomizedExcelDialog.xaml", excel_path, session,
-            read_result.warning))
+            read_result.warning, template_options,
+            create_sheets_from_template))
         if not dialog.result:
             return
         source_order = [eid_to_int(row.revit_sheet.Id)
