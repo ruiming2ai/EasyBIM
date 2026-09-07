@@ -194,9 +194,6 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             self._validation.number_discrepancies
         self.name_discrepancies_dg.ItemsSource = \
             self._validation.name_discrepancies
-        self.skipdiscrepancies_b.IsEnabled = bool(
-            self._validation.number_discrepancies
-            or self._validation.name_discrepancies)
         self.create_selected_b.IsEnabled = bool(
             self._template_options and any(
                 row.can_create
@@ -215,20 +212,12 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         elif self._validation.number_discrepancies \
                 or self._validation.name_discrepancies:
             self.errormsg_tb.Text = \
-                u"Skip the visible discrepancies or cancel this load."
+                u"Correct the visible discrepancies in Excel or Revit, then reload this dialog."
             self.show_element(self.errormsg_block)
         else:
             self.errormsg_tb.Text = \
                 u"No matching sheets are available to load."
             self.show_element(self.errormsg_block)
-
-    def skip_discrepancies(self, sender, args):
-        del sender, args
-        self._session.skip_number_discrepancies(
-            self._validation.number_discrepancies)
-        self._session.skip_name_discrepancies(
-            self._validation.name_discrepancies)
-        self._refresh_validation()
 
     def create_selected_sheets(self, sender, args):
         del sender, args

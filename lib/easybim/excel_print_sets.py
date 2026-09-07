@@ -86,23 +86,21 @@ class ExcelPrintSetRow(object):
 
 class ExcelValidationResult(object):
     def __init__(self, number_discrepancies, name_discrepancies, final_rows,
-                 visible_rows, skipped_row_ids):
+                 visible_rows):
         self.number_discrepancies = list(number_discrepancies or [])
         self.name_discrepancies = list(name_discrepancies or [])
         self.final_rows = list(final_rows or [])
         self.visible_rows = list(visible_rows or [])
-        self.skipped_row_ids = set(skipped_row_ids or [])
         self.can_continue = (
             not self.number_discrepancies and not self.name_discrepancies
         )
 
 
 class ExcelPrintSetSession(object):
-    """Mutable import session that tracks user-skipped discrepancy rows."""
+    """Mutable import session that validates a model-sheet snapshot."""
 
     def __init__(self, rows, model_sheets):
         self.rows = list(rows or [])
-        self.skipped_row_ids = set()
         self.set_model_sheets(model_sheets)
 
     def set_model_sheets(self, model_sheets):
@@ -116,8 +114,6 @@ class ExcelPrintSetSession(object):
         ])
         visible_rows = []
         for import_row in self.rows:
-            if import_row.row_id in self.skipped_row_ids:
-                continue
             if not _row_matches_revision_filter(
                     import_row,
                     self._sheet_by_number,
@@ -186,22 +182,8 @@ class ExcelPrintSetSession(object):
             number_discrepancies,
             name_discrepancies,
             final_rows,
-            visible_rows,
-            self.skipped_row_ids
+            visible_rows
         )
-
-    def skip_number_discrepancies(self, discrepancy_rows):
-        self._skip_discrepancy_rows(discrepancy_rows)
-
-    def skip_name_discrepancies(self, discrepancy_rows):
-        self._skip_discrepancy_rows(discrepancy_rows)
-
-    def _skip_discrepancy_rows(self, discrepancy_rows):
-        for discrepancy in discrepancy_rows or []:
-            try:
-                self.skipped_row_ids.add(int(discrepancy.source_row.row_id))
-            except Exception:
-                continue
 
 
 def _safe_text(value):

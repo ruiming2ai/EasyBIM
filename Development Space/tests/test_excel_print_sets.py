@@ -196,13 +196,9 @@ class ExcelPrintSetsTests(unittest.TestCase):
         self.assertEqual(
             [row.number for row in result.final_rows], ["A001", "A002"])
 
-        session.skip_number_discrepancies(result.number_discrepancies)
-        result = session.validate()
+        self.assertFalse(hasattr(session, "skip_number_discrepancies"))
+        self.assertFalse(hasattr(session, "skip_name_discrepancies"))
         self.assertFalse(result.can_continue)
-        session.skip_name_discrepancies(result.name_discrepancies)
-        result = session.validate()
-
-        self.assertTrue(result.can_continue)
         self.assertEqual(
             [row.number for row in result.final_rows], ["A001", "A002"])
 
