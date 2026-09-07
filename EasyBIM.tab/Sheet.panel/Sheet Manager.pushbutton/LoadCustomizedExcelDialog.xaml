@@ -52,7 +52,7 @@
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Grid.Column="0" Text="Missing / Duplicate Sheet Numbers"
                        FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <TextBlock Grid.Row="0" Grid.Column="2" Text="Missing / Mismatched Sheet Names"
+            <TextBlock Grid.Row="0" Grid.Column="2" Text="Missing Sheet Names"
                        FontWeight="SemiBold" Margin="0,0,0,6"/>
             <DataGrid x:Name="number_discrepancies_dg" Grid.Row="1" Grid.Column="0"
                       AutoGenerateColumns="False" BorderThickness="1" RowHeaderWidth="0"

@@ -161,21 +161,11 @@ class ExcelPrintSetSession(object):
                 continue
 
             name_key = normalize_key(import_row.sheet_name)
-            model_name_key = normalize_key(getattr(revit_sheet, "Name", ""))
             if not name_key:
                 name_discrepancies.append(
                     DiscrepancyRow(
                         import_row,
                         "Sheet name is blank.",
-                        revit_sheet=revit_sheet
-                    )
-                )
-                continue
-            if name_key != model_name_key:
-                name_discrepancies.append(
-                    DiscrepancyRow(
-                        import_row,
-                        "Sheet name does not match the model sheet name.",
                         revit_sheet=revit_sheet
                     )
                 )

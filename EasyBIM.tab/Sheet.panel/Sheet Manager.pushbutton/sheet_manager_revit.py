@@ -204,8 +204,6 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
             try:
                 subtransaction.Start()
                 sheet = DB.ViewSheet.Create(doc, titleblock_type_id)
-                sheet.SheetNumber = import_row.sheet_number
-                sheet.Name = import_row.sheet_name
                 _copy_writable_parameter_values(
                     template_sheet, sheet, _EXCLUDED_SHEET_PARAM_IDS)
                 doc.Regenerate()
@@ -219,6 +217,11 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
                 for revision_id in template_sheet.GetAdditionalRevisionIds():
                     revision_ids.Add(revision_id)
                 sheet.SetAdditionalRevisionIds(revision_ids)
+                # Excel is the source of truth for the newly-created sheet
+                # identity, even when a template exposes similarly named
+                # writable parameters.
+                sheet.SheetNumber = import_row.sheet_number
+                sheet.Name = import_row.sheet_name
                 subtransaction.Commit()
                 created.append(sheet)
             except Exception as err:
