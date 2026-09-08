@@ -194,9 +194,9 @@ class ExcelPrintSetsTests(unittest.TestCase):
             [("Detail A", "Detail B"), ("", "Detail C")]
         )
         self.assertTrue(result.name_discrepancies[0].can_rename)
-        self.assertFalse(result.name_discrepancies[0].rename_selected)
+        self.assertFalse(result.name_discrepancies[0].is_selected)
         self.assertFalse(result.name_discrepancies[1].can_rename)
-        self.assertFalse(result.name_discrepancies[1].rename_selected)
+        self.assertFalse(result.name_discrepancies[1].is_selected)
         self.assertEqual(
             [row.number for row in result.final_rows], ["A001", "A002"])
 
@@ -250,7 +250,7 @@ class ExcelPrintSetsTests(unittest.TestCase):
         }
 
         self.assertTrue(by_number["A900"].can_create)
-        self.assertFalse(by_number["A900"].create_selected)
+        self.assertFalse(by_number["A900"].is_selected)
         self.assertFalse(by_number["A901"].can_create)
         self.assertFalse(by_number["A902"].can_create)
         self.assertFalse(by_number[""].can_create)
@@ -260,7 +260,7 @@ class ExcelPrintSetsTests(unittest.TestCase):
         session = module.ExcelPrintSetSession(
             [module.ExcelImportRow(1, "A900", "New Sheet")], [])
         discrepancy = session.validate().number_discrepancies[0]
-        discrepancy.create_selected = True
+        discrepancy.is_selected = True
 
         session.set_model_sheets([_FakeSheet("A900", "New Sheet")])
         result = session.validate()
@@ -289,6 +289,36 @@ class ExcelPrintSetsTests(unittest.TestCase):
         self.assertFalse(result.final_rows[0].is_pending)
         self.assertTrue(result.final_rows[1].is_pending)
         self.assertEqual(result.final_rows[1].template_sheet_id, 321)
+
+    def test_ignoring_selected_discrepancies_omits_them_from_this_load(self):
+        module = _load_module()
+        rows = [
+            module.ExcelImportRow(1, "A001", "First"),
+            module.ExcelImportRow(2, "A999", "Missing"),
+            module.ExcelImportRow(3, "A002", "Excel Second"),
+            module.ExcelImportRow(4, "A003", "Third"),
+        ]
+        session = module.ExcelPrintSetSession(
+            rows, [
+                _FakeSheet("A001", "First"),
+                _FakeSheet("A002", "Revit Second"),
+                _FakeSheet("A003", "Third"),
+            ])
+
+        first = session.validate()
+        first.number_discrepancies[0].is_selected = True
+        first.name_discrepancies[0].is_selected = True
+        session.ignore_number_rows(first.number_discrepancies)
+        session.ignore_name_rows(first.name_discrepancies)
+        result = session.validate()
+
+        self.assertTrue(result.can_continue)
+        self.assertEqual(result.number_discrepancies, [])
+        self.assertEqual(result.name_discrepancies, [])
+        self.assertEqual([row.number for row in result.final_rows],
+                         ["A001", "A003"])
+        self.assertEqual([row.excel_row for row in result.visible_rows],
+                         [1, 4])
 
     def test_revision_filter_hides_unresolved_rows_and_preserves_matching_order(self):
         module = _load_module()

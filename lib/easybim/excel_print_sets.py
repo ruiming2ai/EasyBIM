@@ -67,10 +67,12 @@ class DiscrepancyRow(object):
         self.reason = reason
         self.revit_sheet = revit_sheet
         self.can_create = bool(can_create)
-        self.create_selected = False
         self.can_rename = bool(
             revit_sheet is not None and normalize_key(self.excel_name))
-        self.rename_selected = False
+        # One checkbox serves the action selected in the row's panel:
+        # create/ignore for number discrepancies and rename/ignore for name
+        # discrepancies.
+        self.is_selected = False
 
 
 class ExcelPrintSetRow(object):
@@ -113,6 +115,7 @@ class ExcelPrintSetSession(object):
         self.rows = list(rows or [])
         self._creation_templates = {}
         self._renamed_row_ids = set()
+        self._ignored_row_ids = set()
         self.set_model_sheets(model_sheets)
 
     def set_model_sheets(self, model_sheets):
@@ -134,12 +137,30 @@ class ExcelPrintSetSession(object):
             if source_row is not None:
                 self._renamed_row_ids.add(source_row.row_id)
 
+    def ignore_number_rows(self, discrepancy_rows):
+        """Exclude selected number-discrepancy Excel rows for this session."""
+        self._ignore_selected_rows(discrepancy_rows)
+
+    def ignore_name_rows(self, discrepancy_rows):
+        """Exclude selected name-discrepancy Excel rows for this session."""
+        self._ignore_selected_rows(discrepancy_rows)
+
+    def _ignore_selected_rows(self, discrepancy_rows):
+        for discrepancy in discrepancy_rows or []:
+            if not getattr(discrepancy, "is_selected", False):
+                continue
+            source_row = getattr(discrepancy, "source_row", None)
+            if source_row is not None:
+                self._ignored_row_ids.add(source_row.row_id)
+
     def validate(self, selected_revision_ids=None):
         selected_revision_ids = set([
             int(x) for x in selected_revision_ids or []
         ])
         visible_rows = []
         for import_row in self.rows:
+            if import_row.row_id in self._ignored_row_ids:
+                continue
             if not _row_matches_revision_filter(
                     import_row,
                     self._sheet_by_number,

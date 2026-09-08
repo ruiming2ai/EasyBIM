@@ -207,20 +207,24 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn("LoadCustomizedExcelWindow", ui_source)
         self.assertNotIn("def skip_discrepancies", dialogs_source)
 
-    def test_customized_excel_has_no_discrepancy_skip_bypass(self):
+    def test_customized_excel_can_skip_selected_discrepancies_per_panel(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
             encoding="utf-8")
         dialogs_source = (COMMAND_DIR / "sheet_manager_dialogs.py").read_text(
             encoding="utf-8")
-        self.assertNotIn("Skip Discrepancies", xaml)
-        self.assertNotIn("skipdiscrepancies_b", xaml)
-        self.assertNotIn("skip_discrepancies", xaml)
-        self.assertNotIn("skipnumbers_b", xaml)
-        self.assertNotIn("skipnames_b", xaml)
-        self.assertNotIn("def skip_discrepancies", dialogs_source)
-        self.assertNotIn("def skip_number_discrepancies", dialogs_source)
-        self.assertNotIn("def skip_name_discrepancies", dialogs_source)
-        self.assertIn("Select the discrepancies to stage", dialogs_source)
+        self.assertEqual(xaml.count('Header="Select"'), 2)
+        self.assertEqual(xaml.count('IsChecked="{Binding is_selected'), 2)
+        self.assertNotIn("Binding create_selected", xaml)
+        self.assertNotIn("Binding rename_selected", xaml)
+        self.assertIn('x:Name="skip_numbers_b"', xaml)
+        self.assertIn('x:Name="skip_names_b"', xaml)
+        self.assertEqual(xaml.count('Content="Skip and Ignore"'), 2)
+        self.assertIn('Click="skip_selected_numbers"', xaml)
+        self.assertIn('Click="skip_selected_names"', xaml)
+        self.assertIn("def skip_selected_numbers", dialogs_source)
+        self.assertIn("def skip_selected_names", dialogs_source)
+        self.assertIn("ignore_number_rows", dialogs_source)
+        self.assertIn("ignore_name_rows", dialogs_source)
 
     def test_customized_excel_lists_sheet_name_discrepancies(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
@@ -245,8 +249,8 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn('x:Name="create_selected_b"', xaml)
         self.assertIn('Content="Create Selected Sheets"', xaml)
         self.assertIn('Click="create_selected_sheets"', xaml)
-        self.assertIn('Header="Create"', xaml)
-        self.assertIn("can_create", xaml)
+        self.assertIn('Header="Select"', xaml)
+        self.assertNotIn('IsEnabled="{Binding can_create}"', xaml)
         self.assertIn("CreateSheetsFromTemplateWindow", dialogs_source)
         self.assertIn("def create_selected_sheets", dialogs_source)
         self.assertIn("template_sheet_id", ui_source)
@@ -308,9 +312,9 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertNotIn('Rename to Match Excel', number_panel)
         self.assertIn('Content="Rename to Match Excel"', name_panel)
         self.assertNotIn('Create Selected Sheets', name_panel)
-        self.assertIn('Header="Rename"', xaml)
-        self.assertIn('IsChecked="{Binding rename_selected', xaml)
-        self.assertIn('IsEnabled="{Binding can_rename}"', xaml)
+        self.assertIn('Header="Select"', xaml)
+        self.assertIn('IsChecked="{Binding is_selected', xaml)
+        self.assertNotIn('IsEnabled="{Binding can_rename}"', xaml)
         self.assertIn('Click="rename_selected_sheets"', xaml)
         self.assertIn("def rename_selected_sheets", dialogs_source)
         self.assertIn("stage_renames", dialogs_source)

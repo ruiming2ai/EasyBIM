@@ -59,12 +59,11 @@
                           CanUserSortColumns="False" Foreground="#C00000"
                           HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
                     <DataGrid.Columns>
-                        <DataGridTemplateColumn Header="Create" Width="55">
+                        <DataGridTemplateColumn Header="Select" Width="55">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
-                                              IsChecked="{Binding create_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                              IsEnabled="{Binding can_create}"/>
+                                              IsChecked="{Binding is_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -74,9 +73,12 @@
                         <DataGridTextColumn Header="Reason" Binding="{Binding reason}" Width="150" IsReadOnly="True"/>
                     </DataGrid.Columns>
                 </DataGrid>
-                <Button x:Name="create_selected_b" Grid.Row="1" Height="32" MinWidth="180"
-                        Margin="0,8,0,0" HorizontalAlignment="Left"
-                        Content="Create Selected Sheets" Click="create_selected_sheets"/>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="create_selected_b" Height="32" MinWidth="180"
+                            Content="Create Selected Sheets" Click="create_selected_sheets"/>
+                    <Button x:Name="skip_numbers_b" Height="32" MinWidth="130" Margin="8,0,0,0"
+                            Content="Skip and Ignore" Click="skip_selected_numbers"/>
+                </StackPanel>
             </Grid>
             <Grid Grid.Row="1" Grid.Column="2">
                 <Grid.RowDefinitions>
@@ -88,12 +90,11 @@
                           CanUserSortColumns="False" Foreground="#C00000"
                           HorizontalGridLinesBrush="#DEDEDE" VerticalGridLinesBrush="#DEDEDE">
                     <DataGrid.Columns>
-                        <DataGridTemplateColumn Header="Rename" Width="60">
+                        <DataGridTemplateColumn Header="Select" Width="55">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
-                                              IsChecked="{Binding rename_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                              IsEnabled="{Binding can_rename}"/>
+                                              IsChecked="{Binding is_selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -103,9 +104,12 @@
                         <DataGridTextColumn Header="Sheet Name (Revit)" Binding="{Binding revit_name}" Width="*" IsReadOnly="True"/>
                     </DataGrid.Columns>
                 </DataGrid>
-                <Button x:Name="rename_selected_b" Grid.Row="1" Height="32" MinWidth="180"
-                        Margin="0,8,0,0" HorizontalAlignment="Left"
-                        Content="Rename to Match Excel" Click="rename_selected_sheets"/>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="rename_selected_b" Height="32" MinWidth="180"
+                            Content="Rename to Match Excel" Click="rename_selected_sheets"/>
+                    <Button x:Name="skip_names_b" Height="32" MinWidth="130" Margin="8,0,0,0"
+                            Content="Skip and Ignore" Click="skip_selected_names"/>
+                </StackPanel>
             </Grid>
         </Grid>
     </DockPanel>

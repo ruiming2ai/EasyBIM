@@ -213,7 +213,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         elif self._validation.number_discrepancies \
                 or self._validation.name_discrepancies:
             self.errormsg_tb.Text = \
-                u"Select the discrepancies to stage, or correct Excel or Revit and reload this dialog."
+                u"Select discrepancies to create, rename, or skip and ignore; or correct Excel or Revit and reload this dialog."
             self.show_element(self.errormsg_block)
         else:
             self.errormsg_tb.Text = \
@@ -224,7 +224,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         del sender, args
         selected = [
             row for row in self._validation.number_discrepancies
-            if row.can_create and row.create_selected
+            if row.can_create and row.is_selected
         ]
         if not selected:
             forms.alert("Check at least one missing sheet to create.",
@@ -251,7 +251,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         del sender, args
         selected = [
             row for row in self._validation.name_discrepancies
-            if row.can_rename and row.rename_selected
+            if row.can_rename and row.is_selected
         ]
         if not selected:
             forms.alert("Check at least one sheet name to rename.",
@@ -263,6 +263,32 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             "Selected sheet names are staged. Click Load, then Apply "
             "Changes to rename them in Revit.",
             title="Rename to Match Excel")
+
+    def skip_selected_numbers(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.number_discrepancies
+            if row.is_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one sheet-number discrepancy to skip.",
+                        title="Skip and Ignore")
+            return
+        self._session.ignore_number_rows(selected)
+        self._refresh_validation()
+
+    def skip_selected_names(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.name_discrepancies
+            if row.is_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one sheet-name discrepancy to skip.",
+                        title="Skip and Ignore")
+            return
+        self._session.ignore_name_rows(selected)
+        self._refresh_validation()
 
     def load_clicked(self, sender, args):
         del sender, args
