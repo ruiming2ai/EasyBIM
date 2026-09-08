@@ -4,7 +4,20 @@
 
 try:
     from easybim import coordination_review_passive
-    coordination_review_passive.register_passive_detector(source="startup")
+
+    # Hand the application over explicitly, for the same reason idling.install
+    # below needs it: during application init `HOST_APP.uiapp` - the only
+    # source a lib module can reach on its own - is None, so a bare call found
+    # no event source and silently skipped, leaving the session with no
+    # Coordination Review listener.  A UIControlledApplication is fine here:
+    # `_revit_application` walks it down to the ControlledApplication that
+    # raises FailuresProcessing.
+    try:
+        _passive_app = __revit__
+    except NameError:
+        _passive_app = None
+
+    coordination_review_passive.register_passive_detector(_passive_app, source="startup")
 except Exception:
     pass
 

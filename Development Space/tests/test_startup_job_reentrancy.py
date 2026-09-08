@@ -263,7 +263,8 @@ class EmptyReportDiagnosisTests(unittest.TestCase):
 
         self.assertTrue(report["detection_error"])
 
-    def test_report_path_diagnoses_before_showing_the_window(self):
+    def _run_report(self, computed=None, computed_error=None):
+        """Drive _print_coordination_review_report and capture what it shows."""
         observed = {}
         fake_passive = types.ModuleType("easybim.coordination_review_passive")
         fake_passive.build_passive_coordination_report = lambda doc, consume=True: {
@@ -272,8 +273,15 @@ class EmptyReportDiagnosisTests(unittest.TestCase):
         }
         fake_passive.unregister_passive_detector = lambda source="": None
 
+        if computed_error is not None:
+            build = mock.Mock(side_effect=computed_error)
+        else:
+            build = mock.Mock(return_value=computed)
+
         with mock.patch.dict(
             sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_build_computed_coordination_report", build
         ), mock.patch.object(
             self.messages, "_count_link_instances", return_value=2
         ), mock.patch.object(
@@ -283,11 +291,35 @@ class EmptyReportDiagnosisTests(unittest.TestCase):
         ), mock.patch.object(
             self.messages,
             "_show_coordination_review_dialog",
-            side_effect=lambda report, doc=None, uiapp=None: observed.setdefault("report", report) or True,
+            side_effect=lambda report, doc=None, uiapp=None: observed.setdefault("report", report)
+            or True,
         ):
             self.messages._print_coordination_review_report(self.doc)
+        return observed["report"], build
 
-        self.assertEqual(observed["report"]["diagnosis"]["code"], "listener_off")
+    def test_the_computed_comparison_replaces_the_captured_warning(self):
+        """Detection no longer waits for Revit's one-shot warning: the report
+        shown is the comparison of the monitored links."""
+        computed = {
+            "source": "computed",
+            "monitored_link_count": 2,
+            "problem_count": 1,
+            "total_issues": 3,
+            "links": [{"link_id": 7, "name": "ARCH.rvt", "issue_count": 3}],
+        }
+        report, build = self._run_report(computed=computed)
+
+        self.assertIs(report, computed)
+        self.assertNotIn("diagnosis", report)
+        # The captured warning is handed over only as a per-link hint.
+        passive_report = build.call_args[0][1]
+        self.assertTrue(passive_report.get("detection_error"))
+
+    def test_a_failed_comparison_falls_back_to_the_diagnosed_report(self):
+        report, _build = self._run_report(computed_error=RuntimeError("collector blew up"))
+
+        self.assertTrue(report["detection_error"])
+        self.assertEqual(report["diagnosis"]["code"], "listener_off")
 
 
 class FakeControlledApp(object):

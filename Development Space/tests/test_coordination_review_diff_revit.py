@@ -398,6 +398,32 @@ class MonitoringCountTests(unittest.TestCase):
         self.assertEqual(self.module.count_monitoring_elements(None, db=FakeDB), 0)
 
 
+class MonitoredLinkIdTests(unittest.TestCase):
+    """Which links to check: a link nothing monitors has nothing to
+    coordinate, so it must never reach the comparison."""
+
+    def setUp(self):
+        self.module = _load_module()
+
+    def test_counts_are_grouped_per_link(self):
+        counts = self.module.collect_monitored_link_ids(_host_doc(), db=FakeDB)
+        self.assertEqual(counts, {LINK_ID: 7, OTHER_LINK_ID: 1})
+
+    def test_unmonitored_links_never_appear(self):
+        doc = FakeDocument([Level(1, "Level 1", 0.0), Grid(5, "A", FakeLine((0, 0, 0), (0, 10, 0)))])
+        self.assertEqual(self.module.collect_monitored_link_ids(doc, db=FakeDB), {})
+
+    def test_one_element_monitoring_two_links_counts_for_both(self):
+        doc = FakeDocument([Level(1, "Level 1", 0.0, [LINK_ID, OTHER_LINK_ID])])
+        self.assertEqual(
+            self.module.collect_monitored_link_ids(doc, db=FakeDB),
+            {LINK_ID: 1, OTHER_LINK_ID: 1},
+        )
+
+    def test_no_document(self):
+        self.assertEqual(self.module.collect_monitored_link_ids(None, db=FakeDB), {})
+
+
 class LengthFormatterTests(unittest.TestCase):
     def setUp(self):
         self.module = _load_module()

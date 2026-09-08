@@ -948,6 +948,23 @@ def _build_empty_coordination_diagnosis(report, doc):
     return report
 
 
+def _build_computed_coordination_report(doc, passive_report):
+    """Compare every monitored link instead of waiting for Revit's warning.
+
+    Revit raises the Coordination Review warning once, while a link loads, so
+    a report built only from that event keeps coming back empty for reasons
+    outside our control.  Comparing the monitored links proves the answer
+    either way; the captured warning survives only as a per-link hint.
+    """
+    from easybim import coordination_review_revit
+    from easybim.progress import ProgressSession
+
+    with ProgressSession("Checking monitored links", cancellable=True) as progress:
+        return coordination_review_revit.build_document_review_report(
+            doc, passive_report=passive_report, progress=progress
+        )
+
+
 def _print_coordination_review_report(doc, uiapp=None):
     try:
         try:
@@ -957,6 +974,15 @@ def _print_coordination_review_report(doc, uiapp=None):
             report = build_passive_coordination_report(doc, consume=False)
         except Exception:
             report = _build_coordination_detection_error_report(doc)
+
+        passive_report = report
+        try:
+            report = _build_computed_coordination_report(doc, passive_report)
+        except Exception as ex:
+            logger = _get_logger()
+            if logger:
+                logger.warning("Coordination Review comparison failed: %s", ex)
+            report = passive_report
 
         if report.get("detection_error"):
             report = _diagnose_empty_coordination_report(report, doc)

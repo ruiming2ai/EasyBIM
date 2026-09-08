@@ -18,11 +18,14 @@ VERDICT_NO_LINKS = "no_links"
 VERDICT_LISTENER_OFF = "listener_off"
 VERDICT_DOC_MISMATCH = "doc_mismatch"
 VERDICT_WARNING_LIST = "warning_list"
-VERDICT_CLEAR = "clear"
+VERDICT_NOT_CAPTURED = "not_captured"
 VERDICT_UNKNOWN = "unknown"
 
-#: Verdicts where the model is fine and the user needs no action.
-BENIGN_VERDICTS = (VERDICT_NOT_APPLICABLE, VERDICT_NO_LINKS, VERDICT_CLEAR)
+#: Verdicts where the model is fine and the user needs no action.  A clean
+#: result is now *proved* by comparing the monitored links (see
+#: ``coordination_review_revit``), never inferred from a warning that never
+#: arrived - so no listener-derived verdict belongs here.
+BENIGN_VERDICTS = (VERDICT_NOT_APPLICABLE, VERDICT_NO_LINKS)
 
 
 def _safe_text(value):
@@ -92,10 +95,13 @@ def _listener_covered_open(evidence):
 
 
 def _saw_traffic(evidence):
-    return bool(
-        _safe_int(evidence.get("events_seen"))
-        or _safe_int(evidence.get("failures_seen"))
-    )
+    """Real failure messages, not merely events.
+
+    ``events_seen`` counts FailuresProcessing callbacks, which fire with no
+    failure messages at all; counting them as traffic once produced the
+    self-contradicting "saw 0 warning messages" all-clear.
+    """
+    return _safe_int(evidence.get("failures_seen")) > 0
 
 
 def _verdict(code, headline, details, action="", evidence=None):
@@ -197,35 +203,28 @@ def diagnose(evidence):
             evidence,
         )
 
-    # 5. The listener was attached and saw Revit's failure traffic, yet no
-    #    Coordination Review warning came through: the links have no changes.
+    # 5. Nothing conclusive.  The comparison, not this, decides whether the
+    #    links are clean; all that is left here is to say what was not seen.
+    details = [
+        "Revit raises that warning once, while a link loads, and it cannot be "
+        "raised again on demand.",
+    ]
     if _saw_traffic(evidence):
-        return _verdict(
-            VERDICT_CLEAR,
-            "No link reported changes needing Coordination Review.",
-            [
-                "The listener was attached while this model opened and saw {0} "
-                "warning {1}, none of them a Coordination Review warning.".format(
-                    _safe_int(evidence.get("failures_seen")),
-                    _plural(evidence.get("failures_seen"), "message"),
-                ),
-            ],
-            "",
-            evidence,
+        details.append(
+            "The listener was attached and saw {0} warning {1}, none of them a "
+            "Coordination Review warning.".format(
+                _safe_int(evidence.get("failures_seen")),
+                _plural(evidence.get("failures_seen"), "message"),
+            )
         )
-
-    # 6. Attached but Revit raised nothing at all.  Most often means the links
-    #    were already loaded, so no load-time warning was raised for them.
+    elif _listener_covered_open(evidence):
+        details.append("The listener was attached but Revit raised no warnings at all.")
     return _verdict(
-        VERDICT_UNKNOWN,
-        "No Coordination Review warning was raised for this model.",
-        [
-            "The listener was attached but Revit raised no warnings at all while "
-            "this model opened, which usually means the links loaded without "
-            "changes to review.",
-        ],
-        "Reload a link (Manage Links) to make Revit re-check it, or open "
-        "Manage > Warnings.",
+        VERDICT_NOT_CAPTURED,
+        "No Coordination Review warning was captured for this model.",
+        details,
+        "EasyBIM compares the monitored links directly, so this does not decide "
+        "whether they are clean.",
         evidence,
     )
 

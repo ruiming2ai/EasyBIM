@@ -3,6 +3,10 @@
 
 try:
     from easybim import coordination_review_passive
-    coordination_review_passive.register_passive_detector(source="doc-opening")
+
+    # Pass this hook's live UIApplication: a lib module cannot see `__revit__`,
+    # and `HOST_APP.uiapp` is not dependable this early, so a bare call can
+    # find no event source and attach nothing.
+    coordination_review_passive.register_passive_detector(__revit__, source="doc-opening")
 except Exception:
     pass

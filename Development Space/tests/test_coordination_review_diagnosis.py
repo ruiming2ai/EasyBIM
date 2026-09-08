@@ -59,16 +59,27 @@ class NothingToReviewTests(unittest.TestCase):
         self.assertTrue(verdict["benign"])
         self.assertIn("Copy/Monitor", verdict["headline"])
 
-    def test_monitoring_present_and_listener_saw_traffic_means_clear(self):
+    def test_listener_traffic_alone_never_claims_the_model_is_clean(self):
+        """A missed one-shot warning looks exactly like a clean model, so only
+        the comparison in coordination_review_revit may claim clean."""
         verdict = self.module.diagnose(_evidence())
-        self.assertEqual(verdict["code"], self.module.VERDICT_CLEAR)
-        self.assertTrue(verdict["benign"])
-        self.assertIn("No link reported changes", verdict["headline"])
-        self.assertIn("7 warning messages", verdict["details"][0])
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
+        self.assertFalse(verdict["benign"])
+        self.assertIn("No Coordination Review warning was captured", verdict["headline"])
+        self.assertIn("7 warning messages", " ".join(verdict["details"]))
+        self.assertIn("compares the monitored links directly", verdict["action"])
+
+    def test_events_without_failures_are_not_traffic(self):
+        """events_seen counts callbacks that carry no failure messages; taking
+        them for traffic produced the "saw 0 warning messages" all-clear."""
+        verdict = self.module.diagnose(_evidence(events_seen=4, failures_seen=0))
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
+        self.assertFalse(verdict["benign"])
+        self.assertNotIn("saw 0 warning", " ".join(verdict["details"]))
 
     def test_unknown_counts_do_not_claim_not_applicable(self):
         verdict = self.module.diagnose(_evidence(link_count=None, monitoring_count=None))
-        self.assertEqual(verdict["code"], self.module.VERDICT_CLEAR)
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
 
 
 class ListenerStateTests(unittest.TestCase):
@@ -106,13 +117,13 @@ class ListenerStateTests(unittest.TestCase):
                 register_count=2,
             )
         )
-        self.assertEqual(verdict["code"], self.module.VERDICT_CLEAR)
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
 
     def test_registered_now_wins_over_timestamps(self):
         verdict = self.module.diagnose(
             _evidence(registered=False, registered_now=True, unregistered_at=999.0)
         )
-        self.assertEqual(verdict["code"], self.module.VERDICT_CLEAR)
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
 
     def test_listener_off_outranks_a_document_mismatch(self):
         verdict = self.module.diagnose(
@@ -143,7 +154,7 @@ class DocumentMismatchTests(unittest.TestCase):
         verdict = self.module.diagnose(
             _evidence(stored_doc_keys=["title:tower.rvt", "model:tower"])
         )
-        self.assertEqual(verdict["code"], self.module.VERDICT_CLEAR)
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
 
     def test_mismatch_list_is_bounded(self):
         verdict = self.module.diagnose(
@@ -183,9 +194,9 @@ class NoTrafficTests(unittest.TestCase):
 
     def test_attached_but_revit_raised_nothing(self):
         verdict = self.module.diagnose(_evidence(events_seen=0, failures_seen=0))
-        self.assertEqual(verdict["code"], self.module.VERDICT_UNKNOWN)
+        self.assertEqual(verdict["code"], self.module.VERDICT_NOT_CAPTURED)
         self.assertFalse(verdict["benign"])
-        self.assertIn("Reload a link", verdict["action"])
+        self.assertIn("raised no warnings at all", " ".join(verdict["details"]))
 
 
 class SummaryTextTests(unittest.TestCase):
@@ -204,6 +215,20 @@ class SummaryTextTests(unittest.TestCase):
         verdict = self.module.diagnose({})
         self.assertEqual(verdict["code"], self.module.VERDICT_LISTENER_OFF)
         self.assertTrue(self.module.summary_text(verdict))
+
+    def test_no_listener_verdict_is_ever_benign(self):
+        """Only a positive check of the model may be benign."""
+        for code in (
+            self.module.VERDICT_LISTENER_OFF,
+            self.module.VERDICT_DOC_MISMATCH,
+            self.module.VERDICT_WARNING_LIST,
+            self.module.VERDICT_NOT_CAPTURED,
+        ):
+            self.assertNotIn(code, self.module.BENIGN_VERDICTS)
+        self.assertEqual(
+            set(self.module.BENIGN_VERDICTS),
+            {self.module.VERDICT_NOT_APPLICABLE, self.module.VERDICT_NO_LINKS},
+        )
 
 
 if __name__ == "__main__":

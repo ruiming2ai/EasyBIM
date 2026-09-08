@@ -1086,41 +1086,35 @@ automatically when a document is opened, surfaced as a button for the times you
 want to revisit the workset choice or review coordination changes without
 closing and reopening the file.
 
-In the Coordination Review summary, each listed link has a **View Issues**
-button. Revit's own Coordination Review dialog cannot be opened for a chosen
-link or read through the API, so EasyBIM computes the differences itself and
-shows them in its own **Coordination Review Issues** window for that link:
+The **Coordination Review** summary does not wait for Revit's warning. Revit
+raises "needs Coordination Review" only once, while a link loads, and it
+cannot be raised again on demand, so a report built from that single event
+kept coming back empty for reasons outside EasyBIM's control. Instead EasyBIM
+compares the links itself every time the summary opens:
 
-- Every element of this model that monitors the link (Copy/Monitor) is
-  compared with the link's current contents, in host coordinates.
-- Levels and grids are matched by name (a Copy/Monitor prefix or suffix is
-  tolerated) and reported as moved, deleted in the link, or renamed. Link
-  levels and grids that nothing monitors are listed for information.
-- Columns, walls, floors, openings and MEP fixtures are matched to the nearest
-  link element of the same category and reported as moved, deleted in the
-  link, or type changed. These rows are estimates and are badged as such.
-- **Show** selects the host element and frames it in the current view (no other
-  views are opened). **Refresh** recomputes after you change the model.
+- It finds every link this model monitors with **Copy/Monitor**. Links that
+  nothing monitors are skipped: without a monitored element a link has nothing
+  for Coordination Review to report.
+- Each monitored link is compared with its current contents, in host
+  coordinates, across every Copy/Monitor category. Levels and grids are matched
+  by name (a prefix or suffix is tolerated) and reported as moved, deleted in
+  the link, or renamed. Columns, walls, floors, openings and MEP fixtures are
+  matched to the nearest link element of the same category and reported as
+  moved, deleted in the link, or type changed; those rows are estimates and are
+  badged as such.
+- Every monitored link gets a row, whether or not it has differences, so a
+  clean row is a **proved** result rather than the absence of a warning. A link
+  Revit did flag also carries a *Revit flagged* badge.
+- **View Issues** on any link opens the full detail, where **Show** selects the
+  host element and frames it in the current view (no other views are opened)
+  and **Refresh** recomputes that link.
 
-Revit's own Coordination Review remains the place to Accept, Modify, Postpone
-or Reject a difference. The comparison runs only when you click View Issues,
-so Start Message stays fast, and Start Message can be run again afterwards
-and shows the same link list until the document is closed.
+Because the comparison is the detector, the two empty states are honest:
+"Nothing in this model uses Copy/Monitor", or "No differences found across N
+monitored links". Revit's own Coordination Review remains the place to Accept,
+Modify, Postpone or Reject a difference.
 
-When no link is listed, the window says why rather than showing a bare
-`Detection Error`. Revit raises the "needs Coordination Review" warning once,
-while a link loads, so EasyBIM listens for it during file open and cannot
-simply re-read it later. The empty state reports one of:
-
-- **Nothing to review** - the model has no links, or nothing in it uses
-  Copy/Monitor, so Coordination Review does not apply.
-- **No changes** - the listener was attached while the model opened and saw
-  Revit's warnings, none of them a Coordination Review warning.
-- **Listener was not attached** - usually the model was already open before
-  EasyBIM loaded. Reopen it, or check Manage > Warnings.
-- **Captured under a different document identity** - cloud models report their
-  path and title late, so the capture and the report can disagree. Both keys
-  are shown.
-
-If Revit's own warning list still holds Coordination Review entries, those
-links are listed instead of an empty report.
+The check runs when the summary opens, at file open and on every Start Message,
+with a progress bar you can cancel; a cancelled run reports what it finished
+and never claims an all-clear. Only monitored links are read, so a model that
+uses no Copy/Monitor costs a single pass and stops.

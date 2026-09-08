@@ -353,16 +353,13 @@ def collect_host_monitoring_items(doc, link_instance_id_int, db=None):
     return items
 
 
-def count_monitoring_elements(doc, db=None, limit=1):
-    """How many host elements use Copy/Monitor against any link.
-
-    Answers "does Coordination Review apply to this model at all", so the
-    default stops at the first hit.  Pass a larger ``limit`` for a count.
-    """
-    db = db if db is not None else _import_revit_db()
+def _scan_monitoring(doc, db, limit):
+    """``({link id: monitoring elements}, elements seen)`` in one pass."""
+    counts = {}
+    seen = 0
     if doc is None:
-        return 0
-    found = 0
+        return counts, seen
+
     for element in _collect_elements(doc, available_builtins(db), db):
         try:
             if not element.IsMonitoringLinkElement():
@@ -370,14 +367,45 @@ def count_monitoring_elements(doc, db=None, limit=1):
         except Exception:
             continue
         try:
-            if not list(element.GetMonitoredLinkElementIds() or []):
-                continue
+            monitored = list(element.GetMonitoredLinkElementIds() or [])
         except Exception:
             continue
-        found += 1
-        if limit and found >= int(limit):
+
+        counted = False
+        for link_id in monitored:
+            link_id_int = _element_id_int(link_id)
+            if link_id_int is None:
+                continue
+            counts[link_id_int] = counts.get(link_id_int, 0) + 1
+            counted = True
+        if not counted:
+            continue
+
+        seen += 1
+        if limit and seen >= int(limit):
             break
-    return found
+    return counts, seen
+
+
+def collect_monitored_link_ids(doc, db=None, limit=0):
+    """``{link instance id: how many host elements monitor it}``.
+
+    One collector pass over the Copy/Monitor categories.  Links that nothing
+    monitors never appear, which is what lets the review skip them: without a
+    Copy/Monitor relationship a link has nothing to coordinate.
+    """
+    db = db if db is not None else _import_revit_db()
+    return _scan_monitoring(doc, db, limit)[0]
+
+
+def count_monitoring_elements(doc, db=None, limit=1):
+    """How many host elements use Copy/Monitor against any link.
+
+    Answers "does Coordination Review apply to this model at all", so the
+    default stops at the first hit.  Pass ``limit=0`` for a full count.
+    """
+    db = db if db is not None else _import_revit_db()
+    return _scan_monitoring(doc, db, limit)[1]
 
 
 def collect_link_items(link_doc, transform, labels, db=None):

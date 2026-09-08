@@ -18,7 +18,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
             <TextBlock Text="Coordination Review" FontSize="30" FontWeight="SemiBold"/>
-            <TextBlock Text="All linked-model Coordination Review issues are shown together so users can review the full problem list at once. Click View Issues to see the differences EasyBIM found between this model's monitored elements and that link."
+            <TextBlock Text="EasyBIM compares every link this model monitors with Copy/Monitor against the link's current contents, so the result does not depend on catching Revit's one-off warning. Links nothing monitors are skipped. Click View Issues for the full detail of a link."
                        Margin="0,6,0,0"
                        FontSize="13"
                        Foreground="DimGray"
@@ -41,22 +41,22 @@
 
                 <Border Grid.Column="1" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10" Margin="0,0,10,0">
                     <StackPanel>
-                        <TextBlock Text="Warnings" FontSize="11" Foreground="DimGray"/>
-                        <TextBlock x:Name="matching_warnings_tb" FontSize="22" FontWeight="SemiBold"/>
+                        <TextBlock Text="Monitored Links" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="monitored_links_tb" FontSize="22" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Column="2" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10" Margin="0,0,10,0">
                     <StackPanel>
-                        <TextBlock Text="Problem Links" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock Text="Links With Differences" FontSize="11" Foreground="DimGray"/>
                         <TextBlock x:Name="problem_links_tb" FontSize="22" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Column="3" BorderBrush="#E3E3E3" BorderThickness="1" Background="#FAFAFA" Padding="10">
                     <StackPanel>
-                        <TextBlock Text="Assignments" FontSize="11" Foreground="DimGray"/>
-                        <TextBlock x:Name="assignments_tb" FontSize="22" FontWeight="SemiBold"/>
+                        <TextBlock Text="Differences" FontSize="11" Foreground="DimGray"/>
+                        <TextBlock x:Name="differences_tb" FontSize="22" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Border>
             </Grid>
