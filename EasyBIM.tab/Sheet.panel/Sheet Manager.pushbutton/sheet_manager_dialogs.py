@@ -14,7 +14,6 @@ from System.Windows.Controls import ComboBox
 from System.Windows.Controls import ComboBoxItem
 from System.Windows.Controls import Orientation
 from System.Windows.Controls import StackPanel
-from System.Windows.Controls import TextBox
 
 from pyrevit import forms
 
@@ -357,24 +356,33 @@ class FilterByRevisionWindow(forms.WPFWindow):
 
 
 class FilterByParameterWindow(forms.WPFWindow):
-    """Native-schedule-style AND rules; 8 rows built programmatically."""
+    """Native-schedule-style AND rules with source-value choices."""
 
-    RULE_COUNT = 8
-
-    def __init__(self, xaml_file_name, field_options, current_rules,
+    def __init__(self, xaml_file_name, field_options, value_options,
+                 current_rules,
                  add_params_checked):
         self._is_ready = False
         self.result = None
+        self._field_options = list(field_options or [])
+        self._value_options = value_options or {}
         forms.WPFWindow.__init__(self, xaml_file_name)
         self._rule_rows = []
         current_rules = list(current_rules or [])
-        for pos in range(self.RULE_COUNT):
+        for pos in range(max(1, len(current_rules))):
             rule = current_rules[pos] if pos < len(current_rules) else None
-            self._rule_rows.append(self._build_rule_row(field_options, rule))
+            self._rule_rows.append(self._build_rule_row(rule))
         self.addparams_cb.IsChecked = bool(add_params_checked)
         self._is_ready = True
 
-    def _build_rule_row(self, field_options, rule):
+    def _populate_value_choices(self, value_cb, field_key, text=None):
+        if text is None:
+            text = value_cb.Text or u""
+        value_cb.Items.Clear()
+        for value in self._value_options.get(field_key, []):
+            value_cb.Items.Add(value)
+        value_cb.Text = text
+
+    def _build_rule_row(self, rule):
         panel = StackPanel()
         panel.Orientation = Orientation.Horizontal
         panel.Margin = Thickness(0, 3, 0, 3)
@@ -382,53 +390,65 @@ class FilterByParameterWindow(forms.WPFWindow):
         field_cb = ComboBox()
         field_cb.Width = 240.0
         _add_combo_item(field_cb, "(none)", None)
-        for key, label in field_options:
+        for key, label in self._field_options:
             _add_combo_item(field_cb, label, key)
         op_cb = ComboBox()
         op_cb.Width = 170.0
         op_cb.Margin = Thickness(8, 0, 0, 0)
         for op_key, op_label in state.FILTER_OPS:
             _add_combo_item(op_cb, op_label, op_key)
-        value_tb = TextBox()
-        value_tb.Width = 220.0
-        value_tb.Margin = Thickness(8, 0, 0, 0)
+        value_cb = ComboBox()
+        value_cb.Width = 220.0
+        value_cb.Margin = Thickness(8, 0, 0, 0)
+        value_cb.IsEditable = True
+
+        def field_changed(sender, args):
+            del sender, args
+            self._populate_value_choices(value_cb, _combo_key(field_cb))
+        field_cb.SelectionChanged += field_changed
 
         def op_changed(sender, args):
             del sender, args
             op_key = _combo_key(op_cb)
-            value_tb.IsEnabled = op_key not in state.FILTER_OPS_NO_VALUE
+            value_cb.IsEnabled = op_key not in state.FILTER_OPS_NO_VALUE
         op_cb.SelectionChanged += op_changed
 
         if rule is not None:
             _select_combo_key(field_cb, rule[0])
             _select_combo_key(op_cb, rule[1])
-            value_tb.Text = u"{0}".format(rule[2] or u"")
+            self._populate_value_choices(
+                value_cb, rule[0], u"{0}".format(rule[2] or u""))
         else:
             field_cb.SelectedIndex = 0
             op_cb.SelectedIndex = 0
+        op_changed(None, None)
 
         panel.Children.Add(field_cb)
         panel.Children.Add(op_cb)
-        panel.Children.Add(value_tb)
+        panel.Children.Add(value_cb)
         self.rules_sp.Children.Add(panel)
-        return (field_cb, op_cb, value_tb)
+        return (field_cb, op_cb, value_cb)
+
+    def add_filter_clicked(self, sender, args):
+        del sender, args
+        self._rule_rows.append(self._build_rule_row(None))
 
     def clear_clicked(self, sender, args):
         del sender, args
-        for field_cb, op_cb, value_tb in self._rule_rows:
+        for field_cb, op_cb, value_cb in self._rule_rows:
             field_cb.SelectedIndex = 0
             op_cb.SelectedIndex = 0
-            value_tb.Text = u""
+            value_cb.Text = u""
 
     def ok_clicked(self, sender, args):
         del sender, args
         rules = []
-        for field_cb, op_cb, value_tb in self._rule_rows:
+        for field_cb, op_cb, value_cb in self._rule_rows:
             field_key = _combo_key(field_cb)
             op_key = _combo_key(op_cb)
             if field_key is None or op_key is None:
                 continue
-            rules.append((field_key, op_key, value_tb.Text or u""))
+            rules.append((field_key, op_key, value_cb.Text or u""))
         self.result = (rules, bool(self.addparams_cb.IsChecked))
         self.Close()
 
@@ -438,18 +458,17 @@ class FilterByParameterWindow(forms.WPFWindow):
 
 
 class SortWindow(forms.WPFWindow):
-    LEVEL_COUNT = 4
-
     def __init__(self, xaml_file_name, field_options, current_levels):
         self._is_ready = False
         self.result = None
+        self._field_options = list(field_options or [])
         forms.WPFWindow.__init__(self, xaml_file_name)
         self._level_rows = []
         current_levels = list(current_levels or [])
-        for pos in range(self.LEVEL_COUNT):
+        for pos in range(max(1, len(current_levels))):
             level = current_levels[pos] if pos < len(current_levels) else None
             self._level_rows.append(
-                self._build_level_row(field_options, level, pos))
+                self._build_level_row(self._field_options, level, pos))
         self._is_ready = True
 
     def _build_level_row(self, field_options, level, pos):
@@ -483,6 +502,11 @@ class SortWindow(forms.WPFWindow):
         panel.Children.Add(direction_cb)
         self.levels_sp.Children.Add(panel)
         return (field_cb, direction_cb)
+
+    def add_sort_level_clicked(self, sender, args):
+        del sender, args
+        self._level_rows.append(self._build_level_row(
+            self._field_options, None, len(self._level_rows)))
 
     def clear_clicked(self, sender, args):
         del sender, args

@@ -335,6 +335,12 @@ class NumberConflictTests(unittest.TestCase):
 
 
 class FilterTests(unittest.TestCase):
+    def test_distinct_filter_values_omits_blank_and_normalizes_duplicates(self):
+        self.assertEqual(
+            st.distinct_filter_values(
+                [u"  Plan  ", u"plan", None, u"", u"Ceiling"]),
+            [u"Ceiling", u"Plan"])
+
     def test_all_ten_ops(self):
         cases = [
             ("AB", "equals", "ab", True),

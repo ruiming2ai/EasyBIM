@@ -687,24 +687,29 @@ class SheetManagerWindow(forms.WPFWindow):
 
     # ---------------------------------------------------------- refresh
 
+    def _source_rows(self):
+        """Rows in the active source, before search/filter/sort processing."""
+        rows = list(self._all_rows)
+        if self._source_order is None:
+            return rows
+        by_id = {}
+        for row in rows:
+            by_id[row.sheet_id] = row
+        scoped = [by_id[sheet_id] for sheet_id in self._source_order
+                  if sheet_id in by_id]
+        scoped += [row for row in rows if row.is_pending]
+        if self._custom_excel_batch is not None:
+            scoped.sort(key=lambda row: getattr(
+                row, "custom_excel_order", 1000000000))
+        return scoped
+
     def _refresh_visible_rows(self, preserve_selection=False):
         selected_ids = None
         if preserve_selection:
             selected_ids = set(
                 id(item) for item in self.sheets_dg.SelectedItems
                 if isinstance(item, SheetRow))
-        rows = self._all_rows
-        if self._source_order is not None:
-            by_id = {}
-            for row in rows:
-                by_id[row.sheet_id] = row
-            scoped = [by_id[sheet_id] for sheet_id in self._source_order
-                      if sheet_id in by_id]
-            scoped += [row for row in rows if row.is_pending]
-            if self._custom_excel_batch is not None:
-                scoped.sort(key=lambda row: getattr(
-                    row, "custom_excel_order", 1000000000))
-            rows = scoped
+        rows = self._source_rows()
         rows = state.search_rows(rows, self._columns, self._search_text)
         rows = state.filter_rows_by_revisions(
             rows, self._columns, self._revision_filter_ids,
@@ -945,9 +950,20 @@ class SheetManagerWindow(forms.WPFWindow):
                 continue
             if column_key.startswith("p:") or column_key.startswith("tb:"):
                 wanted.append(column_key)
+        self._prefetch_filter_parameter_values(
+            wanted, rows if rows is not None else self._all_rows)
+
+    def _prefetch_filter_parameter_values(self, column_keys, rows):
+        """Cache unshown sheet/title-block parameters for the supplied rows."""
+        wanted = []
+        for column_key in column_keys:
+            if (column_key.startswith("p:") or
+                    column_key.startswith("tb:")) \
+                    and column_key not in wanted:
+                wanted.append(column_key)
         if not wanted:
             return
-        for row in (rows if rows is not None else self._all_rows):
+        for row in rows:
             if row.is_pending:
                 continue
             for column_key in wanted:
@@ -1294,6 +1310,34 @@ class SheetManagerWindow(forms.WPFWindow):
                     (key, state.TB_HEADER_PREFIX + param_name))
         return options
 
+    def _filter_value_options(self, field_options, rows):
+        """Distinct value choices for every filter field in the active source.
+
+        Displayed fields are read from the staged grid.  All other sheet and
+        title-block fields are prefetched here while the caller has a Revit
+        API context, keeping the dialog itself and live filtering API-free.
+        """
+        column_map = state.columns_by_key(self._columns)
+        extra_keys = []
+        for field_key, _ in field_options:
+            if field_key in column_map:
+                continue
+            if field_key.startswith("p:") or field_key.startswith("tb:"):
+                extra_keys.append(field_key)
+        self._prefetch_filter_parameter_values(extra_keys, rows)
+
+        choices = {}
+        for field_key, _ in field_options:
+            column = column_map.get(field_key)
+            values = []
+            for row in rows:
+                if column is not None:
+                    values.append(getattr(row, column.attr, None))
+                else:
+                    values.append(self._extra_filter_lookup(row, field_key))
+            choices[field_key] = state.distinct_filter_values(values)
+        return choices
+
     def filter_by_parameter(self, sender, args):
         del sender, args
         self._run_in_revit("Filter By Parameter",
@@ -1302,8 +1346,11 @@ class SheetManagerWindow(forms.WPFWindow):
     def _filter_by_parameter_work(self, uiapp):
         self._require_doc(uiapp, must_be_active=False)
         self._ensure_param_info()
+        field_options = self._filter_field_options()
+        value_options = self._filter_value_options(
+            field_options, self._source_rows())
         dialog = self._show_dialog(dialogs.FilterByParameterWindow(
-            "FilterByParameterDialog.xaml", self._filter_field_options(),
+            "FilterByParameterDialog.xaml", field_options, value_options,
             self._param_rules, False))
         if dialog.result is None:
             return

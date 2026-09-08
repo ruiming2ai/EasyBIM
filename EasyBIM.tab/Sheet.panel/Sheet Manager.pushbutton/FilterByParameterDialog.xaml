@@ -14,7 +14,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <TextBlock Grid.Row="0"
-                   Text="Rows must satisfy every rule (AND), like native schedule filters. Leave a field on (none) to skip a rule."
+                   Text="Rows must satisfy every rule (AND), like native schedule filters. Values come from the current source; you can also type a value. Leave a field on (none) to skip a rule."
                    TextWrapping="Wrap"
                    Margin="0,0,0,8"/>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -27,6 +27,13 @@
                   Content="Add Parameters to Table"
                   ToolTip="Adds parameters referenced by rules as table columns when they are not shown yet."/>
         <DockPanel Grid.Row="3" Margin="0,12,0,0" LastChildFill="False">
+            <Button x:Name="addfilter_b"
+                    Content="Add Filter"
+                    Height="28"
+                    MinWidth="90"
+                    Margin="0,0,8,0"
+                    DockPanel.Dock="Left"
+                    Click="add_filter_clicked"/>
             <Button x:Name="clear_b"
                     Content="Clear Rules"
                     Height="28"

@@ -581,6 +581,25 @@ def columns_by_key(columns):
     return result
 
 
+def distinct_filter_values(values):
+    """Return stable, display-ready choices for a filter value dropdown.
+
+    Empty cells are handled by the ``has value`` / ``no value`` operators,
+    so they are intentionally absent here.  Comparison is case-insensitive
+    while the first nonblank spelling remains the displayed value.
+    """
+    distinct = {}
+    for value in values:
+        text = u"" if value is None else u"{0}".format(value)
+        text = text.strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key not in distinct:
+            distinct[key] = text
+    return [distinct[key] for key in sorted(distinct)]
+
+
 def filter_rows_by_rules(rows, column_map, rules, extra_lookup=None):
     """AND of rules; rules = [(column_key, op, arg)].
 

@@ -122,6 +122,33 @@ class SheetManagerBundleTests(unittest.TestCase):
                 missing,
                 "%s: missing handler(s): %s" % (xaml_name, missing))
 
+    def test_filter_and_sort_dialogs_support_dynamic_rules(self):
+        filter_xaml = (COMMAND_DIR / "FilterByParameterDialog.xaml").read_text(
+            encoding="utf-8")
+        sort_xaml = (COMMAND_DIR / "SortDialog.xaml").read_text(
+            encoding="utf-8")
+        dialogs_source = (COMMAND_DIR / "sheet_manager_dialogs.py").read_text(
+            encoding="utf-8")
+
+        self.assertIn('x:Name="addfilter_b"', filter_xaml)
+        self.assertIn('Content="Add Filter"', filter_xaml)
+        self.assertIn('Click="add_filter_clicked"', filter_xaml)
+        self.assertIn("value_cb.IsEditable = True", dialogs_source)
+        self.assertIn("def add_filter_clicked", dialogs_source)
+        self.assertNotIn("RULE_COUNT", dialogs_source)
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        self.assertIn("def _source_rows", ui_source)
+        self.assertIn("def _filter_value_options", ui_source)
+        self.assertIn("self._source_rows()", ui_source)
+
+        self.assertIn('x:Name="addsort_b"', sort_xaml)
+        self.assertIn('Content="Add Sort Level"', sort_xaml)
+        self.assertIn('Click="add_sort_level_clicked"', sort_xaml)
+        self.assertIn('ScrollViewer', sort_xaml)
+        self.assertIn("def add_sort_level_clicked", dialogs_source)
+        self.assertNotIn("LEVEL_COUNT", dialogs_source)
+
     def test_scripts_stay_ironpython27_safe(self):
         # No f-strings; keep the py2-compatible idiom the runtime needs.
         for path in sorted(COMMAND_DIR.glob("*.py")) + LIB_MODULES:
