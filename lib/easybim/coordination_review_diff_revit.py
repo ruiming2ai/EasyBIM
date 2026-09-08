@@ -353,6 +353,33 @@ def collect_host_monitoring_items(doc, link_instance_id_int, db=None):
     return items
 
 
+def count_monitoring_elements(doc, db=None, limit=1):
+    """How many host elements use Copy/Monitor against any link.
+
+    Answers "does Coordination Review apply to this model at all", so the
+    default stops at the first hit.  Pass a larger ``limit`` for a count.
+    """
+    db = db if db is not None else _import_revit_db()
+    if doc is None:
+        return 0
+    found = 0
+    for element in _collect_elements(doc, available_builtins(db), db):
+        try:
+            if not element.IsMonitoringLinkElement():
+                continue
+        except Exception:
+            continue
+        try:
+            if not list(element.GetMonitoredLinkElementIds() or []):
+                continue
+        except Exception:
+            continue
+        found += 1
+        if limit and found >= int(limit):
+            break
+    return found
+
+
 def collect_link_items(link_doc, transform, labels, db=None):
     """Snapshots of the link's elements for ``labels``, in host coordinates."""
     db = db if db is not None else _import_revit_db()

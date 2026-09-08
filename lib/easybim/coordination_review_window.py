@@ -271,8 +271,14 @@ class CoordinationReviewWindow(forms.WPFWindow):
         self._visible_issue_keys = []
 
         if self.report.get("detection_error"):
-            self._set_empty_state(True, "Detection Error")
-            self.status_tb.Text = "Detection Error"
+            # No warning was captured.  The diagnosis says why - nothing to
+            # review, listener not attached, or a document-identity mismatch -
+            # instead of the bare "Detection Error" that hid all three.
+            diagnosis = dict(self.report.get("diagnosis") or {})
+            text = _safe_text(self.report.get("diagnosis_text"))
+            headline = _safe_text(diagnosis.get("headline"))
+            self._set_empty_state(True, text or "No Coordination Review warnings were captured.")
+            self.status_tb.Text = headline or "No Coordination Review warnings were captured."
             return
 
         automation_error = self.report.get("automation_error")

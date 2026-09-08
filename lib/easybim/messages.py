@@ -850,6 +850,104 @@ def _show_workset_picker_dialog_wpfwindow(context):
     return True, None
 
 
+def _count_link_instances(doc):
+    try:
+        return len(_collect_link_instances(doc))
+    except Exception:
+        return None
+
+
+def _count_monitoring_elements(doc):
+    """Whether anything in the model uses Copy/Monitor (0 or 1; None if unknown)."""
+    try:
+        from easybim import coordination_review_diff_revit
+
+        return coordination_review_diff_revit.count_monitoring_elements(doc)
+    except Exception:
+        return None
+
+
+def _count_warning_list_matches(doc):
+    """Coordination Review entries in Revit's own warning list (None if unreadable).
+
+    The warning is raised once while a link loads and does not always persist,
+    so a zero proves nothing on its own - but a hit means the listener missed
+    an event that Revit still remembers.
+    """
+    if not _is_doc_valid(doc):
+        return None
+    try:
+        warnings = _get_document_warnings(doc)
+    except Exception:
+        return None
+    matches = 0
+    for warning in warnings:
+        description = _clean_warning_text(_get_warning_description(warning)).lower()
+        if "coordination review" in description:
+            matches += 1
+    return matches
+
+
+def _diagnose_empty_coordination_report(report, doc):
+    """Explain an empty capture instead of showing a bare Detection Error.
+
+    Diagnosis is a nicety on top of the report, so nothing it does may cost
+    the user their window: any failure hands back the plain empty report.
+    """
+    try:
+        return _build_empty_coordination_diagnosis(report, doc)
+    except Exception as ex:
+        logger = _get_logger()
+        if logger:
+            logger.warning("Coordination Review diagnosis failed: %s", ex)
+        return report
+
+
+def _build_empty_coordination_diagnosis(report, doc):
+    try:
+        from easybim import coordination_review_diagnosis
+    except Exception:
+        return report
+
+    evidence = dict(report.get("capture") or {})
+    if not evidence:
+        try:
+            from easybim.coordination_review_passive import capture_evidence
+
+            evidence = dict(capture_evidence(doc) or {})
+        except Exception:
+            evidence = {}
+
+    evidence["link_count"] = _count_link_instances(doc)
+    evidence["warning_list_matches"] = _count_warning_list_matches(doc)
+    # The Copy/Monitor pass is the only costly probe, so it runs last and only
+    # when the cheap evidence has not already settled the verdict.
+    if not evidence.get("warning_list_matches") and evidence.get("link_count"):
+        evidence["monitoring_count"] = _count_monitoring_elements(doc)
+
+    try:
+        verdict = coordination_review_diagnosis.diagnose(evidence)
+    except Exception:
+        return report
+
+    report["diagnosis"] = verdict
+    report["diagnosis_text"] = coordination_review_diagnosis.summary_text(verdict)
+
+    # Revit still holds the warning: report those links rather than nothing.
+    if verdict.get("code") == coordination_review_diagnosis.VERDICT_WARNING_LIST:
+        try:
+            recovered = _build_coordination_report(doc)
+        except Exception:
+            recovered = None
+        if recovered and recovered.get("grouped"):
+            recovered["source"] = "revit_warning_list"
+            recovered["detection_error"] = False
+            recovered["diagnosis"] = verdict
+            recovered["diagnosis_text"] = report.get("diagnosis_text", "")
+            return recovered
+    return report
+
+
 def _print_coordination_review_report(doc, uiapp=None):
     try:
         try:
@@ -859,6 +957,9 @@ def _print_coordination_review_report(doc, uiapp=None):
             report = build_passive_coordination_report(doc, consume=False)
         except Exception:
             report = _build_coordination_detection_error_report(doc)
+
+        if report.get("detection_error"):
+            report = _diagnose_empty_coordination_report(report, doc)
 
         if _show_coordination_review_dialog(report, doc=doc, uiapp=uiapp):
             return
@@ -890,7 +991,7 @@ def _print_coordination_review_report(doc, uiapp=None):
 def _disable_passive_coordination_review_detector():
     try:
         from easybim.coordination_review_passive import unregister_passive_detector
-        unregister_passive_detector()
+        unregister_passive_detector(source="report")
     except Exception:
         pass
 

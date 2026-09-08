@@ -191,6 +191,105 @@ class StartupJobStageOrderingTests(unittest.TestCase):
         self.assertEqual(calls, [False, False])
 
 
+class EmptyReportDiagnosisTests(unittest.TestCase):
+    """An empty capture must explain itself instead of showing a bare
+    Detection Error, and must fall back to Revit's own warning list when that
+    list still holds the warning the listener missed."""
+
+    def setUp(self):
+        self.messages = _load_messages()
+        self.doc = FakeDocument()
+
+    def _empty_report(self, **capture):
+        return {"detection_error": True, "capture": dict(capture)}
+
+    def test_verdict_and_text_are_attached_to_the_report(self):
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=3), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=0), \
+                mock.patch.object(self.messages, "_count_monitoring_elements", return_value=0):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1, registered_now=True, failures_seen=2),
+                self.doc,
+            )
+
+        self.assertEqual(report["diagnosis"]["code"], "not_applicable")
+        self.assertIn("Copy/Monitor", report["diagnosis_text"])
+
+    def test_warning_list_hit_recovers_the_links(self):
+        recovered = {"grouped": {"7": {"Needs Coordination Review": {"count": 1}}}}
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=2), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=1), \
+                mock.patch.object(self.messages, "_build_coordination_report", return_value=recovered):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=0), self.doc
+            )
+
+        self.assertFalse(report["detection_error"])
+        self.assertEqual(report["source"], "revit_warning_list")
+        self.assertEqual(report["grouped"], recovered["grouped"])
+        self.assertEqual(report["diagnosis"]["code"], "warning_list")
+
+    def test_warning_list_hit_without_usable_links_keeps_the_verdict(self):
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=2), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=1), \
+                mock.patch.object(self.messages, "_build_coordination_report", return_value={"grouped": {}}):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1), self.doc
+            )
+
+        self.assertTrue(report["detection_error"])
+        self.assertEqual(report["diagnosis"]["code"], "warning_list")
+
+    def test_copy_monitor_pass_is_skipped_once_the_verdict_is_settled(self):
+        """The only costly probe must not run when cheaper evidence decides."""
+        monitoring = mock.Mock(return_value=0)
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=0), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=0), \
+                mock.patch.object(self.messages, "_count_monitoring_elements", monitoring):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1, registered_now=True), self.doc
+            )
+
+        monitoring.assert_not_called()
+        self.assertEqual(report["diagnosis"]["code"], "no_links")
+
+    def test_a_broken_probe_never_breaks_the_report(self):
+        with mock.patch.object(
+            self.messages, "_count_link_instances", side_effect=RuntimeError("boom")
+        ):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1), self.doc
+            )
+
+        self.assertTrue(report["detection_error"])
+
+    def test_report_path_diagnoses_before_showing_the_window(self):
+        observed = {}
+        fake_passive = types.ModuleType("easybim.coordination_review_passive")
+        fake_passive.build_passive_coordination_report = lambda doc, consume=True: {
+            "detection_error": True,
+            "capture": {"register_count": 0},
+        }
+        fake_passive.unregister_passive_detector = lambda source="": None
+
+        with mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_count_link_instances", return_value=2
+        ), mock.patch.object(
+            self.messages, "_count_warning_list_matches", return_value=0
+        ), mock.patch.object(
+            self.messages, "_count_monitoring_elements", return_value=5
+        ), mock.patch.object(
+            self.messages,
+            "_show_coordination_review_dialog",
+            side_effect=lambda report, doc=None, uiapp=None: observed.setdefault("report", report) or True,
+        ):
+            self.messages._print_coordination_review_report(self.doc)
+
+        self.assertEqual(observed["report"]["diagnosis"]["code"], "listener_off")
+
+
 class FakeControlledApp(object):
     """pyRevit's ``__revit__`` in the startup/Idling engine: no ActiveUIDocument."""
 

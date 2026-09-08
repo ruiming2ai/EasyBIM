@@ -1106,3 +1106,21 @@ Revit's own Coordination Review remains the place to Accept, Modify, Postpone
 or Reject a difference. The comparison runs only when you click View Issues,
 so Start Message stays fast, and Start Message can be run again afterwards
 and shows the same link list until the document is closed.
+
+When no link is listed, the window says why rather than showing a bare
+`Detection Error`. Revit raises the "needs Coordination Review" warning once,
+while a link loads, so EasyBIM listens for it during file open and cannot
+simply re-read it later. The empty state reports one of:
+
+- **Nothing to review** - the model has no links, or nothing in it uses
+  Copy/Monitor, so Coordination Review does not apply.
+- **No changes** - the listener was attached while the model opened and saw
+  Revit's warnings, none of them a Coordination Review warning.
+- **Listener was not attached** - usually the model was already open before
+  EasyBIM loaded. Reopen it, or check Manage > Warnings.
+- **Captured under a different document identity** - cloud models report their
+  path and title late, so the capture and the report can disagree. Both keys
+  are shown.
+
+If Revit's own warning list still holds Coordination Review entries, those
+links are listed instead of an empty report.

@@ -373,6 +373,31 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(self.module.collect_link_items(_link_doc(), FakeTransform(), set(), db=FakeDB), [])
 
 
+class MonitoringCountTests(unittest.TestCase):
+    """Answers "does Coordination Review apply to this model at all", which is
+    what lets an empty report say the model is fine rather than guess."""
+
+    def setUp(self):
+        self.module = _load_module()
+
+    def test_stops_at_the_first_hit_by_default(self):
+        self.assertEqual(self.module.count_monitoring_elements(_host_doc(), db=FakeDB), 1)
+
+    def test_counts_elements_monitoring_any_link(self):
+        """Every Copy/Monitor relationship counts, including the level that
+        monitors a different link: the question is whether Coordination Review
+        applies to the model, not to one link."""
+        count = self.module.count_monitoring_elements(_host_doc(), db=FakeDB, limit=0)
+        self.assertEqual(count, 8)
+
+    def test_model_without_copy_monitor_reports_zero(self):
+        doc = FakeDocument([Level(1, "Level 1", 0.0), Grid(5, "A", FakeLine((0, 0, 0), (0, 10, 0)))])
+        self.assertEqual(self.module.count_monitoring_elements(doc, db=FakeDB, limit=0), 0)
+
+    def test_no_document_reports_zero(self):
+        self.assertEqual(self.module.count_monitoring_elements(None, db=FakeDB), 0)
+
+
 class LengthFormatterTests(unittest.TestCase):
     def setUp(self):
         self.module = _load_module()

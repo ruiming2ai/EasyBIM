@@ -11,13 +11,17 @@ import time
 
 STATE_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_STATE"
 HANDLER_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_HANDLER"
+DIAG_ENVVAR = "EASYBIM_COORDINATION_REVIEW_PASSIVE_DIAG"
 SOURCE = "passive_coordination_review_warning"
+#: Bound for the sample of warning texts kept for diagnosis.
+RECENT_TEXT_LIMIT = 20
 ISSUE_TEXT = "Needs Coordination Review"
 GENERIC_LINK_KEY = "__COORDINATION_REVIEW_LINK__"
 GENERIC_LINK_NAME = "Linked model needs Coordination Review"
 STATUS = "needs_coordination_review"
 
 _FALLBACK_STATE = {"documents": {}}
+_FALLBACK_DIAG = None
 _HANDLER_REF = None
 _HANDLER_APP = None
 
@@ -98,6 +102,63 @@ def _log_debug(message):
         logger.debug("[Coordination Review Passive] {}".format(message))
     except Exception:
         pass
+
+
+def _empty_diagnostics():
+    return {
+        "registered": False,
+        "registered_at": None,
+        "registered_by": "",
+        "register_count": 0,
+        "unregistered_at": None,
+        "unregistered_by": "",
+        "last_error": "",
+        "events_seen": 0,
+        "failures_seen": 0,
+        "matched": 0,
+        "recent_texts": [],
+        "doc_keys_seen": [],
+    }
+
+
+def _normalize_diagnostics(diagnostics):
+    normalized = _empty_diagnostics()
+    if not isinstance(diagnostics, dict):
+        return normalized
+    for key, default in list(normalized.items()):
+        value = diagnostics.get(key, default)
+        if isinstance(default, list) and not isinstance(value, list):
+            value = default
+        normalized[key] = value
+    normalized["recent_texts"] = list(normalized["recent_texts"])[-RECENT_TEXT_LIMIT:]
+    normalized["doc_keys_seen"] = list(normalized["doc_keys_seen"])[-RECENT_TEXT_LIMIT:]
+    return normalized
+
+
+def load_diagnostics():
+    """Session-wide trail of what the passive listener did (never raises)."""
+    stored = _get_envvar(DIAG_ENVVAR, None)
+    if stored is None:
+        stored = _FALLBACK_DIAG
+    return _normalize_diagnostics(stored)
+
+
+def _save_diagnostics(diagnostics):
+    global _FALLBACK_DIAG
+    diagnostics = _normalize_diagnostics(diagnostics)
+    _FALLBACK_DIAG = diagnostics
+    _set_envvar(DIAG_ENVVAR, diagnostics)
+    return diagnostics
+
+
+def _update_diagnostics(**changes):
+    diagnostics = load_diagnostics()
+    diagnostics.update(changes)
+    return _save_diagnostics(diagnostics)
+
+
+def reset_diagnostics():
+    return _save_diagnostics(_empty_diagnostics())
 
 
 def _normalize_state(state):
@@ -391,7 +452,7 @@ def record_coordination_review_failure(doc, failure, timestamp=None):
     return list(records)
 
 
-def _empty_report(doc, detection_error=False):
+def _empty_report(doc, detection_error=False, capture=None):
     return {
         "doc_title": _get_doc_title(doc),
         "link_map": {},
@@ -401,7 +462,24 @@ def _empty_report(doc, detection_error=False):
         "total_link_assignments": 0,
         "source": SOURCE,
         "detection_error": bool(detection_error),
+        "capture": capture or {},
     }
+
+
+def capture_evidence(doc):
+    """What the passive listener did this session, for this document.
+
+    Everything an empty report needs to explain itself, with no Revit calls
+    beyond reading the document's own identity.
+    """
+    state = _load_state()
+    stored = sorted(list((state.get("documents", {}) or {}).keys()))
+    evidence = dict(load_diagnostics())
+    evidence["doc_key"] = _doc_key(doc)
+    evidence["doc_aliases"] = _doc_aliases(doc)
+    evidence["stored_doc_keys"] = stored
+    evidence["registered_now"] = is_registered()
+    return evidence
 
 
 def build_passive_coordination_report(doc, consume=True):
@@ -416,7 +494,7 @@ def build_passive_coordination_report(doc, consume=True):
                 sorted(list((state.get("documents", {}) or {}).keys())),
             )
         )
-        return _empty_report(doc, detection_error=True)
+        return _empty_report(doc, detection_error=True, capture=capture_evidence(doc))
 
     link_map = {}
     grouped = {}
@@ -519,6 +597,29 @@ def _active_doc_from_sender(sender):
     return None
 
 
+def _note_failure_seen(doc, failure, matched):
+    """Keep a bounded trail so an empty report can explain itself."""
+    try:
+        diagnostics = load_diagnostics()
+        diagnostics["failures_seen"] = _safe_int(diagnostics.get("failures_seen"), 0) + 1
+        if matched:
+            diagnostics["matched"] = _safe_int(diagnostics.get("matched"), 0) + 1
+            doc_key = _doc_key(doc)
+            keys = list(diagnostics.get("doc_keys_seen", []) or [])
+            if doc_key and doc_key not in keys:
+                keys.append(doc_key)
+                diagnostics["doc_keys_seen"] = keys
+        else:
+            text = _failure_description(failure)[:200]
+            texts = list(diagnostics.get("recent_texts", []) or [])
+            if text and text not in texts:
+                texts.append(text)
+                diagnostics["recent_texts"] = texts
+        _save_diagnostics(diagnostics)
+    except Exception:
+        pass
+
+
 def _handle_failures_processing(sender, args):
     try:
         accessor = args.GetFailuresAccessor()
@@ -530,12 +631,20 @@ def _handle_failures_processing(sender, args):
     except Exception:
         doc = _active_doc_from_sender(sender)
 
-    failures = _call_no_args(accessor, "GetFailureMessages", []) or []
-    for failure in list(failures):
+    failures = list(_call_no_args(accessor, "GetFailureMessages", []) or [])
+    try:
+        _update_diagnostics(
+            events_seen=_safe_int(load_diagnostics().get("events_seen"), 0) + 1
+        )
+    except Exception:
+        pass
+
+    for failure in failures:
         try:
-            record_coordination_review_failure(doc, failure)
+            recorded = record_coordination_review_failure(doc, failure)
         except Exception:
-            pass
+            recorded = None
+        _note_failure_seen(doc, failure, bool(recorded))
 
 
 def _make_failures_processing_handler():
@@ -550,24 +659,47 @@ def _make_failures_processing_handler():
         return _handle_failures_processing
 
 
-def register_passive_detector(uiapp=None):
-    """Register the session-level Revit failure listener."""
-    global _HANDLER_REF, _HANDLER_APP
+def is_registered():
+    """True when the shared mirror holds a live handler.
 
-    if _HANDLER_REF is not None:
-        return True
+    The mirror, not this engine's globals, is the authority: the report that
+    detaches the listener runs in a different pyRevit engine from the hook
+    that re-attaches it on the next document open.
+    """
+    handler = _get_envvar(HANDLER_ENVVAR, None)
+    if handler is None:
+        handler = _HANDLER_REF
+    return handler is not None and handler is not True
+
+
+def register_passive_detector(uiapp=None, source=""):
+    """Register the session-level Revit failure listener.
+
+    Always detaches whatever the shared mirror holds and attaches a fresh
+    delegate, so the listener can never be left silently off.  It used to
+    return early when *this engine's* global was set, which is why a second
+    document opened in the same session lost the listener: the report had
+    detached it from another engine, and the hook's own global still looked
+    attached.
+    """
+    global _HANDLER_REF, _HANDLER_APP
 
     app = _revit_application(uiapp)
     if app is None:
         _log_debug("FailuresProcessing registration failed: event source not found.")
+        _update_diagnostics(
+            registered=False,
+            last_error="event source not found ({0})".format(_safe_text(source) or "unknown"),
+        )
         return False
 
-    # A previous pyRevit engine may have left its delegate attached; detach it
-    # before adding a fresh one so subscriptions can never stack.  A legacy
-    # ``True`` marker (written by an older version when the envvar store
-    # failed) carries no delegate to detach and is simply ignored.
-    existing_handler = _get_envvar(HANDLER_ENVVAR, None)
-    if existing_handler is not None and existing_handler is not True:
+    # Detach every handler this session knows about - the mirror's and this
+    # engine's - before adding a fresh one, so subscriptions never stack.  A
+    # legacy ``True`` marker (written by an older version when the envvar
+    # store failed) carries no delegate to detach and is simply ignored.
+    for existing_handler in (_get_envvar(HANDLER_ENVVAR, None), _HANDLER_REF):
+        if existing_handler is None or existing_handler is True:
+            continue
         try:
             app.FailuresProcessing -= existing_handler
         except Exception:
@@ -578,6 +710,10 @@ def register_passive_detector(uiapp=None):
         app.FailuresProcessing += handler
     except Exception:
         _log_debug("FailuresProcessing registration failed while adding handler.")
+        _update_diagnostics(
+            registered=False,
+            last_error="attach failed ({0})".format(_safe_text(source) or "unknown"),
+        )
         return False
 
     _HANDLER_REF = handler
@@ -586,11 +722,22 @@ def register_passive_detector(uiapp=None):
     # on the next registration.  If the envvar store fails, the module globals
     # still guard against re-registration within this engine.
     _set_envvar(HANDLER_ENVVAR, handler)
-    _log_debug("FailuresProcessing registered.")
+    diagnostics = load_diagnostics()
+    _save_diagnostics(
+        dict(
+            diagnostics,
+            registered=True,
+            registered_at=time.time(),
+            registered_by=_safe_text(source),
+            register_count=_safe_int(diagnostics.get("register_count"), 0) + 1,
+            last_error="",
+        )
+    )
+    _log_debug("FailuresProcessing registered ({0}).".format(_safe_text(source) or "unknown"))
     return True
 
 
-def unregister_passive_detector(uiapp=None):
+def unregister_passive_detector(uiapp=None, source=""):
     """Unregister the passive detector when the stored handler is available."""
     global _HANDLER_REF, _HANDLER_APP
 
@@ -605,3 +752,8 @@ def unregister_passive_detector(uiapp=None):
     _HANDLER_REF = None
     _HANDLER_APP = None
     _set_envvar(HANDLER_ENVVAR, None)
+    _update_diagnostics(
+        registered=False,
+        unregistered_at=time.time(),
+        unregistered_by=_safe_text(source),
+    )
