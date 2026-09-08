@@ -432,6 +432,59 @@ class StagedChanges(object):
                     or self.pending_sheets or self.copy_content_ops)
 
 
+class CustomizedExcelBatch(object):
+    """Selected Customized-Excel rows allowed through one Apply action."""
+
+    def __init__(self):
+        self._cells = set()
+        self._pending_rows = set()
+
+    def include_cell(self, row, attr):
+        self._cells.add((id(row), attr))
+
+    def include_pending_row(self, row):
+        self._pending_rows.add(id(row))
+
+    def has_changes(self):
+        return bool(self._cells or self._pending_rows)
+
+    def _includes_cell(self, row, attr):
+        return (id(row), attr) in self._cells
+
+    def select(self, changes):
+        """Return only the staged operations selected from Excel."""
+        selected = StagedChanges()
+        selected.pending_sheets = [
+            row for row in changes.pending_sheets
+            if id(row) in self._pending_rows
+        ]
+        selected.renames = [
+            item for item in changes.renames
+            if self._includes_cell(item[0], "number")
+        ]
+        selected.name_edits = [
+            item for item in changes.name_edits
+            if self._includes_cell(item[0], "name")
+        ]
+        selected.param_edits = [
+            item for item in changes.param_edits
+            if self._includes_cell(item[0], item[1].attr)
+        ]
+        for attr in ("revision_adds", "revision_removes",
+                     "cloud_hide_requests", "cloud_unhide_candidates"):
+            setattr(selected, attr, [
+                item for item in getattr(changes, attr)
+                if self._includes_cell(item[0], item[1].attr)
+            ])
+        return selected
+
+    def record_applied(self, applied_cells):
+        for row, attr in applied_cells or []:
+            self._cells.discard((id(row), attr))
+            if not getattr(row, "is_pending", False):
+                self._pending_rows.discard(id(row))
+
+
 def compute_staged_changes(rows, columns):
     changes = StagedChanges()
     for row in rows:

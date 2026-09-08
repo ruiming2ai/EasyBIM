@@ -211,6 +211,7 @@ class SheetManagerWindow(forms.WPFWindow):
         self._source_label = "All Sheets"
         self._selectall_cb = None
         self._source_order = None
+        self._custom_excel_batch = None
         self._all_revision_ids = set()
         self._revision_filter_ids = set()
         self._param_rules = []
@@ -700,6 +701,9 @@ class SheetManagerWindow(forms.WPFWindow):
             scoped = [by_id[sheet_id] for sheet_id in self._source_order
                       if sheet_id in by_id]
             scoped += [row for row in rows if row.is_pending]
+            if self._custom_excel_batch is not None:
+                scoped.sort(key=lambda row: getattr(
+                    row, "custom_excel_order", 1000000000))
             rows = scoped
         rows = state.search_rows(rows, self._columns, self._search_text)
         rows = state.filter_rows_by_revisions(
@@ -1038,6 +1042,8 @@ class SheetManagerWindow(forms.WPFWindow):
     def load_customized_excel(self, sender, args):
         del sender, args
         self._commit_pending_edit()
+        if self._block_if_staged_changes("Load Customized Excel"):
+            return
         self._run_in_revit(
             "Load Customized Excel", self._load_customized_excel_work)
 
@@ -1066,35 +1072,38 @@ class SheetManagerWindow(forms.WPFWindow):
             read_result.rows, smrevit.collect_sheets(self._doc))
         template_options = smrevit.collect_sheet_template_options(self._doc)
 
-        def create_sheets_from_template(template_sheet_id, import_rows):
-            created, failures = smrevit.create_sheets_from_template(
-                self._doc, template_sheet_id, import_rows)
-            if created:
-                session.set_model_sheets(smrevit.collect_sheets(self._doc))
-                self._sync_done(self._sync_work(uiapp))
-            return created, failures
-
-        def rename_sheets_to_excel(discrepancy_rows):
-            renamed, failures = smrevit.rename_sheets_to_excel(
-                self._doc, discrepancy_rows)
-            if renamed:
-                session.set_model_sheets(smrevit.collect_sheets(self._doc))
-                self._sync_done(self._sync_work(uiapp))
-            return renamed, failures
-
         dialog = self._show_dialog(dialogs.LoadCustomizedExcelWindow(
             "LoadCustomizedExcelDialog.xaml", excel_path, session,
-            read_result.warning, template_options,
-            create_sheets_from_template, rename_sheets_to_excel))
+            read_result.warning, template_options))
         if not dialog.result:
             return
-        source_order = [eid_to_int(row.revit_sheet.Id)
-                        for row in dialog.result]
-        if not source_order:
-            self._alert("No matching sheets are available to load.",
-                        title="Load Customized Excel")
-            return
+        batch = state.CustomizedExcelBatch()
+        source_order = []
+        by_id = dict((row.sheet_id, row) for row in self._all_rows)
+        name_column = state.columns_by_key(self._columns).get("name")
+        for imported in dialog.result:
+            if imported.is_pending:
+                row = SheetRow(None, imported.number, imported.name,
+                               False, 0)
+                row.template_sheet_id = imported.template_sheet_id
+                row.custom_excel_order = imported.index
+                state.populate_row(row, self._columns, {})
+                state.mark_pending_row_dirty(row, self._columns)
+                self._all_rows.append(row)
+                batch.include_pending_row(row)
+                continue
+            sheet_id = eid_to_int(imported.revit_sheet.Id)
+            row = by_id.get(sheet_id)
+            if row is None:
+                continue
+            row.custom_excel_order = imported.index
+            source_order.append(sheet_id)
+            if imported.stage_name and name_column is not None:
+                if state.apply_cell_edit(
+                        row, name_column, imported.source_row.sheet_name):
+                    batch.include_cell(row, name_column.attr)
         self._source_order = source_order
+        self._custom_excel_batch = batch if batch.has_changes() else None
         self._source_label = u"Customized Excel: {0}".format(
             os.path.basename(excel_path))
         self._refresh_visible_rows()
@@ -1425,6 +1434,8 @@ class SheetManagerWindow(forms.WPFWindow):
     def export_to_excel(self, sender, args):
         del sender, args
         self._commit_pending_edit()
+        if self._block_if_staged_changes("Export to Excel"):
+            return
         if not smxlsx.XLSXWRITER_AVAILABLE:
             self._alert(
                 "The 'xlsxwriter' module is not available in this "
@@ -1457,6 +1468,8 @@ class SheetManagerWindow(forms.WPFWindow):
     def import_from_excel(self, sender, args):
         del sender, args
         self._commit_pending_edit()
+        if self._block_if_staged_changes("Import from Excel"):
+            return
         file_path = forms.pick_file(
             files_filter="Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm"
                          "|All files (*.*)|*.*")
@@ -1848,13 +1861,21 @@ class SheetManagerWindow(forms.WPFWindow):
     def apply_changes(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        changes = state.compute_staged_changes(self._all_rows, self._columns)
-        changes.copy_content_ops = list(self._copy_content_ops)
+        all_changes = state.compute_staged_changes(
+            self._all_rows, self._columns)
+        all_changes.copy_content_ops = list(self._copy_content_ops)
+        batch = self._custom_excel_batch
+        changes = batch.select(all_changes) if batch is not None \
+            else all_changes
         if changes.is_empty():
-            self._alert("No staged changes to apply.", title="Sheet Manager")
+            message = "No staged changes to apply."
+            if batch is not None:
+                message = "No staged Customized Excel changes to apply."
+            self._alert(message, title="Sheet Manager")
             return
-        empty_rows, duplicate_groups = \
-            state.find_number_problems(self._all_rows)
+        number_rows = self._all_rows if batch is None else \
+            list(changes.pending_sheets)
+        empty_rows, duplicate_groups = state.find_number_problems(number_rows)
         if empty_rows or duplicate_groups:
             lines = []
             for row in empty_rows:
@@ -1891,10 +1912,23 @@ class SheetManagerWindow(forms.WPFWindow):
         def done(payload):
             results, stale = payload
             self._post_apply_refresh(results, stale)
+            if batch is not None:
+                batch.record_applied(results.applied_cells)
+                self._refresh_custom_excel_source_order()
+                if not batch.has_changes():
+                    self._custom_excel_batch = None
             self._show_dialog(dialogs.ApplyResultsWindow(
                 "ApplyResultsDialog.xaml", results))
 
         self._run_in_revit("Apply Changes", work, done)
+
+    def _refresh_custom_excel_source_order(self):
+        rows = [row for row in self._all_rows
+                if hasattr(row, "custom_excel_order")
+                and row.sheet_id is not None and not row.is_missing]
+        rows.sort(key=lambda row: row.custom_excel_order)
+        self._source_order = [row.sheet_id for row in rows]
+        self._refresh_visible_rows(preserve_selection=True)
 
     def _confirm_link_reload(self, title):
         choice = self._alert(
@@ -1903,6 +1937,8 @@ class SheetManagerWindow(forms.WPFWindow):
         return choice == "Reload links"
 
     def _checked_print_sheets(self, action_title):
+        if self._block_if_staged_changes(action_title):
+            return None
         checked = [row for row in self._visible_rows
                    if row.is_selected and not row.is_pending
                    and not row.is_missing
@@ -1921,6 +1957,16 @@ class SheetManagerWindow(forms.WPFWindow):
                 "continuing.", title=action_title)
             return None
         return sheets
+
+    def _block_if_staged_changes(self, action_title):
+        changes = state.compute_staged_changes(self._all_rows, self._columns)
+        changes.copy_content_ops = list(self._copy_content_ops)
+        if changes.is_empty():
+            return False
+        self._alert(
+            "Apply Changes before {0}. Staged edits are shown in red."
+            .format(action_title), title="Sheet Manager")
+        return True
 
     def _reload_and_post_command(self, action_title, command_member_name,
                                  sheets):

@@ -175,6 +175,38 @@ def _copy_writable_parameter_values(source, target, excluded_ids=None):
     return copied
 
 
+def _clear_sheet_collection(sheet):
+    """New Customized-Excel sheets belong in the main model collection."""
+    try:
+        sheet.SheetCollectionId = DB.ElementId.InvalidElementId
+    except Exception:
+        pass
+
+
+def _create_sheet_from_template(doc, template_sheet, template_tblock,
+                                sheet_number, sheet_name):
+    """Create one direct-model sheet and copy the allowed template values."""
+    sheet = DB.ViewSheet.Create(doc, template_tblock.GetTypeId())
+    _clear_sheet_collection(sheet)
+    sheet.SheetNumber = sheet_number
+    sheet.Name = sheet_name
+    _copy_writable_parameter_values(
+        template_sheet, sheet, _EXCLUDED_SHEET_PARAM_IDS)
+    doc.Regenerate()
+    new_tblocks = collect_titleblock_map(doc).get(eid_to_int(sheet.Id)) or []
+    if len(new_tblocks) != 1:
+        raise ValueError("The new sheet has no single title block.")
+    _copy_writable_parameter_values(template_tblock, new_tblocks[0])
+    revision_ids = clr_id_list_factory()()
+    for revision_id in template_sheet.GetAdditionalRevisionIds():
+        revision_ids.Add(revision_id)
+    sheet.SetAdditionalRevisionIds(revision_ids)
+    # Excel remains authoritative even where template parameter names overlap.
+    sheet.SheetNumber = sheet_number
+    sheet.Name = sheet_name
+    return sheet
+
+
 def create_sheets_from_template(doc, template_sheet_id, import_rows):
     """Create empty sheets from one template.
 
@@ -198,7 +230,6 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
         pass
 
     template_tblock = template_tblocks[0]
-    titleblock_type_id = template_tblock.GetTypeId()
     created = []
     failures = []
     with revit.Transaction("Sheet Manager - Create Excel Sheets", doc=doc):
@@ -206,27 +237,9 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
             subtransaction = DB.SubTransaction(doc)
             try:
                 subtransaction.Start()
-                sheet = DB.ViewSheet.Create(doc, titleblock_type_id)
-                sheet.SheetNumber = import_row.sheet_number
-                sheet.Name = import_row.sheet_name
-                _copy_writable_parameter_values(
-                    template_sheet, sheet, _EXCLUDED_SHEET_PARAM_IDS)
-                doc.Regenerate()
-                new_tblocks = collect_titleblock_map(doc).get(
-                    eid_to_int(sheet.Id)) or []
-                if len(new_tblocks) != 1:
-                    raise ValueError("The new sheet has no single title block.")
-                _copy_writable_parameter_values(template_tblock,
-                                                 new_tblocks[0])
-                revision_ids = clr_id_list_factory()()
-                for revision_id in template_sheet.GetAdditionalRevisionIds():
-                    revision_ids.Add(revision_id)
-                sheet.SetAdditionalRevisionIds(revision_ids)
-                # Excel is the source of truth for the newly-created sheet
-                # identity, even when a template exposes similarly named
-                # writable parameters.
-                sheet.SheetNumber = import_row.sheet_number
-                sheet.Name = import_row.sheet_name
+                sheet = _create_sheet_from_template(
+                    doc, template_sheet, template_tblock,
+                    import_row.sheet_number, import_row.sheet_name)
                 subtransaction.Commit()
                 created.append(sheet)
             except Exception as err:
@@ -238,42 +251,6 @@ def create_sheets_from_template(doc, template_sheet_id, import_rows):
                     getattr(import_row, "sheet_number", u""),
                     exception_text(err)))
     return created, failures
-
-
-def rename_sheets_to_excel(doc, discrepancy_rows):
-    """Rename selected matched sheets to their nonblank Excel names.
-
-    Returns ``(renamed_sheets, failure_messages)``. Each rename has an
-    independent subtransaction so a rejected Revit name leaves other selected
-    discrepancy rows available for the same attempt.
-    """
-    renamed = []
-    failures = []
-    with revit.Transaction("Sheet Manager - Rename Excel Sheet Names",
-                           doc=doc):
-        for discrepancy in discrepancy_rows or []:
-            subtransaction = DB.SubTransaction(doc)
-            try:
-                subtransaction.Start()
-                sheet = getattr(discrepancy, "revit_sheet", None)
-                excel_name = u"{0}".format(
-                    getattr(discrepancy, "excel_name", u"") or u"").strip()
-                if sheet is None:
-                    raise ValueError("Matched sheet is no longer available.")
-                if not excel_name:
-                    raise ValueError("Excel sheet name is blank.")
-                sheet.Name = excel_name
-                subtransaction.Commit()
-                renamed.append(sheet)
-            except Exception as err:
-                try:
-                    subtransaction.RollBack()
-                except Exception:
-                    pass
-                failures.append(u"{0}: {1}".format(
-                    getattr(discrepancy, "number", u""),
-                    exception_text(err)))
-    return renamed, failures
 
 
 def read_light_snapshot(doc, known_ids):
@@ -489,6 +466,7 @@ def _builtin_int(builtin_param):
 _EXCLUDED_SHEET_PARAM_IDS = set(x for x in (
     _builtin_int(getattr(DB.BuiltInParameter, "SHEET_NUMBER", None)),
     _builtin_int(getattr(DB.BuiltInParameter, "SHEET_NAME", None)),
+    _builtin_int(getattr(DB.BuiltInParameter, "SHEET_COLLECTION", None)),
 ) if x is not None)
 
 
@@ -979,10 +957,22 @@ def _apply_creates(doc, changes, sheets_by_id, tb_map, results,
     with revit.Transaction("Sheet Manager - Create Sheets", doc=doc):
         for row in changes.pending_sheets:
             try:
-                sheet = DB.ViewSheet.Create(doc, tb_type_id)
-                sheet.SheetNumber = row.number
-                if row.name:
-                    sheet.Name = row.name
+                template_sheet_id = getattr(row, "template_sheet_id", None)
+                template_sheet = sheets_by_id.get(template_sheet_id)
+                template_tblocks = tb_map.get(template_sheet_id) or []
+                if template_sheet_id is not None:
+                    if template_sheet is None or len(template_tblocks) != 1:
+                        raise ValueError(
+                            "The selected sheet template is no longer usable.")
+                    sheet = _create_sheet_from_template(
+                        doc, template_sheet, template_tblocks[0],
+                        row.number, row.name)
+                else:
+                    sheet = DB.ViewSheet.Create(doc, tb_type_id)
+                    _clear_sheet_collection(sheet)
+                    sheet.SheetNumber = row.number
+                    if row.name:
+                        sheet.Name = row.name
                 row.sheet_id = eid_to_int(sheet.Id)
                 row.is_pending = False
                 sheets_by_id[row.sheet_id] = sheet

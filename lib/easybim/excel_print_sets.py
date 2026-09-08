@@ -76,14 +76,21 @@ class DiscrepancyRow(object):
 class ExcelPrintSetRow(object):
     """Validated sheet row ready for native print-set saving."""
 
-    def __init__(self, import_row, revit_sheet, index):
+    def __init__(self, import_row, revit_sheet, index,
+                 template_sheet_id=None, stage_name=False):
         self.source_row = import_row
         self.revit_sheet = revit_sheet
         self.excel_row = getattr(import_row, "excel_row", 0)
         self.index = index
-        self.number = _safe_text(getattr(revit_sheet, "SheetNumber", ""))
-        self.name = _safe_text(getattr(revit_sheet, "Name", ""))
-        self.printable = bool(getattr(revit_sheet, "CanBePrinted", False))
+        self.template_sheet_id = template_sheet_id
+        self.is_pending = template_sheet_id is not None
+        self.stage_name = bool(stage_name)
+        self.number = _safe_text(getattr(
+            revit_sheet, "SheetNumber", import_row.sheet_number))
+        self.name = _safe_text(getattr(
+            revit_sheet, "Name", import_row.sheet_name))
+        self.printable = bool(getattr(revit_sheet, "CanBePrinted", False)) \
+            if revit_sheet is not None else False
         self.status = "Printable" if self.printable else "Skipped"
 
 
@@ -104,12 +111,28 @@ class ExcelPrintSetSession(object):
 
     def __init__(self, rows, model_sheets):
         self.rows = list(rows or [])
+        self._creation_templates = {}
+        self._renamed_row_ids = set()
         self.set_model_sheets(model_sheets)
 
     def set_model_sheets(self, model_sheets):
         """Replace the model snapshot after immediate sheet creation."""
         self.model_sheets = list(model_sheets or [])
         self._sheet_by_number = _build_sheet_index(self.model_sheets)
+
+    def stage_creations(self, discrepancy_rows, template_sheet_id):
+        """Mark selected missing rows for creation during Apply Changes."""
+        for discrepancy in discrepancy_rows or []:
+            source_row = getattr(discrepancy, "source_row", None)
+            if source_row is not None:
+                self._creation_templates[source_row.row_id] = template_sheet_id
+
+    def stage_renames(self, discrepancy_rows):
+        """Mark selected name discrepancies for a staged Excel rename."""
+        for discrepancy in discrepancy_rows or []:
+            source_row = getattr(discrepancy, "source_row", None)
+            if source_row is not None:
+                self._renamed_row_ids.add(source_row.row_id)
 
     def validate(self, selected_revision_ids=None):
         selected_revision_ids = set([
@@ -154,6 +177,12 @@ class ExcelPrintSetSession(object):
 
             revit_sheet = self._sheet_by_number.get(number_key)
             if revit_sheet is None:
+                template_sheet_id = self._creation_templates.get(
+                    import_row.row_id)
+                if template_sheet_id is not None:
+                    matched_pairs.append((import_row, None,
+                                          template_sheet_id, False))
+                    continue
                 number_discrepancies.append(
                     DiscrepancyRow(
                         import_row,
@@ -166,6 +195,10 @@ class ExcelPrintSetSession(object):
             name_key = normalize_key(import_row.sheet_name)
             model_name_key = normalize_key(getattr(revit_sheet, "Name", ""))
             if name_key != model_name_key:
+                if import_row.row_id in self._renamed_row_ids:
+                    matched_pairs.append((import_row, revit_sheet,
+                                          None, True))
+                    continue
                 name_discrepancies.append(
                     DiscrepancyRow(
                         import_row,
@@ -175,11 +208,13 @@ class ExcelPrintSetSession(object):
                 )
                 continue
 
-            matched_pairs.append((import_row, revit_sheet))
+            matched_pairs.append((import_row, revit_sheet, None, False))
 
         final_rows = [
-            ExcelPrintSetRow(import_row, revit_sheet, index + 1)
-            for index, (import_row, revit_sheet) in enumerate(matched_pairs)
+            ExcelPrintSetRow(import_row, revit_sheet, index + 1,
+                             template_sheet_id, stage_name)
+            for index, (import_row, revit_sheet, template_sheet_id,
+                        stage_name) in enumerate(matched_pairs)
         ]
         return ExcelValidationResult(
             number_discrepancies,

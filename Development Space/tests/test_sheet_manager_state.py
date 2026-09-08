@@ -213,6 +213,43 @@ class StagedChangesTests(unittest.TestCase):
         self.assertEqual(len(changes.param_edits), 1)
 
 
+class CustomizedExcelBatchTests(unittest.TestCase):
+    def test_batch_keeps_only_its_selected_name_edit_and_pending_sheet(self):
+        columns = build_columns()
+        selected = make_row(columns, sheet_id=1, name="Revit name")
+        unrelated = make_row(columns, sheet_id=2, name="Other Revit name")
+        pending = st.SheetRowBase(None, "A200", "Excel new sheet", False, 0)
+        st.populate_row(pending, columns, {})
+
+        name_column = column_by_key(columns, "name")
+        self.assertTrue(st.apply_cell_edit(selected, name_column, "Excel name"))
+        self.assertTrue(st.apply_cell_edit(
+            unrelated, name_column, "Unrelated staged name"))
+        st.mark_pending_row_dirty(pending, columns)
+
+        batch = st.CustomizedExcelBatch()
+        batch.include_cell(selected, name_column.attr)
+        batch.include_pending_row(pending)
+        changes = batch.select(
+            st.compute_staged_changes([selected, unrelated, pending], columns))
+
+        self.assertEqual([item[0] for item in changes.name_edits], [selected])
+        self.assertEqual(changes.pending_sheets, [pending])
+        self.assertTrue(batch.has_changes())
+
+    def test_batch_removes_only_successfully_applied_cells(self):
+        columns = build_columns()
+        row = make_row(columns, sheet_id=1, name="Revit name")
+        name_column = column_by_key(columns, "name")
+        st.apply_cell_edit(row, name_column, "Excel name")
+        batch = st.CustomizedExcelBatch()
+        batch.include_cell(row, name_column.attr)
+
+        batch.record_applied([(row, name_column.attr)])
+
+        self.assertFalse(batch.has_changes())
+
+
 class NumberPlanningTests(unittest.TestCase):
     def test_simple_rename(self):
         temp, final = st.plan_number_assignments(

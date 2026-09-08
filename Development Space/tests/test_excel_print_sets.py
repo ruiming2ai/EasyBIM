@@ -268,6 +268,28 @@ class ExcelPrintSetsTests(unittest.TestCase):
         self.assertTrue(result.can_continue)
         self.assertEqual([row.number for row in result.final_rows], ["A900"])
 
+    def test_selected_creations_and_renames_become_staged_excel_rows(self):
+        module = _load_module()
+        rows = [
+            module.ExcelImportRow(1, "A001", "Excel Detail"),
+            module.ExcelImportRow(2, "A900", "Excel New Sheet"),
+        ]
+        session = module.ExcelPrintSetSession(
+            rows, [_FakeSheet("A001", "Revit Detail")])
+        first = session.validate()
+
+        session.stage_renames(first.name_discrepancies)
+        session.stage_creations(first.number_discrepancies, 321)
+        result = session.validate()
+
+        self.assertTrue(result.can_continue)
+        self.assertEqual([row.number for row in result.final_rows],
+                         ["A001", "A900"])
+        self.assertTrue(result.final_rows[0].stage_name)
+        self.assertFalse(result.final_rows[0].is_pending)
+        self.assertTrue(result.final_rows[1].is_pending)
+        self.assertEqual(result.final_rows[1].template_sheet_id, 321)
+
     def test_revision_filter_hides_unresolved_rows_and_preserves_matching_order(self):
         module = _load_module()
         rows = [

@@ -170,16 +170,13 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
     """Resolve Excel discrepancies before loading its matching sheet rows."""
 
     def __init__(self, xaml_file_name, excel_path, session, warning=None,
-                 template_options=None, create_callback=None,
-                 rename_callback=None):
+                 template_options=None):
         self._is_ready = False
         self.result = None
         self._session = session
         self._warning = warning
         self._validation = None
         self._template_options = list(template_options or [])
-        self._create_callback = create_callback
-        self._rename_callback = rename_callback
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.file_tb.Text = excel_path
         self.warning_tb.Text = warning or u""
@@ -201,8 +198,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
                 row.can_create
                 for row in self._validation.number_discrepancies))
         self.rename_selected_b.IsEnabled = bool(
-            self._rename_callback is not None and any(
-                row.can_rename
+            any(row.can_rename
                 for row in self._validation.name_discrepancies))
 
         self.summary_tb.Text = (
@@ -218,7 +214,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         elif self._validation.number_discrepancies \
                 or self._validation.name_discrepancies:
             self.errormsg_tb.Text = \
-                u"Correct the visible discrepancies in Excel or Revit, then reload this dialog."
+                u"Select the discrepancies to stage, or correct Excel or Revit and reload this dialog."
             self.show_element(self.errormsg_block)
         else:
             self.errormsg_tb.Text = \
@@ -235,7 +231,7 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             forms.alert("Check at least one missing sheet to create.",
                         title="Create Selected Sheets")
             return
-        if not self._template_options or self._create_callback is None:
+        if not self._template_options:
             forms.alert("No usable sheet templates are available.",
                         title="Create Selected Sheets")
             return
@@ -245,20 +241,12 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
         dialog.ShowDialog()
         if dialog.result is None:
             return
-        try:
-            created, failures = self._create_callback(
-                dialog.result, [row.source_row for row in selected])
-        except Exception as err:
-            forms.alert("Could not create the selected sheets.",
-                        expanded=str(err), title="Create Selected Sheets")
-            return
+        self._session.stage_creations(selected, dialog.result)
         self._refresh_validation()
-        message = ["Created sheets: {0}".format(len(created))]
-        if failures:
-            message.append("Failed sheets: {0}".format(len(failures)))
-        forms.alert("\n".join(message),
-                    expanded="\n".join(failures) or None,
-                    title="Create Selected Sheets")
+        forms.alert(
+            "Selected sheets are staged for creation. Click Load, then "
+            "Apply Changes to create them in Revit.",
+            title="Create Selected Sheets")
 
     def rename_selected_sheets(self, sender, args):
         del sender, args
@@ -270,23 +258,12 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             forms.alert("Check at least one sheet name to rename.",
                         title="Rename to Match Excel")
             return
-        if self._rename_callback is None:
-            forms.alert("Sheet-name renaming is unavailable.",
-                        title="Rename to Match Excel")
-            return
-        try:
-            renamed, failures = self._rename_callback(selected)
-        except Exception as err:
-            forms.alert("Could not rename the selected sheets.",
-                        expanded=str(err), title="Rename to Match Excel")
-            return
+        self._session.stage_renames(selected)
         self._refresh_validation()
-        message = ["Renamed sheets: {0}".format(len(renamed))]
-        if failures:
-            message.append("Failed sheets: {0}".format(len(failures)))
-        forms.alert("\n".join(message),
-                    expanded="\n".join(failures) or None,
-                    title="Rename to Match Excel")
+        forms.alert(
+            "Selected sheet names are staged. Click Load, then Apply "
+            "Changes to rename them in Revit.",
+            title="Rename to Match Excel")
 
     def load_clicked(self, sender, args):
         del sender, args

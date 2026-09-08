@@ -193,7 +193,7 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertNotIn("def skip_discrepancies", dialogs_source)
         self.assertNotIn("def skip_number_discrepancies", dialogs_source)
         self.assertNotIn("def skip_name_discrepancies", dialogs_source)
-        self.assertIn("Correct the visible discrepancies", dialogs_source)
+        self.assertIn("Select the discrepancies to stage", dialogs_source)
 
     def test_customized_excel_lists_sheet_name_discrepancies(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
@@ -222,11 +222,47 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn("can_create", xaml)
         self.assertIn("CreateSheetsFromTemplateWindow", dialogs_source)
         self.assertIn("def create_selected_sheets", dialogs_source)
-        self.assertIn("create_sheets_from_template", ui_source)
+        self.assertIn("template_sheet_id", ui_source)
+        self.assertIn("CustomizedExcelBatch", ui_source)
         self.assertIn("def collect_sheet_template_options", revit_source)
         self.assertIn("DB.ViewSheet.Create", revit_source)
         self.assertIn("GetAdditionalRevisionIds", revit_source)
         self.assertIn("_copy_writable_parameter_values", revit_source)
+
+    def test_customized_excel_template_dialog_fits_its_footer(self):
+        xaml = (COMMAND_DIR / "CreateSheetsFromTemplateDialog.xaml").read_text(
+            encoding="utf-8")
+        self.assertIn('SizeToContent="Height"', xaml)
+        self.assertIn('MinHeight="250"', xaml)
+
+    def test_customized_excel_excludes_sheet_collection_from_template_copy(self):
+        source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
+            encoding="utf-8")
+        excluded = source.split("_EXCLUDED_SHEET_PARAM_IDS =", 1)[1]\
+            .split("def excluded_sheet_param_ids", 1)[0]
+        self.assertIn('"SHEET_COLLECTION"', excluded)
+        self.assertIn("SheetCollectionId", source)
+
+    def test_customized_excel_is_staged_and_applied_as_its_own_batch(self):
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        dialogs_source = (COMMAND_DIR / "sheet_manager_dialogs.py").read_text(
+            encoding="utf-8")
+        self.assertIn("CustomizedExcelBatch", ui_source)
+        self.assertIn("batch.select", ui_source)
+        self.assertIn("stage_creations", dialogs_source)
+        self.assertIn("stage_renames", dialogs_source)
+        self.assertNotIn("rename_sheets_to_excel(", ui_source)
+
+    def test_staged_changes_block_excel_export_import_and_native_output(self):
+        source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        for method_name in ("export_to_excel", "import_from_excel",
+                            "load_customized_excel", "_checked_print_sheets"):
+            body = source.split("def {0}".format(method_name), 1)[1]\
+                .split("\n    def ", 1)[0]
+            self.assertIn("_block_if_staged_changes", body)
+        self.assertIn("def _block_if_staged_changes", source)
 
     def test_customized_excel_separates_create_and_rename_actions_by_panel(self):
         xaml = (COMMAND_DIR / "LoadCustomizedExcelDialog.xaml").read_text(
@@ -250,26 +286,27 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertIn('IsEnabled="{Binding can_rename}"', xaml)
         self.assertIn('Click="rename_selected_sheets"', xaml)
         self.assertIn("def rename_selected_sheets", dialogs_source)
-        self.assertIn("rename_sheets_to_excel", ui_source)
-        self.assertIn("def rename_sheets_to_excel", revit_source)
+        self.assertIn("stage_renames", dialogs_source)
+        self.assertIn("CustomizedExcelBatch", ui_source)
+        self.assertNotIn("def rename_sheets_to_excel", revit_source)
 
     def test_created_sheet_identity_is_reapplied_after_template_values(self):
         source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
             encoding="utf-8")
-        creation_body = source.split("def create_sheets_from_template", 1)[1]\
-            .split("\ndef read_light_snapshot", 1)[0]
+        creation_body = source.split("def _create_sheet_from_template", 1)[1]\
+            .split("\ndef create_sheets_from_template", 1)[0]
         sheet_values = creation_body.index(
-            "_copy_writable_parameter_values(\n                    template_sheet")
+            "_copy_writable_parameter_values(\n        template_sheet")
         titleblock_values = creation_body.index(
             "_copy_writable_parameter_values(template_tblock")
         first_excel_number = creation_body.index(
-            "sheet.SheetNumber = import_row.sheet_number")
+            "sheet.SheetNumber = sheet_number")
         first_excel_name = creation_body.index(
-            "sheet.Name = import_row.sheet_name")
+            "sheet.Name = sheet_name")
         last_excel_number = creation_body.rindex(
-            "sheet.SheetNumber = import_row.sheet_number")
+            "sheet.SheetNumber = sheet_number")
         last_excel_name = creation_body.rindex(
-            "sheet.Name = import_row.sheet_name")
+            "sheet.Name = sheet_name")
 
         self.assertLess(first_excel_number, sheet_values)
         self.assertLess(first_excel_name, sheet_values)
@@ -346,82 +383,6 @@ class SheetManagerBundleTests(unittest.TestCase):
 
         self.assertEqual(copied, 0)
         self.assertEqual(target_number.value, "Excel E1")
-
-    def test_rename_to_excel_keeps_other_selected_rows_when_one_fails(self):
-        source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
-            encoding="utf-8")
-        tree = ast.parse(source)
-        function = next(
-            node for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "rename_sheets_to_excel")
-
-        class Transaction(object):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_value, traceback):
-                return False
-
-        class SubTransaction(Transaction):
-            def __init__(self, doc):
-                self.doc = doc
-
-            def Start(self):
-                return None
-
-            def Commit(self):
-                return None
-
-            def RollBack(self):
-                return None
-
-        namespace = {
-            "DB": type("DB", (), {"SubTransaction": SubTransaction}),
-            "revit": type("Revit", (), {
-                "Transaction": staticmethod(
-                    lambda title, doc: Transaction())
-            }),
-            "exception_text": str,
-        }
-        exec(compile(ast.Module(body=[function], type_ignores=[]),
-                     "sheet_manager_revit.py", "exec"), namespace)
-        rename_sheets = namespace["rename_sheets_to_excel"]
-
-        class Sheet(object):
-            def __init__(self, name, reject_name=None):
-                self._name = name
-                self._reject_name = reject_name
-
-            @property
-            def Name(self):
-                return self._name
-
-            @Name.setter
-            def Name(self, value):
-                if value == self._reject_name:
-                    raise ValueError("Rejected sheet name")
-                self._name = value
-
-        class Discrepancy(object):
-            def __init__(self, number, excel_name, sheet):
-                self.number = number
-                self.excel_name = excel_name
-                self.revit_sheet = sheet
-
-        accepted = Sheet("Revit Detail")
-        rejected = Sheet("Revit Schedule", reject_name="Excel Schedule")
-        renamed, failures = rename_sheets(
-            object(), [
-                Discrepancy("A001", "Excel Detail", accepted),
-                Discrepancy("A002", "Excel Schedule", rejected),
-            ])
-
-        self.assertEqual(renamed, [accepted])
-        self.assertEqual(accepted.Name, "Excel Detail")
-        self.assertEqual(rejected.Name, "Revit Schedule")
-        self.assertEqual(len(failures), 1)
-        self.assertIn("A002", failures[0])
 
     def test_pdf_export_and_print_post_checked_visible_rows_as_in_session_set(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
