@@ -175,19 +175,50 @@ def _copy_writable_parameter_values(source, target, excluded_ids=None):
     return copied
 
 
-def _clear_sheet_collection(sheet):
-    """New Customized-Excel sheets belong in the main model collection."""
+def _is_invalid_element_id(element_id):
+    if element_id is None:
+        return True
+    try:
+        return eid_to_int(element_id) == \
+            eid_to_int(DB.ElementId.InvalidElementId)
+    except Exception:
+        return element_id == DB.ElementId.InvalidElementId
+
+
+def _ensure_direct_model_sheet(doc, sheet):
+    """Remove a new sheet from any Sheet Collection before numbering it.
+
+    Sheet Collections were added in Revit 2025.  Revit can finalize a new
+    sheet's collection association during regeneration, so clear and verify
+    that association after regenerating instead of silently ignoring a failed
+    early assignment.  Older Revit hosts do not expose this property and
+    already create direct-model sheets.
+    """
+    try:
+        sheet.SheetCollectionId
+    except AttributeError:
+        return
+    doc.Regenerate()
+    collection_id = sheet.SheetCollectionId
+    if _is_invalid_element_id(collection_id):
+        return
     try:
         sheet.SheetCollectionId = DB.ElementId.InvalidElementId
-    except Exception:
-        pass
+    except Exception as err:
+        raise ValueError(
+            "Could not remove the new sheet from its Sheet Collection: {0}"
+            .format(exception_text(err)))
+    doc.Regenerate()
+    if not _is_invalid_element_id(sheet.SheetCollectionId):
+        raise ValueError(
+            "The new sheet is still associated with a Sheet Collection.")
 
 
 def _create_sheet_from_template(doc, template_sheet, template_tblock,
                                 sheet_number, sheet_name):
     """Create one direct-model sheet and copy the allowed template values."""
     sheet = DB.ViewSheet.Create(doc, template_tblock.GetTypeId())
-    _clear_sheet_collection(sheet)
+    _ensure_direct_model_sheet(doc, sheet)
     sheet.SheetNumber = sheet_number
     sheet.Name = sheet_name
     _copy_writable_parameter_values(
@@ -202,6 +233,7 @@ def _create_sheet_from_template(doc, template_sheet, template_tblock,
         revision_ids.Add(revision_id)
     sheet.SetAdditionalRevisionIds(revision_ids)
     # Excel remains authoritative even where template parameter names overlap.
+    _ensure_direct_model_sheet(doc, sheet)
     sheet.SheetNumber = sheet_number
     sheet.Name = sheet_name
     return sheet
@@ -969,7 +1001,7 @@ def _apply_creates(doc, changes, sheets_by_id, tb_map, results,
                         row.number, row.name)
                 else:
                     sheet = DB.ViewSheet.Create(doc, tb_type_id)
-                    _clear_sheet_collection(sheet)
+                    _ensure_direct_model_sheet(doc, sheet)
                     sheet.SheetNumber = row.number
                     if row.name:
                         sheet.Name = row.name

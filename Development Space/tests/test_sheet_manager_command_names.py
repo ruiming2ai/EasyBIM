@@ -353,6 +353,60 @@ class SheetManagerBundleTests(unittest.TestCase):
                       copy_body)
         self.assertIn("if target_param_id in excluded_ids:", copy_body)
 
+    def test_new_sheet_is_verified_direct_before_excel_number_assignment(self):
+        source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+        functions = [
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in ("_is_invalid_element_id",
+                              "_ensure_direct_model_sheet")
+        ]
+        namespace = {
+            "DB": type("DB", (), {
+                "ElementId": type("ElementId", (), {
+                    "InvalidElementId": -1,
+                }),
+            }),
+            "eid_to_int": lambda element_id: element_id,
+        }
+        exec(compile(ast.Module(body=functions, type_ignores=[]),
+                     "sheet_manager_revit.py", "exec"), namespace)
+
+        events = []
+
+        class Document(object):
+            def Regenerate(self):
+                events.append("regenerate")
+
+        class Sheet(object):
+            def __init__(self):
+                self._collection_id = 42
+
+            @property
+            def SheetCollectionId(self):
+                return self._collection_id
+
+            @SheetCollectionId.setter
+            def SheetCollectionId(self, value):
+                events.append(("set_collection", value))
+                self._collection_id = value
+
+        sheet = Sheet()
+        namespace["_ensure_direct_model_sheet"](Document(), sheet)
+
+        self.assertEqual(sheet.SheetCollectionId, -1)
+        self.assertEqual(events,
+                         ["regenerate", ("set_collection", -1),
+                          "regenerate"])
+
+        creation_body = source.split("def _create_sheet_from_template", 1)[1]\
+            .split("\ndef create_sheets_from_template", 1)[0]
+        self.assertLess(
+            creation_body.index("_ensure_direct_model_sheet(doc, sheet)"),
+            creation_body.index("sheet.SheetNumber = sheet_number"))
+
     def test_parameter_copy_does_not_overwrite_target_sheet_identity(self):
         source = (COMMAND_DIR / "sheet_manager_revit.py").read_text(
             encoding="utf-8")
