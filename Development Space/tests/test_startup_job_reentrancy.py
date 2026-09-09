@@ -7,7 +7,9 @@ before marking itself done could be entered twice - stacking a second dialog
 and, for the coordination report, consuming the recorded warnings twice.
 """
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import sys
 import time
@@ -320,6 +322,157 @@ class EmptyReportDiagnosisTests(unittest.TestCase):
 
         self.assertTrue(report["detection_error"])
         self.assertEqual(report["diagnosis"]["code"], "listener_off")
+
+
+class FakeOutput(object):
+    """pyRevit's output console: the HTML fallback when WPF will not open."""
+
+    def __init__(self):
+        self.html = ""
+
+    def print_html(self, html):
+        self.html = html
+
+
+class FallbackRendererTests(unittest.TestCase):
+    """When the WPF window fails to build, the report is printed into pyRevit's
+    output console instead.  Those renderers were written for the old
+    warning-shaped report, so a computed one used to print "No Revit links
+    found in this document" over a model with real differences - a false
+    all-clear on the backup screen."""
+
+    def setUp(self):
+        self.messages = _load_messages()
+
+    def _computed(self, **overrides):
+        report = {
+            "doc_title": "11070-MHGC-AEI-001",
+            "source": "computed",
+            "monitored_link_count": 4,
+            "checked_count": 4,
+            "problem_count": 1,
+            "total_issues": 3,
+            "links": [
+                {
+                    "link_id": 11,
+                    "name": "ARCH.rvt",
+                    "issue_count": 3,
+                    "estimated_count": 1,
+                    "monitoring_count": 12,
+                    "error": "",
+                    "report": {
+                        "groups": [
+                            {"kind": "level_moved", "title": "Level moved", "issues": [{}, {}]},
+                            {
+                                "kind": "element_moved",
+                                "title": "Element moved",
+                                "estimated": True,
+                                "issues": [{}],
+                            },
+                        ]
+                    },
+                },
+                {
+                    "link_id": 12,
+                    "name": "STR.rvt",
+                    "issue_count": 0,
+                    "monitoring_count": 5,
+                    "error": "",
+                    "report": {"groups": []},
+                },
+            ],
+        }
+        report.update(overrides)
+        return report
+
+    def test_html_fallback_reports_the_computed_differences(self):
+        output = FakeOutput()
+        self.messages._render_report_html(output, self._computed())
+
+        self.assertNotIn("No Revit links found in this document", output.html)
+        self.assertIn("11070-MHGC-AEI-001", output.html)
+        self.assertIn("3 differences across 1 link of 4 monitored links", output.html)
+        self.assertIn("ARCH.rvt", output.html)
+        self.assertIn("3 differences found (12 monitored elements)", output.html)
+        self.assertIn("Level moved: 2", output.html)
+        self.assertIn("Element moved (estimated): 1", output.html)
+        # A clean link still gets a row, as in the window.
+        self.assertIn("STR.rvt", output.html)
+        self.assertIn("No differences found (5 monitored elements)", output.html)
+
+    def test_html_fallback_states_the_proved_not_applicable(self):
+        output = FakeOutput()
+        self.messages._render_report_html(
+            output, self._computed(monitored_link_count=0, checked_count=0, links=[])
+        )
+
+        self.assertIn("Nothing in this model uses Copy/Monitor", output.html)
+        self.assertNotIn("No Revit links found in this document", output.html)
+
+    def test_html_fallback_still_renders_a_warning_shaped_report(self):
+        """The passive report is still what shows when the comparison fails."""
+        output = FakeOutput()
+        self.messages._render_report_html(
+            output,
+            {
+                "doc_title": "Tower.rvt",
+                "link_map": {7: {"name": "ARCH.rvt"}},
+                "grouped": {7: {"Needs Coordination Review": {"count": 1, "instance_ids": set()}}},
+                "link_totals": {7: 1},
+                "total_matching_warnings": 1,
+                "total_link_assignments": 1,
+            },
+        )
+
+        self.assertIn("ARCH.rvt", output.html)
+        self.assertIn("Needs Coordination Review", output.html)
+
+    def test_text_fallback_reports_the_computed_differences(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.messages._render_report_text(self._computed())
+        text = buffer.getvalue()
+
+        self.assertNotIn("No Revit links found in this document", text)
+        self.assertIn("3 differences across 1 link of 4 monitored links", text)
+        self.assertIn("ARCH.rvt", text)
+        self.assertIn("Level moved: 2", text)
+
+    def test_text_fallback_still_renders_a_warning_shaped_report(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.messages._render_report_text(
+                {
+                    "doc_title": "Tower.rvt",
+                    "link_map": {7: {"name": "ARCH.rvt"}},
+                    "grouped": {7: {"Needs Coordination Review": {"count": 1, "instance_ids": set()}}},
+                    "link_totals": {7: 1},
+                }
+            )
+        self.assertIn("ARCH.rvt", buffer.getvalue())
+
+    def test_a_computed_report_is_recognised_without_the_source_marker(self):
+        self.assertTrue(self.messages._is_computed_report({"links": []}))
+        self.assertTrue(self.messages._is_computed_report({"source": "computed"}))
+        self.assertFalse(self.messages._is_computed_report({"link_map": {}, "grouped": {}}))
+        self.assertFalse(self.messages._is_computed_report({}))
+
+    def test_a_failing_fallback_never_escapes_the_report(self):
+        """_print_coordination_review_report swallows fallback failures; a
+        broken console must not take Start Message down with it."""
+        computed = self._computed()
+        with mock.patch.object(
+            self.messages, "_show_coordination_review_dialog", return_value=False
+        ), mock.patch.object(
+            self.messages, "_build_computed_coordination_report", return_value=computed
+        ), mock.patch.object(
+            self.messages, "_get_output_window", return_value=None
+        ), mock.patch.object(
+            self.messages, "_render_report_text", side_effect=RuntimeError("no stream")
+        ), mock.patch.object(
+            self.messages, "_disable_passive_coordination_review_detector"
+        ):
+            self.messages._print_coordination_review_report(FakeDocument())
 
 
 class FakeControlledApp(object):

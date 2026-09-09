@@ -1236,9 +1236,75 @@ def _sum_link_warning_counts(link_bucket):
     return total
 
 
+def _is_computed_report(report):
+    """True for the comparison-built report, false for the warning-built one.
+
+    Both reach these renderers: the comparison is what normally runs, and the
+    passive report is the fallback when the comparison itself fails.
+    """
+    report = report or {}
+    return report.get("source") == "computed" or "links" in report
+
+
+def _computed_report_lines(report):
+    """``(headline, [(link name, status, [group lines])])`` for a computed report.
+
+    Built from the very records the WPF window renders, so the console
+    fallbacks cannot drift from it and claim something different.
+    """
+    from easybim import coordination_review_model
+
+    summary = coordination_review_model.summarize_checked_links(report)
+    records = coordination_review_model.build_checked_link_records(report)
+
+    rows = []
+    for record in records:
+        groups = []
+        for group in list(record.get("groups", []) or []):
+            title = _safe_text(group.get("title")) or _safe_text(group.get("kind"))
+            count = len(list(group.get("issues", []) or []))
+            if group.get("estimated"):
+                title = "{} (estimated)".format(title)
+            groups.append("{}: {}".format(title, count))
+        rows.append(
+            (
+                _safe_text(record.get("name")),
+                _safe_text(record.get("status_text")),
+                groups,
+            )
+        )
+    return _safe_text(summary.get("headline")), _safe_text(summary.get("detail")), rows
+
+
+def _render_computed_report_html(output, report):
+    html = ["<h3>Coordination Review Summary</h3>"]
+    html.append(
+        "<p><b>Document:</b> {}</p>".format(_escape_html(report.get("doc_title", "(Unknown)")))
+    )
+    headline, detail, rows = _computed_report_lines(report)
+    html.append("<p><b>{}</b></p>".format(_escape_html(headline)))
+    if detail:
+        html.append("<p>{}</p>".format(_escape_html(detail)))
+
+    for name, status, groups in rows:
+        html.append("<h4>{}</h4>".format(_escape_html(name)))
+        html.append("<p>{}</p>".format(_escape_html(status)))
+        if groups:
+            html.append("<ul>")
+            for line in groups:
+                html.append("<li>{}</li>".format(_escape_html(line)))
+            html.append("</ul>")
+
+    output.print_html("\n".join(html))
+
+
 def _render_report_html(output, report):
     if output is None or not hasattr(output, "print_html"):
         raise RuntimeError("pyRevit output html not available")
+
+    if _is_computed_report(report):
+        _render_computed_report_html(output, report)
+        return
 
     link_map = report.get("link_map", {})
     grouped = report.get("grouped", {})
@@ -1298,7 +1364,27 @@ def _render_report_html(output, report):
     output.print_html("\n".join(html))
 
 
+def _render_computed_report_text(report):
+    headline, detail, rows = _computed_report_lines(report)
+    print("Coordination Review Summary")
+    print("Document: {}".format(report.get("doc_title", "(Unknown)")))
+    print(headline)
+    if detail:
+        print(detail)
+
+    for name, status, groups in rows:
+        print("")
+        print(name)
+        print("  {}".format(status))
+        for line in groups:
+            print("  - {}".format(line))
+
+
 def _render_report_text(report):
+    if _is_computed_report(report):
+        _render_computed_report_text(report)
+        return
+
     link_map = report.get("link_map", {})
     grouped = report.get("grouped", {})
     link_totals = report.get("link_totals", {})
