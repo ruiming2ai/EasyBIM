@@ -151,22 +151,23 @@ typically a downstream panelboard, whose own rating is what the feeder has to
 be. This command reads that value off the elements and writes it onto the
 circuits.
 
-1. Pick the **current parameter on circuited elements**. Every parameter that
-   actually holds a value somewhere is listed; parameters measured in amps come
-   first, and each is labelled with where it was found (`Instance`, `Type`, or
-   both — the instance value wins, the type value fills a gap).
-2. Tick the **target circuit parameters**. Every writable numeric parameter on
-   the circuits is offered, so a shared rating parameter works as well as the
-   native ones; **Rating** (the trip rating) and **Frame** are ticked by
-   default.
+1. Pick the **current parameter on circuited elements**. Only populated
+   parameters defined with Revit's Current spec are listed, labelled with where
+   they were found (`Instance`, `Type`, or both — the instance value wins, the
+   type value fills a gap).
+2. Tick the **target circuit parameters**. Only writable Current parameters
+   found on circuits are offered, so a shared current parameter works as well
+   as the native ones; **Rating** (the trip rating) and **Frame** are ticked by
+   default when available.
 3. Review the list and press **Update**. All rows start checked; **All** and
    **None** toggle the lot, and **Cancel** writes nothing.
 
 Per circuit, the **highest** value found across its elements wins — a tie goes
 to an Electrical Equipment element, so a panel and a receptacle both reading
 20 A credit the panel. The `From Element` column names the element the value
-came from, and `Existing` shows what the ticked targets hold right now, so a
-row that would change nothing is marked `no change`.
+came from, and `Existing` shows what the ticked targets hold right now. Values
+that differ from `New Value` are red, and a row that would change nothing is
+marked `no change`.
 
 Elements without the parameter are simply ignored: a circuit is still listed
 and still updated as long as *one* of its elements carries a value. A circuit

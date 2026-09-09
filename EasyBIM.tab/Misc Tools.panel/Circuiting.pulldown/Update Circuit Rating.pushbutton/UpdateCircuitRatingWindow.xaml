@@ -102,10 +102,41 @@
                                     Binding="{Binding new_text}"
                                     Width="90"
                                     IsReadOnly="True"/>
-                <DataGridTextColumn Header="Existing"
-                                    Binding="{Binding existing_text}"
-                                    Width="180"
-                                    IsReadOnly="True"/>
+                <DataGridTemplateColumn Header="Existing"
+                                        Width="180"
+                                        IsReadOnly="True">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ItemsControl ItemsSource="{Binding existing_values}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding label}"/>
+                                            <TextBlock Text=" "/>
+                                            <TextBlock Text="{Binding value_text}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding is_mismatch}" Value="True">
+                                                                <Setter Property="Foreground" Value="#C00000"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                            <TextBlock Text="{Binding separator}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Status"
                                     Binding="{Binding status}"
                                     Width="90"

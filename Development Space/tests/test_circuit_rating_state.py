@@ -144,6 +144,24 @@ class BuildRowsTests(unittest.TestCase):
             [RATING_TARGET])
         self.assertEqual(u"Rating -", rows[0].existing_text)
 
+    def test_existing_entries_mark_only_mismatched_targets_red(self):
+        rows, _ = state.build_rows(
+            [record(1, samples=[sample(100.0)],
+                    existing={RATING: 100.0, FRAME: 60.0})],
+            [RATING_TARGET, FRAME_TARGET])
+        self.assertEqual(
+            [(u"Rating", u"100", False), (u"Frame", u"60", True)],
+            [(item.label, item.value_text, item.is_mismatch)
+             for item in rows[0].existing_values])
+
+    def test_missing_target_value_is_shown_as_a_red_dash(self):
+        rows, _ = state.build_rows(
+            [record(1, samples=[sample(100.0)], existing={RATING: None})],
+            [RATING_TARGET])
+        item = rows[0].existing_values[0]
+        self.assertEqual((u"Rating", u"-", True),
+                         (item.label, item.value_text, item.is_mismatch))
+
     def test_no_change_is_flagged_only_when_every_target_matches(self):
         matching, _ = state.build_rows(
             [record(1, samples=[sample(100.0)],

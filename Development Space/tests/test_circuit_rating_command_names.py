@@ -160,6 +160,16 @@ class CircuitRatingXamlTests(unittest.TestCase):
             source,
         )
 
+    def test_existing_values_use_per_target_mismatch_styling(self):
+        source = (COMMAND_DIR / "UpdateCircuitRatingWindow.xaml").read_text(
+            encoding="utf-8")
+        existing = source.split('Header="Existing"', 1)[1]\
+            .split('Header="Status"', 1)[0]
+        self.assertIn("DataGridTemplateColumn", existing)
+        self.assertIn('ItemsSource="{Binding existing_values}"', existing)
+        self.assertIn('Binding="{Binding is_mismatch}"', existing)
+        self.assertIn('Property="Foreground" Value="#C00000"', existing)
+
     def test_the_zero_report_carries_its_three_columns(self):
         source = (COMMAND_DIR / "ZeroRatingReportWindow.xaml").read_text(
             encoding="utf-8")

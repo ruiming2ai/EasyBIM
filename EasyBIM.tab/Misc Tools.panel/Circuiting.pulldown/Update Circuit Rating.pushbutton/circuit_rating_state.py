@@ -125,6 +125,7 @@ class CircuitRowBase(object):
         self.source_value = source_value
         self.new_text = format_amps(source_value)
         self.existing_text = u""
+        self.existing_values = []
         self.status = STATUS_UPDATE
         self.is_selected = True
 
@@ -143,6 +144,17 @@ class CircuitRowBase(object):
                 target.get("label") or u"",
                 format_amps(value) if value is not None else u"-"))
         return u"; ".join(parts)
+
+    def describe_existing_values(self, targets, existing):
+        """Values for the Existing cell, with an independent mismatch flag."""
+        items = []
+        targets = list(targets or [])
+        for index, target in enumerate(targets):
+            value = (existing or {}).get(target.get("key"))
+            items.append(ExistingValue(
+                target.get("label"), value, self.source_value,
+                u"; " if index < len(targets) - 1 else u""))
+        return items
 
     def unchanged_against(self, targets, existing):
         """True when every ticked target already holds the new value."""
@@ -202,6 +214,7 @@ def build_rows(records, targets, row_factory=None, selected_ids=None):
         )
         existing = record.get("existing") or {}
         row.existing_text = row.describe_existing(targets, existing)
+        row.existing_values = row.describe_existing_values(targets, existing)
         row.status = (STATUS_NO_CHANGE
                       if row.unchanged_against(targets, existing)
                       else STATUS_UPDATE)
@@ -210,6 +223,16 @@ def build_rows(records, targets, row_factory=None, selected_ids=None):
         rows.append(row)
     rows.sort(key=circuit_sort_key)
     return rows, skipped
+
+
+class ExistingValue(object):
+    """One target/value pair in a row's Existing cell."""
+
+    def __init__(self, label, value, new_value, separator=u""):
+        self.label = label or u""
+        self.value_text = format_amps(value) if value is not None else u"-"
+        self.is_mismatch = not values_match(value, new_value)
+        self.separator = separator or u""
 
 
 def build_plan(rows, targets):
