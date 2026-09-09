@@ -14,6 +14,8 @@ from System.Windows.Controls import ComboBox
 from System.Windows.Controls import ComboBoxItem
 from System.Windows.Controls import Orientation
 from System.Windows.Controls import StackPanel
+from System.Collections import ArrayList
+from System.Windows.Data import ListCollectionView, PropertyGroupDescription
 
 from pyrevit import forms
 
@@ -169,13 +171,16 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
     """Resolve Excel discrepancies before loading its matching sheet rows."""
 
     def __init__(self, xaml_file_name, excel_path, session, warning=None,
-                 template_options=None):
+                 template_options=None, comparison_sources=None,
+                 comparison_reader=None):
         self._is_ready = False
         self.result = None
         self._session = session
         self._warning = warning
         self._validation = None
         self._template_options = list(template_options or [])
+        self._comparison_reader = comparison_reader
+        self._comparison_view = None
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.file_tb.Text = excel_path
         self.warning_tb.Text = warning or u""
@@ -183,8 +188,53 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             self.show_element(self.warning_tb)
         else:
             self.hide_element(self.warning_tb)
+        for kind, source_id, label in comparison_sources or []:
+            _add_combo_item(self.comparison_source_cb, label, (kind, source_id))
+        self.compare_b.IsEnabled = bool(comparison_sources and comparison_reader)
+        if comparison_sources:
+            self.comparison_source_cb.SelectedIndex = 0
+        else:
+            self.comparison_summary_tb.Text = "No Sheet Lists or saved Print Sets are available to compare."
         self._is_ready = True
         self._refresh_validation()
+
+    def comparison_source_changed(self, sender, args):
+        del sender, args
+        if not self._is_ready:
+            return
+        self._comparison_view = None
+        self.comparison_dg.ItemsSource = None
+        self.comparison_summary_tb.Text = "Source changed. Click Compare to read this source."
+        self.comparison_warning_tb.Text = u""
+
+    def compare_clicked(self, sender, args):
+        del sender, args
+        source_key = _combo_key(self.comparison_source_cb)
+        if source_key is None or self._comparison_reader is None:
+            return
+        self.comparison_tab.IsSelected = True
+        self.comparison_dg.ItemsSource = None
+        self._comparison_view = None
+        self.comparison_warning_tb.Text = u""
+        try:
+            result = self._comparison_reader(source_key)
+            items = ArrayList()
+            for finding in result.findings:
+                items.Add(finding)
+            view = ListCollectionView(items)
+            view.GroupDescriptions.Add(PropertyGroupDescription("group_label"))
+            self._comparison_view = view
+            self.comparison_dg.ItemsSource = view
+            label = self.comparison_source_cb.SelectedItem.Content
+            self.comparison_summary_tb.Text = (
+                u"{0} — {1} Excel row(s), {2} Revit sheet(s), "
+                u"{3} unique selected-source number match(es), {4} finding(s)."
+            ).format(label, result.excel_count, result.source_count,
+                     result.matched_count, len(result.findings))
+            self.comparison_warning_tb.Text = u"\n".join(result.warnings)
+        except Exception as error:
+            self.comparison_summary_tb.Text = "Comparison failed. No import changes were made."
+            forms.alert(str(error), title="Compare Drawing Lists")
 
     def _refresh_validation(self):
         self._validation = self._session.validate()

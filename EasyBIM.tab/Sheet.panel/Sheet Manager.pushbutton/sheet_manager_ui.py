@@ -58,6 +58,7 @@ import sheet_manager_dialogs as dialogs
 import sheet_manager_revit as smrevit
 import sheet_manager_state as state
 import sheet_manager_xlsx as smxlsx
+import sheet_manager_comparison_revit as smcompare
 
 
 LOGGER = script.get_logger()
@@ -1087,10 +1088,17 @@ class SheetManagerWindow(forms.WPFWindow):
         session = excel_print_sets.ExcelPrintSetSession(
             read_result.rows, smrevit.collect_sheets(self._doc))
         template_options = smrevit.collect_sheet_template_options(self._doc)
+        comparison_sources = smcompare.collect_sources(self._doc)
+
+        def compare_source(source_key):
+            # This modal dialog runs within the same ExternalEvent Execute.
+            # Always compare original workbook rows, not staged/ignored matches.
+            return smcompare.read_comparison(self._doc, session.rows, source_key)
 
         dialog = self._show_dialog(dialogs.LoadCustomizedExcelWindow(
             "LoadCustomizedExcelDialog.xaml", excel_path, session,
-            read_result.warning, template_options))
+            read_result.warning, template_options, comparison_sources,
+            compare_source))
         if not dialog.result:
             return
         batch = state.CustomizedExcelBatch()

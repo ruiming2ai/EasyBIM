@@ -122,6 +122,20 @@ class SheetManagerBundleTests(unittest.TestCase):
                 missing,
                 "%s: missing handler(s): %s" % (xaml_name, missing))
 
+    def test_customized_excel_comparison_is_a_grouped_readonly_table(self):
+        root = ET.parse(str(COMMAND_DIR / "LoadCustomizedExcelDialog.xaml")).getroot()
+        controls = {e.attrib[X_NAME]: e for e in root.iter() if X_NAME in e.attrib}
+        self.assertIn("compare_b", controls)
+        self.assertIn("comparison_source_cb", controls)
+        self.assertIn("comparison_tab", controls)
+        grid = controls["comparison_dg"]
+        self.assertEqual(grid.attrib["IsReadOnly"], "True")
+        self.assertEqual(grid.attrib["CanUserSortColumns"], "False")
+        self.assertTrue(any(e.tag.endswith("GroupStyle") for e in grid.iter()))
+        headers = [e.attrib.get("Header") for e in grid.iter()]
+        for header in ("Sheet Number", "Sheet Name (Excel)", "Sheet Name (Revit)", "Reason / Details"):
+            self.assertIn(header, headers)
+
     def test_filter_and_sort_dialogs_support_dynamic_rules(self):
         filter_xaml = (COMMAND_DIR / "FilterByParameterDialog.xaml").read_text(
             encoding="utf-8")
