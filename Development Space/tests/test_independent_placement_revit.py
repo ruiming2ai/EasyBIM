@@ -3,7 +3,11 @@ import sys
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "lib"))
-from easybim import independent_placement_revit as r
+# Other existing discovery modules install a stub easybim package. Give that
+# package a scoped search path while importing this adapter, then restore it.
+import easybim
+with patch.object(easybim, "__path__", [str(pathlib.Path(__file__).resolve().parents[2] / "lib/easybim")], create=True):
+    from easybim import independent_placement_revit as r
 
 class FakeTransaction:
     history = []
