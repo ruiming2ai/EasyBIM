@@ -1,4 +1,5 @@
-"""Damper Check's Revit adapter, driven over fakes shaped like the API.
+"""The duct-network scanner (shared by Damper Check and Fire Damper Check),
+driven over fakes shaped like the API.
 
 The fakes carry both ``ElementId`` generations (``IntegerValue`` up to 2025,
 ``Value`` from 2024) and the ``AllRefs`` noise a real connector hands back:
@@ -12,22 +13,19 @@ import types
 import unittest
 
 
-COMMAND_DIR = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "EasyBIM.tab"
-    / "Misc Tools.panel"
-    / "Damper Check.pushbutton"
-)
+LIB_DIR = pathlib.Path(__file__).resolve().parents[2] / "lib" / "easybim"
 
 
 def _load(name):
-    spec = importlib.util.spec_from_file_location(name, str(COMMAND_DIR / (name + ".py")))
+    # Loaded by path, standalone: the module's guarded imports fall back to
+    # local shims when the ``easybim`` package is not importable.
+    spec = importlib.util.spec_from_file_location(name, str(LIB_DIR / (name + ".py")))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-revit = _load("damper_check_revit")
+revit = _load("duct_network_revit")
 
 
 # ---------------------------------------------------------------- fakes

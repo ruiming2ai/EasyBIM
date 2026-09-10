@@ -31,9 +31,13 @@ __persistentengine__ = True
 ACTIVE_ENVVAR = "EASYBIM_DAMPER_CHECK_ACTIVE"
 STALE_MODULES = (
     "damper_check_ui",
-    "damper_check_revit",
     "damper_check_state",
     "damper_check_settings",
+    "easybim.duct_network_revit",
+    "easybim.duct_network_state",
+    "easybim.type_checklist",
+    "easybim.local_settings",
+    "easybim.check_windows",
     "easybim.external_events",
 )
 
@@ -99,10 +103,10 @@ def main():
         )
     _drop_stale_modules()
 
-    import damper_check_revit as drevit
     import damper_check_settings as dsettings
     import damper_check_state as dstate
     import damper_check_ui as dui
+    from easybim import duct_network_revit as drevit
     from easybim import external_events
     from easybim.progress import ProgressSession
 

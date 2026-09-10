@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Revit API layer for Damper Check: one read-only pass into plain dicts.
+"""The duct network, read once into plain dicts - shared by Damper Check
+and Fire Damper Check.
 
 Everything that touches the API lives here and nothing but ints, floats,
-booleans and unicode crosses back into ``damper_check_state``.  There is no
-Transaction in this module and there never will be: the tool judges, it
-does not fix.
+booleans and unicode crosses back into the state modules.  There is no
+Transaction in this module and there never will be: the checkers judge,
+they do not fix.  Hoisted out of Damper Check's bundle when Fire Damper
+Check became the second consumer (a ``.pushbutton`` folder is only on
+``sys.path`` while its own script runs, so siblings cannot share otherwise).
 
 The pass reads the *physical* connector graph.  Per connector it keeps only
 ``ConnectorType`` End/Curve (Physical is accepted defensively) in the HVAC
@@ -22,6 +25,12 @@ text, ``ElementId`` values ride ``easybim.compat``, and an element whose
 connector manager throws is recorded with its error and kept, so its
 neighbours' references still join it into the graph.  ``db`` is injectable
 so the desktop tests drive the adapter with fakes shaped like the API.
+
+Two readings stay off by default because they are the performance cliff on
+a hospital model and only Fire Damper Check needs them: ``with_curves``
+adds each duct's location line (flex ducts a polyline, everything else a
+bounding box) and ``origin_type_keys`` adds ``Connector.Origin`` for the
+few family types named in it.
 """
 
 from __future__ import print_function
@@ -473,6 +482,82 @@ def _duct_size(element, db):
                _param_double(element, "RBS_CURVE_HEIGHT_PARAM", db))
 
 
+def _xyz(point):
+    try:
+        return [float(point.X), float(point.Y), float(point.Z)]
+    except Exception:
+        return None
+
+
+def _location_curve(element):
+    try:
+        location = element.Location
+        curve = getattr(location, "Curve", None)
+    except Exception:
+        return None
+    return curve
+
+
+def _curve_points(curve, cap=200):
+    """``[[x,y,z], ...]`` along a curve: its two ends for a Line, else its
+    tessellation (capped) - a duct is never an arc, flex always is."""
+    if curve is None:
+        return []
+    is_line = False
+    try:
+        is_line = enum_name(type(curve).__name__) == u"Line"
+    except Exception:
+        is_line = False
+    if not is_line:
+        try:
+            points = [_xyz(point) for point in curve.Tessellate()]
+            points = [point for point in points if point is not None]
+            if len(points) >= 2:
+                return points[:cap]
+        except Exception:
+            pass
+    try:
+        ends = [_xyz(curve.GetEndPoint(0)), _xyz(curve.GetEndPoint(1))]
+    except Exception:
+        return []
+    if None in ends:
+        return []
+    return ends
+
+
+def _flex_points(element):
+    curve = _location_curve(element)
+    points = _curve_points(curve)
+    if len(points) >= 2:
+        return points
+    try:
+        points = [_xyz(point) for point in element.Points]
+        return [point for point in points if point is not None]
+    except Exception:
+        return []
+
+
+def _bbox_record(element):
+    try:
+        bbox = element.get_BoundingBox(None)
+    except Exception:
+        return None
+    if bbox is None:
+        return None
+    low = _xyz(getattr(bbox, "Min", None))
+    high = _xyz(getattr(bbox, "Max", None))
+    if low is None or high is None:
+        return None
+    return [low, high]
+
+
+def _connector_origin(connector):
+    try:
+        return _xyz(connector.Origin)
+    except Exception:
+        return None
+
+
 # -------------------------------------------------------------- collectors
 
 
@@ -645,17 +730,32 @@ def collect_types(doc, db=None, clock=None, budget_seconds=CATALOG_BUDGET_SECOND
     }
 
 
-def scan_terminal_ids_in_view(doc, view_id, db=None):
+def element_ids_in_view(doc, view_id, member_names, db=None):
+    """Ids of the given built-in categories visible in one view, or None
+    when the view cannot be read (the caller then widens to the model)."""
     db = _db(db)
-    member = _builtin(db, "BuiltInCategory", "OST_DuctTerminal")
-    if member is None or view_id is None:
+    if view_id is None:
         return None
-    try:
-        collector = _collector(doc, db, element_id_factory(db.ElementId)(view_id))
-        ids = collector.OfCategory(member).WhereElementIsNotElementType().ToElementIds()
-        return sorted(eid_to_int(element_id) for element_id in ids)
-    except Exception:
+    members = [_builtin(db, "BuiltInCategory", name) for name in member_names]
+    members = [member for member in members if member is not None]
+    if not members:
         return None
+    found = set()
+    for member in members:
+        try:
+            collector = _collector(doc, db, element_id_factory(db.ElementId)(view_id))
+            ids = collector.OfCategory(member).WhereElementIsNotElementType().ToElementIds()
+        except Exception:
+            return None
+        for element_id in ids:
+            value = eid_to_int(element_id)
+            if value is not None:
+                found.add(value)
+    return sorted(found)
+
+
+def scan_terminal_ids_in_view(doc, view_id, db=None):
+    return element_ids_in_view(doc, view_id, ("OST_DuctTerminal",), db=db)
 
 
 # -------------------------------------------------------------------- scan
@@ -674,6 +774,8 @@ def scan(doc, options=None, db=None, progress=None, clock=None, clr_list=None):
     started = clock()
     budget = float(options.get("budget_seconds") or DEFAULT_BUDGET_SECONDS)
     cap = int(options.get("element_cap") or DEFAULT_ELEMENT_CAP)
+    with_curves = bool(options.get("with_curves"))
+    origin_type_keys = set(safe_text(key) for key in options.get("origin_type_keys") or ())
 
     kind_map = _kind_map(db)
     insulation_ints = _insulation_ints(db)
@@ -765,6 +867,12 @@ def scan(doc, options=None, db=None, progress=None, clock=None, clr_list=None):
             meta["pulled_in"] += 1
 
         family, type_name, type_id = _type_names(element, doc, type_cache)
+        element_type_key = u"{0} : {1}".format(family.strip(), type_name.strip())
+        if origin_type_keys and element_type_key in origin_type_keys and records:
+            for record, connector in zip(records, raw_connectors):
+                origin = _connector_origin(connector)
+                if origin is not None:
+                    record["origin"] = origin
         if kind in ("duct", "flex"):
             size = _duct_size(element, db)
         elif kind == "equipment":
@@ -778,13 +886,13 @@ def scan(doc, options=None, db=None, progress=None, clock=None, clr_list=None):
         except Exception:
             pass
 
-        elements[element_id] = {
+        record = {
             "id": element_id,
             "kind": kind,
             "category": category,
             "family": family,
             "type": type_name,
-            "type_key": u"{0} : {1}".format(family.strip(), type_name.strip()),
+            "type_key": element_type_key,
             "type_id": type_id,
             "level": _level_name(element, doc, db, level_cache),
             "space": _space_label(element) if kind == "terminal" else u"",
@@ -795,6 +903,17 @@ def scan(doc, options=None, db=None, progress=None, clock=None, clr_list=None):
             "error": error,
             "name": name,
         }
+        if with_curves:
+            if kind == "duct":
+                points = _curve_points(_location_curve(element))
+                record["curve"] = points if len(points) == 2 else None
+                if len(points) > 2:
+                    record["polyline"] = points
+            elif kind == "flex":
+                record["polyline"] = _flex_points(element)
+            else:
+                record["bbox"] = _bbox_record(element)
+        elements[element_id] = record
         meta["elements_read"] += 1
 
     scope_ids = None

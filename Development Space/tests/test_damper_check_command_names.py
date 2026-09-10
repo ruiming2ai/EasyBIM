@@ -13,7 +13,12 @@ COMMAND_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel" / "Damper Check.pus
 UI_MODULE = COMMAND_DIR / "damper_check_ui.py"
 STATE_MODULE = COMMAND_DIR / "damper_check_state.py"
 SETTINGS_MODULE = COMMAND_DIR / "damper_check_settings.py"
-REVIT_MODULE = COMMAND_DIR / "damper_check_revit.py"
+LIB_DIR = REPO_ROOT / "lib" / "easybim"
+REVIT_MODULE = LIB_DIR / "duct_network_revit.py"
+SHARED_MODULES = ("duct_network_revit.py", "duct_network_state.py", "type_checklist.py",
+                  "local_settings.py", "check_windows.py")
+# The shared bridged window reaches these by name on every results XAML.
+REQUIRED_RESULTS_CONTROLS = ("StatusText", "RefreshButton", "EmptyText", "ContentScroll")
 SCRIPT = COMMAND_DIR / "script.py"
 
 X_NAME = "{http://schemas.microsoft.com/winfx/2006/xaml}Name"
@@ -128,8 +133,12 @@ class DamperCheckBundleTests(unittest.TestCase):
 
     def test_expected_modules_exist(self):
         for name in ("script.py", "damper_check_state.py", "damper_check_settings.py",
-                     "damper_check_revit.py", "damper_check_ui.py"):
+                     "damper_check_ui.py"):
             self.assertTrue((COMMAND_DIR / name).exists(), name)
+        # The scanner and the plumbing live in lib, shared with Fire Damper Check.
+        self.assertFalse((COMMAND_DIR / "damper_check_revit.py").exists())
+        for name in SHARED_MODULES:
+            self.assertTrue((LIB_DIR / name).exists(), name)
 
     def test_the_readme_documents_the_tool(self):
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -184,6 +193,11 @@ class DamperCheckXamlTests(unittest.TestCase):
             "StatusText", "CheckButton", "CancelButton",
         }
         self.assertFalse(required - names, "missing x:Name(s): %s" % (required - names))
+
+    def test_the_results_window_carries_what_the_shared_window_touches(self):
+        names = _xaml_names(_xaml_root("DamperCheckResultsWindow.xaml"))
+        for name in REQUIRED_RESULTS_CONTROLS:
+            self.assertIn(name, names)
 
     def test_the_results_window_carries_the_agreed_controls(self):
         names = _xaml_names(_xaml_root("DamperCheckResultsWindow.xaml"))
@@ -276,12 +290,14 @@ class DamperCheckIronPythonTests(unittest.TestCase):
         self.assertNotIn("pyrevit", STATE_MODULE.read_text(encoding="utf-8"))
 
     def test_ui_module_stays_free_of_revit_api(self):
-        source = UI_MODULE.read_text(encoding="utf-8")
-        self.assertNotIn("Autodesk.Revit", source)
-        self.assertNotIn("import clr", source)
-        # Every model read belongs to damper_check_revit, reached only through
-        # the callables the launcher hands in.
-        self.assertNotIn("damper_check_revit", source)
+        for path in (UI_MODULE, LIB_DIR / "check_windows.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("Autodesk.Revit", source, path.name)
+            self.assertNotIn("import clr", source, path.name)
+            # Every model read belongs to the scanner, reached only through
+            # the callables the launcher hands in.
+            self.assertNotIn("duct_network_revit", source, path.name)
+            self.assertNotIn("damper_check_revit", source, path.name)
 
     def test_the_revit_module_never_opens_a_transaction(self):
         source = REVIT_MODULE.read_text(encoding="utf-8")
@@ -290,7 +306,8 @@ class DamperCheckIronPythonTests(unittest.TestCase):
         self.assertNotIn("SubTransaction", source)
 
     def test_no_module_writes_to_the_model(self):
-        for path in sorted(COMMAND_DIR.glob("*.py")):
+        paths = sorted(COMMAND_DIR.glob("*.py")) + [LIB_DIR / name for name in SHARED_MODULES]
+        for path in paths:
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("Transaction(", source, path.name)
 
@@ -308,8 +325,10 @@ class DamperCheckLauncherTests(unittest.TestCase):
         self.assertIn("def _drop_stale_modules", source)
         self.assertIn("script.get_envvar(ACTIVE_ENVVAR)", source)
         stale = _module_constant(SCRIPT, "STALE_MODULES")
-        for name in ("damper_check_ui", "damper_check_revit", "damper_check_state",
-                     "damper_check_settings", "easybim.external_events"):
+        for name in ("damper_check_ui", "damper_check_state", "damper_check_settings",
+                     "easybim.duct_network_revit", "easybim.duct_network_state",
+                     "easybim.type_checklist", "easybim.local_settings",
+                     "easybim.check_windows", "easybim.external_events"):
             self.assertIn(name, stale)
 
     def test_the_bridge_is_created_inside_the_command_run(self):

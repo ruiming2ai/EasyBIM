@@ -9,16 +9,20 @@ import importlib.util
 import json
 import os
 import pathlib
+import sys
 import tempfile
 import unittest
 
 
-COMMAND_DIR = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "EasyBIM.tab"
-    / "Misc Tools.panel"
-    / "Damper Check.pushbutton"
-)
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+COMMAND_DIR = REPO_ROOT / "EasyBIM.tab" / "Misc Tools.panel" / "Damper Check.pushbutton"
+
+# The state and settings modules import their shared halves from
+# ``easybim`` (pure Python, no Revit), which pyRevit puts on the path at
+# runtime and the tests put there here.
+LIB_PARENT = str(REPO_ROOT / "lib")
+if LIB_PARENT not in sys.path:
+    sys.path.insert(0, LIB_PARENT)
 
 
 def _load(name):

@@ -30,18 +30,28 @@ their own so nothing is ever dropped silently.
 
 from __future__ import print_function
 
-import re
+from easybim import type_checklist
+from easybim.duct_network_state import KIND_ACCESSORY
+from easybim.duct_network_state import KIND_DUCT
+from easybim.duct_network_state import KIND_EQUIPMENT
+from easybim.duct_network_state import KIND_FITTING
+from easybim.duct_network_state import KIND_FLEX
+from easybim.duct_network_state import KIND_OTHER
+from easybim.duct_network_state import KIND_TERMINAL
+from easybim.duct_network_state import SYSTEM_CLASSES
+from easybim.duct_network_state import SYSTEM_CLASS_KEYS
+from easybim.duct_network_state import build_graph
+from easybim.duct_network_state import normalize_system_class
+from easybim.duct_network_state import safe_text
+from easybim.duct_network_state import to_float as _float
+from easybim.duct_network_state import to_int as _int
+from easybim.duct_network_state import type_key
+from easybim.type_checklist import keyword_match
 
-
-# ------------------------------------------------------------------ kinds
-
-KIND_DUCT = "duct"
-KIND_FLEX = "flex"
-KIND_FITTING = "fitting"
-KIND_ACCESSORY = "accessory"
-KIND_TERMINAL = "terminal"
-KIND_EQUIPMENT = "equipment"
-KIND_OTHER = "other"
+# Re-exported for the tests and the UI, which reach them through this module.
+__all_shared__ = (KIND_DUCT, KIND_FLEX, KIND_FITTING, KIND_ACCESSORY, KIND_TERMINAL,
+                  KIND_EQUIPMENT, KIND_OTHER, SYSTEM_CLASSES, SYSTEM_CLASS_KEYS,
+                  build_graph, normalize_system_class, safe_text, type_key, keyword_match)
 
 #: Categories the setup checklist shows first, in this order; every other
 #: category discovered in the model follows alphabetically, collapsed.
@@ -52,18 +62,6 @@ CATEGORY_ORDER = (
     u"Mechanical Equipment",
 )
 EXPANDED_CATEGORIES = (u"Duct Accessories",)
-
-#: ``(key, label)`` - the scope chips.  Anything a duct reports that is not
-#: one of the first four lands in Unknown, which is a chip of its own so a
-#: system-less branch is never filtered out of sight.
-SYSTEM_CLASSES = (
-    ("SupplyAir", u"Supply"),
-    ("ReturnAir", u"Return"),
-    ("ExhaustAir", u"Exhaust"),
-    ("OtherAir", u"Other"),
-    ("Unknown", u"Unknown"),
-)
-SYSTEM_CLASS_KEYS = tuple(key for key, _label in SYSTEM_CLASSES)
 
 #: Pre-tick keywords for Duct Accessories.  Exclusions win, so a "Fire
 #: Damper" stays unticked until the user says otherwise.
@@ -86,7 +84,11 @@ MAX_THRESHOLD = 9999
 MAX_NODES = 250000
 MAX_CLIMB = 10000
 SHOW_ID_CAP = 400
-ROW_CAP = 300
+ROW_CAP = type_checklist.ROW_CAP
+
+#: Report search: names by substring over these, ids as whole tokens.
+SEARCH_TEXT_FIELDS = ("title", "detail", "system_name", "level", "space", "label")
+SEARCH_ID_FIELDS = ("terminal_id", "damper_id")
 
 SCOPE_MODEL = "model"
 SCOPE_VIEW = "view"
@@ -126,51 +128,6 @@ PROBLEM_BUCKETS = tuple(key for key, _title, problem in BUCKETS if problem)
 # ---------------------------------------------------------------- helpers
 
 
-def safe_text(value):
-    """Best-effort unicode that never raises.  Local copy on purpose: this
-    module is loaded standalone by the tests (see ``easybim.compat``)."""
-    if value is None:
-        return u""
-    try:
-        return u"{0}".format(value)
-    except Exception:
-        try:
-            return value.decode("utf-8", "replace")
-        except Exception:
-            return u""
-
-
-def _int(value, default=0):
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def type_key(family, type_name):
-    """``Family : Type`` - the by-name identity a damper choice travels under."""
-    return u"{0} : {1}".format(safe_text(family).strip(), safe_text(type_name).strip())
-
-
-def normalize_system_class(value):
-    text = safe_text(value).strip()
-    for key, _label in SYSTEM_CLASSES:
-        if text == key:
-            return key
-    compact = text.replace(u" ", u"").lower()
-    for key, _label in SYSTEM_CLASSES:
-        if compact and compact == key.lower():
-            return key
-    return "Unknown"
-
-
 def clamp_threshold(value):
     number = _int(value, DEFAULT_THRESHOLD)
     if number < 1:
@@ -181,18 +138,6 @@ def clamp_threshold(value):
 
 
 # ------------------------------------------------------- type checklist
-
-
-def keyword_match(text, include, exclude):
-    """``(ticked, reason)`` - exclusions win over inclusions."""
-    lowered = safe_text(text).lower()
-    for keyword in exclude or ():
-        if keyword and keyword.lower() in lowered:
-            return False, u"not pre-ticked: '{0}'".format(keyword)
-    for keyword in include or ():
-        if keyword and keyword.lower() in lowered:
-            return True, u"matches '{0}'".format(keyword)
-    return False, u""
 
 
 def keyword_preselect(row):
@@ -211,62 +156,19 @@ def preselect_types(type_rows, settings):
     a damper the user unticked once does not come back ticked next time.
     """
     settings = settings or {}
-    saved = set(safe_text(key) for key in settings.get("damper_types") or [])
-    unticked = set(safe_text(key) for key in settings.get("unticked_types") or [])
-    rows = []
-    for raw in type_rows or []:
-        row = dict(raw)
-        key = safe_text(row.get("type_key"))
-        row["type_key"] = key
-        if key in saved:
-            row["is_checked"], row["reason"] = True, u"ticked before"
-        elif key in unticked:
-            row["is_checked"], row["reason"] = False, u"unticked before"
-        else:
-            row["is_checked"], row["reason"] = keyword_preselect(row)
-        rows.append(row)
-    rows.sort(key=lambda item: (_category_rank(item.get("category")),
-                                safe_text(item.get("category")).lower(),
-                                safe_text(item.get("type_key")).lower()))
-    return rows
-
-
-def _category_rank(category):
-    name = safe_text(category)
-    for index, known in enumerate(CATEGORY_ORDER):
-        if name == known:
-            return index
-    return len(CATEGORY_ORDER)
+    rows = type_checklist.preselect_rows(
+        type_rows, settings.get("damper_types"), settings.get("unticked_types"),
+        keyword_preselect)
+    return type_checklist.sort_rows(rows, CATEGORY_ORDER)
 
 
 def group_types(rows):
-    """Rows -> ``[{"category", "rows", "is_expanded", "type_count",
-    "instance_count"}]`` with Duct Accessories first and expanded."""
-    groups = {}
-    order = []
-    for row in rows or []:
-        category = safe_text(row.get("category")) or u"Other"
-        if category not in groups:
-            groups[category] = {
-                "category": category,
-                "rows": [],
-                "is_expanded": category in EXPANDED_CATEGORIES,
-                "type_count": 0,
-                "instance_count": 0,
-            }
-            order.append(category)
-        group = groups[category]
-        group["rows"].append(row)
-        group["type_count"] += 1
-        group["instance_count"] += _int(row.get("count"))
-    order.sort(key=lambda name: (_category_rank(name), name.lower()))
-    return [groups[name] for name in order]
+    """Rows -> groups with Duct Accessories first and expanded."""
+    return type_checklist.group_rows(rows, CATEGORY_ORDER, EXPANDED_CATEGORIES)
 
 
 def selection_count_text(rows):
-    total = len(rows or [])
-    checked = len([row for row in rows or [] if row.get("is_checked")])
-    return u"{0} of {1} types ticked as dampers.".format(checked, total)
+    return type_checklist.count_text(rows, u"types ticked as dampers")
 
 
 def apply_setup(settings, rows, threshold=None, scope=None, system_classes=None):
@@ -277,21 +179,10 @@ def apply_setup(settings, rows, threshold=None, scope=None, system_classes=None)
     library.
     """
     settings = dict(settings or {})
-    present = set(safe_text(row.get("type_key")) for row in rows or [])
-    old_damper = set(safe_text(key) for key in settings.get("damper_types") or [])
-    old_unticked = set(safe_text(key) for key in settings.get("unticked_types") or [])
-
-    checked = set(safe_text(row.get("type_key")) for row in rows or [] if row.get("is_checked"))
-    suppressed = set()
-    for row in rows or []:
-        if row.get("is_checked"):
-            continue
-        would_tick, _reason = keyword_preselect(row)
-        if would_tick:
-            suppressed.add(safe_text(row.get("type_key")))
-
-    settings["damper_types"] = sorted((old_damper - present) | checked)
-    settings["unticked_types"] = sorted((old_unticked - present) | suppressed)
+    saved, unticked = type_checklist.fold_choices(
+        settings.get("damper_types"), settings.get("unticked_types"), rows, keyword_preselect)
+    settings["damper_types"] = saved
+    settings["unticked_types"] = unticked
     if threshold is not None:
         settings["threshold"] = clamp_threshold(threshold)
     if scope is not None:
@@ -316,92 +207,9 @@ def config_from_settings(settings):
 
 
 # ------------------------------------------------------------------ graph
-
-
-def _element_label(record):
-    key = safe_text(record.get("type_key"))
-    if not key.strip(u" :"):
-        key = safe_text(record.get("name")) or safe_text(record.get("category")) or u"Element"
-    return key
-
-
-def build_graph(snapshot, config):
-    """Snapshot -> ``{"nodes", "adjacency", "edges"}``.
-
-    A partner that never made it into the snapshot (its own read failed
-    twice over) still becomes a node - unreadable, with no connectors of
-    its own - so the edge to it survives and the branch is not cut there.
-    """
-    elements = (snapshot or {}).get("elements") or {}
-    damper_types = (config or {}).get("damper_types") or set()
-    nodes = {}
-    adjacency = {}
-    edges = set()
-
-    for element_id, record in elements.items():
-        element_id = _int(element_id, None)
-        if element_id is None:
-            continue
-        nodes[element_id] = _node(element_id, record, damper_types)
-        adjacency.setdefault(element_id, set())
-
-    for element_id, record in elements.items():
-        element_id = _int(element_id, None)
-        if element_id is None:
-            continue
-        for connector in record.get("connectors") or []:
-            for partner in connector.get("partners") or []:
-                partner_id = _int(partner[0] if partner else None, None)
-                if partner_id is None or partner_id == element_id:
-                    continue
-                if partner_id not in nodes:
-                    nodes[partner_id] = _stub_node(partner_id)
-                    adjacency.setdefault(partner_id, set())
-                pair = (min(element_id, partner_id), max(element_id, partner_id))
-                edges.add(pair)
-                adjacency[element_id].add(partner_id)
-                adjacency[partner_id].add(element_id)
-
-    return {"nodes": nodes, "adjacency": adjacency, "edges": edges}
-
-
-def _node(element_id, record, damper_types):
-    kind = safe_text(record.get("kind")) or KIND_OTHER
-    key = safe_text(record.get("type_key"))
-    open_end = False
-    for connector in record.get("connectors") or []:
-        if safe_text(connector.get("type")) != u"End":
-            continue  # a duct's Curve connector is never an open end
-        if not connector.get("connected") and not connector.get("partners"):
-            open_end = True
-            break
-    return {
-        "id": element_id,
-        "kind": kind,
-        "type_key": key,
-        "label": _element_label(record),
-        "is_damper": bool(key) and key in damper_types,
-        "is_terminal": kind == KIND_TERMINAL,
-        "is_equipment": kind == KIND_EQUIPMENT,
-        "is_duct": kind in (KIND_DUCT, KIND_FLEX),
-        "size": _float(record.get("size")),
-        "open_end": open_end,
-        "error": bool(safe_text(record.get("error"))),
-        "level": safe_text(record.get("level")),
-        "space": safe_text(record.get("space")),
-        "system_name": safe_text(record.get("system_name")),
-        "system_class": normalize_system_class(record.get("system_class")),
-    }
-
-
-def _stub_node(element_id):
-    return {
-        "id": element_id, "kind": KIND_OTHER, "type_key": u"",
-        "label": u"Element {0} (unread)".format(element_id),
-        "is_damper": False, "is_terminal": False, "is_equipment": False,
-        "is_duct": False, "size": 0.0, "open_end": False, "error": True,
-        "level": u"", "space": u"", "system_name": u"", "system_class": "Unknown",
-    }
+#
+# ``build_graph`` lives in ``easybim.duct_network_state``; what follows is
+# Damper Check's own reading of that graph.
 
 
 def find_components(graph):
@@ -827,57 +635,25 @@ def classify(analysis, threshold):
 # ---------------------------------------------------------------- search
 
 
-_TOKEN_SPLIT = re.compile(r"\s+")
-
-
 def tokens(text):
-    return [part for part in _TOKEN_SPLIT.split(safe_text(text).strip().lower()) if part]
+    return type_checklist.tokens(text)
 
 
 def matches(query, item):
     """Every query token must hit: numbers as whole id tokens ("12" does
     not find 112), words as substrings of the names."""
-    wanted = tokens(query)
-    if not wanted:
-        return True
-    haystack = u" ".join(safe_text(item.get(field)) for field in (
-        "title", "detail", "system_name", "level", "space", "label")).lower()
-    id_tokens = set()
-    for field in ("terminal_id", "damper_id"):
-        value = item.get(field)
-        if value is not None:
-            id_tokens.add(safe_text(value))
-    for token in wanted:
-        if token.isdigit():
-            if token not in id_tokens:
-                return False
-        elif token not in haystack:
-            return False
-    return True
+    return type_checklist.matches(query, item, SEARCH_TEXT_FIELDS, SEARCH_ID_FIELDS)
 
 
 def filter_report(report, query):
     """The same report with only matching rows; counts follow the rows."""
-    report = report or {}
-    buckets = []
-    counts = {}
-    for bucket in report.get("buckets") or []:
-        items = [item for item in bucket.get("items") or [] if matches(query, item)]
-        counts[bucket["key"]] = len(items)
-        buckets.append(dict(bucket, items=items))
-    filtered = dict(report)
-    filtered["buckets"] = buckets
-    filtered["counts"] = counts
-    filtered["problem_count"] = sum(counts.get(key, 0) for key in PROBLEM_BUCKETS)
-    return filtered
+    return type_checklist.filter_report(report, query, PROBLEM_BUCKETS,
+                                        SEARCH_TEXT_FIELDS, SEARCH_ID_FIELDS)
 
 
 def cap_items(items, cap=ROW_CAP):
     """``(shown, hidden_count)`` - branches never grow past the cap."""
-    items = list(items or [])
-    if len(items) <= cap:
-        return items, 0
-    return items[:cap], len(items) - cap
+    return type_checklist.cap_items(items, cap)
 
 
 # ---------------------------------------------------------------- status

@@ -8,17 +8,15 @@ damper list per release.  Everything in it is by name: the ticked and
 unticked ``Family : Type`` keys, the limit N, the scope, the class chips.
 An ElementId never lands here because it means nothing in the next document.
 
-Reading never raises - a truncated or hand-edited file yields the defaults
-plus a note the window can show - and writing goes to a ``.tmp`` beside the
-target and swaps, so a crash mid-write cannot leave a half file behind.
-No Revit imports: the desktop tests drive it against a temp path.
+The file I/O is ``easybim.local_settings`` (shared with Fire Damper Check);
+this module owns only the schema: what the defaults are and how a file of
+any age is read back into them.  No Revit imports.
 """
 
 from __future__ import print_function
 
-import io
-import json
-import os
+from easybim import local_settings
+from easybim.local_settings import name_list as _name_list
 
 
 SCHEMA_VERSION = 1
@@ -48,18 +46,6 @@ def default_settings():
         "damper_types": [],
         "unticked_types": [],
     }
-
-
-def _name_list(value):
-    names = []
-    seen = set()
-    for entry in value if isinstance(value, (list, tuple)) else []:
-        text = _safe_text(entry).strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        names.append(text)
-    return sorted(names)
 
 
 def normalize(raw):
@@ -93,63 +79,14 @@ def normalize(raw):
 
 
 def local_path():
-    """pyRevit's roaming per-user data file; imported lazily so this module
-    loads (and is tested) without pyRevit on the path."""
-    from pyrevit import script
-
-    return script.get_universal_data_file(LOCAL_FILE_ID, "json")
+    return local_settings.local_path(LOCAL_FILE_ID)
 
 
 def load(path=None):
-    """``(settings, note)`` - never raises; ``note`` names a file that could
-    not be read so the window can say so instead of pretending."""
-    if path is None:
-        try:
-            path = local_path()
-        except Exception:
-            return default_settings(), u""
-    if not path or not os.path.isfile(path):
-        return default_settings(), u""
-    try:
-        with io.open(path, "r", encoding="utf-8") as handle:
-            raw = json.loads(handle.read() or "{}")
-    except Exception as ex:
-        return default_settings(), u"Settings file could not be read ({0}); defaults used.".format(ex)
-    return normalize(raw), u""
+    """``(settings, note)`` - never raises."""
+    return local_settings.load(LOCAL_FILE_ID, default_settings, normalize, path=path)
 
 
 def save(settings, path=None):
     """``(ok, error_text)`` - never raises."""
-    if path is None:
-        try:
-            path = local_path()
-        except Exception as ex:
-            return False, u"No settings path is available: {0}".format(ex)
-    if not path:
-        return False, u"No settings path is set."
-
-    payload = normalize(settings)
-    payload["schema"] = SCHEMA_VERSION
-    folder = os.path.dirname(path)
-    try:
-        if folder and not os.path.isdir(folder):
-            os.makedirs(folder)
-    except Exception as ex:
-        return False, u"Could not create {0}: {1}".format(folder, ex)
-
-    text = json.dumps(payload, indent=2, sort_keys=True)
-    temporary = path + ".tmp"
-    try:
-        with io.open(temporary, "w", encoding="utf-8") as handle:
-            handle.write(text if isinstance(text, type(u"")) else text.decode("utf-8"))
-        if os.path.isfile(path):
-            os.remove(path)
-        os.rename(temporary, path)
-    except Exception as ex:
-        try:
-            if os.path.isfile(temporary):
-                os.remove(temporary)
-        except Exception:
-            pass
-        return False, u"Could not write {0}: {1}".format(path, ex)
-    return True, u""
+    return local_settings.save(LOCAL_FILE_ID, settings, normalize, SCHEMA_VERSION, path=path)
