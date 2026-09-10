@@ -1,0 +1,32 @@
+{
+  "measured_utc": "2026-09-10T05:59:55.634392Z",
+  "python": "3.10.6",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "scope": "Pure Python record construction/comparison only. Excludes Revit API, storage, geometry, loading, placement and WPF.",
+  "results": [
+    {
+      "pairs": 100,
+      "parameters_per_snapshot": 40,
+      "repetitions": 3,
+      "create_records_seconds": 0.01209,
+      "unchanged_decisions_seconds": 0.018504,
+      "fifty_changed_decisions_seconds": 0.015404
+    },
+    {
+      "pairs": 1000,
+      "parameters_per_snapshot": 40,
+      "repetitions": 3,
+      "create_records_seconds": 0.101175,
+      "unchanged_decisions_seconds": 0.169165,
+      "fifty_changed_decisions_seconds": 0.168474
+    },
+    {
+      "pairs": 10000,
+      "parameters_per_snapshot": 40,
+      "repetitions": 3,
+      "create_records_seconds": 1.199161,
+      "unchanged_decisions_seconds": 1.890333,
+      "fifty_changed_decisions_seconds": 1.95898
+    }
+  ]
+}

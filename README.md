@@ -914,10 +914,35 @@ the export finishes.
 
 ## Batch Duplicate Host (Misc Tools)
 
-Duplicates a selected element onto multiple target host family instances. Pick
-the source element, then choose targets from categories and types in any open
-document. Set **X**, **Y** and **Z offsets** and an **orientation alignment**
-option, and the tool places a copy at each target location.
+Duplicate a selected local element at reference family locations, or enable
+**Copy Original Family Type** to use each selected reference's family/type and
+instance values. **Monitored** is checked by default. Category/type selection,
+local X/Y/Z offsets, Align Orientation and Back navigation remain available.
+
+MEP and Generic Model point instances use independent placement when their
+native family is standalone. Physical-host and work-plane conversions are not
+yet certified and are skipped. Categories outside this scope keep legacy copying
+with monitoring unavailable. Independent placement verifies actual coordinates
+and orientation after regeneration and commit.
+
+## Copy Monitor (Misc Tools)
+
+A separate command offers **Copy and Monitor**, **Monitor Existing** explicit
+pairing, and **Check Changes**. Review source/local conflicts and parameter
+changes, then apply **Match Source**, **Keep Relative Location**, **Accept
+Difference**, **Postpone**, or **Stop Monitoring** in batches. Relative location
+includes orientation and follows source rotation. Checks run only on command;
+links are not reloaded automatically.
+
+Relationships are stored in the destination RVT by link-instance and element
+UniqueId. Missing sources do not delete local copies. Hosted destinations and
+connected MEP updates are reported as unavailable when independence or safe
+movement cannot be established.
+
+Targets Revit 2024–2027, with **live Revit acceptance still pending**. Hosted
+conversion is disabled. Read the [workflows and limitations](Development%20Space/docs/copy-monitor-workflows.md)
+and [compatibility/performance evidence](Development%20Space/docs/copy-monitor-compatibility.md)
+before project use. Desktop benchmarks do not measure Revit placement speed.
 
 ## Flip Multiple (Misc Tools)
 
