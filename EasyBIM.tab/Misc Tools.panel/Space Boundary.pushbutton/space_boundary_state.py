@@ -67,6 +67,19 @@ MAX_VERTICES_PER_LOOP = 5000
 ACK_PAIRS = 500
 MAX_PAIRS = 20000
 
+#: How far a region's outline may sit from its room's before it reads as
+#: drifted.  Two grid cells: one for each side's own rounding.
+SYNC_TOLERANCE_MM = 2.0
+
+#: Where a planned pair sits in the dry run: on the view's own level, ticked,
+#: or visible in the view from another level, offered unticked.
+CATEGORY_THIS_LEVEL = "this_level"
+CATEGORY_OTHER_LEVEL = "other_level"
+
+#: What a record keeps of a fingerprint: the digests and the numbers, never
+#: the outline itself, so a record stays about half a kilobyte.
+RECORD_FINGERPRINT_KEYS = ("abs", "shape", "area_mm2", "loops", "vertices", "min_corner")
+
 KIND_ROOM = "room"
 KIND_SPACE = "space"
 KIND_LABELS = {KIND_ROOM: u"Rooms", KIND_SPACE: u"Spaces"}
@@ -349,7 +362,7 @@ def fingerprints(loops, grid_mm=GRID_MM):
     vertices = sum(len(loop) for loop in absolute)
     if not absolute:
         return {"abs": u"", "shape": u"", "area_mm2": 0, "loops": 0,
-                "vertices": 0, "min_corner": [0, 0]}
+                "vertices": 0, "min_corner": [0, 0], "outline": ()}
     min_x = min(point[0] for loop in absolute for point in loop)
     min_y = min(point[1] for loop in absolute for point in loop)
     shape = tuple(tuple((x - min_x, y - min_y) for x, y in loop) for loop in absolute)
@@ -361,7 +374,106 @@ def fingerprints(loops, grid_mm=GRID_MM):
         "loops": len(absolute),
         "vertices": vertices,
         "min_corner": [min_x, min_y],
+        # The canonical loops themselves, in grid units: what the drift check
+        # measures a region against.  Never written into a record.
+        "outline": absolute,
     }
+
+
+def digests_only(fingerprint):
+    """What a record keeps of a fingerprint - the outline stays out."""
+    fingerprint = fingerprint or {}
+    return dict((key, fingerprint[key]) for key in RECORD_FINGERPRINT_KEYS
+                if key in fingerprint)
+
+
+def _point_to_segment(point, a, b):
+    px, py = point
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    length2 = float(dx * dx + dy * dy)
+    if length2 == 0.0:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / length2
+    t = max(0.0, min(1.0, t))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _point_to_loop(point, loop):
+    best = None
+    count = len(loop)
+    for index in range(count):
+        distance = _point_to_segment(point, loop[index], loop[(index + 1) % count])
+        if best is None or distance < best:
+            best = distance
+    return best if best is not None else float("inf")
+
+
+def outline_deviation(a, b, grid_mm=GRID_MM):
+    """``(max_mm, sentence)`` - how far two outlines sit apart, both ways.
+
+    Every vertex of each outline is measured to the nearest edge of the
+    other, and the largest such distance is the answer.  That is a distance
+    a person can check with a tape, which a digest comparison never is, and
+    it is what lets the verdict carry a tolerance instead of demanding that
+    two runs round every coordinate identically.
+    """
+    a = tuple(a or ())
+    b = tuple(b or ())
+    grid = to_float(grid_mm, GRID_MM) or GRID_MM
+    if not a or not b:
+        return None, u"There is no outline to compare."
+    if len(a) != len(b):
+        return float("inf"), u"{0} loop(s) against {1}.".format(len(b), len(a))
+    worst = 0.0
+    for loops_from, loops_to in ((a, b), (b, a)):
+        for loop in loops_from:
+            for point in loop:
+                nearest = min(_point_to_loop(point, other) for other in loops_to)
+                if nearest > worst:
+                    worst = nearest
+    return worst * grid, u"Largest gap between the two outlines: {0} mm.".format(
+        int(math.floor(worst * grid + 0.5)))
+
+
+def sync_verdict(region_now, room_now, grid_mm=GRID_MM, tolerance_mm=SYNC_TOLERANCE_MM):
+    """``(in_sync | drifted | unknown, deviation_mm, sentence)``.
+
+    The question the review lane actually answers: does this region match
+    its room *now*?  Measured on the two outlines when both are there, and
+    only on the digests when a fingerprint arrived without one.  ``unknown``
+    is a real answer and is never quietly read as in step.
+    """
+    region_now = region_now or {}
+    room_now = room_now or {}
+    if not region_now.get("abs") or not room_now.get("abs"):
+        return "unknown", None, u"One side has no outline to compare."
+    if region_now.get("outline") and room_now.get("outline"):
+        deviation, sentence = outline_deviation(region_now["outline"], room_now["outline"],
+                                                grid_mm)
+        if deviation is None:
+            return "unknown", None, sentence
+        if deviation <= to_float(tolerance_mm, SYNC_TOLERANCE_MM):
+            return "in_sync", deviation, u""
+        return "drifted", deviation, sentence
+    if region_now["abs"] == room_now["abs"]:
+        return "in_sync", 0.0, u""
+    return "drifted", None, u"The region's outline is not the room's."
+
+
+def cut_plane_visible(base_mm, top_mm, cut_mm):
+    """Whether a plan's cut plane passes through a room's height.
+
+    That is the rule Revit itself draws a room by in a plan: below its base
+    or at or above its upper limit, the room is not there to be seen.
+    """
+    base = to_float(base_mm)
+    top = to_float(top_mm)
+    cut = to_float(cut_mm)
+    if top <= base:
+        return False
+    return base <= cut < top
 
 
 def compare(before, after, grid_mm=GRID_MM):
@@ -572,6 +684,10 @@ CODE_SENTENCES = {
     "revit_refused": u"Revit refused to draw it: {0}.",
     "source_not_in_run": u"Its source was not part of this run.",
     "cancelled": u"The scan stopped before reaching it.",
+    "not_visible": u"It is not visible in this view, so no region was planned.",
+    "visibility_unknown": u"What {0} shows could not be read, so every room on its level was "
+                          u"offered.",
+    "link_hidden": u"The link is hidden in this view.",
 }
 
 
@@ -651,21 +767,31 @@ SOURCE_ORDER = (u"Sources",)
 VIEW_ORDER = (u"Floor plans", u"Engineering plans", u"Area plans", u"Ceiling plans")
 
 
-def source_rule(row):
+def source_rule(row, kind=None):
     """``(ticked, reason)`` for a model that could supply rooms or spaces.
 
-    Ticked when it actually has some of the kind being converted, which is
-    what makes the MEP case work without being told: the spaces are in this
-    model, the rooms are in the architectural link, and each run picks up
-    whichever the user asked for wherever it happens to live.
+    Rooms: ticked when the source actually has some, which is what makes
+    the MEP case work without being told - the rooms are in the architectural
+    link and the run picks them up from there.  Spaces: this model only, by
+    default; a linked model's spaces are the other discipline's business and
+    are offered unticked.
     """
     row = row or {}
     if not row.get("loaded", True):
         return False, u"not loaded"
+    if kind == KIND_SPACE and not row.get("is_host"):
+        return False, u"spaces are read from this model unless you tick it"
     count = to_int(row.get("count"))
     if count:
         return True, u"{0:,} to convert".format(count)
     return False, u"none of this kind"
+
+
+def source_rule_for(kind):
+    """The rule as a one-argument callable, the shape the checklist wants."""
+    def _rule(row):
+        return source_rule(row, kind)
+    return _rule
 
 
 def view_rule(row):
@@ -684,7 +810,8 @@ def view_rule(row):
 def preselect_sources(rows, settings):
     settings = settings or {}
     return type_checklist.preselect_rows(rows, settings.get("source_keys"),
-                                         settings.get("unticked_source_keys"), source_rule)
+                                         settings.get("unticked_source_keys"),
+                                         source_rule_for(settings.get("kind")))
 
 
 def preselect_views(rows, settings):
@@ -693,17 +820,17 @@ def preselect_views(rows, settings):
                                          settings.get("unticked_view_names"), view_rule)
 
 
-def retick_sources(rows):
+def retick_sources(rows, kind=None):
     """Re-run the rule after the kind changed, keeping deliberate ticks.
 
-    Flipping Rooms to Spaces changes every count, so a source ticked only
-    because the rule ticked it has to be reconsidered; one the user touched
-    by hand is left exactly as they left it.
+    Flipping Rooms to Spaces changes every count and the rule itself, so a
+    source ticked only because the rule ticked it has to be reconsidered;
+    one the user touched by hand is left exactly as they left it.
     """
     for row in rows or []:
         if row.get("touched"):
             continue
-        ticked, reason = source_rule(row)
+        ticked, reason = source_rule(row, kind)
         row["is_checked"], row["reason"] = bool(ticked), reason
     return rows
 
@@ -738,7 +865,8 @@ def apply_setup(settings, source_rows, view_rows, options):
     result = dict(settings or {})
     result.update(options or {})
     saved, unticked = type_checklist.fold_choices(
-        result.get("source_keys"), result.get("unticked_source_keys"), source_rows, source_rule)
+        result.get("source_keys"), result.get("unticked_source_keys"), source_rows,
+        source_rule_for(result.get("kind")))
     result["source_keys"], result["unticked_source_keys"] = saved, unticked
     saved, unticked = type_checklist.fold_choices(
         result.get("view_names"), result.get("unticked_view_names"), view_rows, view_rule)
@@ -746,7 +874,7 @@ def apply_setup(settings, source_rows, view_rows, options):
     return result
 
 
-def config_from_settings(settings, boundary_location, region_type=None):
+def config_from_settings(settings, boundary_location, region_type=None, line_style=None):
     """What ``build_plan`` and the writer read; one place decides it."""
     settings = settings or {}
     return {
@@ -756,6 +884,7 @@ def config_from_settings(settings, boundary_location, region_type=None):
         "boundary_source": settings.get("boundary_source") or "document",
         "boundary_location": boundary_location or "Finish",
         "region_type": dict(region_type or {}),
+        "line_style": dict(line_style or {}),
         "replace_existing": bool(settings.get("replace_existing")),
         "include_design_options": bool(settings.get("include_design_options")),
         "grid_mm": to_float(settings.get("grid_mm"), GRID_MM) or GRID_MM,
@@ -786,23 +915,35 @@ def pair_key(view_uid, room_uid, link_uid=u""):
     return u"{0}|{1}|{2}".format(safe_text(link_uid), safe_text(view_uid), safe_text(room_uid))
 
 
-def build_plan(config, views, rooms, boundaries, existing):
+def build_plan(config, views, rooms, boundaries, existing, visibility=None):
     """One plan object; the preview and the executor both read this one.
 
     ``boundaries`` is keyed by room uid, so a room's boundary is read once and
     reused across every view it appears in - the difference between two
     thousand reads and ten thousand on a real job.
+
+    ``visibility`` is ``{view uid: {"visible": set of room uids or None,
+    "note": text}}`` - what each view actually shows.  A room the view does
+    not show is counted and said once per view, never rowed: there is nothing
+    to decide about it.  A room the view shows from another level is offered
+    unticked under its own heading, because a view range that reaches down
+    a storey is a choice somebody made and the tool should not undo it in
+    silence either way.  A view whose contents could not be read offers every
+    room on its level and says so.
     """
     config = config or {}
     grid_mm = to_float(config.get("grid_mm"), GRID_MM) or GRID_MM
     replace = bool(config.get("replace_existing"))
     include_options = bool(config.get("include_design_options"))
     existing = existing or {}
+    visibility = visibility or {}
 
     items = []
     skips = []
     pairs = 0
     notes = []
+    not_visible = 0
+    other_level = 0
 
     room_gate = {}
     for room in rooms or []:
@@ -815,6 +956,11 @@ def build_plan(config, views, rooms, boundaries, existing):
         if not ok:
             skips.append(_skip(u"view", view.get("name"), code, sentence, view_uid=view.get("uid")))
             continue
+        shown = visibility.get(safe_text(view.get("uid"))) or {}
+        visible = shown.get("visible")
+        if visible is None and shown.get("note"):
+            notes.append(shown["note"])
+        hidden_here = 0
         for room in rooms or []:
             pairs += 1
             key = pair_key(view.get("uid"), room.get("uid"), room.get("link_uid"))
@@ -823,11 +969,18 @@ def build_plan(config, views, rooms, boundaries, existing):
             if gate is not None:
                 skips.append(_skip(u"pair", title, gate[0], gate[1], key=key))
                 continue
-            ok, code, sentence = view_shows_room(view, room)
-            if not ok:
-                # Not a fault, just not this view's business: counted, listed
-                # under its own quiet heading, never presented as a problem.
-                skips.append(_skip(u"pair", title, code, sentence, key=key, quiet=True))
+            if visible is not None and room.get("uid") not in visible:
+                # Not this view's to draw, and nothing to decide: counted,
+                # said once per view below, never a row.
+                not_visible += 1
+                hidden_here += 1
+                continue
+            on_level, level_code, level_sentence = view_shows_room(view, room)
+            if visible is None and not on_level:
+                # Nothing is known about what the view shows, so the level is
+                # the only rule left; a room on another level is not offered.
+                not_visible += 1
+                hidden_here += 1
                 continue
             boundary = (boundaries or {}).get(room.get("uid")) or {}
             if boundary.get("code"):
@@ -845,10 +998,15 @@ def build_plan(config, views, rooms, boundaries, existing):
                 skips.append(_skip(u"pair", title, "already_drawn",
                                    CODE_SENTENCES["already_drawn"], key=key, quiet=True))
                 continue
+            if not on_level:
+                other_level += 1
             items.append({
                 "key": key,
                 "action": "replace" if found else "create",
                 "title": title,
+                "category": CATEGORY_THIS_LEVEL if on_level else CATEGORY_OTHER_LEVEL,
+                "category_reason": u"" if on_level else level_sentence,
+                "default_ticked": bool(on_level),
                 "room_uid": room.get("uid"),
                 "room_id": room.get("id"),
                 "room_number": room.get("number"),
@@ -865,6 +1023,9 @@ def build_plan(config, views, rooms, boundaries, existing):
                 "replaces_region_id": found.get("region_id") if found else None,
                 "in_group": bool(room.get("in_group")),
             })
+        if hidden_here:
+            notes.append(u"{0:,} room(s) are not visible in {1} and were not planned.".format(
+                hidden_here, safe_text(view.get("name"))))
 
     counts = {
         "views": len(views or []),
@@ -873,6 +1034,8 @@ def build_plan(config, views, rooms, boundaries, existing):
         "create": len([item for item in items if item["action"] == "create"]),
         "replace": len([item for item in items if item["action"] == "replace"]),
         "skipped": len([skip for skip in skips if skip["scope"] == u"pair"]),
+        "not_visible": not_visible,
+        "other_level": other_level,
     }
     return {
         "mode": "create",
@@ -881,6 +1044,7 @@ def build_plan(config, views, rooms, boundaries, existing):
         "boundary_source": config.get("boundary_source") or "document",
         "grid_mm": grid_mm,
         "region_type": config.get("region_type") or {},
+        "line_style": config.get("line_style") or {},
         "items": items,
         "skips": skips,
         "counts": counts,
@@ -967,9 +1131,10 @@ def make_record(item, room_fingerprints, region_fingerprints, config, created_ut
         "view_uid": safe_text(item.get("view_uid")),
         "view_name": safe_text(item.get("view_name")),
         "boundary_location": config.get("boundary_location") or "Finish",
+        "line_style": safe_text((config.get("line_style") or {}).get("name")),
         "grid_mm": to_float(config.get("grid_mm"), GRID_MM) or GRID_MM,
-        "room": dict(room_fingerprints or {}),
-        "region": dict(region_fingerprints or {}),
+        "room": digests_only(room_fingerprints),
+        "region": digests_only(region_fingerprints),
         "in_group": bool(item.get("in_group")),
         "created_utc": safe_text(created_utc),
     }
@@ -1012,14 +1177,14 @@ DRIFT_BUCKETS = (
     ("both_changed", u"The room changed and the region was edited", True),
     ("region_edited", u"The region was edited by hand", True),
     ("region_moved", u"The region was moved", True),
+    ("drifted", u"The region no longer matches its room", True),
     ("copied_region", u"Copied from another view", True),
     ("duplicate", u"More than one region for one room", True),
     ("orphan_room", u"The room is gone", True),
     ("orphan_view", u"The view no longer shows this room", True),
-    ("unreadable", u"The region could not be read", False),
+    ("unreadable", u"The region could not be judged", False),
     ("link_not_loaded", u"The link is not loaded", False),
     ("source_not_in_run", u"Source not in this run", False),
-    ("missing_region", u"Rooms with no region yet", False),
     ("in_sync", u"In step with the room", False),
     ("ignored", u"Ignored - set aside on review", False),
 )
@@ -1027,25 +1192,34 @@ DRIFT_TITLES = dict((key, title) for key, title, _problem in DRIFT_BUCKETS)
 DRIFT_PROBLEMS = tuple(key for key, _title, problem in DRIFT_BUCKETS if problem)
 IGNORED_BUCKET = "ignored"
 
-#: What each bucket lets you do about it.
-CAN_REDRAW = ("room_moved", "both_changed", "region_edited", "region_moved")
+#: What each bucket lets you do about it.  Update redraws the region from
+#: the room as it is now; Accept takes the region as it now is; Delete is for
+#: a region nothing could be redrawn from.
+CAN_UPDATE = ("room_moved", "both_changed", "region_edited", "region_moved", "drifted")
 CAN_DELETE = ("copied_region", "duplicate", "orphan_room", "orphan_view")
-CAN_ACCEPT = ("region_edited", "region_moved", "both_changed")
-CAN_CREATE = ("missing_region",)
+CAN_ACCEPT = ("region_edited", "region_moved", "both_changed", "drifted")
+
 
 
 def room_key(link_uid, room_uid):
     return u"{0}|{1}".format(safe_text(link_uid), safe_text(room_uid))
 
 
-def classify_drift(live, rooms_now, views_now, expected=None, ignored=None,
-                   loaded_links=None, run_sources=None):
+def classify_drift(live, rooms_now, views_now, ignored=None, loaded_links=None,
+                   run_sources=None):
     """Every stored relationship judged against the model as it is now.
 
-    ``live`` is one entry per region carrying a record; ``rooms_now`` is keyed
-    by ``room_key`` and holds the room's boundary fingerprint recomputed at
-    the location that region was drawn with - so a model whose Area and Volume
-    setting changed since does not read as thousands of false drifts.
+    ``live`` is one entry per region carrying a record, its outline as it is
+    now, and ``room_visible`` - whether its own view still shows the room.
+    ``rooms_now`` is keyed by ``room_key`` and holds the room's outline
+    recomputed at the location that region was drawn with, so a model whose
+    Area and Volume setting changed since does not read as thousands of
+    false drifts.
+
+    The verdict is the question a person asks: does the region match its
+    room *now*?  The digests the record kept only say who moved - and when
+    they cannot, the row still says the region drifted and by how much,
+    because "unknown" is never read as "in step".
     """
     ignored = set(safe_text(value) for value in ignored or [])
     rooms_now = rooms_now or {}
@@ -1055,17 +1229,14 @@ def classify_drift(live, rooms_now, views_now, expected=None, ignored=None,
 
     items_by_bucket = dict((key, []) for key, _title, _problem in DRIFT_BUCKETS)
     notes = []
-    seen_pairs = set()
     by_pair = {}
 
     for entry in live or []:
         record = entry.get("record") or {}
-        region_uid = safe_text(entry.get("region_uid"))
         link_uid = safe_text(record.get("link_uid"))
         key = room_key(link_uid, record.get("room_uid"))
         pair = (key, safe_text(entry.get("owner_view_uid")))
         by_pair.setdefault(pair, []).append(entry)
-        seen_pairs.add((key, safe_text(record.get("view_uid"))))
 
     drift_by_link = {}
     for entry in live or []:
@@ -1077,16 +1248,13 @@ def classify_drift(live, rooms_now, views_now, expected=None, ignored=None,
         row = _drift_row(entry, record)
 
         if region_uid in ignored:
-            _file(items_by_bucket, row, IGNORED_BUCKET,
-                  u"Set aside on review.")
+            _file(items_by_bucket, row, IGNORED_BUCKET, u"Set aside on review.")
             continue
         if link_uid and link_uid not in loaded_links:
-            _file(items_by_bucket, row, "link_not_loaded",
-                  CODE_SENTENCES["link_not_loaded"])
+            _file(items_by_bucket, row, "link_not_loaded", CODE_SENTENCES["link_not_loaded"])
             continue
         if run_sources is not None and (link_uid or HOST_KEY) not in run_sources:
-            _file(items_by_bucket, row, "source_not_in_run",
-                  CODE_SENTENCES["source_not_in_run"])
+            _file(items_by_bucket, row, "source_not_in_run", CODE_SENTENCES["source_not_in_run"])
             continue
         if len(by_pair.get((key, owner_view)) or []) > 1:
             oldest = sorted(by_pair[(key, owner_view)],
@@ -1106,15 +1274,12 @@ def classify_drift(live, rooms_now, views_now, expected=None, ignored=None,
             _file(items_by_bucket, row, "orphan_room",
                   u"'{0}' is no longer in the model.".format(_room_label(record)))
             continue
-        view = views_now.get(owner_view)
-        if view is not None:
-            shows, _code, _sentence = view_shows_room(view, room)
-            if not shows:
-                _file(items_by_bucket, row, "orphan_view",
-                      u"{0} no longer shows this room; redrawing would not fix that.".format(
-                          safe_text(view.get("name")) or u"The view"))
-                continue
-
+        if entry.get("room_visible") is False:
+            view = views_now.get(owner_view) or {}
+            _file(items_by_bucket, row, "orphan_view",
+                  u"{0} no longer shows this room; updating would not fix that.".format(
+                      safe_text(view.get("name")) or u"The view"))
+            continue
         if not entry.get("readable", True):
             _file(items_by_bucket, row, "unreadable",
                   u"Its outline could not be read, so it was not judged.")
@@ -1125,10 +1290,16 @@ def classify_drift(live, rooms_now, views_now, expected=None, ignored=None,
         # every region in the job into a false drift.
         room_fingerprints = (room.get("by_location") or {}).get(
             safe_text(record.get("boundary_location"))) or room.get("fingerprints")
-        room_verdict_name, room_sentence = compare(
-            record.get("room"), room_fingerprints, record.get("grid_mm"))
-        region_verdict_name, region_sentence = compare(
-            record.get("region"), entry.get("fingerprints"), record.get("grid_mm"))
+        grid_mm = record.get("grid_mm")
+        verdict, deviation, sentence = sync_verdict(entry.get("fingerprints"), room_fingerprints,
+                                                    grid_mm)
+        if verdict == "unknown":
+            _file(items_by_bucket, row, "unreadable", sentence)
+            continue
+
+        room_verdict_name, room_sentence = compare(record.get("room"), room_fingerprints, grid_mm)
+        region_verdict_name, region_sentence = compare(record.get("region"),
+                                                       entry.get("fingerprints"), grid_mm)
         room_changed = room_verdict_name in ("moved", "edited")
         region_changed = region_verdict_name in ("moved", "edited")
         if link_uid:
@@ -1137,36 +1308,30 @@ def classify_drift(live, rooms_now, views_now, expected=None, ignored=None,
             if room_changed:
                 counter[0] += 1
 
+        if verdict == "in_sync":
+            if room_verdict_name == "unchanged" and region_verdict_name == "unchanged":
+                _file(items_by_bucket, row, "in_sync", u"")
+            else:
+                # The outlines agree; only the record is behind - written
+                # before Revit had finished the sketch, or by an older build.
+                _file(items_by_bucket, row, "in_sync",
+                      u"Matches the room now; the record is behind. Accept refreshes it.")
+                row["can_accept"] = True
+            continue
+
         if room_changed and region_changed:
             _file(items_by_bucket, row, "both_changed",
-                  u"The room: {0} The region: {1} Redrawing would discard the edit.".format(
+                  u"The room: {0} The region: {1} Updating would discard the edit.".format(
                       room_sentence, region_sentence))
         elif room_changed:
-            _file(items_by_bucket, row, "room_moved", room_sentence)
+            _file(items_by_bucket, row, "room_moved", u"{0} {1}".format(room_sentence, sentence))
         elif region_verdict_name == "edited":
-            _file(items_by_bucket, row, "region_edited", region_sentence)
+            _file(items_by_bucket, row, "region_edited", u"{0} {1}".format(region_sentence, sentence))
         elif region_verdict_name == "moved":
-            _file(items_by_bucket, row, "region_moved", region_sentence)
+            _file(items_by_bucket, row, "region_moved", u"{0} {1}".format(region_sentence, sentence))
         else:
-            _file(items_by_bucket, row, "in_sync", u"")
-
-    for pair in expected or []:
-        key = room_key(pair.get("link_uid"), pair.get("room_uid"))
-        if (key, safe_text(pair.get("view_uid"))) in seen_pairs:
-            continue
-        items_by_bucket["missing_region"].append({
-            "key": safe_text(pair.get("key")),
-            "title": safe_text(pair.get("title")),
-            "detail": u"No region stands for it in this view yet.",
-            "bucket": "missing_region",
-            "region_id": None, "region_uid": u"",
-            "room_uid": safe_text(pair.get("room_uid")),
-            "link_uid": safe_text(pair.get("link_uid")),
-            "view_id": pair.get("view_id"), "view_uid": safe_text(pair.get("view_uid")),
-            "is_ignored": False, "is_checked": False,
-            "can_redraw": False, "can_delete": False,
-            "can_accept": False, "can_create": True,
-        })
+            _file(items_by_bucket, row, "drifted", sentence)
+        row["deviation_mm"] = deviation
 
     for link_uid, counter in drift_by_link.items():
         changed, total = counter
@@ -1206,8 +1371,8 @@ def _drift_row(entry, record):
         "view_id": entry.get("owner_view_id"),
         "view_uid": safe_text(entry.get("owner_view_uid")),
         "is_ignored": False, "is_checked": False,
-        "can_redraw": False, "can_delete": False,
-        "can_accept": False, "can_create": False,
+        "can_update": False, "can_delete": False, "can_accept": False,
+        "deviation_mm": None,
     }
 
 
@@ -1233,10 +1398,9 @@ def _file(items_by_bucket, row, bucket, detail):
     row["bucket"] = bucket
     row["detail"] = detail
     row["is_ignored"] = bucket == IGNORED_BUCKET
-    row["can_redraw"] = bucket in CAN_REDRAW
+    row["can_update"] = bucket in CAN_UPDATE
     row["can_delete"] = bucket in CAN_DELETE
     row["can_accept"] = bucket in CAN_ACCEPT
-    row["can_create"] = bucket in CAN_CREATE
     items_by_bucket[bucket].append(row)
 
 
@@ -1249,10 +1413,15 @@ def plan_summary(plan):
     location = plan.get("boundary_location") or "Finish"
     parts = [u"{0:,} region(s) to draw".format(
         to_int(counts.get("create")) + to_int(counts.get("replace")))]
+    if to_int(counts.get("other_level")):
+        parts.append(u"{0:,} of them visible from another level, unticked".format(
+            to_int(counts["other_level"])))
     if to_int(counts.get("replace")):
         parts.append(u"{0:,} replacing an existing one".format(to_int(counts["replace"])))
     if to_int(counts.get("skipped")):
         parts.append(u"{0:,} skipped, each with a reason".format(to_int(counts["skipped"])))
+    if to_int(counts.get("not_visible")):
+        parts.append(u"{0:,} not visible in their view".format(to_int(counts["not_visible"])))
     return u"{0}. Measured to {1}. One undo step.".format(
         u", ".join(parts), BOUNDARY_SENTENCES.get(location, location))
 
@@ -1268,9 +1437,6 @@ def drift_summary(report):
         text = u"{0:,} of {1:,} tracked region(s) have drifted".format(problems, tracked)
     else:
         text = u"All {0:,} tracked region(s) are in step with their rooms".format(tracked)
-    missing = to_int(counts.get("missing_region"))
-    if missing:
-        text += u", and {0:,} room(s) have no region yet".format(missing)
     set_aside = to_int(report.get("ignored_count"))
     if set_aside:
         text += u", {0:,} set aside".format(set_aside)
@@ -1289,7 +1455,10 @@ def scan_notes(plan_or_report, config, extra=None):
     else:
         notes.append(u"Boundaries follow the override you chose: {0}. This model computes to "
                      u"something else.".format(BOUNDARY_SENTENCES.get(location, location)))
-    notes.append(u"A view is drawn with the rooms on its own level, in its own phase.")
+    notes.append(u"A view is drawn with the rooms it actually shows. Rooms it shows from "
+                 u"another level are offered unticked; rooms it hides are not planned.")
+    notes.append(u"A region counts as in step while its outline sits within {0:g} mm of the "
+                 u"room's.".format(SYNC_TOLERANCE_MM))
     notes.append(u"The relationship is stored in each region inside this model, so it comes back "
                  u"next time and reaches the team after a Sync to Central.")
     notes.append(u"A region cannot be added to a group, so a room in a group drifts when the "

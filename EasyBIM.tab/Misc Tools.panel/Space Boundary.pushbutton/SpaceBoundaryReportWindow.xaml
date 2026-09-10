@@ -25,7 +25,7 @@
                        FontSize="13"
                        Foreground="DimGray"
                        TextWrapping="Wrap"
-                       Text="Every filled region that carries a room relationship, judged against the room as it is now." />
+                       Text="Every filled region that carries a room relationship, compared with the room as it is now. A region in step sits within 2 mm of its room's boundary." />
         </StackPanel>
 
         <Border Grid.Row="1"
@@ -90,6 +90,7 @@
                 <StackPanel Grid.Column="1"
                             Orientation="Horizontal"
                             HorizontalAlignment="Right">
+                    <Button x:Name="UpdateAllButton" Content="Update All" Width="130" Height="36" Margin="0,0,8,0" ToolTip="Replace every drifted region the search leaves visible with one drawn from its room as it is now. One undo step. Hand edits to those regions are lost; set a region aside with Ignore or take it with Accept to keep it." Click="update_all_click" />
                     <Button x:Name="RefreshButton" Content="Refresh" Width="104" Height="36" Margin="0,0,8,0" ToolTip="Re-read the regions and the rooms; search and expanded groups survive." Click="refresh_click" />
                     <Button x:Name="ExpandAllButton" Content="Expand All" Width="104" Height="36" Margin="0,0,8,0" Click="expand_all_click" />
                     <Button x:Name="CollapseAllButton" Content="Collapse All" Width="108" Height="36" Margin="0,0,8,0" Click="collapse_all_click" />

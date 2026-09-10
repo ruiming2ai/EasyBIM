@@ -20,7 +20,7 @@ what the writer is given, so what was previewed is what runs.
 
 **The report** is the review lane: what drifted, and the one or two things
 that can honestly be done about each kind of drift.  A row that can only be
-deleted never offers a redraw, because redrawing it would not fix anything.
+deleted never offers an update, because updating it would not fix anything.
 """
 
 from __future__ import print_function
@@ -61,9 +61,6 @@ REGISTRY = WindowRegistry(ACTIVE_ENVVAR, WINDOW_ENVVAR)
 DocumentGone = DocumentGone
 
 KIND_CHOICES = ((state.KIND_ROOM, u"Rooms"), (state.KIND_SPACE, u"Spaces"))
-
-#: Skips a person should read as information, not as something to fix.
-QUIET_SKIP_TITLE = u"Not this view's rooms"
 
 
 def _text(value):
@@ -106,9 +103,10 @@ class SetupWindow(forms.WPFWindow):
         forms.WPFWindow.__init__(self, SETUP_XAML)
         self.result = None
         self.settings = dict(settings or {})
-        self.picked = dict(picked or {}) or None
+        self.picked = [dict(entry) for entry in picked or []]
         self._catalog = catalog or {}
         self._region_types = list(self._catalog.get("region_types") or [])
+        self._line_styles = list(self._catalog.get("line_styles") or [])
 
         self._source_rows = state.preselect_sources(
             self._catalog.get("sources") or [], self.settings)
@@ -133,6 +131,7 @@ class SetupWindow(forms.WPFWindow):
         self._fill_kinds()
         self._fill_boundary()
         self._fill_region_types()
+        self._fill_line_styles()
 
         active = self._catalog.get("active_view") or {}
         if not active:
@@ -215,6 +214,30 @@ class SetupWindow(forms.WPFWindow):
             self.RegionTypeCombo.IsEnabled = False
             self.RegionTypeCombo.ToolTip = state.CODE_SENTENCES["no_region_type"]
 
+    def _fill_line_styles(self):
+        """The boundary's line style; the invisible one unless told otherwise."""
+        self.LineStyleCombo.Items.Clear()
+        wanted = _text(self.settings.get("line_style_name"))
+        chosen = None
+        for index, row in enumerate(self._line_styles):
+            self.LineStyleCombo.Items.Add(_text(row.get("name")))
+            if wanted and _text(row.get("name")) == wanted:
+                chosen = index
+            elif chosen is None and not wanted and row.get("is_invisible"):
+                chosen = index
+        if self._line_styles:
+            self.LineStyleCombo.SelectedIndex = chosen if chosen is not None else 0
+        else:
+            self.LineStyleCombo.IsEnabled = False
+            self.LineStyleCombo.ToolTip = (u"This Revit does not let a filled region's line "
+                                           u"style be set; the type's own is used.")
+
+    def _line_style(self):
+        index = self.LineStyleCombo.SelectedIndex
+        if index is None or index < 0 or index >= len(self._line_styles):
+            return {}
+        return dict(self._line_styles[index])
+
     # -- reactions ---------------------------------------------------------
 
     def _kind(self):
@@ -229,7 +252,7 @@ class SetupWindow(forms.WPFWindow):
         field = "space_count" if kind == state.KIND_SPACE else "room_count"
         for row in self._source_rows:
             row["count"] = state.to_int(row.get(field))
-        state.retick_sources(self._source_rows)
+        state.retick_sources(self._source_rows, kind)
         total = sum(state.to_int(row.get("count")) for row in self._source_rows)
         noun = u"space" if kind == state.KIND_SPACE else u"room"
         if total:
@@ -270,7 +293,11 @@ class SetupWindow(forms.WPFWindow):
         if not one:
             self.PickedText.Text = u"every room or space in the ticked sources"
         elif self.picked:
-            self.PickedText.Text = _text(self.picked.get("label")) or u"one picked"
+            labels = [_text(entry.get("label")) for entry in self.picked]
+            shown = u", ".join(label for label in labels[:6] if label)
+            if len(labels) > 6:
+                shown += u", …"
+            self.PickedText.Text = u"{0} picked: {1}".format(len(labels), shown)
         else:
             self.PickedText.Text = u"nothing picked yet"
 
@@ -303,6 +330,9 @@ class SetupWindow(forms.WPFWindow):
         del sender, args
 
     def region_type_changed(self, sender, args):
+        del sender, args
+
+    def line_style_changed(self, sender, args):
         del sender, args
 
     def source_search_changed(self, sender, args):
@@ -350,6 +380,7 @@ class SetupWindow(forms.WPFWindow):
             "boundary_source": boundary["boundary_source"],
             "boundary_override": boundary["boundary_override"],
             "region_type_name": _text(self._region_type().get("name")),
+            "line_style_name": _text(self._line_style().get("name")),
             "replace_existing": bool(self.ReplaceExistingCheck.IsChecked),
             "include_design_options": bool(self.IncludeDesignOptionCheck.IsChecked),
         }
@@ -370,8 +401,8 @@ class SetupWindow(forms.WPFWindow):
             return self._complain(u"No view is ticked - tick the views to draw in, or choose the "
                                   u"active view.")
         if bool(self.SubjectOneRadio.IsChecked) and not self.picked:
-            return self._complain(u"Pick the room or space first, or switch back to converting "
-                                  u"every one.")
+            return self._complain(u"Pick the rooms or spaces first, or switch back to "
+                                  u"converting every one.")
         return True
 
     def preview_click(self, sender, args):
@@ -421,7 +452,8 @@ class PlanWindow(forms.WPFWindow):
         self._config = config or {}
         self._expanded = {}
         self._acks = {}
-        self._items = [dict(item, is_checked=True) for item in self._plan.get("items") or []]
+        self._items = [dict(item, is_checked=bool(item.get("default_ticked", True)))
+                       for item in self._plan.get("items") or []]
 
         self.SummaryText.Text = state.plan_summary(self._plan)
         refusal = _text(self._plan.get("refusal"))
@@ -498,16 +530,27 @@ class PlanWindow(forms.WPFWindow):
             else Windows.Visibility.Visible
 
     def _group_items(self, items):
+        """Per view: the rooms on its level, then the ones it shows from
+        another level under their own heading, unticked - so a view range
+        that reaches down a storey is a choice made on purpose."""
         groups = {}
         order = []
         for item in items:
             name = _text(item.get("view_name")) or u"(view)"
-            if name not in groups:
-                groups[name] = []
-                order.append(name)
-            groups[name].append(item)
-        return [{"key": u"view:" + name, "title": name, "items": groups[name]}
-                for name in order]
+            other = item.get("category") == state.CATEGORY_OTHER_LEVEL
+            key = (name, other)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(item)
+        order.sort(key=lambda key: (key[0].lower(), key[1]))
+        result = []
+        for name, other in order:
+            title = name if not other else \
+                u"{0} - visible from another level (unticked)".format(name)
+            result.append({"key": u"view:{0}:{1}".format(name, int(other)), "title": title,
+                           "items": groups[(name, other)], "other_level": other})
+        return result
 
     def _group_skips(self, skips):
         groups = {}
@@ -522,8 +565,6 @@ class PlanWindow(forms.WPFWindow):
         for code in order:
             rows = groups[code]["rows"]
             title = _text(rows[0].get("reason")) or code
-            if groups[code]["quiet"] and code in ("wrong_level", "wrong_phase", "view_no_level"):
-                title = u"{0} - {1}".format(QUIET_SKIP_TITLE, title)
             result.append({"key": u"skip:" + code, "title": title, "rows": rows,
                            "quiet": groups[code]["quiet"]})
         return result
@@ -539,7 +580,8 @@ class PlanWindow(forms.WPFWindow):
                                       foreground=brush("DimGray"), wrap=False))
         header.Children.Add(text_block(group["title"], size=14, semibold=True, wrap=False))
         expander.Header = header
-        expander.IsExpanded = self._expanded.get(group["key"], count <= 40)
+        expander.IsExpanded = self._expanded.get(
+            group["key"], count <= 40 and not group.get("other_level"))
         expander.Expanded += expansion_handler(self._expanded, group["key"], True)
         expander.Collapsed += expansion_handler(self._expanded, group["key"], False)
 
@@ -568,6 +610,8 @@ class PlanWindow(forms.WPFWindow):
         line.Children.Add(checkbox)
         line.Children.Add(text_block(_text(item.get("title")), wrap=False))
         notes = []
+        if item.get("category_reason"):
+            notes.append(_text(item["category_reason"]))
         if item.get("action") == "replace":
             notes.append(u"replaces an existing region")
         if item.get("in_group"):
@@ -603,14 +647,22 @@ class PlanWindow(forms.WPFWindow):
         ticked = len([item for item in self._items if item.get("is_checked")])
         self.CountText.Text = u"{0:,} of {1:,} ticked".format(ticked, len(self._items))
 
+    def _ticked_counts(self):
+        ticked = [item for item in self._items if item.get("is_checked")]
+        return {"create": len([item for item in ticked if item.get("action") != "replace"]),
+                "replace": len([item for item in ticked if item.get("action") == "replace"])}
+
     def _blocking(self):
         if _text(self._plan.get("refusal")):
             return _text(self._plan.get("refusal"))
-        missing = [key for key, done in self._acks.items() if not done]
-        if missing:
-            return u"Tick the box above to confirm before drawing."
         if not any(item.get("is_checked") for item in self._items):
             return u"Nothing is ticked, so there is nothing to draw."
+        # Only what is ticked needs confirming: unticking every replacement
+        # takes the replacement question with it.
+        needed = set(ask["key"] for ask in state.acknowledgements(self._ticked_counts()))
+        missing = [key for key in needed if not self._acks.get(key)]
+        if missing:
+            return u"Tick the box above to confirm before drawing."
         return u""
 
     def _update_status(self):
@@ -684,17 +736,17 @@ class ReportWindow(BridgedWindow):
     """The difference report: what drifted, and what can honestly be done."""
 
     def __init__(self, report, config, bridge=None, uiapp=None, recheck=None, show=None,
-                 redraw=None, accept=None, delete=None, create=None, ignore=None):
+                 update=None, update_all=None, accept=None, delete=None, ignore=None):
         # See SetupWindow: handlers can fire mid-parse, before ``_ready`` exists.
         BridgedWindow.__init__(self, REPORT_XAML, bridge=bridge, uiapp=uiapp, title=TITLE)
         self._report = report or {}
         self._config = config or {}
         self._recheck = recheck
         self._show = show
-        self._redraw = redraw
+        self._update = update
+        self._update_all = update_all
         self._accept = accept
         self._delete = delete
-        self._create = create
         self._ignore = ignore
         self.Closed += self._on_closed
         self._ready = True
@@ -727,8 +779,22 @@ class ReportWindow(BridgedWindow):
         notes = state.scan_notes(self._report, self._config)
         self.ContentPanel.Children.Add(notes_expander(notes, self._expanded))
         self.SummaryText.Text = state.drift_summary(self._report)
+        updatable = self._updatable(buckets)
+        self.UpdateAllButton.IsEnabled = bool(updatable) and not self._busy \
+            and self._update_all is not None
+        self.UpdateAllButton.Content = u"Update All ({0})".format(len(updatable)) \
+            if updatable else u"Update All"
         if not self._busy:
             self._update_status()
+
+    def _updatable(self, buckets):
+        """Every row the search leaves visible that an update would fix."""
+        rows = []
+        for bucket in buckets:
+            for item in bucket["items"]:
+                if item.get("can_update") and not item.get("is_ignored"):
+                    rows.append(item)
+        return rows
 
     def _filtered(self, query):
         buckets = self._report.get("buckets") or []
@@ -751,7 +817,7 @@ class ReportWindow(BridgedWindow):
         """Only what would honestly help this row.
 
         A region whose record names another view, or whose room is gone, is
-        never offered a redraw: there is nothing to redraw it from, and an
+        never offered an update: there is nothing to update it from, and an
         offer that cannot work is worse than no offer.
         """
         buttons = []
@@ -760,16 +826,13 @@ class ReportWindow(BridgedWindow):
                 buttons.append((u"Restore", u"Put this row back in the group it belongs to.",
                                 self._restore_click, 84))
             return tuple(buttons)
-        if item.get("can_redraw") and self._redraw is not None:
-            buttons.append((u"Redraw", u"Delete this region and draw it again from the room as "
+        if item.get("can_update") and self._update is not None:
+            buttons.append((u"Update", u"Replace this region with one drawn from the room as "
                                        u"it is now. Any hand edits to it are lost.",
-                            self._redraw_click, 84))
+                            self._update_click, 84))
         if item.get("can_accept") and self._accept is not None:
             buttons.append((u"Accept", u"Take the region as it now is. Future edits to it are "
                                        u"still reported.", self._accept_click, 84))
-        if item.get("can_create") and self._create is not None:
-            buttons.append((u"Create", u"Draw a region for this room in this view.",
-                            self._create_click, 84))
         if item.get("can_delete") and self._delete is not None:
             buttons.append((u"Delete", u"Delete this region and its record.",
                             self._delete_click, 84))
@@ -783,8 +846,15 @@ class ReportWindow(BridgedWindow):
         if self._bridge is None:
             BridgedWindow._update_status(self)
         else:
-            self.StatusText.Text = (u"Reading only. Nothing changes until you use one of the "
-                                    u"buttons on a row.")
+            self.StatusText.Text = (u"Reading only. Nothing changes until you use Update, "
+                                    u"Accept, Delete or Ignore.")
+
+    def _set_busy(self, busy, label=u""):
+        BridgedWindow._set_busy(self, busy, label)
+        try:
+            self.UpdateAllButton.IsEnabled = not self._busy and self._update_all is not None
+        except Exception:
+            pass
 
     # -- handlers ----------------------------------------------------------
 
@@ -825,9 +895,30 @@ class ReportWindow(BridgedWindow):
 
         self._run_in_revit(u"Show", _work, _done, quiet=True)
 
-    def _redraw_click(self, sender, args):
+    def _update_click(self, sender, args):
         del args
-        self._act(getattr(sender, "Tag", None), self._redraw, u"Redraw", u"Redrawn.")
+        self._act(getattr(sender, "Tag", None), self._update, u"Update", u"Updated.")
+
+    def update_all_click(self, sender, args):
+        del sender, args
+        if self._update_all is None:
+            return
+        items = self._updatable(self._filtered(_text(self.SearchBox.Text)))
+        if not items:
+            self.StatusText.Text = u"Nothing in the report needs updating."
+            return
+
+        def _work(uiapp):
+            return self._update_all(uiapp, items)
+
+        def _done(result):
+            result = result or {}
+            if result.get("report") is not None:
+                self._report = result["report"]
+            self._render()
+            self.StatusText.Text = _text(result.get("message")) or u"Updated."
+
+        self._run_in_revit(u"Update All", _work, _done)
 
     def _accept_click(self, sender, args):
         del args
@@ -837,10 +928,6 @@ class ReportWindow(BridgedWindow):
     def _delete_click(self, sender, args):
         del args
         self._act(getattr(sender, "Tag", None), self._delete, u"Delete", u"Deleted.")
-
-    def _create_click(self, sender, args):
-        del args
-        self._act(getattr(sender, "Tag", None), self._create, u"Create", u"Drawn.")
 
     def _ignore_click(self, sender, args):
         del args
@@ -939,13 +1026,13 @@ def show_plan(plan, config):
     return window.result, window.checked_keys
 
 
-def show_report(report, config, bridge=None, uiapp=None, recheck=None, show=None, redraw=None,
-                accept=None, delete=None, create=None, ignore=None):
+def show_report(report, config, bridge=None, uiapp=None, recheck=None, show=None, update=None,
+                update_all=None, accept=None, delete=None, ignore=None):
     """Open the report modeless; modal when no ExternalEvent could be made."""
     REGISTRY.close_open()
     window = ReportWindow(report, config, bridge=bridge, uiapp=uiapp, recheck=recheck,
-                          show=show, redraw=redraw, accept=accept, delete=delete,
-                          create=create, ignore=ignore)
+                          show=show, update=update, update_all=update_all, accept=accept,
+                          delete=delete, ignore=ignore)
     if bridge is None:
         window.ShowDialog()
         return window

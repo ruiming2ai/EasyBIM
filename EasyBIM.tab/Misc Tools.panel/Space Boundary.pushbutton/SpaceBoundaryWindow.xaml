@@ -129,14 +129,14 @@
                                              Checked="scope_changed" />
                                 <RadioButton x:Name="ScopeSelectedViewsRadio"
                                              GroupName="SpaceBoundaryScope"
-                                             Content="The views I tick below"
+                                             Content="Selected Views Below"
                                              Margin="0,2,0,2"
                                              Checked="scope_changed" />
                                 <TextBlock Foreground="DimGray"
                                            FontSize="11"
                                            TextWrapping="Wrap"
                                            Margin="0,4,0,0"
-                                           Text="Each view is drawn with the rooms on its own level, in its own phase - a Level 2 plan draws Level 2 rooms. Ceiling plans are offered but not ticked: an RCP shows the room outline, never the ceiling edge." />
+                                           Text="Each view is drawn with the rooms it actually shows - visibility, filters, view range and phase all count. Rooms it shows from another level are offered unticked in the preview; rooms it hides are not planned. Ceiling plans are offered but not ticked: an RCP shows the room outline, never the ceiling edge." />
                             </StackPanel>
 
                             <DockPanel Grid.Row="1" Margin="0,8,0,0" LastChildFill="True">
@@ -196,7 +196,7 @@
                                 <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
                                     <RadioButton x:Name="SubjectOneRadio"
                                                  GroupName="SpaceBoundarySubject"
-                                                 Content="Just one I pick"
+                                                 Content="Only the ones I pick"
                                                  VerticalAlignment="Center"
                                                  Checked="subject_changed" />
                                     <Button x:Name="PickButton"
@@ -204,7 +204,7 @@
                                             Width="76"
                                             Height="26"
                                             Margin="10,0,8,0"
-                                            ToolTip="This window closes while you pick in the model, then comes back."
+                                            ToolTip="This window closes while you pick in the model - pick as many as you like, then press Finish - and comes back."
                                             Click="pick_click" />
                                     <TextBlock x:Name="PickedText"
                                                Foreground="DimGray"
@@ -213,9 +213,9 @@
                                                Text="nothing picked yet" />
                                 </StackPanel>
                                 <CheckBox x:Name="ReplaceExistingCheck"
-                                          Content="Redraw regions that already exist"
+                                          Content="Update regions that already exist to match the room now"
                                           Margin="0,8,0,2"
-                                          ToolTip="Off, a room that already has a region in a view is skipped as already drawn. On, the old region is deleted and drawn again - any hand edits to it are lost."
+                                          ToolTip="Off, a room that already has a region in a view is skipped as already drawn. On, the old region is deleted and drawn again from the room as it is now - any hand edits to it are lost."
                                           Checked="option_changed"
                                           Unchecked="option_changed" />
                                 <CheckBox x:Name="IncludeDesignOptionCheck"
@@ -250,14 +250,35 @@
                                               Margin="8,0,0,0"
                                               SelectionChanged="boundary_changed" />
                                 </StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                                    <TextBlock Text="Draw with" VerticalAlignment="Center" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Filled region type" VerticalAlignment="Center" Margin="0,0,8,0" />
                                     <ComboBox x:Name="RegionTypeCombo"
-                                              Width="220"
+                                              Grid.Row="0" Grid.Column="1"
                                               Height="26"
-                                              Margin="8,0,0,0"
+                                              MaxWidth="260"
+                                              HorizontalAlignment="Left"
+                                              MinWidth="200"
+                                              ToolTip="The fill pattern and colour the region is drawn with."
                                               SelectionChanged="region_type_changed" />
-                                </StackPanel>
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Boundary line style" VerticalAlignment="Center" Margin="0,6,8,0" />
+                                    <ComboBox x:Name="LineStyleCombo"
+                                              Grid.Row="1" Grid.Column="1"
+                                              Height="26"
+                                              MaxWidth="260"
+                                              HorizontalAlignment="Left"
+                                              MinWidth="200"
+                                              Margin="0,6,0,0"
+                                              ToolTip="The line style of the region's edge. Invisible lines by default, so only the fill shows."
+                                              SelectionChanged="line_style_changed" />
+                                </Grid>
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -288,13 +309,13 @@
                                    Foreground="DimGray"
                                    Text="The record on each region says which room it was drawn from, in which view, measured to which boundary, and what both outlines looked like at the time. The check re-reads both sides and reports what moved:" />
                         <TextBlock TextWrapping="Wrap" Margin="0,8,0,0"
-                                   Text="• the room's boundary changed - the region can be redrawn" />
+                                   Text="• the room's boundary changed - Update draws the region again from the room as it is now" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
-                                   Text="• the region was edited or moved by hand - redraw it, accept it as it now is, or set it aside" />
+                                   Text="• the region was edited or moved by hand - Update it, Accept it as it now is, or set it aside" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
-                                   Text="• the room is gone, the view no longer shows it, or the region was copied into another view - these are deleted or set aside, never redrawn, because redrawing would not fix them" />
+                                   Text="• the room is gone, the view no longer shows it, or the region was copied into another view - these are deleted or set aside, never updated, because updating would not fix them" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
-                                   Text="• rooms in the ticked views with no region yet - these can be created" />
+                                   Text="• Update All brings every drifted region in the report up to date in one undo step" />
                         <TextBlock Foreground="DimGray"
                                    TextWrapping="Wrap"
                                    Margin="0,12,0,0"

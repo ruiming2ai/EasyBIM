@@ -50,6 +50,9 @@ def default_settings():
         "boundary_source": "document",
         "boundary_override": "Finish",
         "region_type_name": u"",
+        # Empty means the tool's own default - the invisible line style,
+        # found by category so it does not depend on the language Revit runs in.
+        "line_style_name": u"",
         "source_keys": [],
         "unticked_source_keys": [],
         "view_names": [],
@@ -81,6 +84,7 @@ def normalize(raw):
     settings["boundary_override"] = _one_of(raw.get("boundary_override"),
                                             state.BOUNDARY_LOCATIONS, "Finish")
     settings["region_type_name"] = _safe_text(raw.get("region_type_name")).strip()
+    settings["line_style_name"] = _safe_text(raw.get("line_style_name")).strip()
     settings["source_keys"] = _name_list(raw.get("source_keys"))
     settings["unticked_source_keys"] = _name_list(raw.get("unticked_source_keys"))
     settings["view_names"] = _name_list(raw.get("view_names"))

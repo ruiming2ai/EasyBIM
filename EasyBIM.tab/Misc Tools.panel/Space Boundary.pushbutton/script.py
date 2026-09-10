@@ -115,7 +115,7 @@ class Run(object):
         self.storage = bstorage
         self.model_store = model_store
         self.settings = {}
-        self.picked = None
+        self.picked = []
         self.sources = []
         self.views = []
         self.config = {}
@@ -136,6 +136,7 @@ class Run(object):
             "views": self.views,
             "active_view": brevit.active_view_row(self.doc, self.views),
             "region_types": brevit.collect_region_types(self.doc),
+            "line_styles": brevit.collect_line_styles(self.doc),
             "boundary": {"name": name, "source": source, "note": note},
             "tracked_sentence": _tracked_sentence(tracked),
         }
@@ -166,6 +167,19 @@ class Run(object):
                 return row
         return rows[0] if rows else {}
 
+    def _line_style(self, settings):
+        """The chosen boundary line style, else the invisible one, else none."""
+        wanted = self.state.safe_text(settings.get("line_style_name"))
+        rows = self._catalog.get("line_styles") or []
+        if wanted:
+            for row in rows:
+                if self.state.safe_text(row.get("name")) == wanted:
+                    return row
+        for row in rows:
+            if row.get("is_invisible"):
+                return row
+        return rows[0] if rows else {}
+
     def _chosen_views(self, settings):
         if (settings.get("scope") or self.state.SCOPE_ACTIVE) == self.state.SCOPE_ACTIVE:
             active = self._catalog.get("active_view")
@@ -182,13 +196,14 @@ class Run(object):
             rows.append(row)
         return rows
 
-    def build_plan(self, settings, progress=None, replace=None):
+    def build_plan(self, settings, progress=None, replace=None, room_uids=None):
         """The one plan object the preview and the writer both read.
 
-        ``replace`` overrides the setup's own choice, because a Redraw in the
+        ``replace`` overrides the setup's own choice, because an Update in the
         report is a replacement by definition: without it a pair that already
-        has a region would be planned as "already drawn" and the redraw would
-        find nothing to do.
+        has a region would be planned as "already drawn" and the update would
+        find nothing to do.  ``room_uids`` narrows the read to the rooms an
+        update actually needs, so one row costs one boundary and not the job.
         """
         settings = dict(settings or {})
         if replace is not None:
@@ -197,20 +212,29 @@ class Run(object):
         location, source = self._location(settings)
         self.settings = dict(settings)
         self.config = bstate.config_from_settings(settings, location,
-                                                  self._region_type(settings))
+                                                  self._region_type(settings),
+                                                  self._line_style(settings))
         self.config["boundary_source"] = source
-        collected = brevit.rooms_from_sources(self._chosen_sources(settings),
-                                              self.config["kind"])
+        source_rows = self._chosen_sources(settings)
+        collected = brevit.rooms_from_sources(source_rows, self.config["kind"])
         rooms = collected["rooms"]
-        if (settings.get("subject") or bstate.SUBJECT_ALL) == bstate.SUBJECT_ONE and self.picked:
-            wanted = bstate.safe_text(self.picked.get("uid"))
+        wanted = None
+        if room_uids is not None:
+            wanted = set(bstate.safe_text(uid) for uid in room_uids)
+        elif (settings.get("subject") or bstate.SUBJECT_ALL) == bstate.SUBJECT_ONE and self.picked:
+            wanted = set(bstate.safe_text(entry.get("uid")) for entry in self.picked)
+        if wanted is not None:
             rooms = [room for room in rooms
-                     if bstate.safe_text(room.get("uid")).endswith(wanted)]
+                     if any(bstate.safe_text(room.get("uid")).endswith(uid) for uid in wanted)]
+        views = self._chosen_views(settings)
+        visibility = brevit.visibility_map(
+            self.doc, views, rooms, source_rows, self.config["kind"],
+            include_design_options=self.config["include_design_options"])
         read = brevit.read_boundary_map(rooms, location, grid_mm=self.config["grid_mm"],
                                         progress=progress)
         existing = self._existing()
-        plan = bstate.build_plan(self.config, self._chosen_views(settings), rooms,
-                                 read["boundaries"], existing)
+        plan = bstate.build_plan(self.config, views, rooms, read["boundaries"], existing,
+                                 visibility=visibility)
         plan["boundaries"] = read["boundaries"]
         for skip in collected["skips"]:
             plan["skips"].append({"scope": u"source", "key": u"", "title": skip["title"],
@@ -242,7 +266,8 @@ class Run(object):
         location, source = self._location(settings)
         self.settings = dict(settings)
         self.config = bstate.config_from_settings(settings, location,
-                                                  self._region_type(settings))
+                                                  self._region_type(settings),
+                                                  self._line_style(settings))
         self.config["boundary_source"] = source
         live = brevit.read_relationships(self.doc)
         source_rows = self._chosen_sources(settings)
@@ -256,49 +281,36 @@ class Run(object):
                 locations.add(name)
         rooms_now = brevit.rooms_now_map(collected["rooms"], sorted(locations),
                                          grid_mm=self.config["grid_mm"], progress=progress)
-        views = self._chosen_views(settings) or self.views
-        expected = self._expected(settings, collected["rooms"], views)
+        # Whether each region's own view still shows its room: read once per
+        # view that holds a tracked region, never per region.
+        owner_uids = set(bstate.safe_text(row.get("owner_view_uid")) for row in live)
+        owner_views = [view for view in self.views
+                       if bstate.safe_text(view.get("uid")) in owner_uids]
+        visibility = brevit.visibility_map(
+            self.doc, owner_views, collected["rooms"], source_rows, self.config["kind"],
+            include_design_options=self.config["include_design_options"])
+        for row in live:
+            shown = visibility.get(bstate.safe_text(row.get("owner_view_uid"))) or {}
+            visible = shown.get("visible")
+            record = row.get("record") or {}
+            if visible is None:
+                row["room_visible"] = None
+            else:
+                row["room_visible"] = bstate.safe_text(record.get("room_uid")) in visible
         loaded = [bstate.safe_text(row.get("uid")) for row in self.sources
                   if row.get("loaded") and row.get("uid")]
         run_sources = [bstate.safe_text(row.get("uid")) or bstate.HOST_KEY
                        for row in source_rows if row.get("is_checked")]
         report = bstate.classify_drift(
-            live, rooms_now, brevit.views_now_map(self.views), expected=expected,
+            live, rooms_now, brevit.views_now_map(self.views),
             ignored=self.model_store.read(self.doc, TOOL_KEY),
             loaded_links=loaded, run_sources=run_sources)
         for skip in collected["skips"]:
             report["notes"].append(u"{0}: {1}".format(skip["title"], skip["reason"]))
+        for shown in visibility.values():
+            if shown.get("note"):
+                report["notes"].append(shown["note"])
         return report
-
-    def _expected(self, settings, rooms, views):
-        """The pairs a run would draw, so a room with no region is named."""
-        bstate = self.state
-        pairs = []
-        include = bool(settings.get("include_design_options"))
-        for view in views or []:
-            ok, _code, _sentence = bstate.view_verdict(view.get("view_type"),
-                                                       view.get("is_template"))
-            if not ok:
-                continue
-            for room in rooms or []:
-                good, _code, _sentence = bstate.room_verdict(room, include)
-                if not good:
-                    continue
-                shows, _code, _sentence = bstate.view_shows_room(view, room)
-                if not shows:
-                    continue
-                pairs.append({
-                    "key": bstate.pair_key(view.get("uid"), room.get("uid"),
-                                           room.get("link_uid")),
-                    "title": u"{0} · {1}".format(
-                        u"{0} {1}".format(bstate.safe_text(room.get("number")),
-                                          bstate.safe_text(room.get("name"))).strip()
-                        or u"Unnamed",
-                        bstate.safe_text(view.get("name"))),
-                    "room_uid": room.get("uid"), "link_uid": room.get("link_uid"),
-                    "view_uid": view.get("uid"), "view_id": view.get("id"),
-                })
-        return pairs
 
 
 def bstorage_rows(bstorage, doc):
@@ -361,7 +373,7 @@ def main():
 
         if result == "pick":
             picked = brevit.pick_spatial(revit.uidoc, settings.get("kind") or bstate.KIND_ROOM)
-            if picked is not None:
+            if picked:
                 run.picked = picked
             continue
 
@@ -406,7 +418,7 @@ def _report_write(outcome):
         return
     parts = [u"{0:,} region(s) drawn".format(outcome.get("created", 0))]
     if outcome.get("replaced"):
-        parts.append(u"{0:,} redrawn".format(outcome["replaced"]))
+        parts.append(u"{0:,} updated".format(outcome["replaced"]))
     if outcome.get("failed"):
         parts.append(u"{0:,} refused".format(len(outcome["failed"])))
     if outcome.get("skipped"):
@@ -443,38 +455,55 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
         _alive()
         return brevit.show(_uidoc(uiapp), item)
 
-    def redraw(uiapp, item):
+    def _replace_plan(items):
+        """One plan with every wanted pair marked as a replacement."""
+        wanted = {}
+        for item in items:
+            key = bstate.pair_key(item.get("view_uid"), item.get("room_uid"),
+                                  item.get("link_uid"))
+            wanted[key] = item
+        plan = run.build_plan(settings, replace=True,
+                              room_uids=[item.get("room_uid") for item in items])
+        keys = []
+        for entry in plan["items"]:
+            item = wanted.get(entry["key"])
+            if item is None:
+                continue
+            entry["action"] = "replace"
+            entry["replaces_region_id"] = item.get("region_id")
+            keys.append(entry["key"])
+        return plan, keys, [key for key in wanted if key not in keys]
+
+    def update(uiapp, item):
         """Delete the region and draw it again from the room as it is now."""
         del uiapp
         _alive()
-        plan = run.build_plan(settings, replace=True)
-        key = bstate.pair_key(item.get("view_uid"), item.get("room_uid"), item.get("link_uid"))
-        for entry in plan["items"]:
-            if entry["key"] == key:
-                entry["action"] = "replace"
-                entry["replaces_region_id"] = item.get("region_id")
-                break
-        else:
+        plan, keys, missing = _replace_plan([item])
+        if missing:
             return {"ok": False, "report": run.check(settings),
-                    "message": u"That room is no longer in a source this run reads."}
-        outcome = run.draw(plan, [key])
+                    "message": u"That room is no longer in a view or source this run reads."}
+        outcome = run.draw(plan, keys)
         ok = bool(outcome.get("created") or outcome.get("replaced"))
         return {"ok": ok, "report": run.check(settings),
-                "message": u"Redrawn from the room as it is now." if ok else
+                "message": u"Updated from the room as it is now." if ok else
                 _first_reason(outcome)}
 
-    def create(uiapp, item):
+    def update_all(uiapp, items):
+        """Every drifted row at once, in one undo step."""
         del uiapp
         _alive()
-        plan = run.build_plan(settings, replace=False)
-        key = bstate.pair_key(item.get("view_uid"), item.get("room_uid"), item.get("link_uid"))
-        if not any(entry["key"] == key for entry in plan["items"]):
-            return {"ok": False, "report": run.check(settings),
-                    "message": u"That pair is no longer in this run's views and sources."}
-        outcome = run.draw(plan, [key])
-        ok = bool(outcome.get("created"))
-        return {"ok": ok, "report": run.check(settings),
-                "message": u"Drawn." if ok else _first_reason(outcome)}
+        if not items:
+            return {"ok": False, "report": None, "message": u"Nothing to update."}
+        plan, keys, missing = _replace_plan(items)
+        outcome = run.draw(plan, keys) if keys else {}
+        done = int(outcome.get("created", 0)) + int(outcome.get("replaced", 0))
+        refused = len(outcome.get("failed") or []) + len(outcome.get("skipped") or []) + len(missing)
+        parts = [u"{0:,} updated".format(done)]
+        if refused:
+            parts.append(u"{0:,} could not be".format(refused))
+        if outcome.get("error"):
+            parts.append(u"the run was rolled back: {0}".format(outcome["error"]))
+        return {"ok": done > 0, "report": run.check(settings), "message": u", ".join(parts) + u"."}
 
     def accept(uiapp, item):
         del uiapp
@@ -501,8 +530,8 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
         return {"ok": ok, "report": run.check(settings), "message": reason}
 
     bui.show_report(report, run.config, bridge=bridge if ready else None, uiapp=_uiapp(),
-                    recheck=recheck, show=show, redraw=redraw, accept=accept, delete=delete,
-                    create=create, ignore=ignore)
+                    recheck=recheck, show=show, update=update, update_all=update_all,
+                    accept=accept, delete=delete, ignore=ignore)
 
 
 def _first_reason(outcome):

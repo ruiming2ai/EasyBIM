@@ -91,19 +91,62 @@ def _builtin(db, enum_name, member_name):
     return getattr(enum, member_name, None) if enum is not None else None
 
 
+def _member_int(member):
+    """A BuiltInCategory member as its integer id, or None."""
+    if member is None:
+        return None
+    try:
+        return int(member)
+    except Exception:
+        return None
+
+
 def enum_name(value):
     text = safe_text(value)
     return text.rsplit(u".", 1)[1] if u"." in text else text
 
 
-def _collector(doc, db):
+def _collector(doc, db, view_id=None):
+    """A collector over the document - or, given a view id, over what that
+    view shows: VG, filters, view range, phase filter and hidden elements
+    all applied by Revit itself."""
     factory = getattr(db, "FilteredElementCollector", None)
     if factory is None or doc is None:
         return None
     try:
+        if view_id is not None:
+            return factory(doc, view_id)
         return factory(doc)
     except Exception:
         return None
+
+
+def element_name(element, db=None):
+    """An element's name, the way IronPython can actually read it.
+
+    ``FilledRegionType`` and ``GraphicsStyle`` expose ``Name`` in a shape
+    IronPython 2.7 cannot bind, so ``element.Name`` raises and a ``getattr``
+    default quietly hands back an empty string - which is exactly how a
+    combo box ends up full of blank rows.  ``Element.Name.GetValue`` is the
+    repo's established way round it.
+    """
+    db = _db(db)
+    if element is None:
+        return u""
+    try:
+        name = safe_text(element.Name)
+        if name:
+            return name
+    except Exception:
+        pass
+    element_class = getattr(db, "Element", None)
+    getter = getattr(getattr(element_class, "Name", None), "GetValue", None)
+    if getter is None:
+        return u""
+    try:
+        return safe_text(getter(element))
+    except Exception:
+        return u""
 
 
 def _param_string(element, db, bip_name):
@@ -154,7 +197,7 @@ def _levels(doc, db, transform=None):
             continue
         if transform is not None:
             elevation = _transform_z(transform, elevation, db)
-        rows[eid_to_int(level.Id)] = {"name": safe_text(getattr(level, "Name", u"")),
+        rows[eid_to_int(level.Id)] = {"name": element_name(level, db),
                                       "elevation_mm": elevation * MM}
     return rows
 
@@ -239,6 +282,7 @@ def collect_sources(doc, db=None):
             "status": u"" if link_doc is not None else u"not loaded",
             "is_host": False, "count": 0, "category": u"Sources",
             "instance_id": eid_to_int(getattr(instance, "Id", None)),
+            "instance": instance,
             "doc": link_doc, "transform": _link_transform(instance) if link_doc is not None else None,
             "room_count": count_spatial(link_doc, state.KIND_ROOM, db=db) if link_doc is not None else 0,
             "space_count": count_spatial(link_doc, state.KIND_SPACE, db=db) if link_doc is not None else 0,
@@ -299,7 +343,7 @@ def _link_title(instance, link_doc):
                 return title
         except Exception:
             pass
-    name = safe_text(getattr(instance, "Name", u""))
+    name = element_name(instance)
     return name.split(u":")[0].strip() or u"(Unnamed Link)"
 
 
@@ -411,11 +455,42 @@ def collect_views(doc, db=None):
             "level_name": level.get("name", u""),
             "level_keys": keys,
             "phase_name": _view_phase_name(doc, view, db),
+            "cut_mm": _view_cut_mm(doc, view, levels, db),
             "count": 1,
             "default_ticked": view_type not in state.UNTICKED_VIEW_TYPES,
         })
     rows.sort(key=lambda row: (row["category"], safe_text(row["name"]).lower()))
     return rows
+
+
+def _view_cut_mm(doc, view, levels, db):
+    """The height of the plan's cut plane, in host millimetres, or None.
+
+    A room shows in a plan when the cut plane passes through its height;
+    for a linked room displayed by the host view that is the only rule left
+    to apply, so the plane is read here once per view.
+    """
+    plane_enum = getattr(db, "PlanViewPlane", None)
+    cut = getattr(plane_enum, "CutPlane", None) if plane_enum is not None else None
+    try:
+        view_range = view.GetViewRange()
+    except Exception:
+        view_range = None
+    if view_range is None or cut is None:
+        return None
+    try:
+        level_id = eid_to_int(view_range.GetLevelId(cut))
+        offset = float(view_range.GetOffset(cut))
+    except Exception:
+        return None
+    level = levels.get(level_id)
+    if level is None:
+        # A sentinel (Level Above/Below, Unlimited) or an unknown level: the
+        # view's own level is the only honest fallback.
+        level = levels.get(_view_level_id(view))
+    if level is None or level.get("elevation_mm") is None:
+        return None
+    return float(level["elevation_mm"]) + offset * MM
 
 
 def _view_type_label(view_type):
@@ -497,6 +572,7 @@ def collect_spatial(doc, kind, db=None, link_uid=u"", link_title=u"", transform=
             placed = element.Location is not None
         except Exception:
             placed = False
+        base_mm, top_mm = _vertical_extent(element, level, levels)
         rows.append({
             "uid": safe_text(getattr(element, "UniqueId", u"")),
             "id": element_id,
@@ -507,6 +583,8 @@ def collect_spatial(doc, kind, db=None, link_uid=u"", link_title=u"", transform=
             "area": _area(element),
             "level_key": level_key,
             "level_name": level.get("name", u""),
+            "base_mm": base_mm,
+            "top_mm": top_mm,
             "phase_name": _phase_name(doc, element, db),
             "design_option": _design_option(element),
             "in_group": _in_group(element),
@@ -518,6 +596,40 @@ def collect_spatial(doc, kind, db=None, link_uid=u"", link_title=u"", transform=
             "redundant": element_id in warnings,
         })
     return rows
+
+
+def _vertical_extent(element, level, levels):
+    """``(base_mm, top_mm)`` in host millimetres, or ``(None, None)``.
+
+    Base level plus base offset up to the upper limit plus its offset - or
+    the unbounded height when no upper limit is set - which is the height a
+    plan's cut plane has to pass through for the room to show.
+    """
+    elevation = (level or {}).get("elevation_mm")
+    if elevation is None:
+        return None, None
+    try:
+        base = float(elevation) + float(element.BaseOffset) * MM
+    except Exception:
+        return None, None
+    top = None
+    try:
+        upper = element.UpperLimit
+    except Exception:
+        upper = None
+    if upper is not None:
+        upper_level = levels.get(eid_to_int(getattr(upper, "Id", None))) or {}
+        if upper_level.get("elevation_mm") is not None:
+            try:
+                top = float(upper_level["elevation_mm"]) + float(element.LimitOffset) * MM
+            except Exception:
+                top = None
+    if top is None:
+        try:
+            top = base + float(element.UnboundedHeight) * MM
+        except Exception:
+            return base, None
+    return base, top
 
 
 def _area(element):
@@ -749,9 +861,216 @@ def collect_region_types(doc, db=None):
     rows = []
     for element in elements:
         rows.append({"id": eid_to_int(getattr(element, "Id", None)),
-                     "name": safe_text(getattr(element, "Name", u""))})
+                     "name": element_name(element, db)})
     rows.sort(key=lambda row: safe_text(row["name"]).lower())
     return rows
+
+
+def collect_line_styles(doc, db=None):
+    """The line styles a filled region's boundary may take.
+
+    The invisible one is found by its built-in category rather than by name,
+    because ``<Invisible lines>`` is a different string in every language
+    Revit ships in; the user's own choice is remembered by name, which only
+    has to survive within one office.
+    """
+    db = _db(db)
+    region_class = getattr(db, "FilledRegion", None)
+    getter = getattr(region_class, "GetValidLineStyleIdsForFilledRegion", None)
+    if getter is None or doc is None:
+        return []
+    try:
+        ids = list(getter(doc))
+    except Exception:
+        return []
+    invisible_key = _member_int(_builtin(db, "BuiltInCategory", "OST_InvisibleLines"))
+    rows = []
+    for style_id in ids:
+        try:
+            style = doc.GetElement(style_id)
+        except Exception:
+            style = None
+        if style is None:
+            continue
+        category = None
+        try:
+            category = style.GraphicsStyleCategory
+        except Exception:
+            category = None
+        name = element_name(category, db) if category is not None else u""
+        if not name:
+            name = element_name(style, db)
+        category_key = eid_to_int(getattr(category, "Id", None)) if category is not None else None
+        rows.append({"id": eid_to_int(style_id), "name": name,
+                     "is_invisible": invisible_key is not None and category_key == invisible_key})
+    rows.sort(key=lambda row: (not row["is_invisible"], safe_text(row["name"]).lower()))
+    return rows
+
+
+# ------------------------------------------------------------- visibility
+
+
+def _visible_ids(doc, view_id, member, db):
+    """Ids of one category the view shows, or None when it cannot be read."""
+    if member is None:
+        return None
+    collector = _collector(doc, db, element_id_factory(db.ElementId)(view_id))
+    if collector is None:
+        return None
+    try:
+        ids = collector.OfCategory(member).WhereElementIsNotElementType().ToElementIds()
+    except Exception:
+        return None
+    found = set()
+    for element_id in ids:
+        value = eid_to_int(element_id)
+        if value is not None:
+            found.add(value)
+    return found
+
+
+def _category_hidden(view, member, db):
+    key = _member_int(member)
+    if key is None:
+        return False
+    try:
+        return bool(view.GetCategoryHidden(element_id_factory(db.ElementId)(key)))
+    except Exception:
+        return False
+
+
+def _link_mode(view, instance):
+    """``(mode name, linked view id)`` - how the view displays the link."""
+    try:
+        overrides = view.GetLinkOverrides(instance.Id)
+    except Exception:
+        overrides = None
+    if overrides is None:
+        return "ByHostView", None
+    mode = enum_name(getattr(overrides, "LinkVisibilityType", u"")) or "ByHostView"
+    linked_view_id = None
+    try:
+        linked_view_id = eid_to_int(overrides.LinkedViewId)
+    except Exception:
+        linked_view_id = None
+    if linked_view_id is not None and linked_view_id < 0:
+        linked_view_id = None
+    return mode, linked_view_id
+
+
+def _link_hidden(view, instance, db):
+    try:
+        if bool(instance.CanBeHidden(view)) and bool(instance.IsHidden(view)):
+            return True
+    except Exception:
+        pass
+    links_category = _builtin(db, "BuiltInCategory", "OST_RvtLinks")
+    return _category_hidden(view, links_category, db) if links_category is not None else False
+
+
+def _linked_visible_uids(doc, view, view_row, source, rooms, member, db,
+                         include_design_options=False):
+    """``(set of room uids or None, note)`` for one link in one view.
+
+    Revit cannot be asked what a host view shows of a link, so the link's
+    display mode decides which rule applies.  By linked view: the linked
+    view itself is asked, exactly.  By host view: the host view's rules are
+    applied to the linked rooms one by one - category, phase, design option
+    and whether the cut plane passes through the room.
+    """
+    instance = source.get("instance")
+    link_doc = source.get("doc")
+    if instance is None or link_doc is None:
+        return set(), u""
+    if _link_hidden(view, instance, db):
+        return set(), u""
+    mode, linked_view_id = _link_mode(view, instance)
+    if mode in ("ByLinkView", "Custom") and linked_view_id is not None:
+        ids = _visible_ids(link_doc, linked_view_id, member, db)
+        if ids is None:
+            return None, state.sentence_for("visibility_unknown",
+                                            u"{0} through {1}".format(view_row.get("name"),
+                                                                      source.get("title")))
+        return set(room["uid"] for room in rooms if room.get("id") in ids), u""
+
+    if _category_hidden(view, member, db):
+        return set(), u""
+    cut_mm = view_row.get("cut_mm")
+    if cut_mm is None:
+        return None, state.sentence_for("visibility_unknown", view_row.get("name"))
+    view_phase = safe_text(view_row.get("phase_name"))
+    visible = set()
+    for room in rooms:
+        room_phase = safe_text(room.get("phase_name"))
+        if view_phase and room_phase and view_phase != room_phase:
+            continue
+        if safe_text(room.get("design_option")) and not include_design_options:
+            continue
+        if room.get("base_mm") is None or room.get("top_mm") is None:
+            continue
+        if state.cut_plane_visible(room["base_mm"], room["top_mm"], cut_mm):
+            visible.add(room["uid"])
+    return visible, u""
+
+
+def visibility_map(doc, views, rooms, sources, kind, db=None, include_design_options=False):
+    """``{view uid: {"visible": set of room uids or None, "note"}}``.
+
+    One pass per view.  This model's rooms come from a view-filtered
+    collector, which is Revit's own answer to "what does this view show";
+    each link's rooms come from ``_linked_visible_uids``.  ``None`` means the
+    view could not be read at all, and the plan then falls back to the level
+    rule and says so - a room is never dropped by an unanswered question.
+    """
+    db = _db(db)
+    member = _builtin(db, "BuiltInCategory",
+                      "OST_MEPSpaces" if kind == state.KIND_SPACE else "OST_Rooms")
+    to_eid = element_id_factory(db.ElementId) if getattr(db, "ElementId", None) else None
+    by_source = {}
+    for room in rooms or []:
+        by_source.setdefault(safe_text(room.get("link_uid")), []).append(room)
+    link_sources = dict((safe_text(row.get("uid")), row) for row in sources or []
+                        if row.get("uid") and row.get("is_checked", True))
+
+    result = {}
+    for view_row in views or []:
+        view_uid = safe_text(view_row.get("uid"))
+        notes = []
+        visible = set()
+        unknown = False
+        host_rooms = by_source.get(u"") or []
+        if host_rooms:
+            ids = _visible_ids(doc, view_row.get("id"), member, db)
+            if ids is None:
+                unknown = True
+                notes.append(state.sentence_for("visibility_unknown", view_row.get("name")))
+            else:
+                visible.update(room["uid"] for room in host_rooms if room.get("id") in ids)
+        view = None
+        if any(uid for uid in by_source if uid):
+            try:
+                view = doc.GetElement(to_eid(view_row.get("id"))) if to_eid else None
+            except Exception:
+                view = None
+        for link_uid, link_rooms in by_source.items():
+            if not link_uid:
+                continue
+            source = link_sources.get(link_uid)
+            if source is None or view is None:
+                unknown = True
+                notes.append(state.sentence_for("visibility_unknown", view_row.get("name")))
+                continue
+            found, note = _linked_visible_uids(doc, view, view_row, source, link_rooms, member,
+                                               db, include_design_options)
+            if found is None:
+                unknown = True
+                if note:
+                    notes.append(note)
+                continue
+            visible.update(found)
+        result[view_uid] = {"visible": None if unknown else visible,
+                            "note": u" ".join(notes)}
+    return result
 
 
 def _materialise_loops(db, loops, z_ft):
@@ -966,6 +1285,10 @@ def create_regions(doc, plan, checked_keys=None, db=None, progress=None, clock=N
 
     to_eid = element_id_factory(db.ElementId)
     region_type_id = to_eid((plan.get("region_type") or {}).get("id"))
+    line_style_id = None
+    if (plan.get("line_style") or {}).get("id") is not None:
+        line_style_id = to_eid(plan["line_style"]["id"])
+    result["notes"] = []
 
     group = db.TransactionGroup(doc, u"Space Boundary")
     try:
@@ -997,6 +1320,7 @@ def create_regions(doc, plan, checked_keys=None, db=None, progress=None, clock=N
                 safe_text(getattr(view, "Name", u"view"))))
             transaction.Start()
             try:
+                drawn = []
                 for item in view_items:
                     done += 1
                     if done % PROGRESS_EVERY == 0:
@@ -1011,16 +1335,26 @@ def create_regions(doc, plan, checked_keys=None, db=None, progress=None, clock=N
                     if result["cancelled"]:
                         break
                     self_result = _one_region(doc, db, plan, item, view, view_id, z_ft,
-                                              region_type_id, to_eid, created_utc)
+                                              region_type_id, line_style_id, to_eid, created_utc)
                     if self_result["ok"]:
                         if item["action"] == "replace":
                             result["replaced"] += 1
                         else:
                             result["created"] += 1
+                        drawn.append((self_result["region"], self_result["record"]))
+                        if self_result.get("note"):
+                            result["notes"].append(self_result["note"])
                     else:
                         result["failed"].append({"key": item["key"], "title": item["title"],
                                                  "code": self_result["code"],
                                                  "reason": self_result["reason"]})
+                # The sketch a region reports before Revit has regenerated
+                # can be empty or stale, and a record written from it would
+                # hide every later hand edit behind "nothing to compare".
+                # One regeneration per view, then the records are brought up
+                # to what the regions actually are.
+                _regenerate(doc)
+                _refresh_records(doc, db, drawn, plan, result)
                 transaction.Commit()
                 result["views_done"] += 1
             except Exception as ex:
@@ -1051,10 +1385,40 @@ def create_regions(doc, plan, checked_keys=None, db=None, progress=None, clock=N
     return result
 
 
-def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, to_eid, created_utc):
+def _regenerate(doc):
+    """Regenerate inside the open transaction; a refusal is not a rollback."""
+    method = getattr(doc, "Regenerate", None)
+    if not callable(method):
+        return False
+    try:
+        method()
+        return True
+    except Exception:
+        return False
+
+
+def _refresh_records(doc, db, drawn, plan, result):
+    """Re-read each new region's outline and fix the record where it moved."""
+    grid_mm = plan.get("grid_mm") or state.GRID_MM
+    for region, record in drawn:
+        loops = read_region_loops(region, db=db)
+        now = state.fingerprints(loops or [], grid_mm)
+        if now.get("abs") == (record.get("region") or {}).get("abs"):
+            continue
+        record = dict(record)
+        record["region"] = state.digests_only(now)
+        ok, reason = storage.write_record(doc, region, record, db=db)
+        if not ok:
+            result["notes"].append(u"The record on one region could not be refreshed: "
+                                   u"{0}".format(reason))
+
+
+def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, line_style_id,
+                to_eid, created_utc):
     """One room in one view, in its own SubTransaction."""
     sub = db.SubTransaction(doc)
     sub.Start()
+    note = u""
     try:
         if item.get("replaces_region_id") is not None:
             old_id = to_eid(item["replaces_region_id"])
@@ -1067,6 +1431,17 @@ def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, to_eid
         boundary = (plan.get("boundaries") or {}).get(item["boundary_key"]) or {}
         loops = _materialise_loops(db, boundary.get("loops") or [], z_ft)
         region = db.FilledRegion.Create(doc, region_type_id, to_eid(view_id), loops)
+        if line_style_id is not None:
+            setter = getattr(region, "SetLineStyleId", None)
+            try:
+                if callable(setter):
+                    setter(line_style_id)
+                else:
+                    note = u"This Revit cannot set a filled region's line style; the type's " \
+                           u"default was kept."
+            except Exception as ex:
+                note = u"The boundary line style could not be set on {0}: {1}".format(
+                    item.get("title"), safe_text(ex))
         region_loops = read_region_loops(region, db=db)
         record = state.make_record(item, boundary.get("fingerprints") or {},
                                    state.fingerprints(region_loops or [],
@@ -1077,7 +1452,8 @@ def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, to_eid
             sub.RollBack()
             return {"ok": False, "code": "revit_refused", "reason": reason}
         sub.Commit()
-        return {"ok": True, "code": "", "reason": u""}
+        return {"ok": True, "code": "", "reason": u"", "region": region, "record": record,
+                "note": note}
     except Exception as ex:
         try:
             sub.RollBack()
@@ -1144,7 +1520,7 @@ def accept_regions(doc, region_ids, db=None, grid_mm=state.GRID_MM):
                 result["failed"].append({"region_id": row["region_id"], "reason": reason})
                 continue
             record = dict(row["record"])
-            record["region"] = dict(row["fingerprints"])
+            record["region"] = state.digests_only(row["fingerprints"])
             ok, write_reason = storage.write_record(doc, row["region"], record, db=db)
             if ok:
                 result["accepted"] += 1
@@ -1164,38 +1540,69 @@ def accept_regions(doc, region_ids, db=None, grid_mm=state.GRID_MM):
 # -------------------------------------------------------------- pick/show
 
 
+def _selection_module():
+    try:
+        from Autodesk.Revit.UI import Selection
+        return Selection
+    except Exception:
+        return None
+
+
 def pick_spatial(uidoc, kind, db=None):
-    """One room or space, picked in the model.  ``None`` when cancelled."""
+    """Rooms or spaces picked in the model, as many as wanted.  ``[]`` when
+    cancelled.
+
+    The filter keeps the pick to the one category, so a wall or a tag under
+    the cursor does not end the pick.  Rooms in a link cannot be picked this
+    way - a pick on a link lands on the link - so they are converted by
+    ticking the link and choosing the views instead.
+    """
     db = _db(db)
+    selection = _selection_module()
+    if selection is None or uidoc is None:
+        return []
+    wanted = _member_int(_builtin(db, "BuiltInCategory",
+                                  "OST_MEPSpaces" if kind == state.KIND_SPACE else "OST_Rooms"))
+
+    def _is_wanted(element):
+        if wanted is None:
+            return True
+        try:
+            return eid_to_int(element.Category.Id) == wanted
+        except Exception:
+            return False
+
+    class _OnlySpatial(selection.ISelectionFilter):
+        def AllowElement(self, element):
+            return _is_wanted(element)
+
+        def AllowReference(self, reference, point):
+            return False
+
     try:
-        from Autodesk.Revit.UI.Selection import ObjectType
+        references = list(uidoc.Selection.PickObjects(
+            selection.ObjectType.Element, _OnlySpatial(),
+            u"Pick the {0}s to convert, then Finish".format(
+                u"space" if kind == state.KIND_SPACE else u"room")))
     except Exception:
-        return None
-    member = _builtin(db, "BuiltInCategory",
-                      "OST_MEPSpaces" if kind == state.KIND_SPACE else "OST_Rooms")
-    try:
-        reference = uidoc.Selection.PickObject(
-            ObjectType.Element,
-            u"Pick a {0}".format(u"space" if kind == state.KIND_SPACE else u"room"))
-    except Exception:
-        return None
-    try:
-        element = uidoc.Document.GetElement(reference.ElementId)
-    except Exception:
-        return None
-    if element is None:
-        return None
-    category_id = None
-    try:
-        category_id = eid_to_int(element.Category.Id)
-    except Exception:
-        category_id = None
-    if member is not None and category_id is not None and category_id != int(member):
-        return None
-    return {"uid": safe_text(getattr(element, "UniqueId", u"")),
-            "id": eid_to_int(getattr(element, "Id", None)),
-            "label": u"{0} {1}".format(_param_string(element, db, "ROOM_NUMBER"),
-                                       _param_string(element, db, "ROOM_NAME")).strip()}
+        return []
+    picked = []
+    seen = set()
+    for reference in references:
+        try:
+            element = uidoc.Document.GetElement(reference.ElementId)
+        except Exception:
+            element = None
+        if element is None or not _is_wanted(element):
+            continue
+        uid = safe_text(getattr(element, "UniqueId", u""))
+        if uid in seen:
+            continue
+        seen.add(uid)
+        picked.append({"uid": uid, "id": eid_to_int(getattr(element, "Id", None)),
+                       "label": u"{0} {1}".format(_param_string(element, db, "ROOM_NUMBER"),
+                                                  _param_string(element, db, "ROOM_NAME")).strip()})
+    return picked
 
 
 def show(uidoc, row, db=None):
