@@ -1,0 +1,118 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Fire Damper Check"
+        Width="1000"
+        Height="760"
+        MinWidth="840"
+        MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" MinHeight="200" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Fire Damper Check"
+                       FontSize="30"
+                       FontWeight="SemiBold" />
+            <TextBlock x:Name="SummaryText"
+                       Margin="0,6,0,0"
+                       FontSize="13"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Text="Every crossing of a rated barrier, by what was found at it. Show selects the duct and damper and frames the crossing; on Revit 2023+ the linked wall is selected too. Nothing is ever changed." />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="10"
+                Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <DockPanel Grid.Column="0" LastChildFill="True" Margin="0,0,14,0">
+                    <TextBlock DockPanel.Dock="Left"
+                               Text="Search"
+                               Foreground="DimGray"
+                               FontSize="11"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0" />
+                    <TextBox x:Name="SearchBox"
+                             Height="26"
+                             VerticalContentAlignment="Center"
+                             ToolTip="Ids match whole (12 does not find 112); names by substring."
+                             TextChanged="search_changed" />
+                </DockPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBlock Text="Within" VerticalAlignment="Center" />
+                    <Button x:Name="NearDownButton" Content="-" Width="26" Height="26" Margin="8,0,0,0" Click="near_down_click" />
+                    <TextBox x:Name="NearBox" Width="64" Height="26" Text="600" TextAlignment="Center" VerticalContentAlignment="Center" TextChanged="near_changed" />
+                    <Button x:Name="NearUpButton" Content="+" Width="26" Height="26" Click="near_up_click" />
+                    <TextBlock Text="mm, at most" VerticalAlignment="Center" Margin="8,0,8,0" />
+                    <TextBox x:Name="HopsBox" Width="40" Height="26" Text="3" TextAlignment="Center" VerticalContentAlignment="Center" TextChanged="hops_changed" />
+                    <TextBlock Text="connection(s)" VerticalAlignment="Center" Margin="8,0,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="12">
+            <Grid>
+                <TextBlock x:Name="EmptyText"
+                           Visibility="Collapsed"
+                           Foreground="DimGray"
+                           FontSize="14"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center" />
+
+                <ScrollViewer x:Name="ContentScroll"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="ContentPanel" />
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3"
+                BorderBrush="#D0D0D0"
+                BorderThickness="1"
+                Padding="10"
+                Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="StatusText"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Foreground="DimGray"
+                           TextWrapping="Wrap" />
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+                    <Button x:Name="RefreshButton" Content="Refresh" Width="110" Height="36" Margin="0,0,8,0" ToolTip="Re-read the model and the links; search, tolerance and expanded groups survive." Click="refresh_click" />
+                    <Button x:Name="ExpandAllButton" Content="Expand All" Width="110" Height="36" Margin="0,0,8,0" Click="expand_all_click" />
+                    <Button x:Name="CollapseAllButton" Content="Collapse All" Width="110" Height="36" Margin="0,0,8,0" Click="collapse_all_click" />
+                    <Button x:Name="CloseButton" Content="Close" Width="110" Height="36" IsCancel="True" Click="close_click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

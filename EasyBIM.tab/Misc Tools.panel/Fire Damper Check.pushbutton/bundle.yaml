@@ -1,0 +1,14 @@
+title: "Fire Damper\nCheck"
+tooltip: >-
+  Find every duct that crosses a fire-rated wall or floor without a
+  fire damper at the crossing.
+
+  Rated barriers live in the linked architectural model as often as
+  not, and the rating is often only drawn: so a barrier counts when a
+  rating parameter is filled, when its wall or floor type is ticked, or
+  when a drawn fire-rating line of a ticked line style marks it. Choices
+  are remembered by name per link. A ticked fire damper within the
+  tolerance on the same run - or with its body in the barrier - covers
+  the crossing; the tolerance changes live in the report. Read-only:
+  links are read, never written, and nothing in the model is changed.
+author: Ruiming Liu

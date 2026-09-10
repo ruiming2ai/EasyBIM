@@ -1054,6 +1054,63 @@ the command drops its own modules on each launch when no report is open - that
 is what lets an update take effect on the next click. Linked models are not
 traversed.
 
+## Fire Damper Check (Misc Tools)
+
+Finds every duct that crosses a fire-rated wall or floor without a fire damper
+at the crossing. Read-only: links are read, never written, and nothing in the
+model is changed.
+
+**Where the rated barriers come from.** Usually a linked architectural model,
+and often the rating is only drawn. So three sources are combined, each
+confirmed in the setup and remembered **by name per link**:
+
+- **A rating parameter.** Revit's built-in *Fire Rating* on wall and floor
+  types, or any text parameter you pick per link (offices disagree on which one
+  carries it); non-empty means rated.
+- **The wall and floor types you tick.** Every type in each link is listed with
+  its instance count, pre-ticked by the parameter and by name (*fire*, *FR*,
+  *HR*, *rated*, *FW*, *1h*, *2h*); you confirm. Stacked walls are judged by
+  their members; curtain walls have no solid body and are named as skipped.
+- **The drawn fire-rating lines.** Model and detail lines whose line style you
+  tick (*Fire Rating 1HR* and friends) become vertical barriers standing on
+  their view's level up to the next level (or a fixed height). Lines have no
+  thickness (200 mm is assumed) and mark where the architect drew them.
+
+**What counts as a fire damper.** The family types you tick, pre-ticked by
+*fire*, *smoke*, *FD*, *FSD* and *combination* (a duct smoke *detector* is not
+a damper). Duct Accessories open on top; every other category folds beneath.
+
+**What counts as covered.** A ticked fire damper within the tolerance
+(default 600 mm) of the crossing **on the same run** (within 3 connections),
+or one whose body sits in the barrier. Two parallel ducts through one wall are
+two crossings: a damper within tolerance on the *other* duct is reported as
+such, never as covering both. Both numbers change live in the report.
+
+**The report.** One expander per verdict, problems first: no fire damper; a
+flex duct through a rated barrier (wrong regardless of dampers); a damper
+within tolerance but on another run. Then the review rows: a fitting whose box
+overlaps a barrier; a duct running along or inside a barrier; a barrier whose
+geometry could not be read. Then covered (in the barrier / within tolerance),
+and finally the fire dampers at no identified barrier - the wall may not be
+ticked, or the damper is misplaced. **Show** selects the duct and damper and
+frames the crossing; on Revit 2023 and later the linked wall is selected too.
+**Refresh** re-reads the model and the links with search, tolerance and
+expanded groups preserved. A **Scan notes** expander lists every named skip:
+unloaded links, scaled link instances, curtain walls, lines outside plan
+views, a scan that hit its budget.
+
+**How the crossing is found.** The duct's line is mapped into the link's
+coordinates with the link's own transform and intersected with the wall's
+solid, so a duct through a door opening is not a crossing - the geometry
+decides. A per-link bounding-box query and a spatial hash keep a campus link
+and thirty thousand ducts to a few thousand real tests.
+
+The command runs in a persistent pyRevit engine because the modeless report
+owns an ExternalEvent whose handler is Python; the command drops its own
+modules on each launch when no report is open, so an update takes effect on
+the next click. Nested links cannot be reached. A rating is a transcription of
+the link, not a compliance judgement.
+
 ## Clash Detection Mode (Misc Tools, Revit 2023-2027)
 
 A live, forward-only interference checker. Pick two sets of categories, and from
