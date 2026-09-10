@@ -55,3 +55,44 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(candidates[1], r.match_reference(source,candidates))
         candidates.append(dict(source))
         self.assertIsNone(r.match_reference(source,candidates))
+
+class VerificationTests(unittest.TestCase):
+    def parameter(self,value,storage="Double"):
+        return dict(key="length",name="Length",spec="length",storage=storage,
+                    writable=True,value=value,placement=False)
+    def test_rejected_numeric_driver_is_not_successful_placement(self):
+        with patch.object(r,"parameter_records",side_effect=[
+                [self.parameter(12)], [self.parameter(3)]]):
+            with self.assertRaises(ValueError):
+                r.verify_parameter_values(object(),object())
+    def test_unchanged_numeric_driver_passes_read_back(self):
+        with patch.object(r,"parameter_records",side_effect=[
+                [self.parameter(12)], [self.parameter(12)]]):
+            self.assertEqual([],r.verify_parameter_values(object(),object()))
+    def test_half_turn_has_a_valid_axis(self):
+        from easybim import independent_placement as p
+        axis, angle=r._rotation(p.frame(),p.frame((0,0,0),(-1,0,0),(0,-1,0)))
+        self.assertAlmostEqual(3.141592653589793,angle)
+        self.assertAlmostEqual(1,abs(axis[2]))
+
+    def test_mirror_modifies_original_without_creating_an_extra_instance(self):
+        import types
+        from unittest.mock import Mock
+        from easybim import independent_placement as p
+        original=p.frame(); mirrored=p.frame(x=(-1,0,0))
+        transforms=types.SimpleNamespace(MirrorElements=Mock())
+        db=types.SimpleNamespace(ElementTransformUtils=transforms,ElementId=int,
+            Plane=types.SimpleNamespace(CreateByNormalAndOrigin=lambda n,o: "plane"))
+        generic=types.ModuleType("System.Collections.Generic")
+        class List:
+            def __class_getitem__(cls,item): return list
+        generic.List=List
+        instance=types.SimpleNamespace(Id=17)
+        with patch.dict(sys.modules,{"System.Collections.Generic":generic}), \
+             patch.object(r,"get_db",return_value=db),patch.object(r,"xyz",side_effect=lambda x:x), \
+             patch.object(r,"mutation_reason",return_value=""),patch.object(r,"independent_reason",return_value=""), \
+             patch.object(r,"connected",return_value=False),patch.object(r,"verify_instance"), \
+             patch.object(r,"instance_frame",side_effect=[original,mirrored,mirrored]):
+            doc=types.SimpleNamespace(Regenerate=Mock())
+            r.move_to_frame(doc,instance,mirrored)
+        transforms.MirrorElements.assert_called_once_with(doc,[17],"plane",False)

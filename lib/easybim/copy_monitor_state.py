@@ -92,7 +92,7 @@ def compare(record, source, destination, availability="available"):
         result["status"] = "placement_difference"
     if destination.get("independence"):
         result["status"] = "conversion_required"
-    elif result["status"] == "unchanged" and record.get("parameter_issues"):
+    elif result["status"] == "unchanged" and any(i.get("severity", "warning") != "info" for i in record.get("parameter_issues", [])):
         result["status"] = "parameter_exceptions"
     if record.get("postponed") and result["status"] not in ("unchanged", "accepted"):
         result["status"] = "postponed"
@@ -114,8 +114,15 @@ def resolve(record, action, source, destination):
         elif action in ("relative", "match"):
             if action == "relative":
                 result["recipe"] = dict(relative=placement.relative(source["frame"], destination["frame"]))
-            result["baseline_source"] = copy.deepcopy(source)
-            result["baseline_destination"] = copy.deepcopy(destination)
+            if action == "relative" or record["mode"] != "original":
+                # These actions resolve placement only. Keep parameter/type edits
+                # pending until explicitly accepted or transferred by Match Source.
+                for key, current in (("baseline_source", source), ("baseline_destination", destination)):
+                    for field in ("frame", "host", "independence"):
+                        result[key][field] = copy.deepcopy(current.get(field))
+            else:
+                result["baseline_source"] = copy.deepcopy(source)
+                result["baseline_destination"] = copy.deepcopy(destination)
             result["accepted"] = None
         else:
             raise ValueError("Unknown review action: " + action)

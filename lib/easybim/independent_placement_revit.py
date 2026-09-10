@@ -9,6 +9,8 @@ import math
 import os
 import shutil
 import tempfile
+import uuid
+import re
 from easybim import independent_placement as math3
 
 CATEGORY_NAMES = (
@@ -262,6 +264,22 @@ def transfer_parameters(source, destination, cache=None):
     return issues
 
 
+
+def verify_parameter_values(source, destination, strict=False):
+    """Read back values after regeneration; a refused numeric driver aborts."""
+    assignments, ignored = math3.parameter_plan(parameter_records(source), parameter_records(destination))
+    issues = []
+    for assignment in assignments:
+        original, actual = assignment["source"], assignment["destination"]
+        if math3.same_parameter_value(original["value"], actual["value"]):
+            continue
+        reason = "Value differs after regeneration: " + original["name"]
+        if strict or original["storage"] in ("Double", "Integer"):
+            raise ValueError(reason)
+        issues.append(dict(key=original["key"], name=original["name"], reason=reason))
+    return issues
+
+
 def family_revision(element):
     family = element.Symbol.Family
     return math3.fingerprint(dict(uid=family.UniqueId, version=text(family.VersionGuid),
@@ -294,6 +312,15 @@ def prepare_symbol(destination_doc, source, cache):
         cache[key] = source.Symbol
         return source.Symbol
     db = get_db()
+    definition_key = (source.Symbol.Family.UniqueId, text(source.Symbol.Family.VersionGuid))
+    prepared_family = cache.get(definition_key)
+    if prepared_family is not None and prepared_family.IsValidObject:
+        for eid in prepared_family.GetFamilySymbolIds():
+            symbol = destination_doc.GetElement(eid)
+            if name(symbol) == name(source.Symbol):
+                verify_parameter_values(source.Symbol, symbol, strict=True)
+                cache[key] = symbol
+                return symbol
     family_doc = None
     scratch_doc = None
     folder = tempfile.mkdtemp(prefix="easybim-independent-")
@@ -334,22 +361,24 @@ def prepare_symbol(destination_doc, source, cache):
                   if f.IsShared]
         if nested:
             raise ValueError("Nested shared-family loading is not certified for independent copies.")
-        isolated_name = "EasyBIM_" + key[:20]
-        existing = [f for f in db.FilteredElementCollector(destination_doc).OfClass(db.Family)
-                    if name(f) == isolated_name]
-        if existing:
-            family = existing[0]
-        else:
-            path = os.path.join(folder, isolated_name + ".rfa")
-            family_doc.SaveAs(path)
-            family = family_doc.LoadFamily(destination_doc, _reject_load_options(db))
+        # Reuse only variants verified against registry baselines by the caller.
+        # A same-named family in the model is not proof of original content.
+        label = re.sub(r'[<>:"/\\|?*]', '_', name(source.Symbol.Family))[:60]
+        isolated_name = "EasyBIM_{}_{}".format(label, uuid.uuid4().hex[:12])
+        path = os.path.join(folder, isolated_name + ".rfa")
+        family_doc.SaveAs(path)
+        family = family_doc.LoadFamily(destination_doc, _reject_load_options(db))
         if family is None:
             raise ValueError("Loading the isolated family was refused.")
+        if name(family) != isolated_name:
+            raise ValueError("Revit did not preserve the isolated family name.")
         symbols = [destination_doc.GetElement(eid) for eid in family.GetFamilySymbolIds()]
         matches = [s for s in symbols if name(s) == name(source.Symbol)]
         if len(matches) != 1:
             raise ValueError("The original family type could not be resolved uniquely.")
+        verify_parameter_values(source.Symbol, matches[0], strict=True)
         cache[key] = matches[0]
+        cache[definition_key] = family
         return matches[0]
     finally:
         if family_doc is not None:
@@ -395,7 +424,9 @@ def move_to_frame(doc, element, desired):
         raise ValueError("Connected MEP instance: automatic movement requires circuit/connection validation.")
     if math3.determinant(current)*math3.determinant(desired) < 0:
         plane = db.Plane.CreateByNormalAndOrigin(xyz(current["x"]), xyz(current["origin"]))
-        db.ElementTransformUtils.MirrorElement(doc, element.Id, plane)
+        from System.Collections.Generic import List
+        # MirrorElement creates a copy. False preserves this instance's identity.
+        db.ElementTransformUtils.MirrorElements(doc, List[db.ElementId]([element.Id]), plane, False)
         doc.Regenerate()
         current = instance_frame(element)
     axis, angle = _rotation(current, desired)
@@ -433,9 +464,13 @@ def create_instance(doc, source, symbol, desired):
     element = doc.Create.NewFamilyInstance(xyz(desired["origin"]), symbol, level,
                                           db.Structure.StructuralType.NonStructural)
     issues = transfer_parameters(source, element)
+    _, type_issues = math3.parameter_plan(parameter_records(source.Symbol), parameter_records(symbol))
+    issues.extend(dict(issue, name="Type: " + issue["name"]) for issue in type_issues)
     doc.Regenerate()
     move_to_frame(doc, element, desired)
-    return dict(element=element, desired=desired, actual=instance_frame(element),
+    issues.extend(verify_parameter_values(source, element))
+    return dict(element=element, source_uid=source.UniqueId, destination_uid=element.UniqueId,
+                desired=desired, actual=instance_frame(element),
                 parameter_issues=issues, conversion="standalone")
 
 

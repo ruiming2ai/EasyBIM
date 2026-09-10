@@ -105,6 +105,20 @@ def support_reason(placement, physical_host=False, in_place=False, nested=False)
     return ""
 
 
+
+def same_parameter_value(a, b):
+    if isinstance(a, dict) and isinstance(b, dict):
+        if a.get("kind") and b.get("kind"):
+            keys = ("kind", "value") if a.get("kind") == "sentinel" else ("kind", "name", "properties")
+            return all(same_parameter_value(a.get(key), b.get(key)) for key in keys)
+        return set(a) == set(b) and all(same_parameter_value(a[k],b[k]) for k in a)
+    if isinstance(a, (int,float)) and isinstance(b, (int,float)):
+        return abs(a-b) <= max(1e-9,1e-10*max(abs(a),abs(b)))
+    if isinstance(a,(list,tuple)) and isinstance(b,(list,tuple)):
+        return len(a)==len(b) and all(same_parameter_value(x,y) for x,y in zip(a,b))
+    return a == b
+
+
 def parameter_plan(source, destination):
     indexed = {}
     source_counts = {}
@@ -131,7 +145,11 @@ def parameter_plan(source, destination):
         elif value.get("value") is None:
             reason = "source has no assigned value"
         if reason:
-            issues.append(dict(key=value["key"], name=value.get("name", ""), reason=reason))
+            info = value.get("placement") or value.get("value") is None
+            if candidates and "read-only" in reason:
+                info = same_parameter_value(value["value"], candidates[0].get("value"))
+            issues.append(dict(key=value["key"], name=value.get("name", ""), reason=reason,
+                               severity="info" if info else "warning"))
         else:
             assignments.append(dict(source=value, destination=candidates[0]))
     return assignments, issues

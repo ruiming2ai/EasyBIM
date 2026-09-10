@@ -79,3 +79,20 @@ class MonitorState(unittest.TestCase):
     def test_stop_requires_no_available_source(self):
         item = s.resolve(record(),"stop",None,None)
         self.assertFalse(item["active"])
+
+class NotesAreNotConflicts(unittest.TestCase):
+    def test_informational_placement_notes_do_not_make_unchanged_pair_pending(self):
+        item = record()
+        item["parameter_issues"] = [{"name":"Level","reason":"calculated from coordinates","severity":"info"}]
+        self.assertEqual("unchanged",s.compare(item,snap(),snap())["status"])
+
+class RelativeAcknowledgement(unittest.TestCase):
+    def test_keep_relative_does_not_acknowledge_untransferred_parameters(self):
+        item = s.resolve(record(), "relative", snap(2,value=9), snap(3,value=1))
+        self.assertEqual("source_changed", s.compare(item,snap(2,value=9),snap(3,value=1))["status"])
+        self.assertIn("Length",s.compare(item,snap(2,value=9),snap(3,value=1))["source_changes"])
+
+    def test_position_only_match_keeps_parameter_edits_pending(self):
+        item=record(); item["mode"]="position"
+        item=s.resolve(item,"match",snap(2,value=9),snap(2,value=1))
+        self.assertEqual("source_changed",s.compare(item,snap(2,value=9),snap(2,value=1))["status"])
