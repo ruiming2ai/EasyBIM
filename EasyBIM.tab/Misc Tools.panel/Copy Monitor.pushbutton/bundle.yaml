@@ -1,0 +1,9 @@
+title: "Copy\nMonitor"
+tooltip: >-
+  Copy independent MEP and Generic Model instances, monitor existing pairs,
+  and review linked changes on command. Match source, keep relative location,
+  accept differences, postpone, or stop monitoring in batches.
+  Hosted conversion support requires certification; unsupported families are reported.
+author: Ruiming Liu
+min_revit_version: 2024
+max_revit_version: 2027

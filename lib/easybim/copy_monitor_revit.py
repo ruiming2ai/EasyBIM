@@ -7,17 +7,20 @@ from easybim import copy_monitor_storage as storage
 
 
 def snapshot(element, transform=None, destination=False):
-    params = {}
+    params, labels, displays = {}, {}, {}
     for prefix, owner in (("", element), ("type:", element.Symbol)):
         for record in adapter.parameter_records(owner):
             if not record["placement"]:
                 key = prefix + record["key"]
+                labels[key] = prefix + record["name"]
+                displays[key] = record.get("display", adapter.text(record["value"]))
                 if key in params:
                     params[key] = dict(ambiguous=True)
                 else:
                     params[key] = record["value"]
     host = element.Host
     return dict(frame=adapter.instance_frame(element, transform), params=params,
+                parameter_labels=labels, parameter_display=displays, element_id=adapter.id_value(element.Id),
                 type_revision=adapter.family_revision(element),
                 type_label=adapter.name(element.Symbol), family=element.Symbol.FamilyName,
                 host=adapter.text(getattr(host, "UniqueId", "")),
@@ -114,6 +117,7 @@ def copy_requests(doc, requests, progress=None, existing_records=None):
                     "pending", source_snap, dict(source_snap),
                     mode=request["mode"], recipe=request["recipe"],
                     prototype_uid=source.UniqueId if request["mode"] == "duplicate" else "")
+                pending["link_label"] = adapter.name(link)
                 if state.mapping_key(pending) in existing:
                     reports.append(dict(ok=False, error="This source and placement mapping is already monitored.",
                                         request=request))
@@ -157,6 +161,7 @@ def monitor_existing(doc, link, source, destination):
     dst = snapshot(destination, destination=True)
     record = state.new_record(link.UniqueId, document_uid(linked), source.UniqueId,
                               destination.UniqueId, src, dst, mode="position")
+    record["link_label"] = adapter.name(link)
     def mutate():
         return storage.write_record(doc, record)
     return adapter.atomic_item(doc, "Monitor existing element", lambda: None, mutate)

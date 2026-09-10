@@ -212,6 +212,11 @@ def parameter_records(element, include_objects=False):
         record = dict(key=key, name=text(definition.Name), spec=spec, storage=storage,
                       value=value, writable=not parameter.IsReadOnly,
                       placement=builtin in PLACEMENT_PARAMETERS)
+        try:
+            record["display"] = parameter.AsValueString() or (
+                value.get("name", text(value)) if isinstance(value, dict) else text(value))
+        except Exception:
+            record["display"] = text(value)
         if include_objects:
             record["_parameter"] = parameter
         records.append(record)
