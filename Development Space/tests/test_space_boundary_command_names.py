@@ -226,6 +226,29 @@ class XamlTests(unittest.TestCase):
         }
         self.assertFalse(required - names, "missing x:Name(s): %s" % (required - names))
 
+    def test_the_setup_names_the_two_combos_and_the_selected_views_radio(self):
+        """The first Revit run showed one blank combo labelled "Draw with":
+        nobody could tell whether it meant the fill or the edge. Now there are
+        two, each named for what it is."""
+        source = (COMMAND_DIR / "SpaceBoundaryWindow.xaml").read_text(encoding="utf-8")
+        self.assertIn("Filled region type", source)
+        self.assertIn("Boundary line style", source)
+        self.assertIn('x:Name="LineStyleCombo"', source)
+        self.assertNotIn("Draw with", source)
+        self.assertIn('Content="Selected Views Below"', source)
+        self.assertNotIn("The views I tick below", source)
+        self.assertNotIn("no region yet", source)
+
+    def test_the_report_offers_update_and_update_all_and_nothing_it_removed(self):
+        source = (COMMAND_DIR / "SpaceBoundaryReportWindow.xaml").read_text(encoding="utf-8")
+        self.assertIn('x:Name="UpdateAllButton"', source)
+        ui = UI_MODULE.read_text(encoding="utf-8")
+        self.assertIn(u'u"Update"', ui)
+        self.assertNotIn("Redraw", ui)
+        self.assertNotIn("missing_region", ui)
+        self.assertNotIn("can_create", ui)
+        self.assertNotIn("Not this view", ui)
+
     def test_the_setup_has_both_jobs_as_tabs(self):
         source = (COMMAND_DIR / "SpaceBoundaryWindow.xaml").read_text(encoding="utf-8")
         self.assertIn('x:Name="CreateTab"', source)
@@ -472,13 +495,30 @@ class LauncherTests(unittest.TestCase):
                 missing.append("{0}.{1}".format(alias, node.attr))
         self.assertEqual([], sorted(set(missing)))
 
-    def test_the_pick_path_reopens_the_setup(self):
-        """PickObject cannot run while a modal window is up, so the setup
+    def test_the_pick_path_reopens_the_setup_and_takes_many(self):
+        """PickObjects cannot run while a modal window is up, so the setup
         hands its choices back and the launcher reopens it."""
         self.assertIn('self.result = "pick"', UI_MODULE.read_text(encoding="utf-8"))
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('if result == "pick":', source)
         self.assertIn("pick_spatial", source)
+        adapter = REVIT_MODULE.read_text(encoding="utf-8")
+        self.assertIn("PickObjects(", adapter)
+        self.assertNotIn("PickObject(", adapter)
+
+    def test_the_write_regenerates_before_the_record_is_trusted(self):
+        """The record's region digest was written from a sketch Revit had not
+        finished; now the view is regenerated once and the records re-read."""
+        adapter = REVIT_MODULE.read_text(encoding="utf-8")
+        self.assertIn("_regenerate(doc)", adapter)
+        self.assertIn("_refresh_records(", adapter)
+
+    def test_names_are_read_the_way_ironpython_can(self):
+        """The blank combo: ``FilledRegionType.Name`` does not bind under
+        IronPython, and the repo's fallback is ``Element.Name.GetValue``."""
+        adapter = REVIT_MODULE.read_text(encoding="utf-8")
+        self.assertIn("Name.GetValue", adapter)
+        self.assertNotIn('getattr(element, "Name"', adapter)
 
 
 if __name__ == "__main__":

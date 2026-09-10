@@ -362,10 +362,15 @@ class PlanTests(unittest.TestCase):
                                 {"r1": make_boundary(), "r2": make_boundary(),
                                  "r3": make_boundary()}, {})
         pair_skips = [skip for skip in plan["skips"] if skip["scope"] == u"pair"]
-        self.assertEqual(len(plan["items"]) + len(pair_skips), plan["counts"]["pairs"])
+        self.assertEqual(len(plan["items"]) + len(pair_skips) + plan["counts"]["not_visible"],
+                         plan["counts"]["pairs"])
+        # Nothing is known about what the views show, so the level decides:
+        # each plan draws its own room, the other-level pair is not offered.
         self.assertEqual(len(plan["items"]), 2)
+        self.assertEqual(plan["counts"]["not_visible"], 2)
         for skip in plan["skips"]:
             self.assertTrue(skip["reason"], skip["code"])
+        self.assertFalse([skip for skip in pair_skips if skip["code"] in ("wrong_level", "wrong_phase")])
 
     def test_a_section_view_is_skipped_once_not_once_per_room(self):
         plan = state.build_plan(self.config(), [make_view("v9", u"Section", view_type="Section")],
@@ -468,7 +473,7 @@ class DriftTests(unittest.TestCase):
                                       rooms_now(state.fingerprints([bigger])), views_now())
         bucket, item = bucket_of(report, "reg-1")
         self.assertEqual(bucket, "room_moved")
-        self.assertTrue(item["can_redraw"])
+        self.assertTrue(item["can_update"])
         self.assertEqual(report["problem_count"], 1)
 
     def test_a_hand_edited_region_is_told_from_a_moved_one(self):
@@ -479,7 +484,7 @@ class DriftTests(unittest.TestCase):
         bucket, item = bucket_of(report, "reg-1")
         self.assertEqual(bucket, "region_edited")
         self.assertTrue(item["can_accept"])
-        self.assertTrue(item["can_redraw"])
+        self.assertTrue(item["can_update"])
 
         shifted = [(x + 250.0, y) for x, y in SQUARE]
         report = state.classify_drift(
@@ -505,7 +510,7 @@ class DriftTests(unittest.TestCase):
         self.assertEqual(bucket, "orphan_room")
         self.assertIn(u"101 Office", item["detail"])
         self.assertTrue(item["can_delete"])
-        self.assertFalse(item["can_redraw"])
+        self.assertFalse(item["can_update"])
 
     def test_a_region_copied_to_another_view_is_never_trusted(self):
         report = state.classify_drift([live_entry(make_record(), owner_view="v2")],
@@ -513,7 +518,7 @@ class DriftTests(unittest.TestCase):
         bucket, item = bucket_of(report, "reg-1")
         self.assertEqual(bucket, "copied_region")
         self.assertTrue(item["can_delete"])
-        self.assertFalse(item["can_redraw"])
+        self.assertFalse(item["can_update"])
 
     def test_the_second_region_for_one_room_is_the_duplicate(self):
         old = make_record()
@@ -523,13 +528,21 @@ class DriftTests(unittest.TestCase):
         self.assertEqual(bucket_of(report, "reg-1")[0], "in_sync")
         self.assertEqual(bucket_of(report, "reg-2")[0], "duplicate")
 
-    def test_a_view_that_no_longer_shows_the_room_cannot_be_redrawn(self):
-        report = state.classify_drift([live_entry(make_record())],
-                                      rooms_now(), {"v1": make_view(level="L2")})
+    def test_a_view_that_no_longer_shows_the_room_cannot_be_updated(self):
+        """What the view shows decides, not the level: a room the view no
+        longer displays is an orphan, and one it displays from another level
+        is judged like any other."""
+        entry = live_entry(make_record())
+        entry["room_visible"] = False
+        report = state.classify_drift([entry], rooms_now(), views_now())
         bucket, item = bucket_of(report, "reg-1")
         self.assertEqual(bucket, "orphan_view")
-        self.assertFalse(item["can_redraw"])
+        self.assertFalse(item["can_update"])
         self.assertTrue(item["can_delete"])
+        entry = live_entry(make_record())
+        entry["room_visible"] = True
+        report = state.classify_drift([entry], rooms_now(), {"v1": make_view(level="L2")})
+        self.assertEqual(bucket_of(report, "reg-1")[0], "in_sync")
 
     def test_an_unloaded_link_is_named_and_not_judged(self):
         record = make_record(link_uid=u"lnk-1", link_title=u"Arch.rvt")
@@ -547,13 +560,57 @@ class DriftTests(unittest.TestCase):
                                       rooms_now(), views_now())
         self.assertEqual(bucket_of(report, "reg-1")[0], "unreadable")
 
-    def test_a_room_with_no_region_is_offered(self):
-        expected = [{"key": "k1", "title": u"102 Store · Level 1", "room_uid": "r2",
-                     "link_uid": u"", "view_uid": "v1", "view_id": 100}]
-        report = state.classify_drift([], {}, views_now(), expected=expected)
-        bucket, item = bucket_of(report, "k1")
-        self.assertEqual(bucket, "missing_region")
-        self.assertTrue(item["can_create"])
+    def test_unknown_is_never_read_as_in_step(self):
+        """The bug the first Revit run found: a record written before Revit
+        had finished the sketch carried an empty region digest, and every
+        later hand edit read as "in step". Now the outlines decide, and a
+        side with nothing to compare is said so."""
+        stale = make_record()
+        stale["region"] = {}
+        reshaped = [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1400.0), (0.0, 1000.0)]
+        report = state.classify_drift(
+            [live_entry(stale, fingerprints=state.fingerprints([reshaped]))],
+            rooms_now(), views_now())
+        bucket, item = bucket_of(report, "reg-1")
+        self.assertIn(bucket, state.DRIFT_PROBLEMS)
+        self.assertTrue(item["can_update"])
+        self.assertIn(u"mm", item["detail"])
+        # Nothing to compare at all: named, never filed as in step.
+        report = state.classify_drift(
+            [live_entry(stale, fingerprints=state.fingerprints([]))], rooms_now(), views_now())
+        self.assertEqual(bucket_of(report, "reg-1")[0], "unreadable")
+
+    def test_an_outline_that_matches_with_a_stale_record_offers_a_refresh(self):
+        stale = make_record()
+        stale["region"] = {}
+        report = state.classify_drift([live_entry(stale)], rooms_now(), views_now())
+        bucket, item = bucket_of(report, "reg-1")
+        self.assertEqual(bucket, "in_sync")
+        self.assertTrue(item["can_accept"])
+        self.assertIn(u"record is behind", item["detail"])
+
+    def test_the_verdict_is_the_outline_not_the_record(self):
+        """A region reshaped so the stored digests cannot say who moved still
+        reads as drifted, with the gap in millimetres."""
+        record = make_record()
+        record["room"] = {}
+        record["region"] = {}
+        reshaped = [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1400.0), (0.0, 1000.0)]
+        report = state.classify_drift(
+            [live_entry(record, fingerprints=state.fingerprints([reshaped]))],
+            rooms_now(), views_now())
+        bucket, item = bucket_of(report, "reg-1")
+        self.assertEqual(bucket, "drifted")
+        self.assertEqual(int(item["deviation_mm"]), 400)
+        self.assertTrue(item["can_update"])
+        self.assertTrue(item["can_accept"])
+
+    def test_a_sub_tolerance_wobble_is_in_step(self):
+        wobbly = [(0.4, -0.6), (1000.9, 0.3), (999.6, 1000.7), (0.2, 1000.1)]
+        report = state.classify_drift(
+            [live_entry(make_record(), fingerprints=state.fingerprints([wobbly]))],
+            rooms_now(), views_now())
+        self.assertEqual(bucket_of(report, "reg-1")[0], "in_sync")
 
     def test_an_ignored_region_leaves_the_tally(self):
         bigger = [(0.0, 0.0), (1500.0, 0.0), (1500.0, 1000.0), (0.0, 1000.0)]
@@ -620,7 +677,8 @@ class NotesTests(unittest.TestCase):
         notes = state.scan_notes({}, {"boundary_source": "document", "boundary_location": "Center"})
         joined = u" ".join(notes)
         self.assertIn(u"wall centre", joined)
-        self.assertIn(u"own level, in its own phase", joined)
+        self.assertIn(u"rooms it actually shows", joined)
+        self.assertIn(u"2 mm", joined)
         self.assertIn(u"Sync to Central", joined)
         self.assertIn(u"group", joined)
 
@@ -813,6 +871,144 @@ class RecordedLocationTests(unittest.TestCase):
                           "fingerprints": drawn, "by_location": {"Finish": drawn}}}
         report = state.classify_drift([entry], rooms, views_now())
         self.assertEqual(bucket_of(report, u"reg-1")[0], "in_sync")
+
+
+class SyncTests(unittest.TestCase):
+    def test_the_deviation_is_symmetric_and_in_millimetres(self):
+        a = state.fingerprints([SQUARE])["outline"]
+        bigger = [(0.0, 0.0), (1300.0, 0.0), (1300.0, 1000.0), (0.0, 1000.0)]
+        b = state.fingerprints([bigger])["outline"]
+        forward, _s = state.outline_deviation(a, b)
+        backward, _s = state.outline_deviation(b, a)
+        self.assertEqual(forward, backward)
+        self.assertEqual(int(forward), 300)
+
+    def test_a_loop_count_mismatch_is_infinite_not_a_number(self):
+        a = state.fingerprints([SQUARE])["outline"]
+        hole = [(200.0, 200.0), (300.0, 200.0), (300.0, 300.0), (200.0, 300.0)]
+        b = state.fingerprints([SQUARE, hole])["outline"]
+        deviation, sentence = state.outline_deviation(a, b)
+        self.assertEqual(deviation, float("inf"))
+        self.assertIn(u"loop", sentence)
+
+    def test_within_tolerance_is_in_step_and_over_it_is_drifted(self):
+        room = state.fingerprints([SQUARE])
+        nudged = state.fingerprints([[(x + 1.0, y) for x, y in SQUARE]])
+        self.assertEqual(state.sync_verdict(nudged, room)[0], "in_sync")
+        shoved = state.fingerprints([[(x + 3.0, y) for x, y in SQUARE]])
+        verdict, deviation, sentence = state.sync_verdict(shoved, room)
+        self.assertEqual(verdict, "drifted")
+        self.assertEqual(int(deviation), 3)
+        self.assertIn(u"3 mm", sentence)
+
+    def test_digests_alone_still_decide_when_no_outline_travelled(self):
+        room = state.digests_only(state.fingerprints([SQUARE]))
+        same = state.digests_only(state.fingerprints([SQUARE]))
+        other = state.digests_only(state.fingerprints([[(x + 500.0, y) for x, y in SQUARE]]))
+        self.assertEqual(state.sync_verdict(same, room)[0], "in_sync")
+        self.assertEqual(state.sync_verdict(other, room)[0], "drifted")
+        self.assertEqual(state.sync_verdict({}, room)[0], "unknown")
+
+    def test_a_record_never_carries_the_outline(self):
+        fingerprint = state.fingerprints([SQUARE])
+        self.assertIn("outline", fingerprint)
+        kept = state.digests_only(fingerprint)
+        self.assertNotIn("outline", kept)
+        self.assertEqual(kept["abs"], fingerprint["abs"])
+        record = make_record()
+        self.assertNotIn("outline", record["room"])
+        self.assertNotIn("outline", record["region"])
+
+    def test_the_cut_plane_rule(self):
+        self.assertTrue(state.cut_plane_visible(0.0, 3000.0, 1200.0))
+        self.assertTrue(state.cut_plane_visible(0.0, 3000.0, 0.0))
+        self.assertFalse(state.cut_plane_visible(0.0, 3000.0, 3000.0))
+        self.assertFalse(state.cut_plane_visible(0.0, 3000.0, -100.0))
+        self.assertFalse(state.cut_plane_visible(3000.0, 0.0, 1200.0))
+
+
+class VisibilityPlanTests(unittest.TestCase):
+    def config(self):
+        return {"kind": "room", "boundary_location": "Finish", "boundary_source": "document",
+                "grid_mm": 1.0, "region_type": {"id": 9, "name": u"Solid grey"}}
+
+    def _plan(self, visible):
+        views = [make_view()]
+        rooms = [make_room(), make_room("r2", u"102", level="L2"),
+                 make_room("r3", u"103", level="L2")]
+        boundaries = {"r1": make_boundary(), "r2": make_boundary(), "r3": make_boundary()}
+        return state.build_plan(self.config(), views, rooms, boundaries, {},
+                                visibility={"v1": {"visible": visible, "note": u""}})
+
+    def test_a_room_the_view_shows_from_another_level_is_offered_unticked(self):
+        plan = self._plan(set(["r1", "r2"]))
+        by_uid = dict((item["room_uid"], item) for item in plan["items"])
+        self.assertEqual(sorted(by_uid), ["r1", "r2"])
+        self.assertTrue(by_uid["r1"]["default_ticked"])
+        self.assertEqual(by_uid["r1"]["category"], state.CATEGORY_THIS_LEVEL)
+        self.assertFalse(by_uid["r2"]["default_ticked"])
+        self.assertEqual(by_uid["r2"]["category"], state.CATEGORY_OTHER_LEVEL)
+        self.assertTrue(by_uid["r2"]["category_reason"])
+        self.assertEqual(plan["counts"]["other_level"], 1)
+
+    def test_a_room_the_view_hides_is_counted_and_said_once_never_rowed(self):
+        plan = self._plan(set(["r1", "r2"]))
+        self.assertEqual(plan["counts"]["not_visible"], 1)
+        self.assertFalse([skip for skip in plan["skips"] if skip["scope"] == u"pair"])
+        self.assertTrue([note for note in plan["notes"] if u"not visible in Level 1" in note])
+        self.assertIn(u"not visible", state.plan_summary(plan))
+
+    def test_a_room_on_the_views_level_that_the_view_hides_is_not_planned(self):
+        """Visibility settings win over the level: hidden is hidden."""
+        plan = self._plan(set(["r2"]))
+        self.assertEqual([item["room_uid"] for item in plan["items"]], ["r2"])
+        self.assertEqual(plan["counts"]["not_visible"], 2)
+
+    def test_a_view_that_could_not_be_read_offers_its_own_level_and_says_so(self):
+        views = [make_view()]
+        rooms = [make_room(), make_room("r2", u"102", level="L2")]
+        boundaries = {"r1": make_boundary(), "r2": make_boundary()}
+        plan = state.build_plan(self.config(), views, rooms, boundaries, {},
+                                visibility={"v1": {"visible": None, "note": u"could not read"}})
+        self.assertEqual([item["room_uid"] for item in plan["items"]], ["r1"])
+        self.assertIn(u"could not read", plan["notes"])
+
+    def test_the_accounting_rule_holds_with_visibility(self):
+        plan = self._plan(set(["r1", "r2"]))
+        pair_skips = [skip for skip in plan["skips"] if skip["scope"] == u"pair"]
+        self.assertEqual(len(plan["items"]) + len(pair_skips) + plan["counts"]["not_visible"],
+                         plan["counts"]["pairs"])
+
+
+class SpaceSourceTests(unittest.TestCase):
+    def test_spaces_come_from_this_model_by_default(self):
+        host = source_row(key=state.HOST_KEY, rooms=0, spaces=40, host=True)
+        link = source_row(key=u"Arch.rvt", rooms=120, spaces=30)
+        for row in (host, link):
+            row["count"] = row["space_count"]
+        self.assertTrue(state.source_rule(host, state.KIND_SPACE)[0])
+        ticked, reason = state.source_rule(link, state.KIND_SPACE)
+        self.assertFalse(ticked)
+        self.assertIn(u"this model", reason)
+        # Rooms keep the count rule: the link has them, so it is ticked.
+        for row in (host, link):
+            row["count"] = row["room_count"]
+        self.assertTrue(state.source_rule(link, state.KIND_ROOM)[0])
+
+    def test_preselect_and_fold_use_the_kind_from_the_settings(self):
+        settings = {"kind": state.KIND_SPACE, "source_keys": [], "unticked_source_keys": []}
+        rows = state.preselect_sources(
+            [source_row(key=state.HOST_KEY, rooms=0, spaces=4, host=True),
+             source_row(key=u"Arch.rvt", rooms=0, spaces=9)], settings)
+        for row in rows:
+            row["count"] = row["space_count"]
+        state.retick_sources(rows, state.KIND_SPACE)
+        self.assertEqual([row["is_checked"] for row in rows], [True, False])
+        # Unticking the link is what the rule would do anyway, so it is not
+        # remembered as a deliberate choice.
+        folded = state.apply_setup(settings, rows, [], {"kind": state.KIND_SPACE})
+        self.assertEqual(folded["unticked_source_keys"], [])
+        self.assertEqual(folded["source_keys"], [state.HOST_KEY])
 
 
 if __name__ == "__main__":

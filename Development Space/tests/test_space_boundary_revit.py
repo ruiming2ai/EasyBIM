@@ -269,15 +269,46 @@ class Level(Element):
         self.Elevation = float(elevation_ft)
 
 
+class ViewRange(object):
+    def __init__(self, level_id, cut_offset_ft):
+        self._level_id, self._offset = level_id, cut_offset_ft
+
+    def GetLevelId(self, plane):
+        return ElementId(self._level_id)
+
+    def GetOffset(self, plane):
+        return self._offset
+
+
 class View(Element):
     def __init__(self, doc, element_id, name, view_type=u"ViewType.FloorPlan", level=None,
-                 is_template=False, phase_id=None):
+                 is_template=False, phase_id=None, cut_offset_ft=None):
         Element.__init__(self, doc, element_id, name)
         self.ViewType = view_type
         self.GenLevel = level
         self.IsTemplate = is_template
+        self.hidden_categories = set()
+        self.link_overrides = {}
+        self._cut = cut_offset_ft
         if phase_id is not None:
             self.params[u"VIEW_PHASE"] = Param(element_id=ElementId(phase_id))
+
+    def GetViewRange(self):
+        if self._cut is None:
+            raise Exception("not a plan")
+        return ViewRange(self.GenLevel.Id.IntegerValue if self.GenLevel else -1, self._cut)
+
+    def GetCategoryHidden(self, category_id):
+        return category_id.IntegerValue in self.hidden_categories
+
+    def GetLinkOverrides(self, instance_id):
+        return self.link_overrides.get(instance_id.IntegerValue)
+
+
+class LinkOverrides(object):
+    def __init__(self, mode, linked_view_id=-1):
+        self.LinkVisibilityType = u"LinkVisibility." + mode
+        self.LinkedViewId = ElementId(linked_view_id)
 
 
 class Room(Element):
@@ -292,6 +323,10 @@ class Room(Element):
         self.GroupId = ElementId(group_id)
         self.DesignOption = option
         self.Category = types.SimpleNamespace(Id=ElementId(-2000160))
+        self.BaseOffset = 0.0
+        self.UpperLimit = None
+        self.LimitOffset = 0.0
+        self.UnboundedHeight = 8.0
         self._loops = loops if loops is not None else []
         self.boundary_calls = 0
         self.options_seen = []
@@ -317,15 +352,24 @@ class FilledRegionType(Element):
 class FilledRegion(Element):
     created = []
     refuse = None
+    #: When set, a region reports no outline until the document regenerates -
+    #: the way a real sketch reads before Revit has finished it.
+    lazy = False
 
     def __init__(self, doc, element_id, type_id, view_id, loops):
         Element.__init__(self, doc, element_id, u"Region")
         self.type_id = type_id
         self.OwnerViewId = view_id
         self.loops = loops
+        self.line_style_id = None
 
     def GetBoundaries(self):
+        if FilledRegion.lazy and not self.Document.regenerated:
+            return []
         return list(self.loops)
+
+    def SetLineStyleId(self, style_id):
+        self.line_style_id = style_id
 
     @staticmethod
     def Create(doc, type_id, view_id, loops):
@@ -343,6 +387,13 @@ class RevitLinkInstance(Element):
         Element.__init__(self, doc, element_id, name)
         self._link_doc = link_doc
         self._transform = transform or Transform()
+        self.hidden_in = set()
+
+    def CanBeHidden(self, view):
+        return True
+
+    def IsHidden(self, view):
+        return view.Id.IntegerValue in self.hidden_in
 
     def GetLinkDocument(self):
         return self._link_doc
@@ -352,9 +403,22 @@ class RevitLinkInstance(Element):
 
 
 class Collector(object):
-    def __init__(self, doc):
+    """``FilteredElementCollector(doc)`` or, with a view id, what that view
+    shows: the fake document says per view, and "raise" for a view Revit
+    would refuse to read."""
+
+    def __init__(self, doc, view_id=None):
         self.doc = doc
         self.items = list(doc.elements)
+        if view_id is not None:
+            shown = doc.visible_by_view.get(view_id.IntegerValue)
+            if shown == "raise":
+                raise Exception("the view cannot be read")
+            shown = set(shown or [])
+            self.items = [item for item in self.items if item.Id.IntegerValue in shown]
+
+    def ToElementIds(self):
+        return [item.Id for item in self.items]
 
     def OfClass(self, klass):
         self.items = [item for item in self.items if isinstance(item, klass)]
@@ -400,6 +464,11 @@ class Doc(object):
         self.warnings = []
         self.ActiveView = None
         self.deleted = []
+        self.visible_by_view = {}
+        self.regenerated = 0
+
+    def Regenerate(self):
+        self.regenerated += 1
 
     def add(self, element):
         self.elements.append(element)
@@ -568,7 +637,23 @@ class SchemaFilter(object):
         return entity is not None and entity.schema is not None
 
 
-BIC = types.SimpleNamespace(OST_Rooms=u"OST_Rooms", OST_MEPSpaces=u"OST_MEPSpaces")
+BIC = types.SimpleNamespace(OST_Rooms=-2000160, OST_MEPSpaces=-2003600,
+                            OST_InvisibleLines=-2000064, OST_RvtLinks=-2001352)
+
+
+class GraphicsStyle(Element):
+    def __init__(self, doc, element_id, category_name, category_id):
+        Element.__init__(self, doc, element_id, u"")
+        self.GraphicsStyleCategory = types.SimpleNamespace(Name=category_name,
+                                                           Id=ElementId(category_id))
+
+    @property
+    def Name(self):
+        raise AttributeError("IronPython cannot bind Name on this type")
+
+    @Name.setter
+    def Name(self, value):
+        pass
 BIP = types.SimpleNamespace(ROOM_NUMBER=u"ROOM_NUMBER", ROOM_NAME=u"ROOM_NAME",
                             ROOM_PHASE=u"ROOM_PHASE", PHASE_CREATED=u"PHASE_CREATED",
                             VIEW_PHASE=u"VIEW_PHASE")
@@ -600,6 +685,9 @@ def make_db(registry=None, boundary_location=u"SpatialElementBoundaryLocation.Fi
         Level=Level, View=View, FilledRegion=FilledRegion, FilledRegionType=FilledRegionType,
         RevitLinkInstance=RevitLinkInstance, FilteredElementCollector=Collector,
         BuiltInCategory=BIC, BuiltInParameter=BIP,
+        PlanViewPlane=types.SimpleNamespace(CutPlane=u"CutPlane"),
+        Element=types.SimpleNamespace(Name=types.SimpleNamespace(
+            GetValue=lambda element: getattr(element, "fallback_name", u""))),
         Transaction=Transaction, SubTransaction=SubTransaction, TransactionGroup=TransactionGroup,
         SpatialElementBoundaryOptions=Options,
         SpatialElementBoundaryLocation=types.SimpleNamespace(
@@ -852,6 +940,26 @@ class SpatialCollectionTests(unittest.TestCase):
                                         transform=Transform(0.0, 0.0, ft(4000)))
         self.assertEqual(shifted[0]["level_key"], revit.elevation_key(4000.0))
 
+    def test_a_room_carries_its_height_in_host_millimetres(self):
+        doc, level, room = self._model()
+        room.BaseOffset = 1.0
+        room.UnboundedHeight = 10.0
+        rows = revit.collect_spatial(doc, state.KIND_ROOM, db=make_db())
+        self.assertAlmostEqual(rows[0]["base_mm"], 304.8, places=3)
+        self.assertAlmostEqual(rows[0]["top_mm"], 304.8 + 3048.0, places=3)
+        shifted = revit.collect_spatial(doc, state.KIND_ROOM, db=make_db(), link_uid=u"L1",
+                                        transform=Transform(0.0, 0.0, ft(4000)))
+        self.assertAlmostEqual(shifted[0]["base_mm"], 4304.8, places=3)
+
+    def test_an_upper_limit_beats_the_unbounded_height(self):
+        doc, level, room = self._model()
+        upper = Level(doc, 11, u"Level 2", 12.0)
+        doc.add(upper)
+        room.UpperLimit = upper
+        room.LimitOffset = -1.0
+        rows = revit.collect_spatial(doc, state.KIND_ROOM, db=make_db())
+        self.assertAlmostEqual(rows[0]["top_mm"], 11.0 * 304.8, places=3)
+
     def test_a_redundant_room_carries_revits_own_complaint(self):
         doc, _level, _room = self._model()
         doc.warnings.append(Warning(u"Redundant Room", [1]))
@@ -900,6 +1008,14 @@ class ViewTests(unittest.TestCase):
         # Which is what lets one view draw a host room and a linked one.
         self.assertTrue(state.view_shows_room(row, {"level_key": u"id:10"})[0])
         self.assertTrue(state.view_shows_room(row, {"level_key": revit.elevation_key(0.0)})[0])
+
+    def test_a_plan_carries_its_cut_plane_and_a_view_without_one_says_none(self):
+        doc, level = self._model()
+        doc.add(View(doc, 1, u"L1 Power", level=level, cut_offset_ft=4.0))
+        doc.add(View(doc, 2, u"L1 Area", view_type=u"ViewType.AreaPlan", level=level))
+        rows = dict((row["name"], row) for row in revit.collect_views(doc, db=make_db()))
+        self.assertAlmostEqual(rows[u"L1 Power"]["cut_mm"], 4.0 * 304.8, places=3)
+        self.assertIsNone(rows[u"L1 Area"]["cut_mm"])
 
     def test_the_active_view_is_found_by_unique_id(self):
         doc, level = self._model()
@@ -1013,6 +1129,48 @@ class CreateRegionTests(unittest.TestCase):
         self.assertEqual([entry[0] for entry in LOG],
                          ["group.start", "txn.start", "sub.start", "sub.commit",
                           "txn.commit", "group.assimilate"])
+
+    def test_the_boundary_line_style_is_set_on_each_region(self):
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1")])
+        plan["line_style"] = {"id": 12, "name": u"<Invisible lines>"}
+        revit.create_regions(doc, plan, db=db)
+        self.assertEqual(FilledRegion.created[0].line_style_id, ElementId(12))
+
+    def test_no_line_style_chosen_leaves_the_types_default_alone(self):
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1")])
+        revit.create_regions(doc, plan, db=db)
+        self.assertIsNone(FilledRegion.created[0].line_style_id)
+
+    def test_the_record_is_refreshed_after_one_regeneration_per_view(self):
+        """The bug the first Revit run found: a region reports no outline
+        until Revit regenerates, so the record written straight after Create
+        carried an empty digest and every later hand edit read as in step."""
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        other = Room(doc, 3, number=u"102", level=doc.by_id[10],
+                     loops=square_segments(5000, 0, 2000), unique_id=u"r2")
+        doc.add(other)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1"), (other, u"r2")])
+        FilledRegion.lazy = True
+        try:
+            revit.create_regions(doc, plan, db=db)
+        finally:
+            FilledRegion.lazy = False
+        self.assertEqual(doc.regenerated, 1)
+        for region in FilledRegion.created:
+            record = json.loads(region.entity.value)
+            self.assertTrue(record["region"]["abs"])
+            self.assertEqual(record["region"]["abs"], record["room"]["abs"])
+            self.assertNotIn("outline", record["region"])
+        # And the nesting the write promised is untouched by it.
+        kinds = [entry[0] for entry in LOG]
+        self.assertEqual(kinds[0], "group.start")
+        self.assertEqual(kinds[-2:], ["txn.commit", "group.assimilate"])
+        self.assertEqual(kinds.count("sub.commit"), 2)
 
     def test_the_record_lands_on_the_region_inside_that_transaction(self):
         db = make_db(registry=self.registry)
@@ -1257,6 +1415,162 @@ class RelationshipReadTests(unittest.TestCase):
         self.assertEqual([entry[0] for entry in LOG].count("txn.start"), 1)
 
 
+class VisibilityTests(unittest.TestCase):
+    def _host(self):
+        doc = Doc()
+        level = Level(doc, 10, u"Level 1", 0.0)
+        doc.add(level)
+        view = View(doc, 1, u"L1 Power", level=level, cut_offset_ft=4.0)
+        doc.add(view)
+        rooms = []
+        for index in (1, 2, 3):
+            room = Room(doc, 100 + index, number=u"10{0}".format(index), level=level,
+                        loops=square_segments(0, 0, 1000), unique_id=u"r{0}".format(index))
+            room.category_member = BIC.OST_Rooms
+            doc.add(room)
+            rooms.append(room)
+        return doc, view, rooms
+
+    def test_this_models_rooms_are_what_the_view_collector_returns(self):
+        db = make_db()
+        doc, view, rooms = self._host()
+        doc.visible_by_view[1] = [101, 103]
+        view_rows = revit.collect_views(doc, db=db)
+        room_rows = revit.collect_spatial(doc, state.KIND_ROOM, db=db)
+        found = revit.visibility_map(doc, view_rows, room_rows, [], state.KIND_ROOM, db=db)
+        self.assertEqual(found[view.UniqueId]["visible"], set([u"r1", u"r3"]))
+        self.assertEqual(found[view.UniqueId]["note"], u"")
+
+    def test_a_view_revit_will_not_read_answers_none_and_says_so(self):
+        db = make_db()
+        doc, view, rooms = self._host()
+        doc.visible_by_view[1] = "raise"
+        view_rows = revit.collect_views(doc, db=db)
+        room_rows = revit.collect_spatial(doc, state.KIND_ROOM, db=db)
+        found = revit.visibility_map(doc, view_rows, room_rows, [], state.KIND_ROOM, db=db)
+        self.assertIsNone(found[view.UniqueId]["visible"])
+        self.assertIn(u"L1 Power", found[view.UniqueId]["note"])
+
+    def _linked(self, mode, linked_view_id=-1):
+        db = make_db()
+        doc, view, _host_rooms = self._host()
+        doc.visible_by_view[1] = []
+        arch = Doc(title=u"Arch")
+        arch_level = Level(arch, 60, u"Level 1", 0.0)
+        arch.add(arch_level)
+        linked_view = View(arch, 70, u"Arch L1", level=arch_level, cut_offset_ft=4.0)
+        arch.add(linked_view)
+        low = Room(arch, 61, number=u"201", level=arch_level, loops=square_segments(0, 0, 1000),
+                   unique_id=u"low")
+        high = Room(arch, 62, number=u"202", level=arch_level, loops=square_segments(0, 0, 1000),
+                    unique_id=u"high")
+        high.BaseOffset = 10.0
+        for room in (low, high):
+            room.category_member = BIC.OST_Rooms
+            arch.add(room)
+        instance = RevitLinkInstance(doc, 100, u"Arch.rvt : 1", arch)
+        doc.add(instance)
+        if mode is not None:
+            view.link_overrides[100] = LinkOverrides(mode, linked_view_id)
+        sources = revit.collect_sources(doc, db=db)
+        for row in sources:
+            row["is_checked"] = True
+        rooms = revit.rooms_from_sources(sources, state.KIND_ROOM, db=db)["rooms"]
+        views = revit.collect_views(doc, db=db)
+        return db, doc, view, arch, sources, rooms, views, instance
+
+    def test_by_linked_view_asks_the_linked_view_itself(self):
+        db, doc, view, arch, sources, rooms, views, _i = self._linked("ByLinkView", 70)
+        arch.visible_by_view[70] = [62]
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        visible = found[view.UniqueId]["visible"]
+        self.assertEqual(len(visible), 1)
+        self.assertTrue(list(visible)[0].endswith(u"high"))
+
+    def test_by_host_view_applies_the_host_cut_plane_to_each_linked_room(self):
+        db, doc, view, arch, sources, rooms, views, _i = self._linked("ByHostView")
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        visible = found[view.UniqueId]["visible"]
+        # The cut plane sits 4 ft up: through the low room, under the high one.
+        self.assertEqual([uid.rsplit(u"|", 1)[-1] for uid in sorted(visible)], [u"low"])
+
+    def test_no_overrides_at_all_reads_as_by_host_view(self):
+        db, doc, view, arch, sources, rooms, views, _i = self._linked(None)
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        self.assertEqual(len(found[view.UniqueId]["visible"]), 1)
+
+    def test_a_link_hidden_in_the_view_shows_nothing(self):
+        db, doc, view, arch, sources, rooms, views, instance = self._linked("ByHostView")
+        instance.hidden_in.add(1)
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        self.assertEqual(found[view.UniqueId]["visible"], set())
+
+    def test_the_category_hidden_in_the_host_view_hides_the_linked_rooms(self):
+        db, doc, view, arch, sources, rooms, views, _i = self._linked("ByHostView")
+        view.hidden_categories.add(BIC.OST_Rooms)
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        self.assertEqual(found[view.UniqueId]["visible"], set())
+
+    def test_a_linked_view_revit_will_not_read_is_named_not_emptied(self):
+        db, doc, view, arch, sources, rooms, views, _i = self._linked("ByLinkView", 70)
+        arch.visible_by_view[70] = "raise"
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        self.assertIsNone(found[view.UniqueId]["visible"])
+        self.assertIn(u"Arch", found[view.UniqueId]["note"])
+
+
+class PickTests(unittest.TestCase):
+    def setUp(self):
+        self._module = revit._selection_module
+
+    def tearDown(self):
+        revit._selection_module = self._module
+
+    def _fake_selection(self, references, cancel=False):
+        class ISelectionFilter(object):
+            pass
+
+        module = types.SimpleNamespace(ISelectionFilter=ISelectionFilter,
+                                       ObjectType=types.SimpleNamespace(Element=u"Element"))
+        revit._selection_module = lambda: module
+        seen = {}
+
+        def pick_objects(object_type, selection_filter, prompt):
+            seen["filter"] = selection_filter
+            seen["prompt"] = prompt
+            if cancel:
+                raise Exception("OperationCanceledException")
+            return [reference for reference in references
+                    if selection_filter.AllowElement(reference.element)]
+
+        return seen, types.SimpleNamespace(PickObjects=pick_objects)
+
+    def test_many_rooms_come_back_and_a_wall_is_kept_out_of_the_pick(self):
+        db = make_db()
+        doc = Doc()
+        level = Level(doc, 10, u"Level 1", 0.0)
+        rooms = [Room(doc, 1, number=u"101", name=u"Office", level=level, unique_id=u"a"),
+                 Room(doc, 2, number=u"102", name=u"Store", level=level, unique_id=u"b")]
+        wall = Element(doc, 3, u"Wall")
+        wall.Category = types.SimpleNamespace(Id=ElementId(-2000011))
+        for element in rooms + [wall]:
+            doc.add(element)
+        references = [types.SimpleNamespace(ElementId=element.Id, element=element)
+                      for element in rooms + [wall, rooms[0]]]
+        seen, selection = self._fake_selection(references)
+        uidoc = types.SimpleNamespace(Document=doc, Selection=selection)
+        picked = revit.pick_spatial(uidoc, state.KIND_ROOM, db=db)
+        self.assertEqual([entry["label"] for entry in picked], [u"101 Office", u"102 Store"])
+        self.assertIn(u"Finish", seen["prompt"])
+        self.assertFalse(seen["filter"].AllowReference(None, None))
+
+    def test_a_cancelled_pick_is_an_empty_list(self):
+        db = make_db()
+        _seen, selection = self._fake_selection([], cancel=True)
+        uidoc = types.SimpleNamespace(Document=Doc(), Selection=selection)
+        self.assertEqual(revit.pick_spatial(uidoc, state.KIND_ROOM, db=db), [])
+
+
 class StorageTests(unittest.TestCase):
     def setUp(self):
         self.registry = SchemaRegistry()
@@ -1337,6 +1651,60 @@ class StorageTests(unittest.TestCase):
         db = make_db(registry=self.registry, checkout_owner=u"jsmith")
         doc = Doc(workshared=False)
         self.assertEqual(storage.checkout_reason(doc, ElementId(1), db=db), u"")
+
+
+class NameTests(unittest.TestCase):
+    def test_a_name_ironpython_cannot_bind_falls_back_to_get_value(self):
+        """The empty combo: ``FilledRegionType.Name`` raises under IronPython
+        and a getattr default handed back nothing, row after row."""
+        db = make_db()
+        style = GraphicsStyle(Doc(), 1, u"Thin Lines", -2000051)
+        style.fallback_name = u"Thin Lines"
+        self.assertEqual(revit.element_name(style, db=db), u"Thin Lines")
+        plain = Element(Doc(), 2, u"Solid")
+        self.assertEqual(revit.element_name(plain, db=db), u"Solid")
+
+    def test_region_types_are_named_even_when_name_raises(self):
+        db = make_db()
+        doc = Doc()
+
+        class ShyType(FilledRegionType):
+            @property
+            def Name(self):
+                raise AttributeError("no")
+
+            @Name.setter
+            def Name(self, value):
+                self.fallback_name = value
+
+        doc.add(ShyType(doc, 3, u"Solid Grey"))
+        rows = revit.collect_region_types(doc, db=db)
+        self.assertEqual([row["name"] for row in rows], [u"Solid Grey"])
+
+
+class LineStyleTests(unittest.TestCase):
+    def _doc(self):
+        doc = Doc()
+        doc.add(GraphicsStyle(doc, 11, u"Thin Lines", -2000051))
+        doc.add(GraphicsStyle(doc, 12, u"<Lignes invisibles>", BIC.OST_InvisibleLines))
+        doc.add(GraphicsStyle(doc, 13, u"Wide Lines", -2000052))
+        return doc
+
+    def test_the_invisible_style_is_found_by_category_not_by_its_localised_name(self):
+        db = make_db()
+        doc = self._doc()
+        db.FilledRegion.GetValidLineStyleIdsForFilledRegion = staticmethod(
+            lambda document: [ElementId(11), ElementId(12), ElementId(13)])
+        try:
+            rows = revit.collect_line_styles(doc, db=db)
+        finally:
+            del db.FilledRegion.GetValidLineStyleIdsForFilledRegion
+        self.assertEqual(rows[0]["name"], u"<Lignes invisibles>")
+        self.assertTrue(rows[0]["is_invisible"])
+        self.assertEqual([row["name"] for row in rows[1:]], [u"Thin Lines", u"Wide Lines"])
+
+    def test_a_revit_without_the_api_offers_no_styles_rather_than_failing(self):
+        self.assertEqual(revit.collect_line_styles(self._doc(), db=make_db()), [])
 
 
 class RegionTypeTests(unittest.TestCase):
