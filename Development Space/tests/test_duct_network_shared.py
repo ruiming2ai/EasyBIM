@@ -18,6 +18,18 @@ LIB_PARENT = str(REPO_ROOT / "lib")
 if LIB_PARENT not in sys.path:
     sys.path.insert(0, LIB_PARENT)
 
+def _ensure_easybim_package():
+    """Other test modules stub ``easybim`` in sys.modules, sometimes without a
+    ``__path__``; give it one so fresh submodule imports resolve to lib."""
+    package = sys.modules.get("easybim")
+    if package is None:
+        return
+    if not getattr(package, "__path__", None):
+        package.__path__ = [str(REPO_ROOT / "lib" / "easybim")]
+
+
+_ensure_easybim_package()
+
 network = importlib.import_module("easybim.duct_network_state")
 checklist = importlib.import_module("easybim.type_checklist")
 local_settings = importlib.import_module("easybim.local_settings")
