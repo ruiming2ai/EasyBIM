@@ -25,7 +25,7 @@
                        Foreground="DimGray"
                        TextWrapping="Wrap"
                        Margin="0,2,0,0"
-                       Text="Read-only. Every air terminal is traced back through the physical duct connections to its nearest damper - or to the equipment, an open end, or nothing at all. Nothing in the model is changed." />
+                       Text="Every air terminal is traced back through the physical duct connections to its nearest damper - or to the equipment, an open end, or nothing at all. The scan changes nothing; the only thing written to the model is the list of findings you set aside with Ignore." />
         </StackPanel>
 
         <Border Grid.Row="1"

@@ -994,8 +994,8 @@ rather than removing them all at once.
 
 ## Damper Check (Misc Tools)
 
-Finds every HVAC end branch that has no isolation damper. Read-only: the
-report is the deliverable and nothing in the model is ever changed.
+Finds every HVAC end branch that has no isolation damper. The scan changes
+nothing in the model; the report is the deliverable.
 
 **What counts as an end branch.** The check walks the *physical* duct
 connections, never system membership. Ducts, flex ducts, fittings,
@@ -1041,6 +1041,16 @@ expander lists every named skip and limit: unreadable elements, terminals
 outside the active view, looped networks (counts approximate), a scan that hit
 its time budget or element cap.
 
+**Setting a finding aside.** Every row carries an **Ignore** button. It moves the
+finding into an **Ignored** group, out of the problem tally, and writes that
+decision into the model itself (Revit's Extensible Storage, the mechanism Tag
+Align uses for its "This model" presets). So the decision comes back the next
+time anyone runs the check, and reaches the team after a Sync to Central. The
+row keeps a note of the group it came from, and **Restore** puts it back. This
+is the only thing either checker writes: if the model will not take the write
+(read-only, or no permission), the row stays where it is and the status line
+says why, rather than showing a decision that was never saved.
+
 **Scope.** Whole model, or the air terminals in the active view; the walk
 always follows the whole model's ducts so a branch that leaves the view is
 still traced to its damper. Supply / Return / Exhaust / Other / Unknown chips
@@ -1057,8 +1067,8 @@ traversed.
 ## Fire Damper Check (Misc Tools)
 
 Finds every duct that crosses a fire-rated wall or floor without a fire damper
-at the crossing. Read-only: links are read, never written, and nothing in the
-model is changed.
+at the crossing. Links are read, never written, and the scan changes nothing in
+the host model.
 
 **Where the rated barriers come from.** Usually a linked architectural model,
 and often the rating is only drawn. So three sources are combined, each
@@ -1098,6 +1108,16 @@ frames the crossing; on Revit 2023 and later the linked wall is selected too.
 expanded groups preserved. A **Scan notes** expander lists every named skip:
 unloaded links, scaled link instances, curtain walls, lines outside plan
 views, a scan that hit its budget.
+
+**Setting a finding aside.** Every row carries an **Ignore** button. It moves the
+finding into an **Ignored** group, out of the problem tally, and writes that
+decision into the model itself (Revit's Extensible Storage, the mechanism Tag
+Align uses for its "This model" presets). So the decision comes back the next
+time anyone runs the check, and reaches the team after a Sync to Central. The
+row keeps a note of the group it came from, and **Restore** puts it back. This
+is the only thing either checker writes: if the model will not take the write
+(read-only, or no permission), the row stays where it is and the status line
+says why, rather than showing a decision that was never saved.
 
 **How the crossing is found.** The duct's line is mapped into the link's
 coordinates with the link's own transform and intersected with the wall's

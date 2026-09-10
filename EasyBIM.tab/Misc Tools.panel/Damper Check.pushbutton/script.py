@@ -29,6 +29,10 @@ __persistentengine__ = True
 
 # Must equal damper_check_ui.ACTIVE_ENVVAR (test-pinned).
 ACTIVE_ENVVAR = "EASYBIM_DAMPER_CHECK_ACTIVE"
+
+#: Which list in the model's shared record belongs to this tool.
+TOOL_KEY = "damper_check"
+
 STALE_MODULES = (
     "damper_check_ui",
     "damper_check_state",
@@ -38,6 +42,7 @@ STALE_MODULES = (
     "easybim.type_checklist",
     "easybim.local_settings",
     "easybim.check_windows",
+    "easybim.model_store",
     "easybim.external_events",
 )
 
@@ -108,6 +113,7 @@ def main():
     import damper_check_ui as dui
     from easybim import duct_network_revit as drevit
     from easybim import external_events
+    from easybim import model_store
     from easybim.progress import ProgressSession
 
     doc = revit.doc
@@ -136,6 +142,8 @@ def main():
     }
 
     analysis = _scan(doc, options, config, drevit, dstate, ProgressSession)
+    # What the reviewer set aside last time, read back out of the model.
+    analysis["ignored"] = sorted(model_store.read(doc, TOOL_KEY))
 
     # Created here, inside the command run, while an API context still exists.
     bridge = external_events.ExternalEventBridge("EasyBIM Damper Check")
@@ -145,7 +153,17 @@ def main():
         del uiapp
         if not getattr(doc, "IsValidObject", True):
             raise dui.DocumentGone()
-        return dstate.analyze(drevit.scan(doc, options), config)
+        fresh = dstate.analyze(drevit.scan(doc, options), config)
+        fresh["ignored"] = sorted(model_store.read(doc, TOOL_KEY))
+        return fresh
+
+    def ignore(uiapp, key, on):
+        """Set one finding aside, or put it back. The record lives in the
+        model, so this is the one write either checker makes."""
+        del uiapp
+        if not getattr(doc, "IsValidObject", True):
+            raise dui.DocumentGone()
+        return model_store.set_ignored(doc, TOOL_KEY, key, on)
 
     def show(uiapp, element_ids):
         uidoc = getattr(uiapp, "ActiveUIDocument", None) if uiapp is not None else None
@@ -162,6 +180,7 @@ def main():
         rescan=rescan,
         show=show,
         save_settings=dsettings.save,
+        ignore=ignore,
     )
 
 

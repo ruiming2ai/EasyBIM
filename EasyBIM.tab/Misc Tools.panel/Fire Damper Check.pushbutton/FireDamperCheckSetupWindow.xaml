@@ -23,7 +23,7 @@
             <TextBlock Foreground="DimGray"
                        TextWrapping="Wrap"
                        Margin="0,2,0,0"
-                       Text="Read-only. Every duct that crosses a rated wall or floor - in this model or a loaded link - is checked for a fire damper at the crossing. Rated barriers come from a rating parameter, the types you tick, and the drawn fire-rating lines whose styles you tick. Nothing in the model is changed." />
+                       Text="Every duct that crosses a rated wall or floor - in this model or a loaded link - is checked for a fire damper at the crossing. Rated barriers come from a rating parameter, the types you tick, and the drawn fire-rating lines whose styles you tick. Links are read, never written; the only thing written to this model is the list of findings you set aside with Ignore." />
         </StackPanel>
 
         <Grid Grid.Row="1">

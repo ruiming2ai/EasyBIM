@@ -184,10 +184,12 @@ class ResultsWindow(BridgedWindow):
     """The report: one expander per bucket, Show per row, live N."""
 
     def __init__(self, analysis, config, settings, bridge=None, uiapp=None,
-                 rescan=None, show=None, save_settings=None):
+                 rescan=None, show=None, save_settings=None, ignore=None):
         # See SetupWindow: handlers can fire mid-parse, before ``_ready`` exists.
         BridgedWindow.__init__(self, RESULTS_XAML, bridge=bridge, uiapp=uiapp, title=TITLE)
         self._analysis = analysis or {}
+        self._ignore = ignore
+        self._ignored = set(state.safe_text(key) for key in (analysis or {}).get("ignored") or [])
         self._config = config or {}
         self._settings = dict(settings or {})
         self._rescan = rescan
@@ -206,7 +208,7 @@ class ResultsWindow(BridgedWindow):
     # -- rendering ---------------------------------------------------------
 
     def _render(self):
-        report = state.classify(self._analysis, self._threshold)
+        report = state.classify(self._analysis, self._threshold, self._ignored)
         query = state.safe_text(self.SearchBox.Text)
         shown = state.filter_report(report, query) if query.strip() else report
 
@@ -227,7 +229,7 @@ class ResultsWindow(BridgedWindow):
                 self.ContentPanel.Children.Add(bucket_expander(
                     dict(bucket, noun=u"terminal" if len(bucket["items"]) == 1 else u"terminals"),
                     self._expanded, self._row))
-        self.ContentPanel.Children.Add(notes_expander(self._notes(), self._expanded))
+        self.ContentPanel.Children.Add(notes_expander(self._notes(report), self._expanded))
 
         self.SummaryText.Text = state.summary_line(self._analysis, report)
         if not self._busy:
@@ -235,9 +237,21 @@ class ResultsWindow(BridgedWindow):
 
     def _row(self, item):
         suffix = u"  (network has loops - counts approximate)" if item.get("approx") else u""
-        return report_row(item, self._show_click, self._busy, self._show_buttons, detail_suffix=suffix)
+        return report_row(item, self._show_click, self._busy, self._show_buttons,
+                          detail_suffix=suffix, extra_buttons=self._row_buttons(item))
 
-    def _notes(self):
+    def _row_buttons(self, item):
+        """Ignore on a live row; Restore on one already set aside."""
+        if self._ignore is None:
+            return ()
+        if item.get("is_ignored"):
+            return ((u"Restore", u"Put this finding back in the group it belongs to.",
+                     self._restore_click, 84),)
+        return ((u"Ignore", u"Set this finding aside. The decision is stored in this model, so it "
+                            u"comes back next time and reaches the team after a Sync to Central.",
+                 self._ignore_click, 84),)
+
+    def _notes(self, report):
         """Scan notes: named skips and the honest limits, never a crash."""
         analysis = self._analysis
         skips = analysis.get("skips") or {}
@@ -282,14 +296,24 @@ class ResultsWindow(BridgedWindow):
                 meta.get("truncated_reason") or u"budget reached"))
         if meta.get("scope_note"):
             notes.append(state.safe_text(meta.get("scope_note")))
-        notes.append(u"Linked models are not traversed. Nothing in the model is changed.")
+        set_aside = report.get("ignored_count") or 0
+        if set_aside:
+            notes.append(u"{0} finding(s) set aside on review. The list is stored in this model, so it "
+                         u"comes back next time and reaches the team after a Sync to Central.".format(set_aside))
+        stale = list(report.get("stale_ignored") or [])
+        if stale:
+            notes.append(u"{0} set-aside record(s) in this model match no finding now - fixed, deleted, "
+                         u"or out of the current scope.".format(len(stale)))
+        notes.append(u"Linked models are not traversed. The scan itself changes nothing; only the "
+                     u"findings you set aside are written to the model.")
         return notes
 
     def _update_status(self):
         if self._bridge is None:
             BridgedWindow._update_status(self)
         else:
-            self.StatusText.Text = u"Limit {0}. Nothing was changed.".format(self._threshold)
+            self.StatusText.Text = u"Limit {0}. The scan changes nothing in the model.".format(
+                self._threshold)
 
     # -- threshold -----------------------------------------------------------
 
@@ -369,6 +393,41 @@ class ResultsWindow(BridgedWindow):
 
         self._run_in_revit(u"Show", _work, _done, quiet=True)
 
+    def _ignore_click(self, sender, args):
+        del args
+        self._set_ignored(getattr(sender, "Tag", None), True)
+
+    def _restore_click(self, sender, args):
+        del args
+        self._set_ignored(getattr(sender, "Tag", None), False)
+
+    def _set_ignored(self, item, on):
+        """Write the decision into the model, then move the row - in that
+        order, so a row never reads as set aside when nothing was stored."""
+        if item is None or self._ignore is None:
+            return
+        key = state.safe_text(item.get("key"))
+        if not key:
+            self.StatusText.Text = u"This row has no stable key, so it cannot be set aside."
+            return
+
+        def _work(uiapp):
+            return self._ignore(uiapp, key, on)
+
+        def _done(result):
+            ok, keys, reason = result
+            if keys is not None:
+                self._ignored = set(state.safe_text(value) for value in keys)
+            self._render()
+            if ok:
+                self.StatusText.Text = (u"Set aside, and saved in the model."
+                                        if on else u"Restored, and saved in the model.")
+            else:
+                self.StatusText.Text = u"Not saved in the model: {0}".format(
+                    reason or u"unknown error")
+
+        self._run_in_revit(u"Ignore" if on else u"Restore", _work, _done, quiet=True)
+
     def refresh_click(self, sender, args):
         del sender, args
         if self._rescan is None:
@@ -378,6 +437,8 @@ class ResultsWindow(BridgedWindow):
     def _refresh_done(self, analysis):
         if analysis:
             self._analysis = analysis
+            if analysis.get("ignored") is not None:
+                self._ignored = set(state.safe_text(key) for key in analysis["ignored"])
         self._render()
 
     def close_click(self, sender, args):
@@ -404,11 +465,11 @@ def close_open_window():
 
 
 def show_results(analysis, config, settings, bridge=None, uiapp=None, rescan=None,
-                 show=None, save_settings=None):
+                 show=None, save_settings=None, ignore=None):
     """Open the report modeless; modal when no ExternalEvent could be made."""
     REGISTRY.close_open()
     window = ResultsWindow(analysis, config, settings, bridge=bridge, uiapp=uiapp,
-                           rescan=rescan, show=show, save_settings=save_settings)
+                           rescan=rescan, show=show, save_settings=save_settings, ignore=ignore)
     if bridge is None:
         window.ShowDialog()
         return window

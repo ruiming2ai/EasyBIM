@@ -271,8 +271,28 @@ def bucket_expander(bucket, expanded, build_row, cap=None):
     return expander
 
 
-def report_row(item, on_show, busy=False, show_buttons=None, detail_suffix=u""):
-    """A row with its Show button; the item rides on the button's Tag."""
+def _row_button(item, content, tooltip, handler, busy, width=80):
+    button = Windows.Controls.Button()
+    button.Content = content
+    button.Width = width
+    button.Height = 28
+    button.Margin = thickness(6, 0, 0, 0)
+    button.VerticalAlignment = Windows.VerticalAlignment.Center
+    button.Tag = item
+    button.ToolTip = tooltip
+    button.Click += handler
+    button.IsEnabled = not busy
+    return button
+
+
+def report_row(item, on_show, busy=False, show_buttons=None, detail_suffix=u"",
+               extra_buttons=()):
+    """A row with its Show button; the item rides on each button's Tag.
+
+    ``extra_buttons`` is ``[(content, tooltip, handler, width)]`` - Ignore and
+    Restore ride in here.  They are docked right of Show, in the order given,
+    and disable with it while Revit is busy.
+    """
     holder = Windows.Controls.Border()
     holder.BorderBrush = brush("Gainsboro")
     holder.BorderThickness = thickness(1)
@@ -282,17 +302,19 @@ def report_row(item, on_show, busy=False, show_buttons=None, detail_suffix=u""):
 
     panel = Windows.Controls.DockPanel()
     panel.LastChildFill = True
+    for entry in reversed(list(extra_buttons or ())):
+        content, tooltip, handler = entry[0], entry[1], entry[2]
+        width = entry[3] if len(entry) > 3 else 80
+        if handler is None:
+            continue
+        button = _row_button(item, content, tooltip, handler, busy, width)
+        dock_right(panel, button)
+        if show_buttons is not None:
+            show_buttons.append(button)
     if on_show is not None:
-        button = Windows.Controls.Button()
-        button.Content = u"Show"
-        button.Width = 80
-        button.Height = 28
+        button = _row_button(item, u"Show", u"Select the elements in the model and zoom to them.",
+                             on_show, busy)
         button.Margin = thickness(10, 0, 0, 0)
-        button.VerticalAlignment = Windows.VerticalAlignment.Center
-        button.Tag = item
-        button.ToolTip = u"Select the elements in the model and zoom to them."
-        button.Click += on_show
-        button.IsEnabled = not busy
         dock_right(panel, button)
         if show_buttons is not None:
             show_buttons.append(button)

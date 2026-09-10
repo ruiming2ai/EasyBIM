@@ -93,7 +93,12 @@ BUCKETS = (
     ("covered_in_barrier", u"Covered - fire damper in the barrier", False),
     ("covered_within", u"Covered - fire damper within tolerance on the run", False),
     ("idle_damper", u"Fire damper at no identified rated barrier - review", False),
+    ("ignored", u"Ignored - set aside on review", False),
 )
+
+#: The bucket a row lands in once you have set it aside.  Never a problem,
+#: and never counted in the summary's tally.
+IGNORED_BUCKET = "ignored"
 BUCKET_TITLES = dict((key, title) for key, title, _problem in BUCKETS)
 PROBLEM_BUCKETS = tuple(key for key, _title, problem in BUCKETS if problem)
 
@@ -505,9 +510,17 @@ def cluster_crossings(items, connected=None, reach=CLUSTER_FT):
                 attached = True
         if not attached:
             clusters.append({"barrier_key": item["barrier_key"], "point": list(item["point"]), "members": [item]})
-    for number, cluster in enumerate(clusters):
-        cluster["key"] = u"{0}#{1}".format(cluster["barrier_key"], number)
+    for cluster in clusters:
         cluster["members"].sort(key=lambda m: (safe_text(m.get("element_kind")), _int(m.get("element_id"))))
+        # Keyed by what it is, never by where it fell in the list: a
+        # set-aside decision has to find the same crossing on the next scan.
+        ducts = [_int(m["element_id"]) for m in cluster["members"]
+                 if m.get("element_kind") in ("duct", "flex")]
+        dampers = [_int(m["element_id"]) for m in cluster["members"]
+                   if m.get("element_kind") == "damper"]
+        named = sorted(ducts) or sorted(dampers)
+        cluster["key"] = u"cross:{0}:{1}".format(
+            cluster["barrier_key"], u",".join(u"{0}".format(value) for value in named))
     return clusters
 
 
@@ -733,18 +746,33 @@ def _show_for(cluster, damper_id=None):
     return show
 
 
-def classify(analysis, near_mm, hops):
-    """Analysis + the live tolerance and hop limit -> the report."""
+def classify(analysis, near_mm, hops, ignored=None):
+    """Analysis + the live tolerance and hop limit + the set-aside keys."""
     analysis = analysis or {}
     near_mm = clamp_near(near_mm)
     hops = clamp_hops(hops)
     near_ft = near_mm * MM
+    ignored = set(safe_text(key) for key in ignored or [])
+    seen_keys = set()
     items_by_bucket = dict((key, []) for key, _title, _problem in BUCKETS)
+
+    def _add(row):
+        """File a row, sending it to Ignored when it has been set aside."""
+        key = safe_text(row.get("key"))
+        seen_keys.add(key)
+        original = row["bucket"]
+        if key in ignored:
+            row["bucket"] = IGNORED_BUCKET
+            row["detail"] = u"Set aside on review - was \"{0}\". {1}".format(
+                BUCKET_TITLES.get(original, original), row.get("detail") or u"")
+        row["original_bucket"] = original
+        row["is_ignored"] = row["bucket"] == IGNORED_BUCKET
+        items_by_bucket[row["bucket"]].append(row)
 
     for cluster in analysis.get("clusters") or []:
         bucket, candidate = _verdict(cluster, near_ft, hops)
         damper_id = candidate.get("id") if candidate else None
-        items_by_bucket[bucket].append({
+        _add({
             "key": cluster["key"],
             "title": _cluster_title(cluster),
             "detail": _cluster_detail(bucket, cluster, candidate, near_mm, hops),
@@ -761,8 +789,8 @@ def classify(analysis, near_mm, hops):
         })
 
     for row in analysis.get("fittings") or []:
-        items_by_bucket["fitting_crossing"].append({
-            "key": u"fitting#{0}#{1}".format(row["element_id"], row["barrier_key"]),
+        _add({
+            "key": u"fitting:{0}:{1}".format(row["element_id"], row["barrier_key"]),
             "title": u"{0} · {1} · {2} (id {3})".format(row.get("link") or u"This model", row.get("barrier"),
                                                         row.get("label") or u"Fitting", row["element_id"]),
             "detail": u"Its bounding box overlaps the barrier; only ducts and dampers are traced exactly - check by eye.",
@@ -778,8 +806,8 @@ def classify(analysis, near_mm, hops):
         })
 
     for row in analysis.get("unreadable") or []:
-        items_by_bucket["barrier_unreadable"].append({
-            "key": u"unreadable#{0}".format(row["barrier_key"]),
+        _add({
+            "key": u"barrier:{0}".format(row["barrier_key"]),
             "title": u"{0} · {1}".format(row.get("link") or u"This model", row.get("barrier")),
             "detail": u"Its geometry could not be read, so nothing crossing it was judged.",
             "bucket": "barrier_unreadable",
@@ -798,8 +826,8 @@ def classify(analysis, near_mm, hops):
         distance = row.get("min_distance_ft")
         if distance is not None and distance <= near_ft:
             continue
-        items_by_bucket["idle_damper"].append({
-            "key": u"idle#{0}".format(row["id"]),
+        _add({
+            "key": u"idle:{0}".format(row["id"]),
             "title": u"{0} (id {1}){2}".format(row.get("label") or u"Fire damper", row["id"],
                                                u" · " + row["level"] if row.get("level") else u""),
             "detail": (u"No identified rated barrier within {0} mm{1} - the wall may not be ticked, or the damper is misplaced.".format(
@@ -826,6 +854,10 @@ def classify(analysis, near_mm, hops):
         "hops": hops,
         "problem_count": problems,
         "crossing_count": len(analysis.get("clusters") or []),
+        "ignored_count": counts[IGNORED_BUCKET],
+        # Set aside once, then fixed or gone: the record still names them, so
+        # the notes can say so rather than letting the count drift unexplained.
+        "stale_ignored": sorted(ignored - seen_keys),
     }
 
 
@@ -863,14 +895,17 @@ def summary_line(analysis, report):
     idle = _int((report.get("counts") or {}).get("idle_damper"))
     if idle:
         parts.append(u"{0} fire damper{1} at no identified barrier".format(idle, u"" if idle == 1 else u"s"))
+    set_aside = _int(report.get("ignored_count"))
+    if set_aside:
+        parts.append(u"{0} set aside".format(set_aside))
     text = u" - ".join(parts) + u"."
     for block in (meta, crossing_meta):
         if block.get("truncated"):
             text += u" Scan truncated: {0}.".format(safe_text(block.get("truncated_reason")) or u"budget reached")
-    return text + u" Nothing was changed."
+    return text + u" The scan changes nothing in the model."
 
 
-def scan_notes(analysis, config, link_descriptions):
+def scan_notes(analysis, config, link_descriptions, report=None):
     """Every named skip and honest limit, as lines for the notes expander."""
     analysis = analysis or {}
     skips = analysis.get("skips") or {}
@@ -919,6 +954,11 @@ def scan_notes(analysis, config, link_descriptions):
         if block.get("truncated"):
             notes.append(u"The scan stopped early: {0}. What was not read is not judged.".format(
                 block.get("truncated_reason") or u"budget reached"))
+    stale = list((report or {}).get("stale_ignored") or []) if report else []
+    if stale:
+        notes.append(u"{0} set-aside record(s) in this model match no finding now - fixed, deleted, or out of the current scope.".format(
+            len(stale)))
+    notes.append(u"Set-aside decisions are stored in this model, so they come back next time and reach the team after a Sync to Central.")
     notes.append(u"Fittings are judged by bounding box only; a crossing made by an elbow body alone is not traced.")
-    notes.append(u"Nested links cannot be reached. A rating is a transcription of the link, not a compliance judgement. Nothing in the model is changed.")
+    notes.append(u"Nested links cannot be reached. A rating is a transcription of the link, not a compliance judgement. The scan itself writes nothing; only the findings you set aside are stored in the model.")
     return notes

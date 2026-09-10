@@ -29,6 +29,10 @@ __persistentengine__ = True
 
 # Must equal fire_damper_check_ui.ACTIVE_ENVVAR (test-pinned).
 ACTIVE_ENVVAR = "EASYBIM_FIRE_DAMPER_CHECK_ACTIVE"
+
+#: Which list in the model's shared record belongs to this tool.
+TOOL_KEY = "fire_damper_check"
+
 STALE_MODULES = (
     "fire_damper_check_ui",
     "fire_damper_check_revit",
@@ -40,6 +44,7 @@ STALE_MODULES = (
     "easybim.type_checklist",
     "easybim.local_settings",
     "easybim.check_windows",
+    "easybim.model_store",
     "easybim.external_events",
 )
 
@@ -84,7 +89,7 @@ def _uiapp():
         return None
 
 
-def _make_scan(doc, catalog, settings, config, frevit, fstate):
+def _make_scan(doc, catalog, settings, config, frevit, fstate, model_store):
     """The two-phase pass as one callable: ducts, then crossings, then verdicts."""
     view = catalog.get("view") or {}
     link_keys = [link.get("key") for link in catalog.get("links") or []]
@@ -112,6 +117,8 @@ def _make_scan(doc, catalog, settings, config, frevit, fstate):
         description = frevit.describe(contexts, index)
         analysis = fstate.analyze(snapshot, crossings, description, config, segments_info=segments_info)
         analysis["links"] = description.get("links") or []
+        # What the reviewer set aside last time, read back out of the model.
+        analysis["ignored"] = sorted(model_store.read(doc, TOOL_KEY))
         return analysis
 
     return _scan
@@ -132,6 +139,7 @@ def main():
     import fire_damper_check_state as fstate
     import fire_damper_check_ui as fui
     from easybim import external_events
+    from easybim import model_store
     from easybim.progress import ProgressSession
 
     doc = revit.doc
@@ -152,7 +160,7 @@ def main():
         logger.warning("Fire Damper Check settings not saved: %s", error)
 
     config = fstate.config_from_settings(settings)
-    scan = _make_scan(doc, catalog, settings, config, frevit, fstate)
+    scan = _make_scan(doc, catalog, settings, config, frevit, fstate, model_store)
 
     with ProgressSession("Reading ducts and crossing the rated barriers...", cancellable=True) as progress:
         def _tick(done, total):
@@ -171,6 +179,14 @@ def main():
             raise fui.DocumentGone()
         return scan()
 
+    def ignore(uiapp, key, on):
+        """Set one finding aside, or put it back. The record lives in the
+        model, so this is the one write either checker makes."""
+        del uiapp
+        if not getattr(doc, "IsValidObject", True):
+            raise fui.DocumentGone()
+        return model_store.set_ignored(doc, TOOL_KEY, key, on)
+
     def show(uiapp, show_record):
         uidoc = getattr(uiapp, "ActiveUIDocument", None) if uiapp is not None else None
         if uidoc is None:
@@ -186,6 +202,7 @@ def main():
         rescan=rescan,
         show=show,
         save_settings=fsettings.save,
+        ignore=ignore,
     )
 
 

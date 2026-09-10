@@ -120,7 +120,13 @@ BUCKETS = (
     ("covered_single", u"Covered - own damper", False),
     ("covered_integral", u"Covered - terminal type has an integral damper", False),
     ("covered_by_equipment", u"Covered - served by isolating equipment", False),
+    ("ignored", u"Ignored - set aside on review", False),
 )
+
+#: The bucket a row lands in once you have set it aside.  It is never a
+#: problem, and it never counts toward the summary's tally, which is the
+#: whole point of ignoring something.
+IGNORED_BUCKET = "ignored"
 BUCKET_TITLES = dict((key, title) for key, title, _problem in BUCKETS)
 PROBLEM_BUCKETS = tuple(key for key, _title, problem in BUCKETS if problem)
 
@@ -589,14 +595,34 @@ def _row_title(trace):
     return u" · ".join(parts)
 
 
-def classify(analysis, threshold):
-    """Analysis + live N -> the report the window draws."""
+def finding_key(trace):
+    """The name a set-aside decision is stored under, inside the model.
+
+    A terminal is what the user judges, so the terminal is what the key
+    names; the verdict may change on the next scan and the decision still
+    means "I have looked at this one".
+    """
+    return u"terminal:{0}".format(_int(trace.get("id")))
+
+
+def classify(analysis, threshold, ignored=None):
+    """Analysis + live N + the set-aside keys -> the report the window draws."""
     threshold = clamp_threshold(threshold)
     analysis = analysis or {}
+    ignored = set(safe_text(key) for key in ignored or [])
+    seen_keys = set()
     items_by_bucket = dict((key, []) for key, _title, _problem in BUCKETS)
     for trace in analysis.get("terminals") or []:
         bucket = _bucket_for(trace, threshold)
+        key = finding_key(trace)
+        seen_keys.add(key)
+        original = bucket
+        if key in ignored:
+            bucket = IGNORED_BUCKET
         row = {
+            "key": key,
+            "original_bucket": original,
+            "is_ignored": bucket == IGNORED_BUCKET,
             "terminal_id": trace.get("id"),
             "title": _row_title(trace),
             "detail": _detail_for(trace, bucket, threshold),
@@ -611,6 +637,9 @@ def classify(analysis, threshold):
             "label": trace.get("label") or u"",
             "damper_id": trace.get("damper_id"),
         }
+        if row["is_ignored"]:
+            row["detail"] = u"Set aside on review - was \"{0}\". {1}".format(
+                BUCKET_TITLES.get(original, original), row["detail"])
         items_by_bucket[bucket].append(row)
 
     buckets = []
@@ -629,6 +658,10 @@ def classify(analysis, threshold):
         "threshold": threshold,
         "problem_count": problems,
         "terminal_count": len(analysis.get("terminals") or []),
+        "ignored_count": counts[IGNORED_BUCKET],
+        # Set aside once, then fixed or gone: the record still names them, so
+        # the notes can say so rather than letting the count drift unexplained.
+        "stale_ignored": sorted(ignored - seen_keys),
     }
 
 
@@ -681,12 +714,15 @@ def summary_line(analysis, report):
     idle = _int(stats.get("idle_dampers"))
     if idle:
         parts.append(u"{0} damper{1} isolating nothing".format(idle, u"" if idle == 1 else u"s"))
+    set_aside = _int(report.get("ignored_count"))
+    if set_aside:
+        parts.append(u"{0} set aside".format(set_aside))
     text = u" - ".join(parts) + u"."
     if meta.get("truncated"):
         text += u" Scan truncated: {0}".format(safe_text(meta.get("truncated_reason")) or u"budget reached")
         if not text.endswith(u"."):
             text += u"."
-    return text + u" Nothing was changed."
+    return text + u" The scan changes nothing in the model."
 
 
 def excluded_note(config):

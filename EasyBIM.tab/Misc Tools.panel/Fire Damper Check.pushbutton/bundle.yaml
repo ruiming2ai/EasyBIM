@@ -9,6 +9,10 @@ tooltip: >-
   when a drawn fire-rating line of a ticked line style marks it. Choices
   are remembered by name per link. A ticked fire damper within the
   tolerance on the same run - or with its body in the barrier - covers
-  the crossing; the tolerance changes live in the report. Read-only:
-  links are read, never written, and nothing in the model is changed.
+  the crossing; the tolerance changes live in the report.
+
+  Links are read, never written, and the scan changes nothing. Findings
+  you set aside with Ignore move to an Ignored group, and that list is
+  stored in this model, so it comes back next time and reaches the team
+  after a Sync to Central.
 author: Ruiming Liu

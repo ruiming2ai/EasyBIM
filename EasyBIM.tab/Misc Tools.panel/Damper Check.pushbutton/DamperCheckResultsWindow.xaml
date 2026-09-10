@@ -25,7 +25,7 @@
                        FontSize="13"
                        Foreground="DimGray"
                        TextWrapping="Wrap"
-                       Text="Every air terminal in scope, by what its walk toward the trunk found. Show selects the run in the model. Nothing is ever changed." />
+                       Text="Every air terminal in scope, by what its walk toward the trunk found. Show selects the run in the model; Ignore sets a finding aside into its own group, and stores that in the model." />
         </StackPanel>
 
         <Border Grid.Row="1"

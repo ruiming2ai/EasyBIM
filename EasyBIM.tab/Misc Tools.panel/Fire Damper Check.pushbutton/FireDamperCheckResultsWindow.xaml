@@ -25,7 +25,7 @@
                        FontSize="13"
                        Foreground="DimGray"
                        TextWrapping="Wrap"
-                       Text="Every crossing of a rated barrier, by what was found at it. Show selects the duct and damper and frames the crossing; on Revit 2023+ the linked wall is selected too. Nothing is ever changed." />
+                       Text="Every crossing of a rated barrier, by what was found at it. Show selects the duct and damper and frames the crossing; on Revit 2023+ the linked wall is selected too. Ignore sets a finding aside into its own group, and stores that in the model." />
         </StackPanel>
 
         <Border Grid.Row="1"

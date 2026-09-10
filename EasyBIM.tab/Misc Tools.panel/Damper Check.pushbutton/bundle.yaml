@@ -8,5 +8,9 @@ tooltip: >-
   its nearest damper, or to the equipment, an open end, or nothing
   at all. One damper may serve up to N terminals; change N live in
   the report. Branches never assigned to a system are traced like any
-  other and named as such. Read-only: nothing in the model is changed.
+  other and named as such.
+
+  The scan changes nothing. Findings you set aside with Ignore move to
+  an Ignored group, and that list is stored in the model, so it comes
+  back next time and reaches the team after a Sync to Central.
 author: Ruiming Liu
