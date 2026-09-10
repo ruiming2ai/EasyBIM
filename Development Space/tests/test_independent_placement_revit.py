@@ -96,3 +96,32 @@ class VerificationTests(unittest.TestCase):
             doc=types.SimpleNamespace(Regenerate=Mock())
             r.move_to_frame(doc,instance,mirrored)
         transforms.MirrorElements.assert_called_once_with(doc,[17],"plane",False)
+
+class FailurePolicyTests(unittest.TestCase):
+    def process(self,kind,severity="Warning"):
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        db=NS(IFailuresPreprocessor=object,FailureSeverity=NS(Warning="Warning"),
+              BuiltInFailures=NS(GeneralFailures=NS(DuplicateValue="duplicate")),
+              FailureProcessingResult=NS(Continue="continue",ProceedWithRollBack="rollback"))
+        options=Mock(); tx=Mock(); tx.GetFailureHandlingOptions.return_value=options
+        diagnostics=[]; r._failure_options(tx,db,diagnostics)
+        processor=options.SetFailuresPreprocessor.call_args.args[0]
+        message=NS(GetSeverity=lambda:severity,GetFailureDefinitionId=lambda:kind,
+                   GetDescriptionText=lambda:"Failure description")
+        accessor=Mock(); accessor.GetFailureMessages.return_value=[message]
+        return processor.PreprocessFailures(accessor),accessor,diagnostics
+    def test_duplicate_parameter_warning_can_keep_exact_values(self):
+        result,accessor,diagnostics=self.process("duplicate")
+        self.assertEqual("continue",result)
+        accessor.DeleteWarning.assert_called_once()
+        self.assertEqual("info",diagnostics[0]["severity"])
+    def test_host_geometry_and_other_warnings_abort(self):
+        result,accessor,diagnostics=self.process("changed-host")
+        self.assertEqual("rollback",result)
+        accessor.DeleteWarning.assert_not_called()
+        self.assertEqual("Failure description",diagnostics[0]["reason"])
+    def test_error_is_never_suppressed_even_if_id_matches(self):
+        result,accessor,diagnostics=self.process("duplicate","Error")
+        self.assertEqual("rollback",result)
+        accessor.DeleteWarning.assert_not_called()

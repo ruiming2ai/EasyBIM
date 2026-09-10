@@ -474,17 +474,26 @@ def create_instance(doc, source, symbol, desired):
                 parameter_issues=issues, conversion="standalone")
 
 
-def _failure_options(transaction, db):
+def _failure_options(transaction, db, diagnostics=None):
     if not hasattr(db, "IFailuresPreprocessor"):
         return
+    diagnostics = diagnostics if diagnostics is not None else []
     class RollbackFailures(db.IFailuresPreprocessor):
         def PreprocessFailures(self, accessor):
-            # Do not continue after warnings that could alter geometry or
-            # remove constraints. Report the failed item, without modal prompts.
-            messages = list(accessor.GetFailureMessages())
-            if messages:
-                return db.FailureProcessingResult.ProceedWithRollBack
-            return db.FailureProcessingResult.Continue
+            unsafe = False
+            for message in accessor.GetFailureMessages():
+                duplicate = (message.GetSeverity() == db.FailureSeverity.Warning and
+                             message.GetFailureDefinitionId() == db.BuiltInFailures.GeneralFailures.DuplicateValue)
+                diagnostics.append(dict(name="Revit warning" if duplicate else "Revit failure",
+                    reason=text(message.GetDescriptionText()), severity="info" if duplicate else "warning"))
+                if duplicate:
+                    # Exact parameter transfer may intentionally retain duplicate
+                    # Marks. This warning does not move or rehost an instance.
+                    accessor.DeleteWarning(message)
+                else:
+                    unsafe = True
+            return (db.FailureProcessingResult.ProceedWithRollBack if unsafe
+                    else db.FailureProcessingResult.Continue)
     options = transaction.GetFailureHandlingOptions()
     options.SetFailuresPreprocessor(RollbackFailures())
     options.SetClearAfterRollback(True)
@@ -495,24 +504,27 @@ def atomic_item(doc, title, prepare, mutate, verify=None):
     """Preparation, instance mutation and metadata form one rollback boundary."""
     db = get_db()
     group = db.TransactionGroup(doc, title)
-    transaction = None
+    transaction, diagnostics = None, []
     group.Start()
     try:
         prepare()
         transaction = db.Transaction(doc, title + " changes")
         transaction.Start()
-        _failure_options(transaction, db)
+        _failure_options(transaction, db, diagnostics)
         value = mutate()
         status = transaction.Commit()
         transaction = None
         if status != db.TransactionStatus.Committed:
-            raise ValueError("Revit rolled back the operation because of model failures.")
+            detail = "; ".join(item["reason"] for item in diagnostics)
+            raise ValueError("Revit rolled back the operation because of model failures. " + detail)
         if verify is not None:
             verify(value)
+        if isinstance(value, dict) and "parameter_issues" in value:
+            value["parameter_issues"].extend(diagnostics)
         group.Assimilate()
-        return dict(ok=True, value=value, error="")
+        return dict(ok=True, value=value, error="", warnings=diagnostics)
     except Exception as error:
         if transaction is not None:
             transaction.RollBack()
         group.RollBack()
-        return dict(ok=False, value=None, error=text(error))
+        return dict(ok=False, value=None, error=text(error), warnings=diagnostics)
