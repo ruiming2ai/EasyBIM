@@ -123,15 +123,32 @@ class FireDamperCheckBundleTests(unittest.TestCase):
         self.assertIn("tooltip:", bundle)
         self.assertIn("author: Ruiming Liu", bundle)
 
-    def test_the_tooltip_says_it_is_read_only(self):
+    def test_the_tooltip_states_what_is_written(self):
+        """The scan is read-only and says so, but the set-aside list is stored
+        in the model - a tooltip that still promised "nothing is changed"
+        would be the tool lying about the one write it makes."""
         bundle = (COMMAND_DIR / "bundle.yaml").read_text(encoding="utf-8")
-        self.assertIn("Read-only", bundle)
+        self.assertIn("changes nothing", bundle)
+        self.assertIn("Ignore", bundle)
+        self.assertIn("stored in", bundle)
+        self.assertNotIn("nothing in the model is changed", bundle)
 
     def test_both_icon_variants_exist_at_96_by_96(self):
         for name in ("icon.png", "icon.dark.png"):
             path = COMMAND_DIR / name
             self.assertTrue(path.exists(), str(path))
             self.assertEqual(_png_size(path), (96, 96), name)
+
+    def test_the_in_model_store_is_the_only_writer(self):
+        """One module opens a transaction, and it touches one hidden data
+        element. The scan modules are pinned transaction-free above."""
+        store = LIB_DIR / "model_store.py"
+        self.assertTrue(store.exists())
+        source = store.read_text(encoding="utf-8")
+        self.assertIn("Transaction(", source)
+        self.assertIn("DataStorage", source)
+        for name in SHARED_MODULES:
+            self.assertNotIn("Transaction(", (LIB_DIR / name).read_text(encoding="utf-8"), name)
 
     def test_expected_modules_exist(self):
         for name in ("script.py", "fire_damper_check_state.py", "fire_damper_check_settings.py",
@@ -320,7 +337,8 @@ class FireDamperCheckLauncherTests(unittest.TestCase):
         self.assertIn("def _drop_stale_modules", source)
         self.assertIn("script.get_envvar(ACTIVE_ENVVAR)", source)
         stale = _module_constant(SCRIPT, "STALE_MODULES")
-        for name in ("fire_damper_check_ui", "fire_damper_check_revit", "fire_damper_check_state",
+        for name in ("easybim.model_store",
+                     "fire_damper_check_ui", "fire_damper_check_revit", "fire_damper_check_state",
                      "fire_damper_check_settings", "easybim.link_crossings",
                      "easybim.duct_network_revit", "easybim.duct_network_state",
                      "easybim.type_checklist", "easybim.local_settings",

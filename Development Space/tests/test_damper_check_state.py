@@ -446,7 +446,7 @@ class StatsTests(unittest.TestCase):
         line = state.summary_line(analysis, report)
         self.assertIn(u"Read 5 elements in 0.2 s", line)
         self.assertIn(u"1 of 1 terminals lack a damper", line)
-        self.assertTrue(line.endswith(u"Nothing was changed."))
+        self.assertTrue(line.endswith(u"The scan changes nothing in the model."))
 
     def test_summary_line_names_a_truncated_scan(self):
         net = linear_run()
@@ -456,6 +456,64 @@ class StatsTests(unittest.TestCase):
         line = state.summary_line(analysis, state.classify(analysis, 1))
         self.assertIn(u"Scan truncated: 90 s budget reached", line)
         self.assertIn(u"all 1 terminals in scope are isolated", line)
+
+
+class IgnoreTests(unittest.TestCase):
+    """Findings the reviewer sets aside, and the key that record is kept under."""
+
+    def analysis(self):
+        return state.analyze(linear_run(with_damper=False).snapshot(), config())
+
+    def test_the_key_names_the_terminal(self):
+        report = state.classify(self.analysis(), 1)
+        self.assertEqual(bucket_of(report, 5)[1]["key"], u"terminal:5")
+
+    def test_an_ignored_finding_leaves_the_problem_tally(self):
+        analysis = self.analysis()
+        plain = state.classify(analysis, 1)
+        self.assertEqual((plain["problem_count"], plain["ignored_count"]), (1, 0))
+        self.assertEqual(bucket_of(plain, 5)[0], "no_damper_equipment")
+
+        aside = state.classify(analysis, 1, [u"terminal:5"])
+        key, item = bucket_of(aside, 5)
+        self.assertEqual(key, "ignored")
+        self.assertEqual((aside["problem_count"], aside["ignored_count"]), (0, 1))
+        self.assertTrue(item["is_ignored"])
+        self.assertEqual(item["original_bucket"], "no_damper_equipment")
+        self.assertIn(u"Set aside on review", item["detail"])
+        self.assertIn(u"No damper between terminal and equipment", item["detail"])
+        # The row still carries what it needs to be shown and restored.
+        self.assertEqual(item["show_ids"], [5, 4, 2, 1])
+
+    def test_restoring_is_dropping_the_key(self):
+        analysis = self.analysis()
+        self.assertEqual(bucket_of(state.classify(analysis, 1, []), 5)[0], "no_damper_equipment")
+
+    def test_the_ignored_bucket_is_never_a_problem(self):
+        self.assertIn("ignored", [key for key, _title, _problem in state.BUCKETS])
+        self.assertNotIn("ignored", state.PROBLEM_BUCKETS)
+
+    def test_a_key_matching_no_finding_is_reported_stale(self):
+        report = state.classify(self.analysis(), 1, [u"terminal:999"])
+        self.assertEqual(report["stale_ignored"], [u"terminal:999"])
+        self.assertEqual(report["ignored_count"], 0)
+
+    def test_the_key_survives_the_verdict_changing(self):
+        """Fit the damper and the terminal keeps its name, so a decision made
+        last week still points at the same thing."""
+        fixed = state.analyze(linear_run(with_damper=True).snapshot(), config())
+        key, item = bucket_of(state.classify(fixed, 1), 5)
+        self.assertEqual(key, "covered_single")
+        self.assertEqual(item["key"], u"terminal:5")
+        aside = state.classify(fixed, 1, [u"terminal:5"])
+        self.assertEqual(bucket_of(aside, 5)[1]["original_bucket"], "covered_single")
+
+    def test_the_summary_counts_what_was_set_aside(self):
+        analysis = self.analysis()
+        report = state.classify(analysis, 1, [u"terminal:5"])
+        line = state.summary_line(analysis, report)
+        self.assertIn(u"1 set aside", line)
+        self.assertIn(u"The scan changes nothing in the model.", line)
 
 
 class SearchTests(unittest.TestCase):

@@ -116,6 +116,14 @@ def desc(barriers=None, line_barriers=None, skips=None):
             "line_barriers": line_barriers or [], "skips": skips or {}}
 
 
+def named(report, key):
+    """One bucket by key - never by position, so a new bucket cannot move it."""
+    for bucket in report["buckets"]:
+        if bucket["key"] == key:
+            return bucket
+    raise AssertionError("no bucket %r" % key)
+
+
 def bucket_of(report, needle):
     for bucket in report["buckets"]:
         for item in bucket["items"]:
@@ -201,7 +209,7 @@ class VerdictTests(unittest.TestCase):
         analysis = state.analyze(Snap().snapshot(), [], desc(skips={"unreadable": [WALL_KEY]}), config())
         report = state.classify(analysis, 600, 3)
         self.assertEqual(report["counts"]["barrier_unreadable"], 1)
-        self.assertEqual(report["buckets"][5]["items"][0]["show"]["link_element_id"], 10)
+        self.assertEqual(named(report, "barrier_unreadable")["items"][0]["show"]["link_element_id"], 10)
 
     def test_a_damper_far_from_every_barrier_is_idle_and_one_in_a_barrier_is_not(self):
         snap = (Snap().duct(1, (0, 5, 5), (11, 5, 5)).damper(2, (11, 5, 5), (11.3, 5, 5)).join(1, 1, 2, 0)
@@ -209,8 +217,9 @@ class VerdictTests(unittest.TestCase):
         analysis = state.analyze(snap.snapshot(), [crossing(1)], desc(), config())
         report = state.classify(analysis, 600, 3)
         self.assertEqual(report["counts"]["idle_damper"], 1)
-        self.assertEqual(report["buckets"][-1]["items"][0]["damper_id"], 9)
-        self.assertNotIn(2, [item["damper_id"] for item in report["buckets"][-1]["items"]])
+        idle = named(report, "idle_damper")["items"]
+        self.assertEqual(idle[0]["damper_id"], 9)
+        self.assertNotIn(2, [item["damper_id"] for item in idle])
 
     def test_a_damper_without_origins_is_judged_by_its_box(self):
         snap = (Snap().duct(1, (0, 5, 5), (11, 5, 5))
@@ -392,6 +401,75 @@ class ReportTextTests(unittest.TestCase):
         self.assertEqual(state.filter_report(report, u"2")["counts"]["covered_within"], 1)
         self.assertEqual(state.filter_report(report, u"7")["counts"]["covered_within"], 0)
         self.assertEqual(state.filter_report(report, u"arch 1hr")["counts"]["covered_within"], 1)
+
+
+class IgnoreTests(unittest.TestCase):
+    """Findings the reviewer sets aside, and the keys those records live under."""
+
+    def analysis(self):
+        snap = Snap().duct(1, (0, 5, 5), (20, 5, 5))
+        return state.analyze(snap.snapshot(), [crossing(1)], desc(), config())
+
+    def test_the_crossing_key_names_the_barrier_and_the_duct(self):
+        report = state.classify(self.analysis(), 600, 3)
+        self.assertEqual(bucket_of(report, 1)[1]["key"], u"cross:{0}:1".format(WALL_KEY))
+
+    def test_the_key_does_not_move_when_another_crossing_appears(self):
+        """Keyed by content, not by position: a second crossing elsewhere must
+        not rename the first, or last week's decision points at the wrong row."""
+        snap = Snap().duct(1, (0, 5, 5), (20, 5, 5)).duct(3, (0, 15, 5), (20, 15, 5))
+        second = state.analyze(snap.snapshot(),
+                               [crossing(1), crossing(3, point=(10, 15, 5))], desc(), config())
+        report = state.classify(second, 600, 3)
+        self.assertEqual(bucket_of(report, 1)[1]["key"], u"cross:{0}:1".format(WALL_KEY))
+
+    def test_an_ignored_crossing_leaves_the_problem_tally(self):
+        analysis = self.analysis()
+        plain = state.classify(analysis, 600, 3)
+        self.assertEqual((plain["problem_count"], plain["ignored_count"]), (1, 0))
+        key = bucket_of(plain, 1)[1]["key"]
+
+        aside = state.classify(analysis, 600, 3, [key])
+        bucket, item = bucket_of(aside, 1)
+        self.assertEqual(bucket, "ignored")
+        self.assertEqual((aside["problem_count"], aside["ignored_count"]), (0, 1))
+        self.assertTrue(item["is_ignored"])
+        self.assertEqual(item["original_bucket"], "missing")
+        self.assertIn(u"Set aside on review", item["detail"])
+        self.assertEqual(item["show"]["link_element_id"], 10)
+
+    def test_every_row_kind_can_be_set_aside(self):
+        snap = Snap().fitting(7, [[9.5, 4.0, 4.0], [10.5, 6.0, 6.0]])
+        snap.damper(9, (50, 50, 5), (50.3, 50, 5))
+        analysis = state.analyze(snap.snapshot(), [], desc(skips={"unreadable": [WALL_KEY]}), config())
+        report = state.classify(analysis, 600, 3)
+        keys = [item["key"] for bucket in report["buckets"] for item in bucket["items"]]
+        self.assertIn(u"fitting:7:{0}".format(WALL_KEY), keys)
+        self.assertIn(u"barrier:{0}".format(WALL_KEY), keys)
+        self.assertIn(u"idle:9", keys)
+        aside = state.classify(analysis, 600, 3, keys)
+        self.assertEqual(aside["counts"]["ignored"], len(keys))
+        self.assertEqual(aside["counts"]["fitting_crossing"], 0)
+        self.assertEqual(aside["counts"]["idle_damper"], 0)
+
+    def test_the_ignored_bucket_is_never_a_problem(self):
+        self.assertIn("ignored", [key for key, _title, _problem in state.BUCKETS])
+        self.assertNotIn("ignored", state.PROBLEM_BUCKETS)
+
+    def test_a_key_matching_no_finding_is_reported_stale_and_noted(self):
+        analysis = self.analysis()
+        report = state.classify(analysis, 600, 3, [u"cross:gone:1"])
+        self.assertEqual(report["stale_ignored"], [u"cross:gone:1"])
+        notes = state.scan_notes(analysis, config(), [], report=report)
+        self.assertTrue(any(u"match no finding now" in note for note in notes))
+        self.assertTrue(any(u"stored in this model" in note for note in notes))
+
+    def test_the_summary_counts_what_was_set_aside(self):
+        analysis = self.analysis()
+        report = state.classify(analysis, 600, 3, [bucket_of(state.classify(analysis, 600, 3), 1)[1]["key"]])
+        line = state.summary_line(analysis, report)
+        self.assertIn(u"1 set aside", line)
+        self.assertIn(u"The scan changes nothing in the model.", line)
 
 
 class SettingsTests(unittest.TestCase):
