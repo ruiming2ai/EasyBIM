@@ -1131,6 +1131,102 @@ modules on each launch when no report is open, so an update takes effect on
 the next click. Nested links cannot be reached. A rating is a transcription of
 the link, not a compliance judgement.
 
+## Space Boundary (Misc Tools, Revit 2022+)
+
+Draws room and space boundaries as filled regions, remembers which region
+belongs to which room **inside the model**, and later reports how far each one
+has drifted.
+
+**Where the rooms come from** is a checked list, not a single choice: this
+model and every loaded link, in any combination. That is what an MEP job needs
+— the spaces are here and the rooms are in the architectural link — and a link
+placed twice is two sources at their own positions, each with its own regions.
+An unloaded link stays listed with the reason rather than vanishing. Choices
+are remembered by name.
+
+**Where the regions go** is either the active view or the views you tick. Each
+view is drawn with the rooms on its own level, in its own phase — a Level 2
+plan draws Level 2 rooms. Ceiling plans are offered but not ticked: an RCP
+shows the room outline, never the ceiling edge. You can also convert a single
+room or space you pick instead of all of them.
+
+**What the boundary means** follows this model's own Area and Volume
+Computation setting — the same rule Revit itself follows when it makes a space
+from a linked room — shown as a sentence, and overridable to wall finish,
+centre, core boundary or core centre. Whatever was used is stored with each
+region, so a later comparison judges by the rule that region was drawn with.
+
+Nothing is written until you have seen the **preview**: every pair that would
+be drawn, every pair that would be skipped and exactly why, with an explicit
+tick for anything surprising (a large batch, or replacing regions somebody may
+have edited). The run itself is one undo step — a transaction group for the
+run, a transaction per view, a subtransaction per room — so a room Revit
+refuses rolls back on its own without costing the other nineteen in that view.
+A view that could not be committed is removed from the counters too, because a
+report must never claim work that no longer exists.
+
+### The relationship, and where it lives
+
+The record rides on the **filled region itself**, in Extensible Storage. A
+region's link to its room is a property of that region, so the record is
+created, copied and destroyed with the thing it describes: deleting the region
+takes the record with it, and a two-thousand-room job costs no extra elements.
+It is written inside the same transaction as the region, so an undo can never
+leave one without the other. Because it is in the .rvt, it survives a Sync to
+Central and reaches everyone who opens the job, on a cloud or ACC model too.
+
+The record holds the room's id and number, its level, phase and view, the
+boundary location used, and a digest of both outlines — about half a kilobyte,
+with no polygon stored. Names travel beside the ids on purpose: when the room
+is deleted, its name is the only thing left that says what the orphaned region
+used to be, and that is exactly when it matters.
+
+### Check Differences
+
+Re-reads both sides and compares them. A loop is reduced to a canonical form
+first — tessellated, quantised to a millimetre grid, stripped of duplicate and
+collinear vertices, forced counter-clockwise and rotated to a fixed start —
+because Revit does not promise to hand the same boundary back the same way
+twice, and a naive hash would report the whole job as edited. Two digests come
+out of that: one absolute, one with the minimum corner subtracted, which is
+exact integer arithmetic and so identical after a pure translation. That is
+what tells *moved* from *reshaped*.
+
+| What happened | What is offered |
+| --- | --- |
+| The room's boundary changed | Redraw |
+| A region was reshaped by hand | Redraw, Accept as drawn, or Ignore |
+| A region was dragged | Redraw, Accept, or Ignore — the offset is reported |
+| Both changed | Listed apart; the row says redrawing discards the edit |
+| The room is gone | Delete or Ignore, never automatic |
+| A room in a ticked view has no region | Create |
+| A region was copied into another view | Delete or Ignore — its record names the wrong view, so it cannot be trusted |
+| Two regions for one room in one view | The oldest wins; the rest are offered for deletion |
+| The level or phase moved apart | Delete or Ignore — redrawing would not fix it |
+| The link is not loaded | Reported, never judged: there is nothing to compare against |
+| A source was not in this run | Reported under its own heading, never treated as orphaned |
+
+Each room is measured the way its own region was drawn, so changing the model's
+Area and Volume Computation setting afterwards is not read as thousands of
+false drifts. When most regions from one link move together, the report says so
+once instead of listing every row as a surprise. Rows set aside with **Ignore**
+move to their own group and out of the tally, and that list is stored in this
+model too, so it comes back next time and reaches the team. **Accept as drawn**
+is its companion: it re-baselines the region's digest so a deliberate hand edit
+becomes the new normal and *future* edits are still caught.
+
+Requires Revit 2022 or later. Reading a region's own outline —
+`FilledRegion.GetBoundaries()` — arrived then, and it is the only way to notice
+that somebody reshaped a region, so no degraded branch is carried. Known limit,
+stated in the tooltip rather than hidden: a nudge smaller than a millimetre can
+read as an edit rather than a move, because the comparison works on a
+millimetre grid. A filled region cannot be added to a group, so a room inside a
+group drifts when its group moves.
+
+The command runs in a persistent pyRevit engine because the modeless report
+owns an ExternalEvent whose handler is Python; it drops its own modules on each
+launch when no report is open, so an update takes effect on the next click.
+
 ## Clash Detection Mode (Misc Tools, Revit 2023-2027)
 
 A live, forward-only interference checker. Pick two sets of categories, and from

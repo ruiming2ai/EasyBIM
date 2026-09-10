@@ -1,0 +1,27 @@
+title: "Space\nBoundary"
+min_revit_version: 2022
+tooltip: >-
+  Draw room and space boundaries as filled regions, and keep track of
+  them.
+
+  Pick where the rooms come from - this model, any loaded link, or both
+  at once, which is what an MEP job needs when the spaces are here and
+  the rooms are in the architectural link. Draw into the active view or
+  the views you tick; each view gets the rooms on its own level, in its
+  own phase. Boundaries follow this model's own Area and Volume
+  Computation setting unless you override it.
+
+  Which region belongs to which room is written into this model, on the
+  region itself, so it survives a Sync to Central and reaches the team
+  on a cloud or ACC job. Check Differences re-reads both sides and
+  reports what moved: a room whose boundary changed can be redrawn, a
+  region somebody reshaped can be redrawn, accepted as it now is, or set
+  aside. Each room is measured the way its own region was drawn, so
+  changing the model's computation setting afterwards is not read as
+  drift.
+
+  Nothing is drawn until you have seen the preview, and the whole run is
+  one undo step. Requires Revit 2022 or later, because reading a
+  region's own outline - the only way to notice a hand edit - arrived
+  then.
+author: Ruiming Liu
