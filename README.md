@@ -967,6 +967,68 @@ and **SpaceTag**. Choose between scanning the **entire project** or the **active
 view only**. Results are shown in a checklist so you can selectively delete
 rather than removing them all at once.
 
+## Damper Check (Misc Tools)
+
+Finds every HVAC end branch that has no isolation damper. Read-only: the
+report is the deliverable and nothing in the model is ever changed.
+
+**What counts as an end branch.** The check walks the *physical* duct
+connections, never system membership. Ducts, flex ducts, fittings,
+accessories, air terminals and mechanical equipment are the nodes; a connected
+pair of connectors is an edge, so a tap on a main is an edge like any other.
+Mechanical equipment is a boundary the walk never passes through, which is why
+a VAV box splits its inlet side from its downstream side and each downstream
+run roots at the VAV. From every **air terminal** the walk climbs toward the
+trunk and stops at the nearest damper; when there is none it reports what it
+reached instead - the equipment, an open duct end, or nothing at all.
+
+**What counts as a damper.** Whatever family types you tick. The setup window
+lists every family type that takes part in the duct network, grouped by
+category with **Duct Accessories open on top** and every other category
+(Duct Fittings, Air Terminals, Mechanical Equipment, and anything else that
+turned out to carry duct connectors) collapsed beneath. Keywords only pre-tick
+the list - *damper*, *VCD*, *OBD*, *isolation*, *shut-off*, *volume*,
+*balancing* and friends, with *fire*, *smoke*, *backdraft*, *relief*,
+*silencer* and *access* excluded until you say otherwise. Ticking an air
+terminal type means "integral damper"; ticking a VAV type means "the unit
+isolates its run". Your ticks are remembered **by family and type name** on
+this computer, so the next model with the same content library needs no
+re-ticking and an ElementId never crosses documents.
+
+**One damper may serve up to N terminals.** With N = 1 (the default) every
+terminal needs its own damper before the first junction that serves another
+terminal; a tee whose other leg is a capped stub does not end the branch. A
+higher N lets one damper cover a small sub-branch - two diffusers in one room
+off one tee. N changes live in the report without rescanning, and every row
+names the nearest damper and how many terminals it serves.
+
+**The report.** One expander per verdict, problems first: no damper before the
+equipment; no damper and the branch ends at an open duct (a branch never joined
+to its main, or a system left unassigned); no damper and the network reaches no
+equipment; nearest damper serves more terminals than N; terminal not connected
+to any duct; walk truncated by a guard; connectors unreadable. Then the covered
+buckets: own damper, damper shared within N, terminal type with an integral
+damper, served by isolating equipment. **Show** selects the whole run - terminal
+to damper, or to the junction, or to the root - and zooms to it. Search matches
+ids whole (12 does not find 112) and names by substring. **Refresh** re-reads the
+model with search, N and the expanded groups preserved. A **Scan notes**
+expander lists every named skip and limit: unreadable elements, terminals
+outside the active view, looped networks (counts approximate), a scan that hit
+its time budget or element cap.
+
+**Scope.** Whole model, or the air terminals in the active view; the walk
+always follows the whole model's ducts so a branch that leaves the view is
+still traced to its damper. Supply / Return / Exhaust / Other / Unknown chips
+filter terminals by their own system type, which exists whether or not a
+system was ever assigned - a class left unticked is named in the footer.
+
+The command runs in a persistent pyRevit engine because the modeless report
+owns an ExternalEvent whose handler is Python; a recycled engine would kill
+it. A persistent engine keeps its loaded modules across a pyRevit reload, so
+the command drops its own modules on each launch when no report is open - that
+is what lets an update take effect on the next click. Linked models are not
+traversed.
+
 ## Clash Detection Mode (Misc Tools, Revit 2023-2027)
 
 A live, forward-only interference checker. Pick two sets of categories, and from
