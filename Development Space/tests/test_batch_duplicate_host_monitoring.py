@@ -46,3 +46,26 @@ class WizardMonitoring(unittest.TestCase):
         exec(compile(ast.Module(body=[run],type_ignores=[]),"wizard","exec"),ns)
         ns["_run"]()
         self.assertEqual([],calls)
+
+class CurrentReferenceFrame(unittest.TestCase):
+    def load(self):
+        tree=ast.parse((BUNDLE/"batch_duplicate_host_revit.py").read_text(encoding="utf-8"))
+        function=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="_independent_reference_frame")
+        ns=dict(DB=SimpleNamespace(LocationPoint=str))
+        exec(compile(ast.Module(body=[function],type_ignores=[]),"reference","exec"),ns)
+        return ns["_independent_reference_frame"]
+    def test_unavailable_link_transform_is_not_replaced_by_identity(self):
+        def unavailable(): raise ValueError("link unavailable")
+        link=SimpleNamespace(UniqueId="link",GetTotalTransform=unavailable)
+        with self.assertRaisesRegex(ValueError,"link unavailable"):
+            self.load()(SimpleNamespace(Location="point"),link,None,None,{})
+    def test_current_transform_is_cached_per_link_instance(self):
+        from unittest.mock import Mock
+        link=SimpleNamespace(UniqueId="link",GetTotalTransform=Mock(return_value="current-transform"))
+        adapter=SimpleNamespace(instance_frame=Mock(return_value="resolved-frame"))
+        reference=SimpleNamespace(Location="point")
+        cache={}; frame=self.load()
+        self.assertEqual("resolved-frame",frame(reference,link,None,adapter,cache))
+        frame(reference,link,None,adapter,cache)
+        link.GetTotalTransform.assert_called_once()
+        adapter.instance_frame.assert_called_with(reference,"current-transform")

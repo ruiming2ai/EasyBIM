@@ -673,6 +673,24 @@ def _build_element_id_list(element_ids):
     return clr_ids
 
 
+def _independent_reference_frame(reference, link, placement, adapter, transform_cache):
+    # Re-read current link placement; do not inherit the legacy identity fallback.
+    key = link.UniqueId if link is not None else "current-project"
+    if key not in transform_cache:
+        transform_cache[key] = link.GetTotalTransform() if link is not None else DB.Transform.Identity
+    transform = transform_cache[key]
+    if transform is None:
+        raise ValueError("The link transform is unavailable.")
+    if isinstance(reference.Location, DB.LocationPoint):
+        return adapter.instance_frame(reference, transform)
+    point = _get_instance_point_in_host_coordinates(reference, DB.Transform.Identity)
+    x, y, z, error = _get_target_coordinate_frame_in_host_coordinates(reference, transform)
+    if point is None or error:
+        raise ValueError(error or "The reference location is unavailable.")
+    return placement.validate_frame(placement.frame(adapter.vector(transform.OfPoint(point)),
+        adapter.vector(x), adapter.vector(y), adapter.vector(z)))
+
+
 def place_copies(host_document, active_view, source_element, targets, offset,
                  align_orientation, monitored=True, copy_original=False):
     from easybim import independent_placement as placement
@@ -687,7 +705,7 @@ def place_copies(host_document, active_view, source_element, targets, offset,
             result.notes.append("Monitoring is unavailable for this category; legacy copying was used.")
         return result
     summary = PlacementSummary()
-    requests = []
+    requests, transform_cache = [], {}
     for target in targets:
         try:
             reference = target.source_option.document.GetElement(target.instance_id)
@@ -697,17 +715,13 @@ def place_copies(host_document, active_view, source_element, targets, offset,
             reason = adapter.independent_reason(source)
             if reason:
                 raise ValueError(reason)
-            if target.local_coordinate_frame_error:
-                raise ValueError(target.local_coordinate_frame_error)
-            frame = placement.frame(adapter.vector(target.host_point),
-                                    adapter.vector(target.target_local_x_axis),
-                                    adapter.vector(target.target_local_y_axis),
-                                    adapter.vector(target.target_local_z_axis))
+            link = target.source_option.link_instance
+            frame = _independent_reference_frame(reference, link, placement, adapter, transform_cache)
             source_frame = adapter.instance_frame(source)
             desired = placement.desired_frame(frame, adapter.vector(offset), source_frame,
                                               align_orientation)
-            link = target.source_option.link_instance
-            can_monitor = bool(monitored and link is not None and adapter.supported_category(reference))
+            can_monitor = bool(monitored and link is not None and adapter.supported_category(reference)
+                               and isinstance(reference.Location, DB.LocationPoint))
             if monitored and not can_monitor:
                 summary.notes.append(target.display_label + ": monitoring is unavailable for this reference.")
             requests.append(dict(source=source, reference=reference, link=link,
