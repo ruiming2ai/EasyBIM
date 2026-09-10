@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """Plain review rows; no Revit or WPF dependency."""
+from __future__ import unicode_literals
 import json
+try:
+    text_type = unicode
+except NameError:
+    text_type = str
 
 STATUS_LABELS = {
     "unchanged":"Unchanged", "accepted":"Accepted", "source_changed":"Source changed",
@@ -17,7 +22,7 @@ def display(value):
     if value is None: return "(none)"
     if isinstance(value, dict):
         return value.get("name") or json.dumps(value, ensure_ascii=True, sort_keys=True)
-    return str(value)
+    return text_type(value)
 
 
 def details(report):
@@ -33,14 +38,15 @@ def details(report):
                         ("Local changes",report.get("destination_changes",[]))):
         if keys: lines.append(label + ": " + ", ".join(keys))
     old = record.get("baseline_source") or {}
+    old_local = record.get("baseline_destination") or {}
     keys = sorted(set(report.get("source_changes",[])) | set(report.get("destination_changes",[])))
     for key in keys:
         if key in source.get("params",{}) or key in destination.get("params",{}):
             label = source.get("parameter_labels",{}).get(key,key)
             def value(snap):
                 return snap.get("parameter_display",{}).get(key,display(snap.get("params",{}).get(key)))
-            lines.append("{}: prior source={} | current source={} | current local={}".format(
-                label,value(old),value(source),value(destination)))
+            lines.append("{}: prior source={} | current source={} | prior local={} | current local={}".format(
+                label,value(old),value(source),value(old_local),value(destination)))
     for issue in record.get("parameter_issues",[]):
         lines.append("{}: {}".format(issue.get("name",issue.get("key","Parameter")),issue["reason"]))
     if report.get("expected"):
