@@ -697,10 +697,28 @@ def redundant_room_ids(doc, db=None):
 # ------------------------------------------------------------ boundaries
 
 
+def short_curve_mm(document):
+    """The shortest curve this Revit will build, in millimetres, with margin.
+
+    Read from the session rather than assumed: a segment under it is dropped
+    by the loop repair, and a bridge under it is never inserted, because
+    ``Line.CreateBound`` refuses both and the whole room with them.
+    """
+    try:
+        value = float(document.Application.ShortCurveTolerance) * MM
+    except Exception:
+        return state.SHORT_MM
+    if value <= 0.0:
+        return state.SHORT_MM
+    return value * 1.05
+
+
 def read_boundaries(room, location_name, db=None, transform=None, grid_mm=state.GRID_MM):
     """One room's boundary as loops of curve records, in host millimetres."""
     db = _db(db)
     element = room.get("element")
+    short_mm = short_curve_mm(getattr(element, "Document", None))
+    gap_mm = max(state.GAP_BUDGET_MM, 2.0 * short_mm)
     options = _boundary_options(db, location_name)
     if element is None or options is None:
         return {"loops": [], "code": "boundary_unreadable",
@@ -724,7 +742,8 @@ def read_boundaries(room, location_name, db=None, transform=None, grid_mm=state.
             record = _segment_record(segment, db, transform)
             if record is not None:
                 records.append(record)
-        repaired, code, sentence, loop_notes = state.repair_loop(records)
+        repaired, code, sentence, loop_notes = state.repair_loop(records, gap_budget_mm=gap_mm,
+                                                                 short_mm=short_mm)
         notes.extend(loop_notes)
         if code:
             return {"loops": [], "code": code, "sentence": sentence}
@@ -742,7 +761,7 @@ def read_boundaries(room, location_name, db=None, transform=None, grid_mm=state.
         if abs(state.signed_area2(canonical)) / 2.0 * grid_mm * grid_mm < state.MIN_LOOP_AREA_MM2:
             notes.append("sliver_dropped")
             continue
-        loops.append({"records": repaired, "points": points})
+        loops.append({"records": repaired, "points": points, "short_mm": short_mm})
 
     if not loops:
         return {"loops": [], "code": "sliver", "sentence": state.CODE_SENTENCES["sliver"]}
@@ -983,7 +1002,7 @@ def _linked_visible_uids(doc, view, view_row, source, rooms, member, db,
     if instance is None or link_doc is None:
         return set(), u""
     if _link_hidden(view, instance, db):
-        return set(), u""
+        return set(), state.sentence_for("link_hidden", source.get("title"), view_row.get("name"))
     mode, linked_view_id = _link_mode(view, instance)
     if mode in ("ByLinkView", "Custom") and linked_view_id is not None:
         ids = _visible_ids(link_doc, linked_view_id, member, db)
@@ -994,7 +1013,10 @@ def _linked_visible_uids(doc, view, view_row, source, rooms, member, db,
         return set(room["uid"] for room in rooms if room.get("id") in ids), u""
 
     if _category_hidden(view, member, db):
-        return set(), u""
+        return set(), state.sentence_for(
+            "rooms_hidden_in_view",
+            u"Spaces" if enum_name(member) == "OST_MEPSpaces" else u"Rooms",
+            view_row.get("name"), source.get("title"))
     cut_mm = view_row.get("cut_mm")
     if cut_mm is None:
         return None, state.sentence_for("visibility_unknown", view_row.get("name"))
@@ -1062,10 +1084,10 @@ def visibility_map(doc, views, rooms, sources, kind, db=None, include_design_opt
                 continue
             found, note = _linked_visible_uids(doc, view, view_row, source, link_rooms, member,
                                                db, include_design_options)
+            if note:
+                notes.append(note)
             if found is None:
                 unknown = True
-                if note:
-                    notes.append(note)
                 continue
             visible.update(found)
         result[view_uid] = {"visible": None if unknown else visible,
@@ -1088,6 +1110,26 @@ def _materialise_loops(db, loops, z_ft):
         for record in loop.get("records") or []:
             for curve in _curves_for(db, record, z_ft):
                 curve_loop.Append(curve)
+        result.Add(curve_loop)
+    return result
+
+
+def _materialise_simplified(db, loops, z_ft):
+    """The fallback: straight edges through the cleaned outline of each loop."""
+    from System.Collections.Generic import List as ClrList
+
+    result = ClrList[db.CurveLoop]()
+    for loop in loops or []:
+        points = state.simplified_outline(loop.get("points") or [],
+                                          loop.get("short_mm") or state.SHORT_MM)
+        if len(points) < 3:
+            return None
+        curve_loop = db.CurveLoop()
+        for index in range(len(points)):
+            a = points[index]
+            b = points[(index + 1) % len(points)]
+            curve_loop.Append(db.Line.CreateBound(_xyz(db, a[0], a[1], z_ft),
+                                                  _xyz(db, b[0], b[1], z_ft)))
         result.Add(curve_loop)
     return result
 
@@ -1413,6 +1455,31 @@ def _refresh_records(doc, db, drawn, plan, result):
                                    u"{0}".format(reason))
 
 
+def _create_region(doc, db, boundary, z_ft, region_type_id, view_eid, item):
+    """``(region, note)`` - the true loops first, the simplified outline second.
+
+    Revit's sketch validator refuses things the boundary read cannot always
+    foresee - a spur two walls wide, an arc it will not build, loops that
+    touch at a vertex.  When it does, the same room is drawn again from its
+    cleaned outline with straight edges, and the note says so; only if that
+    is refused too does the room fail, with Revit's own words.
+    """
+    loops = _materialise_loops(db, boundary.get("loops") or [], z_ft)
+    try:
+        return db.FilledRegion.Create(doc, region_type_id, view_eid, loops), u""
+    except Exception as first:
+        fallback = _materialise_simplified(db, boundary.get("loops") or [], z_ft)
+        if fallback is None:
+            raise first
+        try:
+            region = db.FilledRegion.Create(doc, region_type_id, view_eid, fallback)
+        except Exception:
+            raise first
+        return region, (u"{0} was drawn from its simplified outline (straight edges, within "
+                        u"a millimetre) because Revit refused the exact one: {1}".format(
+                            item.get("title"), safe_text(first)))
+
+
 def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, line_style_id,
                 to_eid, created_utc):
     """One room in one view, in its own SubTransaction."""
@@ -1429,19 +1496,21 @@ def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, line_s
             doc.Delete(old_id)
 
         boundary = (plan.get("boundaries") or {}).get(item["boundary_key"]) or {}
-        loops = _materialise_loops(db, boundary.get("loops") or [], z_ft)
-        region = db.FilledRegion.Create(doc, region_type_id, to_eid(view_id), loops)
+        region, note = _create_region(doc, db, boundary, z_ft, region_type_id, to_eid(view_id),
+                                      item)
         if line_style_id is not None:
             setter = getattr(region, "SetLineStyleId", None)
             try:
                 if callable(setter):
                     setter(line_style_id)
                 else:
-                    note = u"This Revit cannot set a filled region's line style; the type's " \
-                           u"default was kept."
+                    note = (note + u" " if note else u"") + \
+                        u"This Revit cannot set a filled region's line style; the type's " \
+                        u"default was kept."
             except Exception as ex:
-                note = u"The boundary line style could not be set on {0}: {1}".format(
-                    item.get("title"), safe_text(ex))
+                note = (note + u" " if note else u"") + \
+                    u"The boundary line style could not be set on {0}: {1}".format(
+                        item.get("title"), safe_text(ex))
         region_loops = read_region_loops(region, db=db)
         record = state.make_record(item, boundary.get("fingerprints") or {},
                                    state.fingerprints(region_loops or [],
@@ -1496,43 +1565,6 @@ def delete_regions(doc, region_ids, db=None):
         except Exception:
             pass
         result["deleted"] = 0
-        result["failed"].append({"region_id": None, "reason": safe_text(ex)})
-    return result
-
-
-def accept_regions(doc, region_ids, db=None, grid_mm=state.GRID_MM):
-    """Re-baseline a hand-edited region so future edits are still caught."""
-    db = _db(db)
-    result = {"accepted": 0, "failed": []}
-    wanted = set(value for value in region_ids or [] if value is not None)
-    if not wanted:
-        return result
-    rows = [row for row in read_relationships(doc, db=db, grid_mm=grid_mm)
-            if row["region_id"] in wanted]
-    if not rows:
-        return result
-    transaction = db.Transaction(doc, u"Space Boundary: accept regions")
-    transaction.Start()
-    try:
-        for row in rows:
-            reason = storage.checkout_reason(doc, getattr(row["region"], "Id", None), db=db)
-            if reason:
-                result["failed"].append({"region_id": row["region_id"], "reason": reason})
-                continue
-            record = dict(row["record"])
-            record["region"] = state.digests_only(row["fingerprints"])
-            ok, write_reason = storage.write_record(doc, row["region"], record, db=db)
-            if ok:
-                result["accepted"] += 1
-            else:
-                result["failed"].append({"region_id": row["region_id"], "reason": write_reason})
-        transaction.Commit()
-    except Exception as ex:
-        try:
-            transaction.RollBack()
-        except Exception:
-            pass
-        result["accepted"] = 0
         result["failed"].append({"region_id": None, "reason": safe_text(ex)})
     return result
 

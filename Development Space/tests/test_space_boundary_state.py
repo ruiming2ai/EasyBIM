@@ -190,13 +190,70 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(len(kept), 4)
         self.assertIn("short_segment", notes)
 
-    def test_a_small_gap_is_bridged_and_counted(self):
+    def test_a_small_gap_is_closed_by_moving_the_endpoint_never_by_a_bridge(self):
+        """A bridge half a millimetre long is itself a curve Revit refuses -
+        the room would fail on exactly the repair meant to save it."""
         records = loop_records(SQUARE)
         records[1] = ("L", 1000.5, 0.0, 1000.0, 1000.0)
         kept, code, _sentence, notes = state.repair_loop(records)
         self.assertEqual(code, "")
         self.assertIn("gap_bridged", notes)
+        self.assertEqual(len(kept), 4)
+        self.assertEqual((kept[1][1], kept[1][2]), (1000.0, 0.0))
+        for record in kept:
+            start, end = state._record_ends(record)
+            self.assertGreaterEqual(state._distance(start, end), state.SHORT_MM)
+
+    def test_a_closing_gap_is_closed_the_same_way(self):
+        records = loop_records(SQUARE)
+        records[-1] = ("L", 0.0, 1000.0, 0.0, 0.6)
+        kept, code, _sentence, notes = state.repair_loop(records)
+        self.assertEqual(code, "")
+        self.assertEqual((kept[-1][3], kept[-1][4]), (0.0, 0.0))
+
+    def test_a_spur_goes_with_its_partner_and_leaves_no_gap(self):
+        """A stub wall inside the room: the boundary walks in and straight
+        back out. Dropping only the return leg used to leave a gap the width
+        of the stub, and the loop was refused."""
+        records = [("L", 0.0, 0.0, 400.0, 0.0),
+                   ("L", 400.0, 0.0, 400.0, 300.0),   # in
+                   ("L", 400.0, 300.0, 400.0, 0.0),   # and out
+                   ("L", 400.0, 0.0, 1000.0, 0.0),
+                   ("L", 1000.0, 0.0, 1000.0, 1000.0),
+                   ("L", 1000.0, 1000.0, 0.0, 1000.0),
+                   ("L", 0.0, 1000.0, 0.0, 0.0)]
+        kept, code, _sentence, notes = state.repair_loop(records)
+        self.assertEqual(code, "")
+        self.assertIn("spur_removed", notes)
         self.assertEqual(len(kept), 5)
+        for index in range(len(kept)):
+            _s, end = state._record_ends(kept[index])
+            start, _e = state._record_ends(kept[(index + 1) % len(kept)])
+            self.assertTrue(state._close(end, start, 1e-6))
+
+    def test_a_two_leg_spur_is_peeled_back(self):
+        records = [("L", 0.0, 0.0, 400.0, 0.0),
+                   ("L", 400.0, 0.0, 400.0, 300.0),
+                   ("L", 400.0, 300.0, 500.0, 300.0),
+                   ("L", 500.0, 300.0, 400.0, 300.0),
+                   ("L", 400.0, 300.0, 400.0, 0.0),
+                   ("L", 400.0, 0.0, 1000.0, 0.0),
+                   ("L", 1000.0, 0.0, 1000.0, 1000.0),
+                   ("L", 1000.0, 1000.0, 0.0, 1000.0),
+                   ("L", 0.0, 1000.0, 0.0, 0.0)]
+        kept, code, _sentence, notes = state.repair_loop(records)
+        self.assertEqual(code, "")
+        self.assertEqual(notes.count("spur_removed"), 2)
+        self.assertEqual(len(kept), 5)
+
+    def test_the_sessions_own_short_tolerance_is_honoured(self):
+        records = loop_records(SQUARE)
+        records.insert(1, ("L", 1000.0, 0.0, 1000.0, 1.0))
+        records[2] = ("L", 1000.0, 1.0, 1000.0, 1000.0)
+        kept, code, _s, notes = state.repair_loop(records, gap_budget_mm=2.5, short_mm=1.25)
+        self.assertEqual(code, "")
+        self.assertIn("short_segment", notes)
+        self.assertEqual(len(kept), 4)
 
     def test_a_wide_gap_refuses_the_loop_by_name(self):
         records = loop_records(SQUARE)
@@ -223,6 +280,20 @@ class RepairTests(unittest.TestCase):
     def test_too_few_segments_is_an_open_loop(self):
         kept, code, _s, _n = state.repair_loop([("L", 0.0, 0.0, 1.0, 0.0)])
         self.assertEqual(code, "loop_open")
+
+
+class SimplifiedOutlineTests(unittest.TestCase):
+    def test_a_clean_polygon_comes_back_as_it_is(self):
+        self.assertEqual(state.simplified_outline(SQUARE), SQUARE)
+
+    def test_near_duplicates_collinear_points_and_spikes_go(self):
+        messy = [(0.0, 0.0), (0.3, 0.0), (500.0, 0.0), (1000.0, 0.0), (1000.0, 500.0),
+                 (1300.0, 500.0), (1000.0, 500.0), (1000.0, 1000.0), (0.0, 1000.0),
+                 (0.0, 0.2)]
+        self.assertEqual(state.simplified_outline(messy), SQUARE)
+
+    def test_too_little_left_is_nothing_rather_than_a_sliver(self):
+        self.assertEqual(state.simplified_outline([(0.0, 0.0), (1000.0, 0.0), (0.2, 0.0)]), [])
 
 
 class ShapeTests(unittest.TestCase):
@@ -483,7 +554,6 @@ class DriftTests(unittest.TestCase):
             rooms_now(), views_now())
         bucket, item = bucket_of(report, "reg-1")
         self.assertEqual(bucket, "region_edited")
-        self.assertTrue(item["can_accept"])
         self.assertTrue(item["can_update"])
 
         shifted = [(x + 250.0, y) for x, y in SQUARE]
@@ -580,14 +650,14 @@ class DriftTests(unittest.TestCase):
             [live_entry(stale, fingerprints=state.fingerprints([]))], rooms_now(), views_now())
         self.assertEqual(bucket_of(report, "reg-1")[0], "unreadable")
 
-    def test_an_outline_that_matches_with_a_stale_record_offers_a_refresh(self):
+    def test_an_outline_that_matches_with_a_stale_record_is_in_step_and_says_so(self):
         stale = make_record()
         stale["region"] = {}
         report = state.classify_drift([live_entry(stale)], rooms_now(), views_now())
         bucket, item = bucket_of(report, "reg-1")
         self.assertEqual(bucket, "in_sync")
-        self.assertTrue(item["can_accept"])
         self.assertIn(u"record is behind", item["detail"])
+        self.assertNotIn("can_accept", item)
 
     def test_the_verdict_is_the_outline_not_the_record(self):
         """A region reshaped so the stored digests cannot say who moved still
@@ -603,7 +673,6 @@ class DriftTests(unittest.TestCase):
         self.assertEqual(bucket, "drifted")
         self.assertEqual(int(item["deviation_mm"]), 400)
         self.assertTrue(item["can_update"])
-        self.assertTrue(item["can_accept"])
 
     def test_a_sub_tolerance_wobble_is_in_step(self):
         wobbly = [(0.4, -0.6), (1000.9, 0.3), (999.6, 1000.7), (0.2, 1000.1)]
@@ -612,18 +681,36 @@ class DriftTests(unittest.TestCase):
             rooms_now(), views_now())
         self.assertEqual(bucket_of(report, "reg-1")[0], "in_sync")
 
-    def test_an_ignored_region_leaves_the_tally(self):
+    def test_an_accepted_difference_leaves_the_tally_and_stays_accepted(self):
+        """Permanent: whatever the room or the region do next, the row stays
+        accepted until somebody reopens it."""
         bigger = [(0.0, 0.0), (1500.0, 0.0), (1500.0, 1000.0), (0.0, 1000.0)]
         live = [live_entry(make_record())]
-        plain = state.classify_drift(live, rooms_now(state.fingerprints([bigger])), views_now())
-        self.assertEqual(plain["problem_count"], 1)
+        drifted = state.classify_drift(live, rooms_now(state.fingerprints([bigger])), views_now())
+        self.assertEqual(drifted["problem_count"], 1)
         aside = state.classify_drift(live, rooms_now(state.fingerprints([bigger])), views_now(),
-                                     ignored=["reg-1"])
+                                     accepted=["reg-1"])
         bucket, item = bucket_of(aside, "reg-1")
-        self.assertEqual(bucket, "ignored")
+        self.assertEqual(bucket, "accepted")
         self.assertEqual(aside["problem_count"], 0)
-        self.assertEqual(aside["ignored_count"], 1)
-        self.assertTrue(item["is_ignored"])
+        self.assertEqual(aside["accepted_count"], 1)
+        self.assertTrue(item["is_accepted"])
+        self.assertFalse(item["can_update"])
+        # The room moves again, and the region is dragged: still accepted.
+        larger = [(0.0, 0.0), (2500.0, 0.0), (2500.0, 1000.0), (0.0, 1000.0)]
+        shifted = [(x + 900.0, y) for x, y in SQUARE]
+        again = state.classify_drift(
+            [live_entry(make_record(), fingerprints=state.fingerprints([shifted]))],
+            rooms_now(state.fingerprints([larger])), views_now(), accepted=["reg-1"])
+        self.assertEqual(bucket_of(again, "reg-1")[0], "accepted")
+        self.assertIn(u"accepted", state.drift_summary(again))
+
+    def test_a_problem_row_can_be_accepted_and_an_in_step_one_has_nothing_to_accept(self):
+        for key, _title, problem in state.DRIFT_BUCKETS:
+            if problem:
+                self.assertIn(key, state.DRIFT_PROBLEMS)
+        self.assertNotIn("in_sync", state.DRIFT_PROBLEMS)
+        self.assertNotIn("accepted", state.DRIFT_PROBLEMS)
 
     def test_a_whole_link_drifting_at_once_is_said_once(self):
         bigger = state.fingerprints([[(0.0, 0.0), (1500.0, 0.0), (1500.0, 1000.0), (0.0, 1000.0)]])
@@ -978,6 +1065,59 @@ class VisibilityPlanTests(unittest.TestCase):
         pair_skips = [skip for skip in plan["skips"] if skip["scope"] == u"pair"]
         self.assertEqual(len(plan["items"]) + len(pair_skips) + plan["counts"]["not_visible"],
                          plan["counts"]["pairs"])
+
+
+class PickedRoomTests(unittest.TestCase):
+    def config(self, subject):
+        return {"kind": "room", "boundary_location": "Finish", "boundary_source": "document",
+                "grid_mm": 1.0, "region_type": {"id": 9, "name": u"Solid grey"},
+                "subject": subject}
+
+    def test_a_picked_room_is_ticked_whatever_level_it_sits_on(self):
+        views = [make_view()]
+        rooms = [make_room("r2", u"102", level="L2")]
+        plan = state.build_plan(self.config(state.SUBJECT_ONE), views, rooms,
+                                {"r2": make_boundary()}, {},
+                                visibility={"v1": {"visible": set(["r2"]), "note": u""}})
+        self.assertEqual(len(plan["items"]), 1)
+        self.assertTrue(plan["items"][0]["default_ticked"])
+        self.assertEqual(plan["items"][0]["category"], state.CATEGORY_OTHER_LEVEL)
+        # And when nothing is known about the view, a pick is still honoured.
+        plan = state.build_plan(self.config(state.SUBJECT_ONE), views, rooms,
+                                {"r2": make_boundary()}, {},
+                                visibility={"v1": {"visible": None, "note": u""}})
+        self.assertEqual(len(plan["items"]), 1)
+        self.assertTrue(plan["items"][0]["default_ticked"])
+
+    def test_a_picked_room_the_view_hides_is_still_not_drawn(self):
+        views = [make_view()]
+        rooms = [make_room("r2", u"102", level="L2")]
+        plan = state.build_plan(self.config(state.SUBJECT_ONE), views, rooms,
+                                {"r2": make_boundary()}, {},
+                                visibility={"v1": {"visible": set(), "note": u""}})
+        self.assertEqual(plan["items"], [])
+        self.assertEqual(plan["counts"]["not_visible"], 1)
+
+    def test_converting_all_leaves_other_levels_unticked(self):
+        views = [make_view()]
+        rooms = [make_room("r2", u"102", level="L2")]
+        plan = state.build_plan(self.config(state.SUBJECT_ALL), views, rooms,
+                                {"r2": make_boundary()}, {},
+                                visibility={"v1": {"visible": set(["r2"]), "note": u""}})
+        self.assertFalse(plan["items"][0]["default_ticked"])
+
+    def test_a_views_note_is_carried_even_when_it_answered(self):
+        """A link whose Rooms category the view hides answers "none" - and
+        the reason must reach the preview, not just the count."""
+        views = [make_view()]
+        rooms = [make_room("r1", link_uid=u"L1")]
+        note = state.sentence_for("rooms_hidden_in_view", u"Rooms", u"Level 1", u"Arch.rvt")
+        plan = state.build_plan(self.config(state.SUBJECT_ALL), views, rooms,
+                                {"r1": make_boundary()}, {},
+                                visibility={"v1": {"visible": set(), "note": note}})
+        self.assertIn(note, plan["notes"])
+        self.assertIn(u"Arch.rvt", note)
+        self.assertIn(u"view template", note)
 
 
 class SpaceSourceTests(unittest.TestCase):

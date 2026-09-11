@@ -51,10 +51,15 @@ GRID_MM = 1.0
 #: Chord sagitta bound when an arc is sampled; matches the grid.
 ARC_SAG_MM = 1.0
 MAX_ARC_SEGMENTS = 64
-#: A gap between consecutive segments up to this is bridged and counted;
-#: beyond it the loop is refused by name rather than silently closed.
-GAP_BUDGET_MM = 1.0
-#: Revit refuses to build a curve shorter than about 0.8 mm.
+#: A gap between consecutive segments up to this is closed by moving the
+#: next start onto the previous end - never by inserting a bridge, because a
+#: bridge that small is itself a curve Revit refuses.  Beyond it the loop is
+#: refused by name rather than silently closed.  Wide enough to absorb a
+#: dropped short segment plus rounding.
+GAP_BUDGET_MM = 2.5
+#: Revit refuses to build a curve shorter than its short-curve tolerance,
+#: about 0.8 mm.  The adapter reads the session's real value and passes it in;
+#: this is the desktop default.
 SHORT_MM = 0.8
 #: A loop smaller than a square centimetre is a modelling artefact.
 MIN_LOOP_AREA_MM2 = 1000
@@ -544,13 +549,19 @@ def _segments_cross(a0, a1, b0, b1):
 def repair_loop(records, gap_budget_mm=GAP_BUDGET_MM, short_mm=SHORT_MM):
     """``(records, code, sentence, notes)`` - the decisions, not the drawing.
 
-    Zero-length segments go, a reversed duplicate left by a room separation
-    line drawn along a wall goes, a small gap is bridged and counted, and a
-    gap too large to bridge refuses the loop by name rather than letting
-    Revit throw.
+    A segment shorter than Revit will build goes.  A segment followed by its
+    own reverse is one of two things: a *duplicate* traversal, which a room
+    separation line drawn along a wall leaves, where the second copy goes; or
+    a *spur* - a stub wall poking into the room, where the boundary walks in
+    and straight back out - where both go, or the loop would be left with a
+    gap the width of the stub.  The record after the pair tells them apart.
+    A small gap between neighbours is closed by moving the next start onto
+    the previous end, never by inserting a bridge, because a bridge that
+    small is itself a curve Revit refuses.  A gap too large to close refuses
+    the loop by name rather than letting Revit throw.
     """
     notes = []
-    kept = []
+    sized = []
     for record in records or []:
         start, end = _record_ends(record)
         if start is None:
@@ -558,18 +569,22 @@ def repair_loop(records, gap_budget_mm=GAP_BUDGET_MM, short_mm=SHORT_MM):
         if _distance(start, end) < short_mm and record[0] != "A":
             notes.append("short_segment")
             continue
+        sized.append(record)
+
+    sized = _drop_reversals(sized, short_mm, notes)
+
+    kept = []
+    for record in sized:
+        start, _end = _record_ends(record)
         if kept:
-            previous_start, previous_end = _record_ends(kept[-1])
-            if _close(previous_start, end, short_mm) and _close(previous_end, start, short_mm):
-                notes.append("reversed_duplicate")
-                continue
+            previous_end = _record_ends(kept[-1])[1]
             gap = _distance(previous_end, start)
             if gap > gap_budget_mm:
                 return [], "gap_too_large", CODE_SENTENCES["gap_too_large"].format(
                     int(round(gap))), notes
             if gap > 1e-9:
                 notes.append("gap_bridged")
-                kept.append(("L", previous_end[0], previous_end[1], start[0], start[1]))
+                record = _with_start(record, previous_end)
         kept.append(record)
 
     if len(kept) < 3:
@@ -582,8 +597,103 @@ def repair_loop(records, gap_budget_mm=GAP_BUDGET_MM, short_mm=SHORT_MM):
         return [], "loop_open", CODE_SENTENCES["loop_open"], notes
     if closing > 1e-9:
         notes.append("gap_bridged")
-        kept.append(("L", last_end[0], last_end[1], first_start[0], first_start[1]))
+        kept[-1] = _with_end(kept[-1], first_start)
     return kept, "", u"", notes
+
+
+def _drop_reversals(records, short_mm, notes):
+    """Remove reversed pairs, as duplicates or as spurs, until none are left."""
+    items = list(records)
+    for _pass in range(len(items) + 1):
+        changed = False
+        result = []
+        index = 0
+        while index < len(items):
+            record = items[index]
+            following = items[index + 1] if index + 1 < len(items) else None
+            if following is not None:
+                start, end = _record_ends(record)
+                next_start, next_end = _record_ends(following)
+                if _close(start, next_end, short_mm) and _close(end, next_start, short_mm):
+                    after = items[index + 2] if index + 2 < len(items) else \
+                        (result[0] if result else None)
+                    after_start = _record_ends(after)[0] if after is not None else None
+                    is_spur = after_start is not None and \
+                        _close(after_start, start, short_mm) and \
+                        not _close(after_start, end, short_mm)
+                    if is_spur:
+                        notes.append("spur_removed")
+                    else:
+                        notes.append("reversed_duplicate")
+                        result.append(record)
+                    index += 2
+                    changed = True
+                    continue
+            result.append(record)
+            index += 1
+        items = result
+        if not changed:
+            break
+    return items
+
+
+def _with_start(record, point):
+    kind = record[0]
+    if kind == "L":
+        return ("L", point[0], point[1], record[3], record[4])
+    if kind == "A":
+        return ("A", point[0], point[1], record[3], record[4], record[5], record[6])
+    points = list(record[1] or [])
+    if points:
+        points[0] = (point[0], point[1])
+    return ("T", points)
+
+
+def _with_end(record, point):
+    kind = record[0]
+    if kind == "L":
+        return ("L", record[1], record[2], point[0], point[1])
+    if kind == "A":
+        return ("A", record[1], record[2], point[0], point[1], record[5], record[6])
+    points = list(record[1] or [])
+    if points:
+        points[-1] = (point[0], point[1])
+    return ("T", points)
+
+
+def simplified_outline(points_mm, min_mm=SHORT_MM):
+    """The polygon Revit is likeliest to accept, when the true loop is refused.
+
+    No vertex closer to its neighbour than Revit will build, no exactly
+    collinear vertex, no spike - the things a sketch validator rejects.  It
+    is the same outline within a millimetre, drawn with straight edges, and
+    the tool says so when it has to fall back on it.
+    """
+    points = [(to_float(x), to_float(y)) for x, y in points_mm or []]
+    for _pass in range(len(points) + 2):
+        before = len(points)
+        cleaned = []
+        for point in points:
+            if cleaned and _distance(cleaned[-1], point) < min_mm:
+                continue
+            cleaned.append(point)
+        while len(cleaned) > 1 and _distance(cleaned[-1], cleaned[0]) < min_mm:
+            cleaned.pop()
+        points = cleaned
+        if len(points) >= 3:
+            for index in range(len(points)):
+                a = points[index - 1]
+                b = points[index]
+                c = points[(index + 1) % len(points)]
+                ab = _distance(a, b)
+                bc = _distance(b, c)
+                cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+                if ab == 0.0 or bc == 0.0 or abs(cross) <= 1e-6 * ab * bc:
+                    del points[index]
+                    break
+        if len(points) == before:
+            break
+    return points if len(points) >= 3 else []
 
 
 def _record_ends(record):
@@ -687,7 +797,9 @@ CODE_SENTENCES = {
     "not_visible": u"It is not visible in this view, so no region was planned.",
     "visibility_unknown": u"What {0} shows could not be read, so every room on its level was "
                           u"offered.",
-    "link_hidden": u"The link is hidden in this view.",
+    "link_hidden": u"{0} is hidden in {1}, so none of its rooms were planned.",
+    "rooms_hidden_in_view": u"The {0} category is hidden in {1} (often by its view template), "
+                            u"so none of {2}'s rooms were planned.",
 }
 
 
@@ -937,6 +1049,10 @@ def build_plan(config, views, rooms, boundaries, existing, visibility=None):
     include_options = bool(config.get("include_design_options"))
     existing = existing or {}
     visibility = visibility or {}
+    # A room somebody picked by hand is wanted wherever it can be drawn: it
+    # is ticked whatever level it sits on, and a view whose contents could
+    # not be read still offers it.
+    picked = (config.get("subject") or SUBJECT_ALL) == SUBJECT_ONE
 
     items = []
     skips = []
@@ -958,7 +1074,7 @@ def build_plan(config, views, rooms, boundaries, existing, visibility=None):
             continue
         shown = visibility.get(safe_text(view.get("uid"))) or {}
         visible = shown.get("visible")
-        if visible is None and shown.get("note"):
+        if shown.get("note"):
             notes.append(shown["note"])
         hidden_here = 0
         for room in rooms or []:
@@ -976,7 +1092,7 @@ def build_plan(config, views, rooms, boundaries, existing, visibility=None):
                 hidden_here += 1
                 continue
             on_level, level_code, level_sentence = view_shows_room(view, room)
-            if visible is None and not on_level:
+            if visible is None and not on_level and not picked:
                 # Nothing is known about what the view shows, so the level is
                 # the only rule left; a room on another level is not offered.
                 not_visible += 1
@@ -1006,7 +1122,7 @@ def build_plan(config, views, rooms, boundaries, existing, visibility=None):
                 "title": title,
                 "category": CATEGORY_THIS_LEVEL if on_level else CATEGORY_OTHER_LEVEL,
                 "category_reason": u"" if on_level else level_sentence,
-                "default_ticked": bool(on_level),
+                "default_ticked": bool(on_level or picked),
                 "room_uid": room.get("uid"),
                 "room_id": room.get("id"),
                 "room_number": room.get("number"),
@@ -1186,18 +1302,18 @@ DRIFT_BUCKETS = (
     ("link_not_loaded", u"The link is not loaded", False),
     ("source_not_in_run", u"Source not in this run", False),
     ("in_sync", u"In step with the room", False),
-    ("ignored", u"Ignored - set aside on review", False),
+    ("accepted", u"Accepted differences - set aside on review", False),
 )
 DRIFT_TITLES = dict((key, title) for key, title, _problem in DRIFT_BUCKETS)
 DRIFT_PROBLEMS = tuple(key for key, _title, problem in DRIFT_BUCKETS if problem)
-IGNORED_BUCKET = "ignored"
+ACCEPTED_BUCKET = "accepted"
 
 #: What each bucket lets you do about it.  Update redraws the region from
-#: the room as it is now; Accept takes the region as it now is; Delete is for
-#: a region nothing could be redrawn from.
+#: the room as it is now; Delete is for a region nothing could be redrawn
+#: from; Accept Difference is offered on every problem row and is permanent
+#: until reopened - the list lives in the model.
 CAN_UPDATE = ("room_moved", "both_changed", "region_edited", "region_moved", "drifted")
 CAN_DELETE = ("copied_region", "duplicate", "orphan_room", "orphan_view")
-CAN_ACCEPT = ("region_edited", "region_moved", "both_changed", "drifted")
 
 
 
@@ -1205,7 +1321,7 @@ def room_key(link_uid, room_uid):
     return u"{0}|{1}".format(safe_text(link_uid), safe_text(room_uid))
 
 
-def classify_drift(live, rooms_now, views_now, ignored=None, loaded_links=None,
+def classify_drift(live, rooms_now, views_now, accepted=None, loaded_links=None,
                    run_sources=None):
     """Every stored relationship judged against the model as it is now.
 
@@ -1220,8 +1336,12 @@ def classify_drift(live, rooms_now, views_now, ignored=None, loaded_links=None,
     room *now*?  The digests the record kept only say who moved - and when
     they cannot, the row still says the region drifted and by how much,
     because "unknown" is never read as "in step".
+
+    ``accepted`` is what a reviewer set aside with Accept Difference.  It is
+    permanent: an accepted region stays accepted whatever the room or the
+    region do next, until somebody reopens it.
     """
-    ignored = set(safe_text(value) for value in ignored or [])
+    accepted = set(safe_text(value) for value in accepted or [])
     rooms_now = rooms_now or {}
     views_now = views_now or {}
     loaded_links = set(safe_text(value) for value in loaded_links or [])
@@ -1247,8 +1367,9 @@ def classify_drift(live, rooms_now, views_now, ignored=None, loaded_links=None,
         owner_view = safe_text(entry.get("owner_view_uid"))
         row = _drift_row(entry, record)
 
-        if region_uid in ignored:
-            _file(items_by_bucket, row, IGNORED_BUCKET, u"Set aside on review.")
+        if region_uid in accepted:
+            _file(items_by_bucket, row, ACCEPTED_BUCKET,
+                  u"Accepted as a deliberate difference; it stays accepted until reopened.")
             continue
         if link_uid and link_uid not in loaded_links:
             _file(items_by_bucket, row, "link_not_loaded", CODE_SENTENCES["link_not_loaded"])
@@ -1315,8 +1436,7 @@ def classify_drift(live, rooms_now, views_now, ignored=None, loaded_links=None,
                 # The outlines agree; only the record is behind - written
                 # before Revit had finished the sketch, or by an older build.
                 _file(items_by_bucket, row, "in_sync",
-                      u"Matches the room now; the record is behind. Accept refreshes it.")
-                row["can_accept"] = True
+                      u"Matches the room now; only its record is behind.")
             continue
 
         if room_changed and region_changed:
@@ -1353,7 +1473,7 @@ def classify_drift(live, rooms_now, views_now, ignored=None, loaded_links=None,
         "counts": counts,
         "problem_count": sum(counts[key] for key in DRIFT_PROBLEMS),
         "tracked": len(live or []),
-        "ignored_count": counts[IGNORED_BUCKET],
+        "accepted_count": counts[ACCEPTED_BUCKET],
         "notes": notes,
     }
 
@@ -1370,8 +1490,8 @@ def _drift_row(entry, record):
         "link_uid": safe_text(record.get("link_uid")),
         "view_id": entry.get("owner_view_id"),
         "view_uid": safe_text(entry.get("owner_view_uid")),
-        "is_ignored": False, "is_checked": False,
-        "can_update": False, "can_delete": False, "can_accept": False,
+        "is_accepted": False, "is_checked": False,
+        "can_update": False, "can_delete": False,
         "deviation_mm": None,
     }
 
@@ -1397,10 +1517,9 @@ def _room_label(record):
 def _file(items_by_bucket, row, bucket, detail):
     row["bucket"] = bucket
     row["detail"] = detail
-    row["is_ignored"] = bucket == IGNORED_BUCKET
+    row["is_accepted"] = bucket == ACCEPTED_BUCKET
     row["can_update"] = bucket in CAN_UPDATE
     row["can_delete"] = bucket in CAN_DELETE
-    row["can_accept"] = bucket in CAN_ACCEPT
     items_by_bucket[bucket].append(row)
 
 
@@ -1437,9 +1556,9 @@ def drift_summary(report):
         text = u"{0:,} of {1:,} tracked region(s) have drifted".format(problems, tracked)
     else:
         text = u"All {0:,} tracked region(s) are in step with their rooms".format(tracked)
-    set_aside = to_int(report.get("ignored_count"))
+    set_aside = to_int(report.get("accepted_count"))
     if set_aside:
-        text += u", {0:,} set aside".format(set_aside)
+        text += u", {0:,} accepted".format(set_aside)
     return text + u"."
 
 
@@ -1459,8 +1578,9 @@ def scan_notes(plan_or_report, config, extra=None):
                  u"another level are offered unticked; rooms it hides are not planned.")
     notes.append(u"A region counts as in step while its outline sits within {0:g} mm of the "
                  u"room's.".format(SYNC_TOLERANCE_MM))
-    notes.append(u"The relationship is stored in each region inside this model, so it comes back "
-                 u"next time and reaches the team after a Sync to Central.")
+    notes.append(u"The relationship is stored in each region inside this model, and the "
+                 u"accepted differences in a hidden record beside it, so both come back next "
+                 u"time and reach the team after a Sync to Central.")
     notes.append(u"A region cannot be added to a group, so a room in a group drifts when the "
                  u"group moves.")
     notes.append(u"Sub-millimetre nudges can read as an edit rather than a move, because the "

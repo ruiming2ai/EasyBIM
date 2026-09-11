@@ -32,8 +32,9 @@ __persistentengine__ = True
 ACTIVE_ENVVAR = "EASYBIM_SPACE_BOUNDARY_ACTIVE"
 
 #: Which list in the model's shared record belongs to this tool: the regions
-#: a reviewer set aside. The room-to-region relationship is a different
-#: record entirely and lives on each region, in space_boundary_storage.
+#: a reviewer accepted as deliberate differences. Kept apart from the
+#: room-to-region record on each region because a region another user owns
+#: cannot be written, yet its difference still has to be acceptable.
 TOOL_KEY = "space_boundary"
 
 STALE_MODULES = (
@@ -303,7 +304,7 @@ class Run(object):
                        for row in source_rows if row.get("is_checked")]
         report = bstate.classify_drift(
             live, rooms_now, brevit.views_now_map(self.views),
-            ignored=self.model_store.read(self.doc, TOOL_KEY),
+            accepted=self.model_store.read(self.doc, TOOL_KEY),
             loaded_links=loaded, run_sources=run_sources)
         for skip in collected["skips"]:
             report["notes"].append(u"{0}: {1}".format(skip["title"], skip["reason"]))
@@ -403,33 +404,59 @@ def main():
 
             outcome = run.draw(plan, checked_keys, progress=_draw_tick)
 
-        _report_write(outcome)
+        notes = _report_write(outcome)
         _open_report(run, settings, bui, brevit, bstate, external_events, model_store,
-                     ProgressSession)
+                     ProgressSession, extra_notes=notes)
         return
+
+
+#: How many refused rooms the dialog after Draw lists before it says "and N more".
+REFUSAL_LINES = 25
 
 
 def _report_write(outcome):
-    """Say what was written, including what was not, before the report opens."""
+    """Say what was written - and, above all, what was not.
+
+    A room Revit refused used to reach a person only as a debug line, which
+    is a silent drop with extra steps: the preview listed the room, Draw ran
+    without complaint, and the region simply was not there.  Now every
+    refusal is named, with Revit's own words, before the report opens, and
+    the lines are carried into the report's notes as well.
+    """
     outcome = outcome or {}
     if outcome.get("error"):
-        forms.alert(u"Nothing was drawn - the whole run was rolled back:\n\n{0}".format(
-            outcome["error"]), title=__title__)
-        return
-    parts = [u"{0:,} region(s) drawn".format(outcome.get("created", 0))]
+        text = u"Nothing was drawn - the whole run was rolled back:\n\n{0}".format(
+            outcome["error"])
+        forms.alert(text, title=__title__)
+        return [text]
+    summary = [u"{0:,} region(s) drawn".format(outcome.get("created", 0))]
     if outcome.get("replaced"):
-        parts.append(u"{0:,} updated".format(outcome["replaced"]))
-    if outcome.get("failed"):
-        parts.append(u"{0:,} refused".format(len(outcome["failed"])))
-    if outcome.get("skipped"):
-        parts.append(u"{0:,} skipped".format(len(outcome["skipped"])))
+        summary.append(u"{0:,} updated".format(outcome["replaced"]))
+    problems = []
+    for entry in outcome.get("failed") or []:
+        problems.append(u"Refused - {0}: {1}".format(entry.get("title") or u"(view)",
+                                                     entry.get("reason")))
+    for entry in outcome.get("skipped") or []:
+        problems.append(u"Skipped - {0}: {1}".format(entry.get("title") or u"(view)",
+                                                     entry.get("reason")))
+    for note in outcome.get("notes") or []:
+        problems.append(note)
     if outcome.get("cancelled"):
-        parts.append(u"stopped early, so the rest were not drawn")
-    logger.debug("Space Boundary: %s", u", ".join(parts))
+        problems.append(u"The run stopped early, so the rest were not drawn.")
+    lines = [u", ".join(summary) + u"."] + problems
+    logger.debug("Space Boundary: %s", u" | ".join(lines))
+    if problems:
+        shown = problems[:REFUSAL_LINES]
+        if len(problems) > REFUSAL_LINES:
+            shown.append(u"… and {0:,} more; the report's notes carry them all.".format(
+                len(problems) - REFUSAL_LINES))
+        forms.alert(u"{0}\n\n{1}".format(lines[0], u"\n".join(u"• " + line for line in shown)),
+                    title=__title__)
+    return lines
 
 
 def _open_report(run, settings, bui, brevit, bstate, external_events, model_store,
-                 ProgressSession):
+                 ProgressSession, extra_notes=None):
     """Compare both sides, then hand the report the callables it needs."""
     with ProgressSession("Comparing regions with their rooms...", cancellable=True) as progress:
         def _tick(done, total):
@@ -437,6 +464,8 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
             return not progress.cancelled
 
         report = run.check(settings, progress=_tick)
+    if extra_notes:
+        report["notes"] = list(extra_notes) + list(report.get("notes") or [])
 
     # Created here, inside the command run, while an API context still exists.
     bridge = external_events.ExternalEventBridge("EasyBIM Space Boundary")
@@ -505,25 +534,13 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
             parts.append(u"the run was rolled back: {0}".format(outcome["error"]))
         return {"ok": done > 0, "report": run.check(settings), "message": u", ".join(parts) + u"."}
 
-    def accept(uiapp, item):
-        del uiapp
-        _alive()
-        outcome = brevit.accept_regions(run.doc, [item.get("region_id")])
-        ok = bool(outcome.get("accepted"))
-        return {"ok": ok, "report": run.check(settings),
-                "message": u"Taken as drawn, and saved in the model." if ok else
-                _first_failed(outcome)}
+    def accept_difference(uiapp, key, on):
+        """Accept one region's difference as deliberate, or reopen it.
 
-    def delete(uiapp, item):
-        del uiapp
-        _alive()
-        outcome = brevit.delete_regions(run.doc, [item.get("region_id")])
-        ok = bool(outcome.get("deleted"))
-        return {"ok": ok, "report": run.check(settings),
-                "message": u"Deleted." if ok else _first_failed(outcome)}
-
-    def ignore(uiapp, key, on):
-        """Set one row aside, or put it back. The list lives in this model."""
+        Permanent, and kept in the model beside the relationship: the row
+        stays accepted whatever the room or the region do next, survives a
+        Sync to Central, and comes back only when somebody reopens it.
+        """
         del uiapp
         _alive()
         ok, _keys, reason = model_store.set_ignored(run.doc, TOOL_KEY, key, on)
@@ -531,7 +548,7 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
 
     bui.show_report(report, run.config, bridge=bridge if ready else None, uiapp=_uiapp(),
                     recheck=recheck, show=show, update=update, update_all=update_all,
-                    accept=accept, delete=delete, ignore=ignore)
+                    accept_difference=accept_difference, delete=delete)
 
 
 def _first_reason(outcome):

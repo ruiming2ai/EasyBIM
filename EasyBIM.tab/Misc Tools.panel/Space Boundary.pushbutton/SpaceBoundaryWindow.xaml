@@ -189,29 +189,33 @@
                                 <TextBlock Text="How much" FontWeight="SemiBold" Margin="0,0,0,6" />
                                 <RadioButton x:Name="SubjectAllRadio"
                                              GroupName="SpaceBoundarySubject"
-                                             Content="Every room or space in the ticked sources"
+                                             Content="All rooms or spaces in views"
                                              IsChecked="True"
                                              Margin="0,2,0,2"
                                              Checked="subject_changed" />
-                                <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
-                                    <RadioButton x:Name="SubjectOneRadio"
-                                                 GroupName="SpaceBoundarySubject"
-                                                 Content="Only the ones I pick"
-                                                 VerticalAlignment="Center"
-                                                 Checked="subject_changed" />
-                                    <Button x:Name="PickButton"
-                                            Content="Pick..."
-                                            Width="76"
-                                            Height="26"
-                                            Margin="10,0,8,0"
-                                            ToolTip="This window closes while you pick in the model - pick as many as you like, then press Finish - and comes back."
-                                            Click="pick_click" />
-                                    <TextBlock x:Name="PickedText"
-                                               Foreground="DimGray"
-                                               FontSize="11"
-                                               VerticalAlignment="Center"
-                                               Text="nothing picked yet" />
-                                </StackPanel>
+                                <RadioButton x:Name="SubjectOneRadio"
+                                             GroupName="SpaceBoundarySubject"
+                                             Margin="0,4,0,2"
+                                             VerticalContentAlignment="Center"
+                                             Checked="subject_changed">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button x:Name="PickButton"
+                                                Content="Pick..."
+                                                Width="76"
+                                                Height="26"
+                                                Margin="0,0,8,0"
+                                                ToolTip="This window closes while you pick in the model - pick as many as you like, then press Finish - and comes back. Picked rooms are drawn in every chosen view that shows them, ticked whatever level they sit on."
+                                                Click="pick_click" />
+                                        <TextBlock Text="rooms or spaces in views"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </RadioButton>
+                                <TextBlock x:Name="PickedText"
+                                           Foreground="DimGray"
+                                           FontSize="11"
+                                           Margin="20,0,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="nothing picked yet" />
                                 <CheckBox x:Name="ReplaceExistingCheck"
                                           Content="Update regions that already exist to match the room now"
                                           Margin="0,8,0,2"
@@ -311,9 +315,11 @@
                         <TextBlock TextWrapping="Wrap" Margin="0,8,0,0"
                                    Text="• the room's boundary changed - Update draws the region again from the room as it is now" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
-                                   Text="• the region was edited or moved by hand - Update it, Accept it as it now is, or set it aside" />
+                                   Text="• the region was edited or moved by hand - Update it, or Accept Difference to keep it as it is" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
-                                   Text="• the room is gone, the view no longer shows it, or the region was copied into another view - these are deleted or set aside, never updated, because updating would not fix them" />
+                                   Text="• the room is gone, the view no longer shows it, or the region was copied into another view - these are deleted or accepted, never updated, because updating would not fix them" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
+                                   Text="• Accept Difference is permanent until reopened, and is stored in this model, so it survives a Sync to Central" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
                                    Text="• Update All brings every drifted region in the report up to date in one undo step" />
                         <TextBlock Foreground="DimGray"

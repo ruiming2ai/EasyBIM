@@ -1143,7 +1143,9 @@ actually hold some — on an MEP job that is the architectural link. Spaces tick
 this model only; a link's spaces are offered unticked. A link placed twice is
 two sources at their own positions, each with its own regions. An unloaded
 link stays listed with the reason rather than vanishing. Choices are
-remembered by name.
+remembered by name. A link whose Rooms category the view hides — often by its
+view template, the norm in an MEP view — plans nothing for that link, and the
+preview says so by name rather than showing an empty count.
 
 **Where the regions go** is either the active view or the views you tick. Each
 view is drawn with the rooms **it actually shows** — visibility and graphics
@@ -1152,7 +1154,9 @@ because Revit itself is asked what the view displays. A room the view shows
 from another level (a view range that reaches down a storey) is offered in the
 preview under its own heading, unticked; a room the view hides is not planned,
 and the preview says how many. You can also convert only the rooms or spaces
-you pick — as many as you like — instead of all of them.
+you pick — as many as you like — instead of all of them; a picked room is
+ticked in every chosen view that shows it, whatever level it sits on, because
+picking it was the decision.
 
 **What the boundary means** follows this model's own Area and Volume
 Computation setting — the same rule Revit itself follows when it makes a space
@@ -1171,6 +1175,16 @@ run, a transaction per view, a subtransaction per room — so a room Revit
 refuses rolls back on its own without costing the other nineteen in that view.
 A view that could not be committed is removed from the counters too, because a
 report must never claim work that no longer exists.
+
+A room Revit's sketch validator refuses — a stub wall the boundary walks in
+and out of, an arc it will not build, loops touching at a vertex — is drawn
+again from its cleaned outline with straight edges, within a millimetre, and
+the note says so; only if that is refused too does the room fail, and then it
+is named with Revit's own words in a dialog before the report opens, never
+left as a debug line. The loop repair reads the session's real short-curve
+tolerance, drops what Revit would not build, and closes small gaps by moving
+an endpoint rather than inserting a bridge — a bridge that small is itself a
+curve Revit refuses.
 
 ### Linked rooms and what a view shows
 
@@ -1219,14 +1233,14 @@ compare" is a named row, never a quiet "in step".
 | What happened | What is offered |
 | --- | --- |
 | The room's boundary changed | Update |
-| A region was reshaped by hand | Update, Accept as drawn, or Ignore |
-| A region was dragged | Update, Accept, or Ignore — the offset is reported |
+| A region was reshaped by hand | Update, or Accept Difference |
+| A region was dragged | Update, or Accept Difference — the offset is reported |
 | Both changed | Listed apart; the row says updating discards the edit |
-| The region no longer matches and the record cannot say why | Update, Accept, or Ignore — with the gap in mm |
-| The room is gone | Delete or Ignore, never automatic |
-| A region was copied into another view | Delete or Ignore — its record names the wrong view, so it cannot be trusted |
+| The region no longer matches and the record cannot say why | Update, or Accept Difference — with the gap in mm |
+| The room is gone | Delete or Accept Difference, never automatic |
+| A region was copied into another view | Delete or Accept Difference — its record names the wrong view, so it cannot be trusted |
 | Two regions for one room in one view | The oldest wins; the rest are offered for deletion |
-| The view no longer shows the room | Delete or Ignore — updating would not fix it |
+| The view no longer shows the room | Delete or Accept Difference — updating would not fix it |
 | The link is not loaded | Reported, never judged: there is nothing to compare against |
 | A source was not in this run | Reported under its own heading, never treated as orphaned |
 
@@ -1235,12 +1249,15 @@ compare" is a named row, never a quiet "in step".
 one undo step. Each room is measured the way its own region was drawn, so
 changing the model's Area and Volume Computation setting afterwards is not read
 as thousands of false drifts. When most regions from one link move together,
-the report says so once instead of listing every row as a surprise. Rows set
-aside with **Ignore** move to their own group and out of the tally, and that
-list is stored in this model too, so it comes back next time and reaches the
-team. **Accept as drawn** is its companion: it re-baselines the region's digest
-so a deliberate hand edit becomes the new normal and *future* edits are still
-caught.
+the report says so once instead of listing every row as a surprise.
+**Accept Difference** is the one review action: it records that this region
+deliberately differs from its room, moves the row to its own group and out of
+the tally, and is permanent — the row stays accepted whatever the room or the
+region do next, until **Reopen**. The list is stored in this model, in a
+hidden record beside the relationship, so it survives a Sync to Central and
+reaches the team; it is kept apart from the record on the region because a
+region another user owns cannot be written, yet its difference still has to
+be acceptable.
 
 Requires Revit 2022 or later. Reading a region's own outline —
 `FilledRegion.GetBoundaries()` — arrived then, and it is the only way to notice

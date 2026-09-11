@@ -812,6 +812,25 @@ class BoundaryReadingTests(unittest.TestCase):
         # Tessellated for the fingerprint, so the arc is more than two points.
         self.assertGreater(len(result["loops"][0]["points"]), 8)
 
+    def test_the_sessions_short_curve_tolerance_decides_what_is_dropped(self):
+        """Revit's own number, read from the session, not a guess: the
+        adapter reads Application.ShortCurveTolerance and the repair drops
+        exactly what Line.CreateBound would refuse."""
+        db = make_db()
+        doc = Doc()
+        doc.Application = types.SimpleNamespace(ShortCurveTolerance=1.0 / 304.8)  # 1 mm
+        segments = square_segments(0, 0, 2000)[0]
+        stub = Segment(Line(XYZ(ft(2000), 0.0, 0.0), XYZ(ft(2000), ft(0.9), 0.0)))
+        segments[1] = Segment(Line(XYZ(ft(2000), ft(0.9), 0.0), XYZ(ft(2000), ft(2000), 0.0)))
+        segments.insert(1, stub)
+        room = Room(doc, 1, loops=[segments])
+        result = revit.read_boundaries({"element": room, "uid": u"r1"}, "Finish", db=db)
+        self.assertEqual(result["code"], u"")
+        self.assertIn("short_segment", result["notes"])
+        self.assertEqual(len(result["loops"][0]["records"]), 4)
+        self.assertAlmostEqual(revit.short_curve_mm(doc), 1.05, places=6)
+        self.assertEqual(revit.short_curve_mm(Doc()), state.SHORT_MM)
+
     def test_a_room_with_no_segments_reads_as_not_enclosed(self):
         db = make_db()
         room = Room(Doc(), 1, loops=[])
@@ -1130,6 +1149,39 @@ class CreateRegionTests(unittest.TestCase):
                          ["group.start", "txn.start", "sub.start", "sub.commit",
                           "txn.commit", "group.assimilate"])
 
+    def test_a_loop_revit_refuses_is_drawn_again_from_its_simplified_outline(self):
+        """A stub, an arc Revit will not build, loops touching at a vertex:
+        the exact loop is refused, the cleaned polygon is not, and the note
+        says which it was."""
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1")])
+        attempts = {"count": 0}
+
+        def refuse(_doc, _view_id, _loops):
+            attempts["count"] += 1
+            return attempts["count"] == 1
+
+        FilledRegion.refuse = refuse
+        result = revit.create_regions(doc, plan, db=db)
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(attempts["count"], 2)
+        self.assertTrue([note for note in result["notes"] if u"simplified outline" in note])
+        # The fallback is the same square, drawn with straight edges.
+        drawn = FilledRegion.created[0]
+        self.assertEqual(len(list(drawn.loops)[0].curves), 4)
+
+    def test_a_loop_refused_twice_fails_with_revits_own_words(self):
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1")])
+        FilledRegion.refuse = lambda _d, _v, _l: True
+        result = revit.create_regions(doc, plan, db=db)
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["failed"][0]["code"], "revit_refused")
+        self.assertIn(u"will not draw", result["failed"][0]["reason"])
+
     def test_the_boundary_line_style_is_set_on_each_region(self):
         db = make_db(registry=self.registry)
         doc, view, room = self._model(db)
@@ -1196,8 +1248,10 @@ class CreateRegionTests(unittest.TestCase):
         seen = {"count": 0}
 
         def refuse(_doc, _view_id, _loops):
+            # The first room is refused twice: its exact loop and then its
+            # simplified outline, which is what "Revit refuses it" now means.
             seen["count"] += 1
-            return seen["count"] == 1
+            return seen["count"] <= 2
 
         FilledRegion.refuse = refuse
         result = revit.create_regions(doc, plan, db=db)
@@ -1374,36 +1428,6 @@ class RelationshipReadTests(unittest.TestCase):
         verdict, _sentence = state.compare(row["record"]["room"], now["fingerprints"])
         self.assertEqual(verdict, "unchanged")
 
-    def test_accepting_a_hand_edit_rebaselines_the_regions_own_digest(self):
-        db = make_db(registry=self.registry)
-        doc, _view, _room = self._drawn(db)
-        region = FilledRegion.created[0]
-        before = json.loads(region.entity.value)["region"]["abs"]
-        # Somebody dragged a corner: the outline is no longer what was drawn.
-        region.loops = [[Line(XYZ(0.0, 0.0, 0.0), XYZ(10.0, 0.0, 0.0)),
-                         Line(XYZ(10.0, 0.0, 0.0), XYZ(10.0, 8.0, 0.0)),
-                         Line(XYZ(10.0, 8.0, 0.0), XYZ(0.0, 0.0, 0.0))]]
-        row = revit.read_relationships(doc, db=db)[0]
-        self.assertEqual(state.compare(row["record"]["region"], row["fingerprints"])[0], "edited")
-        result = revit.accept_regions(doc, [region.Id.IntegerValue], db=db)
-        self.assertEqual(result["accepted"], 1)
-        after = json.loads(region.entity.value)["region"]["abs"]
-        self.assertNotEqual(before, after)
-        row = revit.read_relationships(doc, db=db)[0]
-        self.assertEqual(state.compare(row["record"]["region"], row["fingerprints"])[0],
-                         "unchanged")
-
-    def test_accept_never_touches_a_region_someone_else_owns(self):
-        db = make_db(registry=self.registry, checkout_owner=u"jsmith")
-        doc, _view, _room = self._drawn(db)
-        doc.IsWorkshared = True
-        region = FilledRegion.created[0]
-        before = region.entity.value
-        result = revit.accept_regions(doc, [region.Id.IntegerValue], db=db)
-        self.assertEqual(result["accepted"], 0)
-        self.assertIn(u"jsmith", result["failed"][0]["reason"])
-        self.assertEqual(region.entity.value, before)
-
     def test_deleting_regions_is_one_transaction_and_names_what_stayed(self):
         db = make_db(registry=self.registry)
         doc, _view, _room = self._drawn(db)
@@ -1505,11 +1529,25 @@ class VisibilityTests(unittest.TestCase):
         found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
         self.assertEqual(found[view.UniqueId]["visible"], set())
 
-    def test_the_category_hidden_in_the_host_view_hides_the_linked_rooms(self):
+    def test_the_category_hidden_in_the_host_view_hides_the_linked_rooms_and_says_so(self):
+        """The second Revit run: MEP views hide Rooms by view template, so a
+        link planned nothing - correctly - and nobody was told why."""
         db, doc, view, arch, sources, rooms, views, _i = self._linked("ByHostView")
         view.hidden_categories.add(BIC.OST_Rooms)
         found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
         self.assertEqual(found[view.UniqueId]["visible"], set())
+        note = found[view.UniqueId]["note"]
+        self.assertIn(u"Rooms", note)
+        self.assertIn(u"L1 Power", note)
+        self.assertIn(u"Arch", note)
+        self.assertIn(u"view template", note)
+
+    def test_a_link_hidden_in_the_view_says_so_by_name(self):
+        db, doc, view, arch, sources, rooms, views, instance = self._linked("ByHostView")
+        instance.hidden_in.add(1)
+        found = revit.visibility_map(doc, views, rooms, sources, state.KIND_ROOM, db=db)
+        self.assertIn(u"Arch", found[view.UniqueId]["note"])
+        self.assertIn(u"hidden in L1 Power", found[view.UniqueId]["note"])
 
     def test_a_linked_view_revit_will_not_read_is_named_not_emptied(self):
         db, doc, view, arch, sources, rooms, views, _i = self._linked("ByLinkView", 70)

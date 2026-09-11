@@ -406,13 +406,35 @@ class WriteRuleTests(unittest.TestCase):
         for source in others:
             self.assertNotIn(guid, source)
 
-    def test_the_ignore_list_is_kept_apart_from_the_relationship(self):
-        """A region owned by another user cannot be written, but it still has
-        to be ignorable - so the set-aside list goes in the shared store, not
-        on the region."""
+    def test_the_accepted_list_is_kept_apart_from_the_relationship(self):
+        """A region owned by another user cannot be written, but its
+        difference still has to be acceptable - so the accepted list goes in
+        the shared store, not on the region."""
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("model_store", source)
         self.assertIn('TOOL_KEY = "space_boundary"', source)
+        self.assertIn("accept_difference", source)
+        self.assertNotIn("accept_regions", REVIT_MODULE.read_text(encoding="utf-8"))
+
+    def test_accept_difference_is_the_one_review_action(self):
+        ui = UI_MODULE.read_text(encoding="utf-8")
+        self.assertIn(u'u"Accept Difference"', ui)
+        self.assertIn(u'u"Reopen"', ui)
+        for gone in (u'u"Ignore"', u'u"Restore"', u'u"Accept",', u"can_accept", u"is_ignored"):
+            self.assertNotIn(gone, ui, gone)
+        xaml = (COMMAND_DIR / "SpaceBoundaryWindow.xaml").read_text(encoding="utf-8")
+        self.assertIn("Accept Difference", xaml)
+        self.assertIn('Content="All rooms or spaces in views"', xaml)
+        self.assertIn("rooms or spaces in views", xaml)
+        self.assertNotIn("Only the ones I pick", xaml)
+
+    def test_a_refused_room_is_told_to_the_user_not_to_the_log(self):
+        """Draw used to report refusals as a debug line only: the preview
+        listed the room, Draw ran without complaint, and the region was not
+        there. Now every refusal is named before the report opens."""
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("forms.alert", source.split("def _report_write")[1].split("def _open_report")[0])
+        self.assertIn("extra_notes", source)
 
     def test_every_named_skip_has_a_sentence(self):
         """Never silently drop: every code the adapter can emit has words."""

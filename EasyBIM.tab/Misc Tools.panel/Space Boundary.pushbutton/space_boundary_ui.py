@@ -291,7 +291,7 @@ class SetupWindow(forms.WPFWindow):
         one = bool(self.SubjectOneRadio.IsChecked)
         self.PickButton.IsEnabled = one
         if not one:
-            self.PickedText.Text = u"every room or space in the ticked sources"
+            self.PickedText.Text = u"all rooms or spaces in the views"
         elif self.picked:
             labels = [_text(entry.get("label")) for entry in self.picked]
             shown = u", ".join(label for label in labels[:6] if label)
@@ -736,7 +736,7 @@ class ReportWindow(BridgedWindow):
     """The difference report: what drifted, and what can honestly be done."""
 
     def __init__(self, report, config, bridge=None, uiapp=None, recheck=None, show=None,
-                 update=None, update_all=None, accept=None, delete=None, ignore=None):
+                 update=None, update_all=None, accept_difference=None, delete=None):
         # See SetupWindow: handlers can fire mid-parse, before ``_ready`` exists.
         BridgedWindow.__init__(self, REPORT_XAML, bridge=bridge, uiapp=uiapp, title=TITLE)
         self._report = report or {}
@@ -745,9 +745,8 @@ class ReportWindow(BridgedWindow):
         self._show = show
         self._update = update
         self._update_all = update_all
-        self._accept = accept
+        self._accept_difference = accept_difference
         self._delete = delete
-        self._ignore = ignore
         self.Closed += self._on_closed
         self._ready = True
         self._render()
@@ -792,7 +791,7 @@ class ReportWindow(BridgedWindow):
         rows = []
         for bucket in buckets:
             for item in bucket["items"]:
-                if item.get("can_update") and not item.get("is_ignored"):
+                if item.get("can_update") and not item.get("is_accepted"):
                     rows.append(item)
         return rows
 
@@ -821,25 +820,25 @@ class ReportWindow(BridgedWindow):
         offer that cannot work is worse than no offer.
         """
         buttons = []
-        if item.get("is_ignored"):
-            if self._ignore is not None:
-                buttons.append((u"Restore", u"Put this row back in the group it belongs to.",
-                                self._restore_click, 84))
+        if item.get("is_accepted"):
+            if self._accept_difference is not None:
+                buttons.append((u"Reopen", u"Stop accepting this difference; the row goes back "
+                                           u"to the group it belongs to.", self._reopen_click, 84))
             return tuple(buttons)
         if item.get("can_update") and self._update is not None:
             buttons.append((u"Update", u"Replace this region with one drawn from the room as "
                                        u"it is now. Any hand edits to it are lost.",
                             self._update_click, 84))
-        if item.get("can_accept") and self._accept is not None:
-            buttons.append((u"Accept", u"Take the region as it now is. Future edits to it are "
-                                       u"still reported.", self._accept_click, 84))
         if item.get("can_delete") and self._delete is not None:
             buttons.append((u"Delete", u"Delete this region and its record.",
                             self._delete_click, 84))
-        if self._ignore is not None and item.get("region_uid"):
-            buttons.append((u"Ignore", u"Set this row aside. The decision is stored in this "
-                                       u"model, so it comes back next time and reaches the team "
-                                       u"after a Sync to Central.", self._ignore_click, 84))
+        if self._accept_difference is not None and item.get("region_uid") \
+                and item.get("bucket") in state.DRIFT_PROBLEMS:
+            buttons.append((u"Accept Difference",
+                            u"Keep this region as it is and stop reporting it. Permanent until "
+                            u"reopened, whatever the room or the region do next; stored in this "
+                            u"model, so it survives a Sync to Central and reaches the team.",
+                            self._accept_click, 130))
         return tuple(buttons)
 
     def _update_status(self):
@@ -847,7 +846,7 @@ class ReportWindow(BridgedWindow):
             BridgedWindow._update_status(self)
         else:
             self.StatusText.Text = (u"Reading only. Nothing changes until you use Update, "
-                                    u"Accept, Delete or Ignore.")
+                                    u"Delete or Accept Difference.")
 
     def _set_busy(self, busy, label=u""):
         BridgedWindow._set_busy(self, busy, label)
@@ -920,22 +919,17 @@ class ReportWindow(BridgedWindow):
 
         self._run_in_revit(u"Update All", _work, _done)
 
-    def _accept_click(self, sender, args):
-        del args
-        self._act(getattr(sender, "Tag", None), self._accept, u"Accept",
-                  u"Accepted as drawn, and saved in the model.")
-
     def _delete_click(self, sender, args):
         del args
         self._act(getattr(sender, "Tag", None), self._delete, u"Delete", u"Deleted.")
 
-    def _ignore_click(self, sender, args):
+    def _accept_click(self, sender, args):
         del args
-        self._set_ignored(getattr(sender, "Tag", None), True)
+        self._set_accepted(getattr(sender, "Tag", None), True)
 
-    def _restore_click(self, sender, args):
+    def _reopen_click(self, sender, args):
         del args
-        self._set_ignored(getattr(sender, "Tag", None), False)
+        self._set_accepted(getattr(sender, "Tag", None), False)
 
     def _act(self, item, action, label, done_text):
         """Do the thing, re-read, and say what happened - in that order."""
@@ -956,18 +950,18 @@ class ReportWindow(BridgedWindow):
 
         self._run_in_revit(label, _work, _done)
 
-    def _set_ignored(self, item, on):
+    def _set_accepted(self, item, on):
         """Write the decision into the model, then move the row - in that
-        order, so a row never reads as set aside when nothing was stored."""
-        if item is None or self._ignore is None:
+        order, so a row never reads as accepted when nothing was stored."""
+        if item is None or self._accept_difference is None:
             return
         key = _text(item.get("region_uid"))
         if not key:
-            self.StatusText.Text = u"This row has no region to set aside."
+            self.StatusText.Text = u"This row has no region to accept."
             return
 
         def _work(uiapp):
-            return self._ignore(uiapp, key, on)
+            return self._accept_difference(uiapp, key, on)
 
         def _done(result):
             result = result or {}
@@ -975,13 +969,13 @@ class ReportWindow(BridgedWindow):
                 self._report = result["report"]
             self._render()
             if result.get("ok"):
-                self.StatusText.Text = (u"Set aside, and saved in the model." if on
-                                        else u"Restored, and saved in the model.")
+                self.StatusText.Text = (u"Accepted, and saved in the model." if on
+                                        else u"Reopened, and saved in the model.")
             else:
                 self.StatusText.Text = u"Not saved in the model: {0}".format(
                     _text(result.get("message")) or u"unknown error")
 
-        self._run_in_revit(u"Ignore" if on else u"Restore", _work, _done, quiet=True)
+        self._run_in_revit(u"Accept Difference" if on else u"Reopen", _work, _done, quiet=True)
 
     def refresh_click(self, sender, args):
         del sender, args
@@ -1027,12 +1021,12 @@ def show_plan(plan, config):
 
 
 def show_report(report, config, bridge=None, uiapp=None, recheck=None, show=None, update=None,
-                update_all=None, accept=None, delete=None, ignore=None):
+                update_all=None, accept_difference=None, delete=None):
     """Open the report modeless; modal when no ExternalEvent could be made."""
     REGISTRY.close_open()
     window = ReportWindow(report, config, bridge=bridge, uiapp=uiapp, recheck=recheck,
-                          show=show, update=update, update_all=update_all, accept=accept,
-                          delete=delete, ignore=ignore)
+                          show=show, update=update, update_all=update_all,
+                          accept_difference=accept_difference, delete=delete)
     if bridge is None:
         window.ShowDialog()
         return window
