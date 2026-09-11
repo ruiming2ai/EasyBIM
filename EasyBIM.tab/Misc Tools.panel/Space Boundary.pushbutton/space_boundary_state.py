@@ -37,6 +37,7 @@ import hashlib
 import json
 import math
 
+from easybim import json_text
 from easybim import type_checklist
 
 
@@ -1259,8 +1260,15 @@ def make_record(item, room_fingerprints, region_fingerprints, config, created_ut
 
 
 def encode(record):
-    """Compact JSON; the entity holds one string and nothing else."""
-    return json.dumps(record or {}, separators=(",", ":"), sort_keys=True)
+    """Compact, ASCII-only JSON; the entity holds one string and nothing else.
+
+    Not ``json.dumps``: under IronPython the standard encoder chokes on any
+    string with a character above ``\\x7f`` - a room called "Café" took the
+    whole write down with "'unknown' codec can't decode byte 0xe9".
+    ``json_text`` escapes such characters itself, and ``decode`` reads the
+    escapes back on both runtimes.
+    """
+    return json_text.dumps(record or {}, separators=(",", ":"), sort_keys=True)
 
 
 def decode(text):
@@ -1313,7 +1321,7 @@ ACCEPTED_BUCKET = "accepted"
 #: What each bucket lets you do about it.  Update redraws the region from
 #: the room as it is now; Delete is for a region nothing could be redrawn
 #: from; Accept Difference is offered on every problem row and is permanent
-#: until reopened - the list lives in the model.
+#: until restored - the list lives in the model.
 CAN_UPDATE = ("room_moved", "both_changed", "region_edited", "region_moved", "drifted")
 CAN_DELETE = ("copied_region", "duplicate", "orphan_room", "orphan_view")
 
@@ -1341,7 +1349,7 @@ def classify_drift(live, rooms_now, views_now, accepted=None, loaded_links=None,
 
     ``accepted`` is what a reviewer set aside with Accept Difference.  It is
     permanent: an accepted region stays accepted whatever the room or the
-    region do next, until somebody reopens it.
+    region do next, until somebody restores it.
     """
     accepted = set(safe_text(value) for value in accepted or [])
     rooms_now = rooms_now or {}
@@ -1371,7 +1379,7 @@ def classify_drift(live, rooms_now, views_now, accepted=None, loaded_links=None,
 
         if region_uid in accepted:
             _file(items_by_bucket, row, ACCEPTED_BUCKET,
-                  u"Accepted as a deliberate difference; it stays accepted until reopened.")
+                  u"Accepted as a deliberate difference; it stays accepted until restored.")
             continue
         if link_uid and link_uid not in loaded_links:
             _file(items_by_bucket, row, "link_not_loaded", CODE_SENTENCES["link_not_loaded"])

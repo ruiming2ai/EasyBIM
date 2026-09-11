@@ -20,6 +20,14 @@ import io
 import json
 import os
 
+try:
+    from easybim.json_text import dumps as _json_dumps
+except Exception:
+    # Loaded standalone by a desktop test, without the package.  Inside Revit
+    # the package is always there, and json_text is not optional: the
+    # standard encoder cannot write a view or link name with an accent.
+    _json_dumps = json.dumps
+
 
 def safe_text(value):
     if value is None:
@@ -87,7 +95,7 @@ def save(file_id, settings, normalize, schema_version, path=None):
     except Exception as ex:
         return False, u"Could not create {0}: {1}".format(folder, ex)
 
-    text = json.dumps(payload, indent=2, sort_keys=True)
+    text = _json_dumps(payload, indent=2, sort_keys=True)
     temporary = path + ".tmp"
     try:
         with io.open(temporary, "w", encoding="utf-8") as handle:

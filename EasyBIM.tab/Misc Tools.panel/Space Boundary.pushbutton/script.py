@@ -543,11 +543,11 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
                 "message": u"Deleted." if ok else _first_failed(outcome)}
 
     def accept_difference(uiapp, key, on):
-        """Accept one region's difference as deliberate, or reopen it.
+        """Accept one region's difference as deliberate, or restore it.
 
         Permanent, and kept in the model beside the relationship: the row
         stays accepted whatever the room or the region do next, survives a
-        Sync to Central, and comes back only when somebody reopens it.
+        Sync to Central, and comes back only when somebody restores it.
         """
         del uiapp
         _alive()

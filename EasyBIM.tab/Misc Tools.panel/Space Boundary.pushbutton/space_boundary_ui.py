@@ -821,8 +821,8 @@ class ReportWindow(BridgedWindow):
         buttons = []
         if item.get("is_accepted"):
             if self._accept_difference is not None:
-                buttons.append((u"Reopen", u"Stop accepting this difference; the row goes back "
-                                           u"to the group it belongs to.", self._reopen_click, 84))
+                buttons.append((u"Restore", u"Stop accepting this difference; the row goes back "
+                                            u"to the group it belongs to.", self._restore_click, 84))
             return tuple(buttons)
         if item.get("can_update") and self._update is not None:
             buttons.append((u"Update", u"Replace this region with one drawn from the room as "
@@ -835,7 +835,7 @@ class ReportWindow(BridgedWindow):
                 and item.get("bucket") in state.DRIFT_PROBLEMS:
             buttons.append((u"Accept Difference",
                             u"Keep this region as it is and stop reporting it. Permanent until "
-                            u"reopened, whatever the room or the region do next; stored in this "
+                            u"restored, whatever the room or the region do next; stored in this "
                             u"model, so it survives a Sync to Central and reaches the team.",
                             self._accept_click, 130))
         return tuple(buttons)
@@ -926,7 +926,7 @@ class ReportWindow(BridgedWindow):
         del args
         self._set_accepted(getattr(sender, "Tag", None), True)
 
-    def _reopen_click(self, sender, args):
+    def _restore_click(self, sender, args):
         del args
         self._set_accepted(getattr(sender, "Tag", None), False)
 
@@ -969,12 +969,12 @@ class ReportWindow(BridgedWindow):
             self._render()
             if result.get("ok"):
                 self.StatusText.Text = (u"Accepted, and saved in the model." if on
-                                        else u"Reopened, and saved in the model.")
+                                        else u"Restored, and saved in the model.")
             else:
                 self.StatusText.Text = u"Not saved in the model: {0}".format(
                     _text(result.get("message")) or u"unknown error")
 
-        self._run_in_revit(u"Accept Difference" if on else u"Reopen", _work, _done, quiet=True)
+        self._run_in_revit(u"Accept Difference" if on else u"Restore", _work, _done, quiet=True)
 
     def refresh_click(self, sender, args):
         del sender, args

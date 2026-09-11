@@ -419,8 +419,8 @@ class WriteRuleTests(unittest.TestCase):
     def test_accept_difference_is_the_one_review_action(self):
         ui = UI_MODULE.read_text(encoding="utf-8")
         self.assertIn(u'u"Accept Difference"', ui)
-        self.assertIn(u'u"Reopen"', ui)
-        for gone in (u'u"Ignore"', u'u"Restore"', u'u"Accept",', u"can_accept", u"is_ignored"):
+        self.assertIn(u'u"Restore"', ui)
+        for gone in (u'u"Ignore"', u'u"Reopen"', u'u"Accept",', u"can_accept", u"is_ignored"):
             self.assertNotIn(gone, ui, gone)
         xaml = (COMMAND_DIR / "SpaceBoundaryWindow.xaml").read_text(encoding="utf-8")
         self.assertIn("Accept Difference", xaml)
@@ -550,6 +550,21 @@ class LauncherTests(unittest.TestCase):
                         failures.append("{0}:{1} reads '{2}', bound nowhere".format(
                             path.name, node.lineno, node.id))
         self.assertEqual([], failures)
+
+    def test_no_bundle_module_writes_json_with_the_standard_encoder(self):
+        """The standard encoder IronPython ships cannot write "Café". Every
+        JSON that could carry a name goes through json_text; the digest is
+        the one exception, and it only ever sees integers."""
+        for path in sorted(COMMAND_DIR.glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            calls = [line for line in source.splitlines() if "json.dumps(" in line]
+            self.assertEqual(len(calls), 1 if path.name == "space_boundary_state.py" else 0,
+                             "{0}: {1}".format(path.name, calls))
+        self.assertIn("json_text.dumps", STATE_MODULE.read_text(encoding="utf-8"))
+        for name in ("model_store.py", "local_settings.py"):
+            source = (LIB_DIR / name).read_text(encoding="utf-8")
+            self.assertNotIn("json.dumps(", source, name)
+            self.assertIn("json_text", source, name)
 
     def test_the_pick_path_reopens_the_setup_and_takes_many(self):
         """PickObjects cannot run while a modal window is up, so the setup

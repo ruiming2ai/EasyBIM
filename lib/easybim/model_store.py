@@ -31,7 +31,13 @@ except Exception:  # off-Revit (unit tests)
 
 try:
     from easybim.compat import safe_text
+    from easybim.json_text import dumps as _json_dumps
 except Exception:
+    # Loaded standalone by a desktop test, without the package.  Inside Revit
+    # the package is always there, and json_text is not optional: the
+    # standard encoder cannot write a finding whose name carries an accent.
+    _json_dumps = json.dumps
+
     def safe_text(value):
         if value is None:
             return ""
@@ -233,7 +239,7 @@ def write(doc, tool_key, keys, db=None):
     payload = read_payload(doc, db=db)
     payload["tools"][safe_text(tool_key)] = sorted(
         set(safe_text(key).strip() for key in keys or [] if safe_text(key).strip()))
-    text = json.dumps(payload, indent=1, sort_keys=True)
+    text = _json_dumps(payload, indent=1, sort_keys=True)
 
     storage = _storage_module(db)
     try:

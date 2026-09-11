@@ -740,6 +740,18 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(restored["room"]["abs"], record["room"]["abs"])
         self.assertEqual(restored["v"], state.RECORD_VERSION)
 
+    def test_an_accented_room_name_is_written_as_ascii(self):
+        """"Café" took the whole write down in Revit: IronPython's json
+        encoder cannot escape a unicode string. The record is ASCII-only
+        now, whatever the room is called, and reads back unchanged."""
+        record = make_record(room_name=u"Café", link_title=u"Château.rvt")
+        text = state.encode(record)
+        self.assertTrue(all(ord(char) < 128 for char in text))
+        self.assertIn(u"Caf\\u00e9", text)
+        back = state.decode(text)
+        self.assertEqual(back["room_name"], u"Café")
+        self.assertEqual(back["link_title"], u"Château.rvt")
+
     def test_unicode_room_names_survive(self):
         record = make_record(room_name=u"Bureau d'études étage")
         restored = state.decode(state.encode(record))

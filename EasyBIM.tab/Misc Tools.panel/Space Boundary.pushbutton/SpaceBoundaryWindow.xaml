@@ -319,7 +319,7 @@
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
                                    Text="• the room is gone, the view no longer shows it, or the region was copied into another view - these are deleted or accepted, never updated, because updating would not fix them" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
-                                   Text="• Accept Difference is permanent until reopened, and is stored in this model, so it survives a Sync to Central" />
+                                   Text="• Accept Difference is permanent until restored, and is stored in this model, so it survives a Sync to Central" />
                         <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
                                    Text="• Update All brings every drifted region in the report up to date in one undo step" />
                         <TextBlock Foreground="DimGray"

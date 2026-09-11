@@ -1253,7 +1253,7 @@ the report says so once instead of listing every row as a surprise.
 **Accept Difference** is the one review action: it records that this region
 deliberately differs from its room, moves the row to its own group and out of
 the tally, and is permanent — the row stays accepted whatever the room or the
-region do next, until **Reopen**. The list is stored in this model, in a
+region do next, until **Restore**. The list is stored in this model, in a
 hidden record beside the relationship, so it survives a Sync to Central and
 reaches the team; it is kept apart from the record on the region because a
 region another user owns cannot be written, yet its difference still has to
