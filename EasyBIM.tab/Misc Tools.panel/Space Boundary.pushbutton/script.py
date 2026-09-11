@@ -534,6 +534,14 @@ def _open_report(run, settings, bui, brevit, bstate, external_events, model_stor
             parts.append(u"the run was rolled back: {0}".format(outcome["error"]))
         return {"ok": done > 0, "report": run.check(settings), "message": u", ".join(parts) + u"."}
 
+    def delete(uiapp, item):
+        del uiapp
+        _alive()
+        outcome = brevit.delete_regions(run.doc, [item.get("region_id")])
+        ok = bool(outcome.get("deleted"))
+        return {"ok": ok, "report": run.check(settings),
+                "message": u"Deleted." if ok else _first_failed(outcome)}
+
     def accept_difference(uiapp, key, on):
         """Accept one region's difference as deliberate, or reopen it.
 

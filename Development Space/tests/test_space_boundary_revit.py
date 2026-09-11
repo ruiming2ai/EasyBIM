@@ -199,13 +199,17 @@ class Line(Curve):
 
 
 class Arc(Curve):
-    def __init__(self, start, middle, end):
+    """``Arc.Create(start, end, pointOnArc)`` - Revit's order, not the
+    intuitive one.  A fake that took (start, middle, end) let the wrong call
+    through and every curved room failed in Revit as "discontinuous"."""
+
+    def __init__(self, start, end, point_on_arc):
         Curve.__init__(self, start, end)
-        self.middle = middle
+        self.middle = point_on_arc
 
     @staticmethod
-    def Create(start, middle, end):
-        return Arc(start, middle, end)
+    def Create(start, end, point_on_arc):
+        return Arc(start, end, point_on_arc)
 
     def Evaluate(self, _param, _normalised):
         return self.middle
@@ -800,7 +804,7 @@ class BoundaryReadingTests(unittest.TestCase):
     def test_an_arc_segment_survives_as_an_arc_record(self):
         db = make_db()
         doc = Doc()
-        arc = Arc(XYZ(ft(0), ft(0), 0.0), XYZ(ft(500), ft(-200), 0.0), XYZ(ft(1000), ft(0), 0.0))
+        arc = Arc(XYZ(ft(0), ft(0), 0.0), XYZ(ft(1000), ft(0), 0.0), XYZ(ft(500), ft(-200), 0.0))
         segments = [Segment(arc),
                     Segment(Line(XYZ(ft(1000), ft(0), 0.0), XYZ(ft(1000), ft(1000), 0.0))),
                     Segment(Line(XYZ(ft(1000), ft(1000), 0.0), XYZ(ft(0), ft(1000), 0.0))),
@@ -1061,13 +1065,36 @@ class RegionGeometryTests(unittest.TestCase):
         curves = revit._curves_for(db, record, 0.0)
         self.assertEqual(len(curves), 1)
         self.assertIsInstance(curves[0], Arc)
+        # And it ends where the record ends, not at the record's midpoint.
+        self.assertAlmostEqual(curves[0].GetEndPoint(1).X * MM, 1000.0, places=6)
+        self.assertAlmostEqual(curves[0].GetEndPoint(1).Y * MM, 0.0, places=6)
+        self.assertAlmostEqual(curves[0].middle.X * MM, 500.0, places=6)
+
+    def test_a_curved_room_builds_a_contiguous_loop(self):
+        """The second Revit run: every room with a curved wall was refused as
+        "this curve will make the loop discontinuous", because the arc was
+        being rebuilt ending at its midpoint. The fake CurveLoop refuses a
+        non-contiguous append the way Revit does."""
+        db = make_db()
+        doc = Doc()
+        arc = Arc(XYZ(ft(0), ft(0), 0.0), XYZ(ft(1000), ft(0), 0.0), XYZ(ft(500), ft(-200), 0.0))
+        segments = [Segment(arc),
+                    Segment(Line(XYZ(ft(1000), ft(0), 0.0), XYZ(ft(1000), ft(1000), 0.0))),
+                    Segment(Line(XYZ(ft(1000), ft(1000), 0.0), XYZ(ft(0), ft(1000), 0.0))),
+                    Segment(Line(XYZ(ft(0), ft(1000), 0.0), XYZ(ft(0), ft(0), 0.0)))]
+        room = Room(doc, 1, loops=[segments])
+        boundary = revit.read_boundaries({"element": room, "uid": u"r1"}, "Finish", db=db)
+        loops = revit._materialise_loops(db, boundary["loops"], 0.0)
+        curves = list(loops)[0].curves
+        self.assertEqual(len(curves), 4)
+        self.assertIsInstance(curves[0], Arc)
 
     def test_an_arc_revit_refuses_falls_back_to_a_line(self):
         db = make_db()
 
         class NoArc(Arc):
             @staticmethod
-            def Create(start, middle, end):
+            def Create(start, end, point_on_arc):
                 raise Exception("the arc is degenerate")
 
         db.Arc = NoArc
@@ -1171,6 +1198,32 @@ class CreateRegionTests(unittest.TestCase):
         # The fallback is the same square, drawn with straight edges.
         drawn = FilledRegion.created[0]
         self.assertEqual(len(list(drawn.loops)[0].curves), 4)
+
+    def test_a_loop_that_will_not_build_still_falls_back(self):
+        """A CurveLoop.Append refusal happens before FilledRegion.Create is
+        ever reached; it has to be caught the same way, or the fallback never
+        runs and the room is lost with the loop."""
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1")])
+        # Break the exact records so the loop is discontinuous; the tessellated
+        # points, which the fallback draws from, stay whole.
+        records = plan["boundaries"][u"r1"]["loops"][0]["records"]
+        records[1] = ("L", 2000.0, 0.0, 2000.0, 1999.0)
+        result = revit.create_regions(doc, plan, db=db)
+        self.assertEqual(result["created"], 1)
+        self.assertTrue([note for note in result["notes"] if u"simplified outline" in note])
+
+    def test_a_loop_refused_twice_fails_with_both_reasons(self):
+        db = make_db(registry=self.registry)
+        doc, view, room = self._model(db)
+        plan = self._plan(doc, db, [(view, 1)], [(room, u"r1")])
+        FilledRegion.refuse = lambda _d, _v, _l: True
+        result = revit.create_regions(doc, plan, db=db)
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["failed"][0]["code"], "revit_refused")
+        self.assertIn(u"will not draw", result["failed"][0]["reason"])
+        self.assertIn(u"simplified outline", result["failed"][0]["reason"])
 
     def test_a_loop_refused_twice_fails_with_revits_own_words(self):
         db = make_db(registry=self.registry)

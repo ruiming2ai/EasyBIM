@@ -517,6 +517,40 @@ class LauncherTests(unittest.TestCase):
                 missing.append("{0}.{1}".format(alias, node.attr))
         self.assertEqual([], sorted(set(missing)))
 
+    def test_every_name_read_anywhere_in_the_bundle_is_bound_somewhere(self):
+        """The second Revit run died on ``global name 'delete' is not
+        defined``: an edit cut a local function out and left the call that
+        used it. None of these modules can be imported on a laptop, so this
+        is the pyflakes the suite did not have - every name a module reads
+        must be bound somewhere in that module, or be a builtin."""
+        import builtins
+        known = set(dir(builtins)) | {"__file__", "__name__", "__revit__", "unicode",
+                                      "basestring", "long", "xrange"}
+        failures = []
+        for path in sorted(COMMAND_DIR.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            bound = set(known)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                    bound.add(node.name)
+                elif isinstance(node, ast.arg):
+                    bound.add(node.arg)
+                elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    bound.add(node.id)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        bound.add((alias.asname or alias.name).split(".")[0])
+                elif isinstance(node, ast.ExceptHandler) and node.name:
+                    bound.add(node.name)
+                elif isinstance(node, ast.Global):
+                    bound.update(node.names)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    if node.id not in bound:
+                        failures.append("{0}:{1} reads '{2}', bound nowhere".format(
+                            path.name, node.lineno, node.id))
+        self.assertEqual([], failures)
+
     def test_the_pick_path_reopens_the_setup_and_takes_many(self):
         """PickObjects cannot run while a modal window is up, so the setup
         hands its choices back and the launcher reopens it."""

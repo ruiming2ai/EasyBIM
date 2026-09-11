@@ -1027,16 +1027,18 @@ class VisibilityPlanTests(unittest.TestCase):
         return state.build_plan(self.config(), views, rooms, boundaries, {},
                                 visibility={"v1": {"visible": visible, "note": u""}})
 
-    def test_a_room_the_view_shows_from_another_level_is_offered_unticked(self):
+    def test_a_room_the_view_shows_from_another_level_is_offered_ticked_under_its_heading(self):
         plan = self._plan(set(["r1", "r2"]))
         by_uid = dict((item["room_uid"], item) for item in plan["items"])
         self.assertEqual(sorted(by_uid), ["r1", "r2"])
         self.assertTrue(by_uid["r1"]["default_ticked"])
         self.assertEqual(by_uid["r1"]["category"], state.CATEGORY_THIS_LEVEL)
-        self.assertFalse(by_uid["r2"]["default_ticked"])
+        # Ticked like the rest - the heading says why it is there.
+        self.assertTrue(by_uid["r2"]["default_ticked"])
         self.assertEqual(by_uid["r2"]["category"], state.CATEGORY_OTHER_LEVEL)
         self.assertTrue(by_uid["r2"]["category_reason"])
         self.assertEqual(plan["counts"]["other_level"], 1)
+        self.assertNotIn(u"unticked", state.plan_summary(plan))
 
     def test_a_room_the_view_hides_is_counted_and_said_once_never_rowed(self):
         plan = self._plan(set(["r1", "r2"]))
@@ -1098,13 +1100,13 @@ class PickedRoomTests(unittest.TestCase):
         self.assertEqual(plan["items"], [])
         self.assertEqual(plan["counts"]["not_visible"], 1)
 
-    def test_converting_all_leaves_other_levels_unticked(self):
+    def test_everything_the_preview_offers_starts_ticked(self):
         views = [make_view()]
         rooms = [make_room("r2", u"102", level="L2")]
         plan = state.build_plan(self.config(state.SUBJECT_ALL), views, rooms,
                                 {"r2": make_boundary()}, {},
                                 visibility={"v1": {"visible": set(["r2"]), "note": u""}})
-        self.assertFalse(plan["items"][0]["default_ticked"])
+        self.assertTrue(all(item["default_ticked"] for item in plan["items"]))
 
     def test_a_views_note_is_carried_even_when_it_answered(self):
         """A link whose Rooms category the view hides answers "none" - and

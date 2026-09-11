@@ -1152,8 +1152,8 @@ view is drawn with the rooms **it actually shows** — visibility and graphics
 overrides, filters, view range, phase filter and hidden elements all count,
 because Revit itself is asked what the view displays. A room the view shows
 from another level (a view range that reaches down a storey) is offered in the
-preview under its own heading, unticked; a room the view hides is not planned,
-and the preview says how many. You can also convert only the rooms or spaces
+preview under its own heading, ticked like the rest; a room the view hides is
+not planned, and the preview says how many. You can also convert only the rooms or spaces
 you pick — as many as you like — instead of all of them; a picked room is
 ticked in every chosen view that shows it, whatever level it sits on, because
 picking it was the decision.

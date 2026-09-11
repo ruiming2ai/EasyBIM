@@ -1038,10 +1038,10 @@ def build_plan(config, views, rooms, boundaries, existing, visibility=None):
     "note": text}}`` - what each view actually shows.  A room the view does
     not show is counted and said once per view, never rowed: there is nothing
     to decide about it.  A room the view shows from another level is offered
-    unticked under its own heading, because a view range that reaches down
-    a storey is a choice somebody made and the tool should not undo it in
-    silence either way.  A view whose contents could not be read offers every
-    room on its level and says so.
+    ticked under its own heading, so a view range that reaches down a storey
+    is drawn as the person set it and still shows as what it is.  A view
+    whose contents could not be read offers every room on its level and says
+    so.
     """
     config = config or {}
     grid_mm = to_float(config.get("grid_mm"), GRID_MM) or GRID_MM
@@ -1122,7 +1122,9 @@ def build_plan(config, views, rooms, boundaries, existing, visibility=None):
                 "title": title,
                 "category": CATEGORY_THIS_LEVEL if on_level else CATEGORY_OTHER_LEVEL,
                 "category_reason": u"" if on_level else level_sentence,
-                "default_ticked": bool(on_level or picked),
+                # Everything the preview offers starts ticked; the heading a
+                # pair sits under says why it is there, the tick is the run.
+                "default_ticked": True,
                 "room_uid": room.get("uid"),
                 "room_id": room.get("id"),
                 "room_number": room.get("number"),
@@ -1533,7 +1535,7 @@ def plan_summary(plan):
     parts = [u"{0:,} region(s) to draw".format(
         to_int(counts.get("create")) + to_int(counts.get("replace")))]
     if to_int(counts.get("other_level")):
-        parts.append(u"{0:,} of them visible from another level, unticked".format(
+        parts.append(u"{0:,} of them visible from another level".format(
             to_int(counts["other_level"])))
     if to_int(counts.get("replace")):
         parts.append(u"{0:,} replacing an existing one".format(to_int(counts["replace"])))

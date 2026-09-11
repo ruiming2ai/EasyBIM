@@ -1141,7 +1141,12 @@ def _curves_for(db, record, z_ft):
         end = _xyz(db, record[3], record[4], z_ft)
         middle = _xyz(db, record[5], record[6], z_ft)
         try:
-            return [db.Arc.Create(start, middle, end)]
+            # Revit's three-point overload is (start, end, point on arc) -
+            # not (start, middle, end).  With the middle in the end's seat
+            # every arc came back ending halfway round, and the next segment
+            # could not join it: "this curve will make the loop
+            # discontinuous", on every room with a curved wall.
+            return [db.Arc.Create(start, end, middle)]
         except Exception:
             return [db.Line.CreateBound(start, end)]
     if kind == "T":
@@ -1464,20 +1469,32 @@ def _create_region(doc, db, boundary, z_ft, region_type_id, view_eid, item):
     cleaned outline with straight edges, and the note says so; only if that
     is refused too does the room fail, with Revit's own words.
     """
-    loops = _materialise_loops(db, boundary.get("loops") or [], z_ft)
     try:
+        # Building the loop is inside the try on purpose: a CurveLoop that
+        # will not accept a segment is a refusal like any other, and the
+        # fallback has to cover it.
+        loops = _materialise_loops(db, boundary.get("loops") or [], z_ft)
         return db.FilledRegion.Create(doc, region_type_id, view_eid, loops), u""
     except Exception as first:
+        first_text = safe_text(first)
+    try:
         fallback = _materialise_simplified(db, boundary.get("loops") or [], z_ft)
-        if fallback is None:
-            raise first
-        try:
-            region = db.FilledRegion.Create(doc, region_type_id, view_eid, fallback)
-        except Exception:
-            raise first
-        return region, (u"{0} was drawn from its simplified outline (straight edges, within "
-                        u"a millimetre) because Revit refused the exact one: {1}".format(
-                            item.get("title"), safe_text(first)))
+    except Exception as ex:
+        fallback = None
+        first_text = u"{0} Its simplified outline could not be built either: {1}".format(
+            first_text, safe_text(ex))
+    if fallback is None:
+        raise Exception(first_text)
+    try:
+        region = db.FilledRegion.Create(doc, region_type_id, view_eid, fallback)
+    except Exception as second:
+        # Both refusals travel, so the next report says why the fallback did
+        # not save it rather than hiding that behind the first message.
+        raise Exception(u"{0} Drawn again from its simplified outline, Revit refused that too: "
+                        u"{1}".format(first_text, safe_text(second)))
+    return region, (u"{0} was drawn from its simplified outline (straight edges, within "
+                    u"a millimetre) because Revit refused the exact one: {1}".format(
+                        item.get("title"), first_text))
 
 
 def _one_region(doc, db, plan, item, view, view_id, z_ft, region_type_id, line_style_id,

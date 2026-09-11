@@ -531,8 +531,8 @@ class PlanWindow(forms.WPFWindow):
 
     def _group_items(self, items):
         """Per view: the rooms on its level, then the ones it shows from
-        another level under their own heading, unticked - so a view range
-        that reaches down a storey is a choice made on purpose."""
+        another level under their own heading - ticked like the rest, so a
+        view range that reaches down a storey is drawn as it was set."""
         groups = {}
         order = []
         for item in items:
@@ -547,7 +547,7 @@ class PlanWindow(forms.WPFWindow):
         result = []
         for name, other in order:
             title = name if not other else \
-                u"{0} - visible from another level (unticked)".format(name)
+                u"{0} - visible from another level".format(name)
             result.append({"key": u"view:{0}:{1}".format(name, int(other)), "title": title,
                            "items": groups[(name, other)], "other_level": other})
         return result
@@ -580,8 +580,7 @@ class PlanWindow(forms.WPFWindow):
                                       foreground=brush("DimGray"), wrap=False))
         header.Children.Add(text_block(group["title"], size=14, semibold=True, wrap=False))
         expander.Header = header
-        expander.IsExpanded = self._expanded.get(
-            group["key"], count <= 40 and not group.get("other_level"))
+        expander.IsExpanded = self._expanded.get(group["key"], count <= 40)
         expander.Expanded += expansion_handler(self._expanded, group["key"], True)
         expander.Collapsed += expansion_handler(self._expanded, group["key"], False)
 
