@@ -338,7 +338,13 @@ def find_number_problems(rows):
     for number in sorted(by_number.keys()):
         group = by_number[number]
         if len(group) > 1:
-            duplicate_groups.append((number, group))
+            all_original = all(
+                number == u"{0}".format(
+                    r.original.get("number") or u"").strip()
+                for r in group
+            )
+            if not all_original:
+                duplicate_groups.append((number, group))
     return empty_rows, duplicate_groups
 
 

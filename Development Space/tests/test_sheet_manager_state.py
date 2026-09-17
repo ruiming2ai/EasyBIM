@@ -250,13 +250,22 @@ class NumberPlanningTests(unittest.TestCase):
     def test_find_number_problems(self):
         columns = build_columns()
         rows = [make_row(columns, sheet_id=1, number="A101"),
-                make_row(columns, sheet_id=2, number="A101"),
+                make_row(columns, sheet_id=2, number="B201"),
                 make_row(columns, sheet_id=3, number=" ")]
+        rows[1].number = "A101"
         empty_rows, duplicates = st.find_number_problems(rows)
         self.assertEqual(len(empty_rows), 1)
         self.assertEqual(len(duplicates), 1)
         self.assertEqual(duplicates[0][0], "A101")
         self.assertEqual(len(duplicates[0][1]), 2)
+
+    def test_preexisting_duplicates_not_flagged(self):
+        columns = build_columns()
+        rows = [make_row(columns, sheet_id=1, number="A101"),
+                make_row(columns, sheet_id=2, number="A101")]
+        empty_rows, duplicates = st.find_number_problems(rows)
+        self.assertEqual(len(empty_rows), 0)
+        self.assertEqual(len(duplicates), 0)
 
 
 class NumberConflictTests(unittest.TestCase):
