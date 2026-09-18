@@ -119,7 +119,7 @@ class FireDamperCheckBundleTests(unittest.TestCase):
 
     def test_bundle_carries_the_two_line_title_and_author(self):
         bundle = (COMMAND_DIR / "bundle.yaml").read_text(encoding="utf-8")
-        self.assertIn('title: "Fire Damper\\nCheck"', bundle)
+        self.assertIn('title: "Fire Damper\\nCheck [Beta]"', bundle)
         self.assertIn("tooltip:", bundle)
         self.assertIn("author: Ruiming Liu", bundle)
 
