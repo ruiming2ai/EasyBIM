@@ -232,7 +232,7 @@ class SheetManagerBundleTests(unittest.TestCase):
         self.assertNotIn("Binding rename_selected", xaml)
         self.assertIn('x:Name="skip_numbers_b"', xaml)
         self.assertIn('x:Name="skip_names_b"', xaml)
-        self.assertEqual(xaml.count('Content="Skip and Ignore"'), 2)
+        self.assertEqual(xaml.count('Content="Ignore and Load"'), 2)
         self.assertIn('Click="skip_selected_numbers"', xaml)
         self.assertIn('Click="skip_selected_names"', xaml)
         self.assertIn("def skip_selected_numbers", dialogs_source)

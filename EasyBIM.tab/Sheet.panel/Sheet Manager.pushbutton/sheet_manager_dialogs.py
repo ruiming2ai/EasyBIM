@@ -321,8 +321,9 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             if row.is_selected
         ]
         if not selected:
-            forms.alert("Check at least one sheet-number discrepancy to skip.",
-                        title="Skip and Ignore")
+            forms.alert(
+                "Check at least one sheet-number discrepancy to ignore.",
+                title="Ignore and Load")
             return
         self._session.ignore_number_rows(selected)
         self._refresh_validation()
@@ -334,11 +335,36 @@ class LoadCustomizedExcelWindow(forms.WPFWindow):
             if row.is_selected
         ]
         if not selected:
-            forms.alert("Check at least one sheet-name discrepancy to skip.",
-                        title="Skip and Ignore")
+            forms.alert(
+                "Check at least one sheet-name discrepancy to ignore.",
+                title="Ignore and Load")
             return
         self._session.ignore_name_rows(selected)
         self._refresh_validation()
+
+    def select_all_numbers_clicked(self, sender, args):
+        del sender, args
+        for row in self._validation.number_discrepancies:
+            row.is_selected = True
+        self.number_discrepancies_dg.Items.Refresh()
+
+    def none_numbers_clicked(self, sender, args):
+        del sender, args
+        for row in self._validation.number_discrepancies:
+            row.is_selected = False
+        self.number_discrepancies_dg.Items.Refresh()
+
+    def select_all_names_clicked(self, sender, args):
+        del sender, args
+        for row in self._validation.name_discrepancies:
+            row.is_selected = True
+        self.name_discrepancies_dg.Items.Refresh()
+
+    def none_names_clicked(self, sender, args):
+        del sender, args
+        for row in self._validation.name_discrepancies:
+            row.is_selected = False
+        self.name_discrepancies_dg.Items.Refresh()
 
     def load_clicked(self, sender, args):
         del sender, args

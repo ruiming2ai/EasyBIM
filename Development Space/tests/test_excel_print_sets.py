@@ -290,7 +290,7 @@ class ExcelPrintSetsTests(unittest.TestCase):
         self.assertTrue(result.final_rows[1].is_pending)
         self.assertEqual(result.final_rows[1].template_sheet_id, 321)
 
-    def test_ignoring_selected_discrepancies_omits_them_from_this_load(self):
+    def test_ignoring_selected_discrepancies_loads_them(self):
         module = _load_module()
         rows = [
             module.ExcelImportRow(1, "A001", "First"),
@@ -316,9 +316,9 @@ class ExcelPrintSetsTests(unittest.TestCase):
         self.assertEqual(result.number_discrepancies, [])
         self.assertEqual(result.name_discrepancies, [])
         self.assertEqual([row.number for row in result.final_rows],
-                         ["A001", "A003"])
+                         ["A001", "A002", "A003"])
         self.assertEqual([row.excel_row for row in result.visible_rows],
-                         [1, 4])
+                         [1, 2, 3, 4])
 
     def test_revision_filter_hides_unresolved_rows_and_preserves_matching_order(self):
         module = _load_module()

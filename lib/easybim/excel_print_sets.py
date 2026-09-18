@@ -115,7 +115,8 @@ class ExcelPrintSetSession(object):
         self.rows = list(rows or [])
         self._creation_templates = {}
         self._renamed_row_ids = set()
-        self._ignored_row_ids = set()
+        self._accepted_number_row_ids = set()
+        self._accepted_name_row_ids = set()
         self.set_model_sheets(model_sheets)
 
     def set_model_sheets(self, model_sheets):
@@ -138,20 +139,22 @@ class ExcelPrintSetSession(object):
                 self._renamed_row_ids.add(source_row.row_id)
 
     def ignore_number_rows(self, discrepancy_rows):
-        """Exclude selected number-discrepancy Excel rows for this session."""
-        self._ignore_selected_rows(discrepancy_rows)
+        """Accept selected number discrepancies so they load instead of block."""
+        self._accept_selected_rows(
+            discrepancy_rows, self._accepted_number_row_ids)
 
     def ignore_name_rows(self, discrepancy_rows):
-        """Exclude selected name-discrepancy Excel rows for this session."""
-        self._ignore_selected_rows(discrepancy_rows)
+        """Accept selected name discrepancies so they load instead of block."""
+        self._accept_selected_rows(
+            discrepancy_rows, self._accepted_name_row_ids)
 
-    def _ignore_selected_rows(self, discrepancy_rows):
+    def _accept_selected_rows(self, discrepancy_rows, target_set):
         for discrepancy in discrepancy_rows or []:
             if not getattr(discrepancy, "is_selected", False):
                 continue
             source_row = getattr(discrepancy, "source_row", None)
             if source_row is not None:
-                self._ignored_row_ids.add(source_row.row_id)
+                target_set.add(source_row.row_id)
 
     def validate(self, selected_revision_ids=None):
         selected_revision_ids = set([
@@ -159,8 +162,6 @@ class ExcelPrintSetSession(object):
         ])
         visible_rows = []
         for import_row in self.rows:
-            if import_row.row_id in self._ignored_row_ids:
-                continue
             if not _row_matches_revision_filter(
                     import_row,
                     self._sheet_by_number,
@@ -181,28 +182,33 @@ class ExcelPrintSetSession(object):
         matched_pairs = []
 
         for import_row in visible_rows:
+            row_id = import_row.row_id
             number_key = normalize_key(import_row.sheet_number)
             if not number_key:
+                if row_id in self._accepted_number_row_ids:
+                    continue
                 number_discrepancies.append(
                     DiscrepancyRow(import_row, "Sheet number is blank.")
                 )
                 continue
             if number_counts.get(number_key, 0) > 1:
-                number_discrepancies.append(
-                    DiscrepancyRow(
-                        import_row,
-                        "Duplicate imported sheet number."
+                if row_id not in self._accepted_number_row_ids:
+                    number_discrepancies.append(
+                        DiscrepancyRow(
+                            import_row,
+                            "Duplicate imported sheet number."
+                        )
                     )
-                )
-                continue
+                    continue
 
             revit_sheet = self._sheet_by_number.get(number_key)
             if revit_sheet is None:
-                template_sheet_id = self._creation_templates.get(
-                    import_row.row_id)
+                template_sheet_id = self._creation_templates.get(row_id)
                 if template_sheet_id is not None:
                     matched_pairs.append((import_row, None,
                                           template_sheet_id, False))
+                    continue
+                if row_id in self._accepted_number_row_ids:
                     continue
                 number_discrepancies.append(
                     DiscrepancyRow(
@@ -219,6 +225,10 @@ class ExcelPrintSetSession(object):
                 if import_row.row_id in self._renamed_row_ids:
                     matched_pairs.append((import_row, revit_sheet,
                                           None, True))
+                    continue
+                if row_id in self._accepted_name_row_ids:
+                    matched_pairs.append((import_row, revit_sheet,
+                                          None, False))
                     continue
                 name_discrepancies.append(
                     DiscrepancyRow(

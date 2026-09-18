@@ -7,8 +7,11 @@ sheets by name - "Export" and the hidden "_metadata" - with every row and
 column. Pure stdlib (zipfile + ElementTree); no Excel installation needed.
 """
 
+import os
 import posixpath
 import re
+import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -165,9 +168,17 @@ def read_workbook_sheets(excel_path, sheet_names=None):
     Hidden and veryHidden sheets are included. Accepts .xlsx and .xlsm
     (same OOXML zip format). Raises UnsupportedWorkbook on unreadable files.
     """
+    # Copy to a temp file so the read succeeds even when another program
+    # (e.g. Excel) holds a lock on the original.
+    tmp_path = None
     try:
-        workbook = zipfile.ZipFile(excel_path, "r")
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
+        os.close(tmp_fd)
+        shutil.copy2(excel_path, tmp_path)
+        workbook = zipfile.ZipFile(tmp_path, "r")
     except Exception as open_error:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         raise UnsupportedWorkbook(_safe_text(open_error))
 
     try:
@@ -185,3 +196,5 @@ def read_workbook_sheets(excel_path, sheet_names=None):
         return sheets
     finally:
         workbook.close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
