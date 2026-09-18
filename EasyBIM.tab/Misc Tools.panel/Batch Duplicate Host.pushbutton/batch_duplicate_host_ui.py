@@ -22,13 +22,19 @@ def _safe_text(value):
 
 
 class SourceSelectionWindow(forms.WPFWindow):
-    def __init__(self, xaml_file_name):
+    def __init__(self, xaml_file_name, monitored=True, copy_original=False):
         forms.WPFWindow.__init__(self, xaml_file_name)
         self.should_select = False
+        self.monitored = monitored
+        self.copy_original = copy_original
+        self.MonitoredCheckBox.IsChecked = monitored
+        self.CopyOriginalTypeCheckBox.IsChecked = copy_original
 
     def select_click(self, sender, args):
         del sender, args
         self.should_select = True
+        self.monitored = bool(self.MonitoredCheckBox.IsChecked)
+        self.copy_original = bool(self.CopyOriginalTypeCheckBox.IsChecked)
         self.Close()
 
     def cancel_click(self, sender, args):

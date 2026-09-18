@@ -1,5 +1,7 @@
 import importlib.util
 import pathlib
+import sys
+import types
 import unittest
 
 
@@ -31,6 +33,58 @@ class _FakeRow(object):
         self.key = key
         self.revit_sheet = _FakeSheet(revision_ids)
         self.printable = printable
+
+
+class _FakeOrderedList(list):
+    def Add(self, value):
+        self.append(value)
+
+
+class _FakeView(object):
+    pass
+
+
+class _FakeCurrentViewSheetSet(object):
+    def __init__(self):
+        self.IsAutomatic = True
+        self.OrderedViewList = None
+
+    def SaveAs(self, name):
+        raise AssertionError("In-session sheet sets must not be saved")
+
+
+class _FakeViewSheetSetting(object):
+    def __init__(self):
+        self.saved_set = _FakeCurrentViewSheetSet()
+        self.InSession = _FakeCurrentViewSheetSet()
+        self.CurrentViewSheetSet = self.saved_set
+
+
+class _FakePrintManager(object):
+    def __init__(self):
+        self.PrintRange = None
+        self.ViewSheetSetting = _FakeViewSheetSetting()
+        self.apply_count = 0
+
+    def Apply(self):
+        self.apply_count += 1
+
+
+class _FakeDoc(object):
+    def __init__(self):
+        self.PrintManager = _FakePrintManager()
+
+
+class _FakeDB(object):
+    View = _FakeView
+
+    class PrintRange(object):
+        Select = "select"
+
+
+class _NewHost(object):
+    def is_newer_than(self, version):
+        return version == 2022
 
 
 class PrintSetsTests(unittest.TestCase):
@@ -78,6 +132,47 @@ class PrintSetsTests(unittest.TestCase):
 
         self.assertEqual([row.key for row in printable_rows], ["A", "C"])
         self.assertEqual(skipped_count, 1)
+
+    def test_in_session_print_set_becomes_current_and_uses_input_order(self):
+        module = _load_module()
+        system = types.ModuleType("System")
+        collections = types.ModuleType("System.Collections")
+        generic = types.ModuleType("System.Collections.Generic")
+
+        class _List(object):
+            def __class_getitem__(cls, item_type):
+                return _FakeOrderedList
+
+        generic.List = _List
+        old_modules = {name: sys.modules.get(name) for name in (
+            "System", "System.Collections", "System.Collections.Generic")}
+        sys.modules["System"] = system
+        sys.modules["System.Collections"] = collections
+        sys.modules["System.Collections.Generic"] = generic
+        try:
+            first = _FakeView()
+            second = _FakeView()
+            doc = _FakeDoc()
+
+            result = module.set_in_session_print_set(
+                doc, [second, first], _FakeDB, _NewHost())
+        finally:
+            for name, previous in old_modules.items():
+                if previous is None:
+                    del sys.modules[name]
+                else:
+                    sys.modules[name] = previous
+
+        setting = doc.PrintManager.ViewSheetSetting
+        current = setting.CurrentViewSheetSet
+        self.assertIs(result, current)
+        self.assertIs(current, setting.InSession)
+        self.assertIsNot(current, setting.saved_set)
+        self.assertEqual(doc.PrintManager.PrintRange, "select")
+        self.assertFalse(current.IsAutomatic)
+        self.assertEqual(current.OrderedViewList, [second, first])
+        self.assertIsNone(setting.saved_set.OrderedViewList)
+        self.assertEqual(doc.PrintManager.apply_count, 1)
 
 
 if __name__ == "__main__":

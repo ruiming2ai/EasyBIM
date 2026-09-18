@@ -14,7 +14,8 @@ from System.Windows.Controls import ComboBox
 from System.Windows.Controls import ComboBoxItem
 from System.Windows.Controls import Orientation
 from System.Windows.Controls import StackPanel
-from System.Windows.Controls import TextBox
+from System.Collections import ArrayList
+from System.Windows.Data import ListCollectionView, PropertyGroupDescription
 
 from pyrevit import forms
 
@@ -166,6 +167,221 @@ class LoadFromSourceWindow(forms.WPFWindow):
         self.Close()
 
 
+class LoadCustomizedExcelWindow(forms.WPFWindow):
+    """Resolve Excel discrepancies before loading its matching sheet rows."""
+
+    def __init__(self, xaml_file_name, excel_path, session, warning=None,
+                 template_options=None, comparison_sources=None,
+                 comparison_reader=None):
+        self._is_ready = False
+        self.result = None
+        self._session = session
+        self._warning = warning
+        self._validation = None
+        self._template_options = list(template_options or [])
+        self._comparison_reader = comparison_reader
+        self._comparison_view = None
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.file_tb.Text = excel_path
+        self.warning_tb.Text = warning or u""
+        if warning:
+            self.show_element(self.warning_tb)
+        else:
+            self.hide_element(self.warning_tb)
+        for kind, source_id, label in comparison_sources or []:
+            _add_combo_item(self.comparison_source_cb, label, (kind, source_id))
+        self.compare_b.IsEnabled = bool(comparison_sources and comparison_reader)
+        if comparison_sources:
+            self.comparison_source_cb.SelectedIndex = 0
+        else:
+            self.comparison_summary_tb.Text = "No Sheet Lists or saved Print Sets are available to compare."
+        self._is_ready = True
+        self._refresh_validation()
+
+    def comparison_source_changed(self, sender, args):
+        del sender, args
+        if not self._is_ready:
+            return
+        self._comparison_view = None
+        self.comparison_dg.ItemsSource = None
+        self.comparison_summary_tb.Text = "Source changed. Click Compare to read this source."
+        self.comparison_warning_tb.Text = u""
+
+    def compare_clicked(self, sender, args):
+        del sender, args
+        source_key = _combo_key(self.comparison_source_cb)
+        if source_key is None or self._comparison_reader is None:
+            return
+        self.comparison_tab.IsSelected = True
+        self.comparison_dg.ItemsSource = None
+        self._comparison_view = None
+        self.comparison_warning_tb.Text = u""
+        try:
+            result = self._comparison_reader(source_key)
+            items = ArrayList()
+            for finding in result.findings:
+                items.Add(finding)
+            view = ListCollectionView(items)
+            view.GroupDescriptions.Add(PropertyGroupDescription("group_label"))
+            self._comparison_view = view
+            self.comparison_dg.ItemsSource = view
+            label = self.comparison_source_cb.SelectedItem.Content
+            self.comparison_summary_tb.Text = (
+                u"{0} — {1} Excel row(s), {2} Revit sheet(s), "
+                u"{3} unique selected-source number match(es), {4} finding(s)."
+            ).format(label, result.excel_count, result.source_count,
+                     result.matched_count, len(result.findings))
+            self.comparison_warning_tb.Text = u"\n".join(result.warnings)
+        except Exception as error:
+            self.comparison_summary_tb.Text = "Comparison failed. No import changes were made."
+            forms.alert(str(error), title="Compare Drawing Lists")
+
+    def _refresh_validation(self):
+        self._validation = self._session.validate()
+        self.number_discrepancies_dg.ItemsSource = \
+            self._validation.number_discrepancies
+        self.name_discrepancies_dg.ItemsSource = \
+            self._validation.name_discrepancies
+        self.create_selected_b.IsEnabled = bool(
+            self._template_options and any(
+                row.can_create
+                for row in self._validation.number_discrepancies))
+        self.rename_selected_b.IsEnabled = bool(
+            any(row.can_rename
+                for row in self._validation.name_discrepancies))
+
+        self.summary_tb.Text = (
+            u"{0} visible Excel row(s), {1} matching sheet row(s) ready to load."
+        ).format(len(self._validation.visible_rows),
+                 len(self._validation.final_rows))
+        can_load = bool(self._validation.can_continue
+                        and self._validation.final_rows)
+        self.load_b.IsEnabled = can_load
+        if can_load:
+            self.hide_element(self.errormsg_block)
+            self.errormsg_tb.Text = u""
+        elif self._validation.number_discrepancies \
+                or self._validation.name_discrepancies:
+            self.errormsg_tb.Text = \
+                u"Select discrepancies to create, rename, or skip and ignore; or correct Excel or Revit and reload this dialog."
+            self.show_element(self.errormsg_block)
+        else:
+            self.errormsg_tb.Text = \
+                u"No matching sheets are available to load."
+            self.show_element(self.errormsg_block)
+
+    def create_selected_sheets(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.number_discrepancies
+            if row.can_create and row.is_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one missing sheet to create.",
+                        title="Create Selected Sheets")
+            return
+        if not self._template_options:
+            forms.alert("No usable sheet templates are available.",
+                        title="Create Selected Sheets")
+            return
+        dialog = CreateSheetsFromTemplateWindow(
+            "CreateSheetsFromTemplateDialog.xaml", self._template_options,
+            len(selected))
+        dialog.ShowDialog()
+        if dialog.result is None:
+            return
+        self._session.stage_creations(selected, dialog.result)
+        self._refresh_validation()
+        forms.alert(
+            "Selected sheets are staged for creation. Click Load, then "
+            "Apply Changes to create them in Revit.",
+            title="Create Selected Sheets")
+
+    def rename_selected_sheets(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.name_discrepancies
+            if row.can_rename and row.is_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one sheet name to rename.",
+                        title="Rename to Match Excel")
+            return
+        self._session.stage_renames(selected)
+        self._refresh_validation()
+        forms.alert(
+            "Selected sheet names are staged. Click Load, then Apply "
+            "Changes to rename them in Revit.",
+            title="Rename to Match Excel")
+
+    def skip_selected_numbers(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.number_discrepancies
+            if row.is_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one sheet-number discrepancy to skip.",
+                        title="Skip and Ignore")
+            return
+        self._session.ignore_number_rows(selected)
+        self._refresh_validation()
+
+    def skip_selected_names(self, sender, args):
+        del sender, args
+        selected = [
+            row for row in self._validation.name_discrepancies
+            if row.is_selected
+        ]
+        if not selected:
+            forms.alert("Check at least one sheet-name discrepancy to skip.",
+                        title="Skip and Ignore")
+            return
+        self._session.ignore_name_rows(selected)
+        self._refresh_validation()
+
+    def load_clicked(self, sender, args):
+        del sender, args
+        self._refresh_validation()
+        if not self.load_b.IsEnabled:
+            return
+        self.result = list(self._validation.final_rows)
+        self.Close()
+
+    def cancel_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
+class CreateSheetsFromTemplateWindow(forms.WPFWindow):
+    """Pick the existing sheet used to create empty Excel sheets."""
+
+    def __init__(self, xaml_file_name, template_options, target_count):
+        self._is_ready = False
+        self.result = None
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        self.targets_tb.Text = (
+            "Create {0} selected sheet(s) from this template."
+        ).format(target_count)
+        for sheet_id, label in template_options:
+            _add_combo_item(self.source_cb, label, sheet_id)
+        if self.source_cb.Items.Count:
+            self.source_cb.SelectedIndex = 0
+        self._is_ready = True
+
+    def create_clicked(self, sender, args):
+        del sender, args
+        source_id = _combo_key(self.source_cb)
+        if source_id is None:
+            return
+        self.result = source_id
+        self.Close()
+
+    def cancel_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
 class RevisionFilterRow(object):
     def __init__(self, revision, is_selected):
         self.revision_id = revision.get("id")
@@ -216,24 +432,33 @@ class FilterByRevisionWindow(forms.WPFWindow):
 
 
 class FilterByParameterWindow(forms.WPFWindow):
-    """Native-schedule-style AND rules; 8 rows built programmatically."""
+    """Native-schedule-style AND rules with source-value choices."""
 
-    RULE_COUNT = 8
-
-    def __init__(self, xaml_file_name, field_options, current_rules,
+    def __init__(self, xaml_file_name, field_options, value_options,
+                 current_rules,
                  add_params_checked):
         self._is_ready = False
         self.result = None
+        self._field_options = list(field_options or [])
+        self._value_options = value_options or {}
         forms.WPFWindow.__init__(self, xaml_file_name)
         self._rule_rows = []
         current_rules = list(current_rules or [])
-        for pos in range(self.RULE_COUNT):
+        for pos in range(max(1, len(current_rules))):
             rule = current_rules[pos] if pos < len(current_rules) else None
-            self._rule_rows.append(self._build_rule_row(field_options, rule))
+            self._rule_rows.append(self._build_rule_row(rule))
         self.addparams_cb.IsChecked = bool(add_params_checked)
         self._is_ready = True
 
-    def _build_rule_row(self, field_options, rule):
+    def _populate_value_choices(self, value_cb, field_key, text=None):
+        if text is None:
+            text = value_cb.Text or u""
+        value_cb.Items.Clear()
+        for value in self._value_options.get(field_key, []):
+            value_cb.Items.Add(value)
+        value_cb.Text = text
+
+    def _build_rule_row(self, rule):
         panel = StackPanel()
         panel.Orientation = Orientation.Horizontal
         panel.Margin = Thickness(0, 3, 0, 3)
@@ -241,53 +466,65 @@ class FilterByParameterWindow(forms.WPFWindow):
         field_cb = ComboBox()
         field_cb.Width = 240.0
         _add_combo_item(field_cb, "(none)", None)
-        for key, label in field_options:
+        for key, label in self._field_options:
             _add_combo_item(field_cb, label, key)
         op_cb = ComboBox()
         op_cb.Width = 170.0
         op_cb.Margin = Thickness(8, 0, 0, 0)
         for op_key, op_label in state.FILTER_OPS:
             _add_combo_item(op_cb, op_label, op_key)
-        value_tb = TextBox()
-        value_tb.Width = 220.0
-        value_tb.Margin = Thickness(8, 0, 0, 0)
+        value_cb = ComboBox()
+        value_cb.Width = 220.0
+        value_cb.Margin = Thickness(8, 0, 0, 0)
+        value_cb.IsEditable = True
+
+        def field_changed(sender, args):
+            del sender, args
+            self._populate_value_choices(value_cb, _combo_key(field_cb))
+        field_cb.SelectionChanged += field_changed
 
         def op_changed(sender, args):
             del sender, args
             op_key = _combo_key(op_cb)
-            value_tb.IsEnabled = op_key not in state.FILTER_OPS_NO_VALUE
+            value_cb.IsEnabled = op_key not in state.FILTER_OPS_NO_VALUE
         op_cb.SelectionChanged += op_changed
 
         if rule is not None:
             _select_combo_key(field_cb, rule[0])
             _select_combo_key(op_cb, rule[1])
-            value_tb.Text = u"{0}".format(rule[2] or u"")
+            self._populate_value_choices(
+                value_cb, rule[0], u"{0}".format(rule[2] or u""))
         else:
             field_cb.SelectedIndex = 0
             op_cb.SelectedIndex = 0
+        op_changed(None, None)
 
         panel.Children.Add(field_cb)
         panel.Children.Add(op_cb)
-        panel.Children.Add(value_tb)
+        panel.Children.Add(value_cb)
         self.rules_sp.Children.Add(panel)
-        return (field_cb, op_cb, value_tb)
+        return (field_cb, op_cb, value_cb)
+
+    def add_filter_clicked(self, sender, args):
+        del sender, args
+        self._rule_rows.append(self._build_rule_row(None))
 
     def clear_clicked(self, sender, args):
         del sender, args
-        for field_cb, op_cb, value_tb in self._rule_rows:
+        for field_cb, op_cb, value_cb in self._rule_rows:
             field_cb.SelectedIndex = 0
             op_cb.SelectedIndex = 0
-            value_tb.Text = u""
+            value_cb.Text = u""
 
     def ok_clicked(self, sender, args):
         del sender, args
         rules = []
-        for field_cb, op_cb, value_tb in self._rule_rows:
+        for field_cb, op_cb, value_cb in self._rule_rows:
             field_key = _combo_key(field_cb)
             op_key = _combo_key(op_cb)
             if field_key is None or op_key is None:
                 continue
-            rules.append((field_key, op_key, value_tb.Text or u""))
+            rules.append((field_key, op_key, value_cb.Text or u""))
         self.result = (rules, bool(self.addparams_cb.IsChecked))
         self.Close()
 
@@ -297,18 +534,17 @@ class FilterByParameterWindow(forms.WPFWindow):
 
 
 class SortWindow(forms.WPFWindow):
-    LEVEL_COUNT = 4
-
     def __init__(self, xaml_file_name, field_options, current_levels):
         self._is_ready = False
         self.result = None
+        self._field_options = list(field_options or [])
         forms.WPFWindow.__init__(self, xaml_file_name)
         self._level_rows = []
         current_levels = list(current_levels or [])
-        for pos in range(self.LEVEL_COUNT):
+        for pos in range(max(1, len(current_levels))):
             level = current_levels[pos] if pos < len(current_levels) else None
             self._level_rows.append(
-                self._build_level_row(field_options, level, pos))
+                self._build_level_row(self._field_options, level, pos))
         self._is_ready = True
 
     def _build_level_row(self, field_options, level, pos):
@@ -342,6 +578,11 @@ class SortWindow(forms.WPFWindow):
         panel.Children.Add(direction_cb)
         self.levels_sp.Children.Add(panel)
         return (field_cb, direction_cb)
+
+    def add_sort_level_clicked(self, sender, args):
+        del sender, args
+        self._level_rows.append(self._build_level_row(
+            self._field_options, None, len(self._level_rows)))
 
     def clear_clicked(self, sender, args):
         del sender, args

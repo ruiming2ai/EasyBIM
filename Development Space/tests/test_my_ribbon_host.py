@@ -660,6 +660,67 @@ class DynamoBundleTests(unittest.TestCase):
         self.assertIn('"Uuid": "3"', fresh)
         self.assertIn('"RunType": "Automatic"', fresh)
 
+    def test_an_unpatched_copy_of_a_manual_graph_is_repaired_on_the_next_sync(self):
+        """The state found on a real machine: a plain copy still saying Manual,
+        dated like the original, and a bundle.yaml still naming dynamo_path -
+        so pyRevit opens the Manual original headless and the click does
+        nothing.  Neither the date nor the yaml may vouch for that copy."""
+        _touch(self.graph, DYN_JSON_MANUAL)
+        bundle = self._bundle()
+        os.makedirs(bundle)
+        target = os.path.join(bundle, "script.dyn")
+        shutil.copyfile(self.graph, target)
+        shutil.copystat(self.graph, target)
+        with open(os.path.join(bundle, "bundle.yaml"), "w", encoding="utf-8") as handle:
+            handle.write(self.host.render_dynamo_bundle_yaml("Renumber Sheets", "tip", self.graph))
+        report = self.host.sync_dynamo_bundles({"sources": [self.source], "placements": []},
+                                               root=self.root)
+        self.assertEqual(report["errors"], [])
+        with open(target, encoding="utf-8") as handle:
+            self.assertIn('"RunType": "Automatic"', handle.read())
+        with open(os.path.join(bundle, "bundle.yaml"), encoding="utf-8") as handle:
+            self.assertNotIn("dynamo_path", handle.read())
+
+    def test_the_copy_is_current_only_when_it_is_really_automatic(self):
+        _touch(self.graph, DYN_JSON_MANUAL)
+        bundle = self._bundle()
+        os.makedirs(bundle)
+        target = os.path.join(bundle, "script.dyn")
+        shutil.copyfile(self.graph, target)
+        shutil.copystat(self.graph, target)
+        # same date as the original, but unpatched: not current
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "copied")
+        with open(target, encoding="utf-8") as handle:
+            self.assertIn('"RunType": "Automatic"', handle.read())
+        # patched and dated: current
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "current")
+
+    def test_a_manual_copy_of_a_lost_graph_is_still_made_to_run(self):
+        _touch(self.graph, DYN_JSON_MANUAL)
+        bundle = self._bundle()
+        os.makedirs(bundle)
+        target = os.path.join(bundle, "script.dyn")
+        shutil.copyfile(self.graph, target)
+        os.remove(self.graph)
+        self.assertEqual(self.host.refresh_dynamo_copy(self.source, root=self.root), "missing")
+        with open(target, encoding="utf-8") as handle:
+            self.assertIn('"RunType": "Automatic"', handle.read())
+
+    def test_the_file_pyrevit_runs_is_checked_whatever_the_facts_said(self):
+        """A wrong verdict upstream must never be silent: the report reads the
+        file pyRevit will actually open, not the facts the bundle was written
+        from."""
+        _touch(self.graph, DYN_JSON_MANUAL)
+        verdict = self.host.dynamo_needs_forced_run
+        self.host.dynamo_needs_forced_run = lambda facts: False  # the wrong verdict
+        try:
+            report = self.host.sync_dynamo_bundles({"sources": [self.source], "placements": []},
+                                                   root=self.root)
+        finally:
+            self.host.dynamo_needs_forced_run = verdict
+        self.assertTrue(any("Manual run mode" in message for message in report["errors"]),
+                        report["errors"])
+
     def test_only_a_cpython_graph_asks_for_a_clean_engine(self):
         cpython = self.host.desired_dynamo_yaml(self.source, self.host.read_dynamo_facts(self.graph))
         self.assertIn("clean: true", cpython)
@@ -671,14 +732,40 @@ class DynamoBundleTests(unittest.TestCase):
 
     def test_a_graph_whose_run_mode_cannot_be_forced_is_reported_not_hidden(self):
         """The copy is still written, but the button will not run: say so."""
-        # a second "RunType" anywhere in the file means there is no single
-        # answer, so nothing is rewritten by guesswork
-        _touch(self.graph, DYN_JSON_MANUAL.replace(
-            '"Engine": "IronPython2"', '"Engine": "IronPython2", "RunType": "Manual"'))
-        registry = {"sources": [self.source], "placements": []}
-        report = self.host.sync_dynamo_bundles(registry, root=self.root)
+        _touch(self.graph, DYN_JSON_MANUAL)
+        patch = self.host.force_automatic_run
+        self.host.force_automatic_run = lambda text: (text, False)  # nothing could be set
+        try:
+            report = self.host.sync_dynamo_bundles({"sources": [self.source], "placements": []},
+                                                   root=self.root)
+        finally:
+            self.host.force_automatic_run = patch
         self.assertTrue(any("Manual run mode" in message for message in report["errors"]),
                         report["errors"])
+
+    def test_a_bundle_no_source_claims_is_removed_on_sync(self):
+        """A second Revit session's save can drop this one's source while its
+        folder stays: a ghost button, and the next add gets a ' 2' name."""
+        self.host.write_dynamo_bundle(self.source, root=self.root)
+        ghost = os.path.join(os.path.dirname(self._bundle()), "Renumber Sheets 2.pushbutton")
+        os.makedirs(ghost)
+        _touch(os.path.join(ghost, "bundle.yaml"), "title: ghost\n")
+        report = self.host.sync_dynamo_bundles({"sources": [self.source], "placements": []},
+                                               root=self.root)
+        self.assertFalse(os.path.isdir(ghost))
+        self.assertTrue(os.path.isdir(self._bundle()))
+        self.assertIn("orphan: Renumber Sheets 2.pushbutton", report["deleted"])
+        self.assertEqual(report["errors"], [])
+
+    def test_a_claimed_bundle_is_never_taken_for_an_orphan(self):
+        other = dict(self.source, id="s2", path=os.path.join(self.tmp, "graphs", "Other.dyn"),
+                     title="Other", label="Other", bundle="Other.pushbutton")
+        _touch(other["path"], DYN_JSON)
+        registry = {"sources": [self.source, other], "placements": []}
+        self.host.sync_dynamo_bundles(registry, root=self.root)
+        self.host.sync_dynamo_bundles(registry, root=self.root)
+        self.assertEqual(sorted(self.host.existing_dynamo_bundle_names(self.root)),
+                         ["Other.pushbutton", "Renumber Sheets.pushbutton"])
 
     def test_delete_bundle_only_inside_the_library(self):
         self.host.write_dynamo_bundle(self.source, root=self.root)

@@ -26,7 +26,6 @@ RATING_BIP_NAMES = (
 )
 
 _NUMERIC_STORAGE = ("Double", "Integer")
-_USABLE_STORAGE = ("Double", "Integer", "String")
 
 
 def _storage_name(param):
@@ -275,7 +274,7 @@ def _element_readings(element, doc, source_names):
         if not name:
             continue
         storage = _storage_name(param)
-        if storage not in _USABLE_STORAGE:
+        if storage not in _NUMERIC_STORAGE or not _is_current_spec(param):
             continue
         # The instance parameter is authoritative; the type only fills a gap.
         if name in readings:
@@ -348,7 +347,8 @@ def _collect_target_options(circuits):
                     continue
             except Exception:
                 continue
-            if _storage_name(param) not in _NUMERIC_STORAGE:
+            if (_storage_name(param) not in _NUMERIC_STORAGE
+                    or not _is_current_spec(param)):
                 continue
             key = eid_to_int(param.Id)
             if key in found:

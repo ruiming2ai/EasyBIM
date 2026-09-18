@@ -359,6 +359,54 @@ class IdlingDispatcherTests(unittest.TestCase):
 
         self.assertEqual([], calls)
 
+    def test_another_sessions_change_is_applied_here_and_a_needed_reload_is_named(self):
+        calls = []
+        notices = []
+
+        class FakeMyRibbon(object):
+            @staticmethod
+            def has_pending_startup_apply():
+                return False
+
+            @staticmethod
+            def watch_registry():
+                calls.append(1)
+                return {"missing": [{"title": "New", "reason":
+                                     "tab 'X' is not on the ribbon (extension not loaded)"}]}
+
+        self.idling.my_ribbon = FakeMyRibbon
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling.auto_update = None
+        self.idling._notify = lambda message: notices.append(message)
+        self.idling._on_idling("sender", None)
+        self.assertEqual(calls, [1])
+        self.assertEqual(len(notices), 1)
+        self.assertIn("1 button need", notices[0])
+
+    def test_the_watch_waits_for_the_startup_apply(self):
+        calls = []
+
+        class FakeMyRibbon(object):
+            @staticmethod
+            def has_pending_startup_apply():
+                return True
+
+            @staticmethod
+            def run_pending_startup_apply():
+                return {}
+
+            @staticmethod
+            def watch_registry():
+                calls.append(1)
+
+        self.idling.my_ribbon = FakeMyRibbon
+        self.idling.messages = None
+        self.idling.temp_phase_close = None
+        self.idling.auto_update = None
+        self.idling._on_idling("sender", None)
+        self.assertEqual(calls, [])
+
     def test_auto_update_detaches_the_delegate_before_running(self):
         """The update can end in reload_pyrevit(), which disposes the engine
         that owns this delegate; Revit would keep invoking a dead object."""

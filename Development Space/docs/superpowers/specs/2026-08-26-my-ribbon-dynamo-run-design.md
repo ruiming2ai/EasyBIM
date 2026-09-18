@@ -126,6 +126,20 @@ Recorded so they are not re-investigated:
 Nothing here has run in Revit. In order of risk:
 
 1. A graph saved in Manual run mode: add it, Apply, reload, click - it runs.
+   **Found failing on 2026-09-01** (Dynamo 3.x, Manual, no UI nodes): the bundle's
+   `script.dyn` still said Manual and `bundle.yaml` still named `dynamo_path`, so
+   pyRevit opened the Manual original headless and the click did nothing. The
+   run mode was decided by a `json.loads` walk to `View.Dynamo.RunType` while the
+   patch worked by regex - two readings, and the verdict that gated every guard
+   downstream came from the one that failed on the real file. Fixed by reading
+   the run mode with the patch's own regex (`run_type_in_text`), verifying an
+   existing copy really says Automatic instead of trusting its date, and reading
+   back the file pyRevit actually runs regardless of the facts. Re-verify this
+   item after that change. **Refused again on 2026-09-07**: the same graph
+   names `RunType` twice and the patch demanded exactly one, handing the copy
+   back still Manual - which the new readback reported, as designed. The patch
+   now sets every run mode the file names; a run-mode key can only mean run
+   mode, so that cannot corrupt a file.
 2. An Automatic graph still runs from its own location and picks up an edit
    with no Apply.
 3. A CPython3 graph runs, and its `bundle.yaml` carries `clean: true`.

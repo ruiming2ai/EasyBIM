@@ -9,6 +9,7 @@ interactivity is wired at grid level or on programmatically built headers.
 
 from __future__ import print_function
 
+import os
 import time
 
 import clr
@@ -57,6 +58,7 @@ import sheet_manager_dialogs as dialogs
 import sheet_manager_revit as smrevit
 import sheet_manager_state as state
 import sheet_manager_xlsx as smxlsx
+import sheet_manager_comparison_revit as smcompare
 
 
 LOGGER = script.get_logger()
@@ -210,6 +212,7 @@ class SheetManagerWindow(forms.WPFWindow):
         self._source_label = "All Sheets"
         self._selectall_cb = None
         self._source_order = None
+        self._custom_excel_batch = None
         self._all_revision_ids = set()
         self._revision_filter_ids = set()
         self._param_rules = []
@@ -221,7 +224,8 @@ class SheetManagerWindow(forms.WPFWindow):
         self._last_sync = time.time()
         self._editing_row = None
         self._revit_buttons = [
-            self.loadsheetlist_b, self.loadprintset_b, self.filterparam_b,
+            self.loadcustomexcel_b, self.loadsheetlist_b, self.loadprintset_b,
+            self.filterparam_b,
             self.addtbparam_b, self.addsheetparam_b, self.saveprintset_b,
             self.selecttblocks_b, self.apply_b, self.refresh_b,
             self.pdfexport_b, self.print_b,
@@ -684,21 +688,29 @@ class SheetManagerWindow(forms.WPFWindow):
 
     # ---------------------------------------------------------- refresh
 
+    def _source_rows(self):
+        """Rows in the active source, before search/filter/sort processing."""
+        rows = list(self._all_rows)
+        if self._source_order is None:
+            return rows
+        by_id = {}
+        for row in rows:
+            by_id[row.sheet_id] = row
+        scoped = [by_id[sheet_id] for sheet_id in self._source_order
+                  if sheet_id in by_id]
+        scoped += [row for row in rows if row.is_pending]
+        if self._custom_excel_batch is not None:
+            scoped.sort(key=lambda row: getattr(
+                row, "custom_excel_order", 1000000000))
+        return scoped
+
     def _refresh_visible_rows(self, preserve_selection=False):
         selected_ids = None
         if preserve_selection:
             selected_ids = set(
                 id(item) for item in self.sheets_dg.SelectedItems
                 if isinstance(item, SheetRow))
-        rows = self._all_rows
-        if self._source_order is not None:
-            by_id = {}
-            for row in rows:
-                by_id[row.sheet_id] = row
-            scoped = [by_id[sheet_id] for sheet_id in self._source_order
-                      if sheet_id in by_id]
-            scoped += [row for row in rows if row.is_pending]
-            rows = scoped
+        rows = self._source_rows()
         rows = state.search_rows(rows, self._columns, self._search_text)
         rows = state.filter_rows_by_revisions(
             rows, self._columns, self._revision_filter_ids,
@@ -939,9 +951,20 @@ class SheetManagerWindow(forms.WPFWindow):
                 continue
             if column_key.startswith("p:") or column_key.startswith("tb:"):
                 wanted.append(column_key)
+        self._prefetch_filter_parameter_values(
+            wanted, rows if rows is not None else self._all_rows)
+
+    def _prefetch_filter_parameter_values(self, column_keys, rows):
+        """Cache unshown sheet/title-block parameters for the supplied rows."""
+        wanted = []
+        for column_key in column_keys:
+            if (column_key.startswith("p:") or
+                    column_key.startswith("tb:")) \
+                    and column_key not in wanted:
+                wanted.append(column_key)
         if not wanted:
             return
-        for row in (rows if rows is not None else self._all_rows):
+        for row in rows:
             if row.is_pending:
                 continue
             for column_key in wanted:
@@ -1031,6 +1054,82 @@ class SheetManagerWindow(forms.WPFWindow):
         self._source_label = "All Sheets"
         self.search_tb.Text = u""
         self._search_text = u""
+        self._refresh_visible_rows()
+
+    def load_customized_excel(self, sender, args):
+        del sender, args
+        self._commit_pending_edit()
+        if self._block_if_staged_changes("Load Customized Excel"):
+            return
+        self._run_in_revit(
+            "Load Customized Excel", self._load_customized_excel_work)
+
+    def _load_customized_excel_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
+        excel_path = forms.pick_file(
+            files_filter=(
+                "Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm|"
+                "All files (*.*)|*.*"),
+            restore_dir=True,
+            multi_file=False)
+        if not excel_path:
+            return
+        try:
+            read_result = excel_print_sets.read_visible_excel_rows(excel_path)
+        except excel_print_sets.UnsupportedExcelFile as error:
+            self._alert(str(error), title="Load Customized Excel")
+            return
+        except Exception as error:
+            LOGGER.debug("Failed to read customized Excel: %s", error)
+            self._alert("Failed to import the Excel file.",
+                        expanded=str(error), title="Load Customized Excel")
+            return
+
+        session = excel_print_sets.ExcelPrintSetSession(
+            read_result.rows, smrevit.collect_sheets(self._doc))
+        template_options = smrevit.collect_sheet_template_options(self._doc)
+        comparison_sources = smcompare.collect_sources(self._doc)
+
+        def compare_source(source_key):
+            # This modal dialog runs within the same ExternalEvent Execute.
+            # Always compare original workbook rows, not staged/ignored matches.
+            return smcompare.read_comparison(self._doc, session.rows, source_key)
+
+        dialog = self._show_dialog(dialogs.LoadCustomizedExcelWindow(
+            "LoadCustomizedExcelDialog.xaml", excel_path, session,
+            read_result.warning, template_options, comparison_sources,
+            compare_source))
+        if not dialog.result:
+            return
+        batch = state.CustomizedExcelBatch()
+        source_order = []
+        by_id = dict((row.sheet_id, row) for row in self._all_rows)
+        name_column = state.columns_by_key(self._columns).get("name")
+        for imported in dialog.result:
+            if imported.is_pending:
+                row = SheetRow(None, imported.number, imported.name,
+                               False, 0)
+                row.template_sheet_id = imported.template_sheet_id
+                row.custom_excel_order = imported.index
+                state.populate_row(row, self._columns, {})
+                state.mark_pending_row_dirty(row, self._columns)
+                self._all_rows.append(row)
+                batch.include_pending_row(row)
+                continue
+            sheet_id = eid_to_int(imported.revit_sheet.Id)
+            row = by_id.get(sheet_id)
+            if row is None:
+                continue
+            row.custom_excel_order = imported.index
+            source_order.append(sheet_id)
+            if imported.stage_name and name_column is not None:
+                if state.apply_cell_edit(
+                        row, name_column, imported.source_row.sheet_name):
+                    batch.include_cell(row, name_column.attr)
+        self._source_order = source_order
+        self._custom_excel_batch = batch if batch.has_changes() else None
+        self._source_label = u"Customized Excel: {0}".format(
+            os.path.basename(excel_path))
         self._refresh_visible_rows()
 
     def load_sheet_list(self, sender, args):
@@ -1219,6 +1318,34 @@ class SheetManagerWindow(forms.WPFWindow):
                     (key, state.TB_HEADER_PREFIX + param_name))
         return options
 
+    def _filter_value_options(self, field_options, rows):
+        """Distinct value choices for every filter field in the active source.
+
+        Displayed fields are read from the staged grid.  All other sheet and
+        title-block fields are prefetched here while the caller has a Revit
+        API context, keeping the dialog itself and live filtering API-free.
+        """
+        column_map = state.columns_by_key(self._columns)
+        extra_keys = []
+        for field_key, _ in field_options:
+            if field_key in column_map:
+                continue
+            if field_key.startswith("p:") or field_key.startswith("tb:"):
+                extra_keys.append(field_key)
+        self._prefetch_filter_parameter_values(extra_keys, rows)
+
+        choices = {}
+        for field_key, _ in field_options:
+            column = column_map.get(field_key)
+            values = []
+            for row in rows:
+                if column is not None:
+                    values.append(getattr(row, column.attr, None))
+                else:
+                    values.append(self._extra_filter_lookup(row, field_key))
+            choices[field_key] = state.distinct_filter_values(values)
+        return choices
+
     def filter_by_parameter(self, sender, args):
         del sender, args
         self._run_in_revit("Filter By Parameter",
@@ -1227,8 +1354,11 @@ class SheetManagerWindow(forms.WPFWindow):
     def _filter_by_parameter_work(self, uiapp):
         self._require_doc(uiapp, must_be_active=False)
         self._ensure_param_info()
+        field_options = self._filter_field_options()
+        value_options = self._filter_value_options(
+            field_options, self._source_rows())
         dialog = self._show_dialog(dialogs.FilterByParameterWindow(
-            "FilterByParameterDialog.xaml", self._filter_field_options(),
+            "FilterByParameterDialog.xaml", field_options, value_options,
             self._param_rules, False))
         if dialog.result is None:
             return
@@ -1359,6 +1489,8 @@ class SheetManagerWindow(forms.WPFWindow):
     def export_to_excel(self, sender, args):
         del sender, args
         self._commit_pending_edit()
+        if self._block_if_staged_changes("Export to Excel"):
+            return
         if not smxlsx.XLSXWRITER_AVAILABLE:
             self._alert(
                 "The 'xlsxwriter' module is not available in this "
@@ -1391,6 +1523,8 @@ class SheetManagerWindow(forms.WPFWindow):
     def import_from_excel(self, sender, args):
         del sender, args
         self._commit_pending_edit()
+        if self._block_if_staged_changes("Import from Excel"):
+            return
         file_path = forms.pick_file(
             files_filter="Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm"
                          "|All files (*.*)|*.*")
@@ -1782,13 +1916,21 @@ class SheetManagerWindow(forms.WPFWindow):
     def apply_changes(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        changes = state.compute_staged_changes(self._all_rows, self._columns)
-        changes.copy_content_ops = list(self._copy_content_ops)
+        all_changes = state.compute_staged_changes(
+            self._all_rows, self._columns)
+        all_changes.copy_content_ops = list(self._copy_content_ops)
+        batch = self._custom_excel_batch
+        changes = batch.select(all_changes) if batch is not None \
+            else all_changes
         if changes.is_empty():
-            self._alert("No staged changes to apply.", title="Sheet Manager")
+            message = "No staged changes to apply."
+            if batch is not None:
+                message = "No staged Customized Excel changes to apply."
+            self._alert(message, title="Sheet Manager")
             return
-        empty_rows, duplicate_groups = \
-            state.find_number_problems(self._all_rows)
+        number_rows = self._all_rows if batch is None else \
+            list(changes.pending_sheets)
+        empty_rows, duplicate_groups = state.find_number_problems(number_rows)
         if empty_rows or duplicate_groups:
             lines = []
             for row in empty_rows:
@@ -1825,10 +1967,23 @@ class SheetManagerWindow(forms.WPFWindow):
         def done(payload):
             results, stale = payload
             self._post_apply_refresh(results, stale)
+            if batch is not None:
+                batch.record_applied(results.applied_cells)
+                self._refresh_custom_excel_source_order()
+                if not batch.has_changes():
+                    self._custom_excel_batch = None
             self._show_dialog(dialogs.ApplyResultsWindow(
                 "ApplyResultsDialog.xaml", results))
 
         self._run_in_revit("Apply Changes", work, done)
+
+    def _refresh_custom_excel_source_order(self):
+        rows = [row for row in self._all_rows
+                if hasattr(row, "custom_excel_order")
+                and row.sheet_id is not None and not row.is_missing]
+        rows.sort(key=lambda row: row.custom_excel_order)
+        self._source_order = [row.sheet_id for row in rows]
+        self._refresh_visible_rows(preserve_selection=True)
 
     def _confirm_link_reload(self, title):
         choice = self._alert(
@@ -1836,7 +1991,40 @@ class SheetManagerWindow(forms.WPFWindow):
             options=["Reload links", "Skip"])
         return choice == "Reload links"
 
-    def _reload_and_post_command(self, action_title, command_member_name):
+    def _checked_print_sheets(self, action_title):
+        if self._block_if_staged_changes(action_title):
+            return None
+        checked = [row for row in self._visible_rows
+                   if row.is_selected and not row.is_pending
+                   and not row.is_missing
+                   and row.sheet_id in self._sheets_by_id]
+        if not checked:
+            self._alert(
+                "Check at least one sheet row first (checkbox column).",
+                title=action_title)
+            return None
+        sheets = [self._sheets_by_id[row.sheet_id] for row in checked]
+        non_printable = [sheet for sheet in sheets
+                         if not bool(getattr(sheet, "CanBePrinted", False))]
+        if non_printable:
+            self._alert(
+                "Uncheck non-printable placeholder sheet(s) before "
+                "continuing.", title=action_title)
+            return None
+        return sheets
+
+    def _block_if_staged_changes(self, action_title):
+        changes = state.compute_staged_changes(self._all_rows, self._columns)
+        changes.copy_content_ops = list(self._copy_content_ops)
+        if changes.is_empty():
+            return False
+        self._alert(
+            "Apply Changes before {0}. Staged edits are shown in red."
+            .format(action_title), title="Sheet Manager")
+        return True
+
+    def _reload_and_post_command(self, action_title, command_member_name,
+                                 sheets):
         def work(uiapp):
             should_reload = self._confirm_link_reload(action_title)
             if should_reload:
@@ -1845,6 +2033,9 @@ class SheetManagerWindow(forms.WPFWindow):
                 if items:
                     self._show_dialog(dialogs.ReloadLinksResultsWindow(
                         "ReloadLinksResultsDialog.xaml", items))
+            self._require_doc(uiapp, must_be_active=True)
+            print_sets.set_in_session_print_set(
+                self._doc, sheets, DB, HOST_APP)
             try:
                 from Autodesk.Revit.UI import PostableCommand
                 command = getattr(PostableCommand, command_member_name, None)
@@ -1870,12 +2061,16 @@ class SheetManagerWindow(forms.WPFWindow):
     def pdf_export(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        self._reload_and_post_command("PDF Export", "ExportPDF")
+        sheets = self._checked_print_sheets("PDF Export")
+        if sheets:
+            self._reload_and_post_command("PDF Export", "ExportPDF", sheets)
 
     def print_sheets(self, sender, args):
         del sender, args
         self._commit_pending_edit()
-        self._reload_and_post_command("Print", "Print")
+        sheets = self._checked_print_sheets("Print")
+        if sheets:
+            self._reload_and_post_command("Print", "Print", sheets)
 
 
 # ------------------------------------------------------------ launcher

@@ -38,6 +38,7 @@ WINDOW_CLASSES = {
     "CredentialsWindow.xaml": "CredentialsWindow",
     "TabVisibilityWindow.xaml": "TabVisibilityWindow",
     "DynamoButtonWindow.xaml": "DynamoButtonWindow",
+    "ImportResultsDialog.xaml": "ImportResultsWindow",
 }
 
 EXPECTED_MODULES = (
@@ -313,16 +314,18 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertIn("set_tabs_hidden", _function_source(STATE_MODULE, "set_hide_tab"))
         self.assertIn("replace_hidden_tabs", _function_source(UI_MODULE, "show_hide_tabs_click"))
 
-    def test_remove_keeps_files_and_uninstall_stages_the_delete(self):
+    def test_remove_keeps_files_and_only_a_dynamo_button_is_deleted(self):
         remove = _function_source(UI_MODULE, "remove_source_click")
-        uninstall = _function_source(UI_MODULE, "uninstall_source_click")
         # Remove stages a delete only for a Dynamo button, which is nothing but
         # the bundle My Ribbon wrote
         self.assertEqual(remove.count("pending_deletes.append"), 1)
         self.assertIn('source.get("kind") == "dynamo"', remove)
-        self.assertIn("pending_deletes.append(source)", uninstall)
-        self.assertIn('installed_by_my_ribbon', uninstall)
-        self.assertIn("installed_by_my_ribbon", _function_source(UI_MODULE, "_refresh_buttons"))
+        # Uninstalling an extension belongs to pyRevit's Extensions window, so
+        # neither the button nor its handler may come back here
+        self.assertEqual(_function_source(UI_MODULE, "uninstall_source_click"), u"")
+        self.assertNotIn("uninstall_btn", _code_without_prose(UI_MODULE))
+        xaml = (COMMAND_DIR / "MyRibbonWindow.xaml").read_text(encoding="utf-8")
+        self.assertNotIn("uninstall", xaml.lower())
 
     def test_a_manual_graph_is_the_one_case_that_runs_from_our_copy(self):
         """pyRevit opens a graph saved in Manual run mode and never runs it, so
@@ -340,8 +343,45 @@ class MyRibbonContractTests(unittest.TestCase):
         self.assertNotIn("io.open(path, \"w", forced)
         # and the patch is one textual substitution, never a re-serialisation
         force = _function_source(STATE_MODULE, "force_automatic_run")
-        self.assertIn("len(found) != 1", force)
+        # every run-mode value the file names is set, never just the first
+        self.assertIn("pattern.sub(_patch, raw)", force)
         self.assertNotIn("json.dumps", force)
+
+    def test_the_run_mode_is_verified_on_the_file_pyrevit_runs(self):
+        """Detection, patching and verification read the same text, so a wrong
+        verdict upstream can never be silent."""
+        self.assertIn("run_type_in_text(", _function_source(STATE_MODULE, "dynamo_facts_from_text"))
+        refresh = _function_source(HOST_MODULE, "refresh_dynamo_copy")
+        # the date alone never vouches for a copy that had to be patched
+        self.assertIn("if patching and not _names_a_run_mode_other_than_automatic(target)", refresh)
+        sync = _function_source(HOST_MODULE, "sync_dynamo_bundles")
+        self.assertIn("read_dynamo_run_type(runs)", sync)
+        # the report must not be gated on the facts it is there to check
+        self.assertNotIn("dynamo_needs_forced_run(facts) and", sync)
+
+    def test_apply_reads_the_file_first_and_never_keeps_a_ghost_bundle(self):
+        """An outdated window replays only its own changes onto the file as it
+        is now; a bundle no source claims goes; a replace-mode import is the
+        one write that means to overwrite."""
+        apply_body = _function_source(SCRIPT_MODULE, "_apply")
+        self.assertIn("my_ribbon.load_registry()", apply_body)
+        self.assertIn("state.replay_changes(", apply_body)
+        self.assertLess(apply_body.index("replay_changes("), apply_body.index("sync_dynamo_bundles("))
+        self.assertLess(apply_body.index("dedupe_registry("), apply_body.index("save_registry("))
+        run = _function_source(SCRIPT_MODULE, "_run")
+        self.assertIn('merge_with_disk=(outcome.get("mode") != "replace")', run)
+        self.assertIn("state.dedupe_registry(saved)", run)
+        sync = _function_source(HOST_MODULE, "sync_dynamo_bundles")
+        self.assertIn('"orphan: {0}"', sync)
+        consumers = _function_source(IDLING_MODULE, "_run_consumers")
+        self.assertLess(consumers.index("_run_my_ribbon_apply"), consumers.index("_run_my_ribbon_watch"))
+        self.assertLess(consumers.index("_run_my_ribbon_watch"), consumers.index("_run_auto_update"))
+        xaml = (COMMAND_DIR / "ImportResultsDialog.xaml").read_text(encoding="utf-8")
+        for name in ("extensions", "buttons", "tabs", "panels", "settings"):
+            self.assertIn('x:Name="{0}_tab"'.format(name), xaml)
+            self.assertIn('x:Name="{0}_dg"'.format(name), xaml)
+        for name in ("SourceSelectionWindow.xaml", "MyRibbonWindow.xaml", "bundle.yaml"):
+            self.assertNotIn("Dynamo graph", (COMMAND_DIR / name).read_text(encoding="utf-8"), name)
 
     def test_the_clean_engine_is_asked_for_by_cpython_graphs_only(self):
         desired = _function_source(HOST_MODULE, "desired_dynamo_yaml")
@@ -401,9 +441,11 @@ class MyRibbonContractTests(unittest.TestCase):
 
     def test_reload_only_after_the_window_closed_and_only_from_the_main_loop(self):
         script = _code_without_prose(SCRIPT_MODULE)
-        self.assertEqual(script.count("host.reload_pyrevit()"), 1)
         run = _function_source(SCRIPT_MODULE, "_run")
-        self.assertIn("host.reload_pyrevit()", run)
+        # Apply reloads, and so does Import now that it applies itself. Both
+        # calls belong to the main loop; a window or _apply must never reload.
+        self.assertEqual(script.count("host.reload_pyrevit()"), 2)
+        self.assertEqual(run.count("host.reload_pyrevit()"), 2)
         self.assertLess(run.index("window.ShowDialog()"), run.index("host.reload_pyrevit()"))
         self.assertNotIn("reload_pyrevit", _function_source(SCRIPT_MODULE, "_apply"))
         self.assertNotIn("reload_pyrevit", _code_without_prose(UI_MODULE))
@@ -446,20 +488,34 @@ class MyRibbonContractTests(unittest.TestCase):
 
     def test_import_still_installs_what_this_computer_lacks(self):
         """The two cards went; the code behind them is Import's, and stays."""
-        imported = _function_source(SCRIPT_MODULE, "_import")
-        self.assertIn("_download_git", imported)
-        self.assertIn("_install_from_catalogue", imported)
-        self.assertIn("catalogue_packages", imported)
-        self.assertIn('kind == "installed"', imported)
+        one = _function_source(SCRIPT_MODULE, "_download_one")
+        self.assertIn("_download_git(", one)
+        self.assertIn("_install_from_catalogue(", one)
+        self.assertIn("host.catalogue_packages(", one)
         # a source downloaded again survives a Remove staged earlier in the session
-        self.assertEqual(imported.count("_forget_pending_delete"), 4)
+        self.assertEqual(one.count("_forget_pending_delete"), 3)
+        # every path ends in the report: installed, or named with a reason
+        self.assertEqual(one.count('outcome["downloaded"]'), 3)
+        self.assertEqual(one.count('outcome["failed"]'), 2)
+        imported = _function_source(SCRIPT_MODULE, "_import")
+        self.assertIn("_download_one(", imported)
+        self.assertIn("forms.ProgressBar(", imported)
+        # a tab can be a pyRevit extension too, so both kinds reach the download
+        self.assertIn('kind == "ribbon"', _function_source(SCRIPT_MODULE, "_needs_download"))
 
-    def test_installed_sources_carry_the_git_remote_when_available(self):
-        """The add flow reads the git remote so the export is downloadable."""
-        flow = _function_source(SCRIPT_MODULE, "_add_source_flow")
-        self.assertIn("remote_url", flow)
-        self.assertIn("parse_git_url", flow)
-        self.assertIn('"url"', flow)
+    def test_installed_sources_carry_a_download_handle_when_available(self):
+        """Add and export both record where an installed extension came from.
+
+        A cloned extension has a git remote; one placed by pyRevit's own
+        installer has none, and then only the catalogue can name it - so the
+        helper must try both or built-in extensions export with no handle.
+        """
+        helper = _function_source(SCRIPT_MODULE, "_installed_source_url")
+        self.assertIn("host.remote_url(", helper)
+        self.assertIn("state.parse_git_url(", helper)
+        self.assertIn("host.catalogue_packages(", helper)
+        for name in ("_add_source_flow", "_export"):
+            self.assertIn("_installed_source_url", _function_source(SCRIPT_MODULE, name), name)
 
     def test_downloads_are_cancellable_and_probed_first(self):
         clone = _function_source(SCRIPT_MODULE, "_clone_with_progress")

@@ -1,0 +1,16 @@
+title: "Damper\nCheck"
+tooltip: >-
+  Find every HVAC end branch that has no isolation damper.
+
+  Tick once which duct accessory (or other) family types count as
+  dampers - remembered by name on this computer - then every air
+  terminal is traced back through the physical duct connections to
+  its nearest damper, or to the equipment, an open end, or nothing
+  at all. One damper may serve up to N terminals; change N live in
+  the report. Branches never assigned to a system are traced like any
+  other and named as such.
+
+  The scan changes nothing. Findings you set aside with Ignore move to
+  an Ignored group, and that list is stored in the model, so it comes
+  back next time and reaches the team after a Sync to Central.
+author: Ruiming Liu

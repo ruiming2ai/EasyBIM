@@ -7,7 +7,9 @@ before marking itself done could be entered twice - stacking a second dialog
 and, for the coordination report, consuming the recorded warnings twice.
 """
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import sys
 import time
@@ -103,9 +105,10 @@ class StartupJobStageOrderingTests(unittest.TestCase):
         job = self._job("run_report")
         observed = {}
 
-        def _report(doc):
+        def _report(doc, uiapp=None):
             del doc
             observed["stage_during_modal"] = job["stage"]
+            observed["uiapp"] = uiapp
 
         with mock.patch.object(
             self.messages, "_print_coordination_review_report", side_effect=_report
@@ -119,6 +122,8 @@ class StartupJobStageOrderingTests(unittest.TestCase):
             self.messages._process_startup_job(self.uiapp, job, self.NOW)
 
         self.assertEqual("done", observed["stage_during_modal"])
+        # The Idling sender is the only live UIApplication in that engine.
+        self.assertIs(self.uiapp, observed["uiapp"])
 
     def test_file_open_trigger_is_consumed_before_the_alert_opens(self):
         observed = {}
@@ -162,6 +167,395 @@ class StartupJobStageOrderingTests(unittest.TestCase):
         ):
             # Must not raise.
             self.messages._print_coordination_review_report(self.doc)
+
+    def test_report_keeps_captured_warnings_for_reruns(self):
+        """Start Message can be re-run: the report must read the passively
+        captured warnings without consuming them, or the second run shows a
+        bogus Detection Error.  hooks/doc-closing.py clears them on close."""
+        calls = []
+        fake_passive = types.ModuleType("easybim.coordination_review_passive")
+
+        def _build(doc, consume=True):
+            calls.append(consume)
+            return {"doc_title": "sample.rvt"}
+
+        fake_passive.build_passive_coordination_report = _build
+        fake_passive.unregister_passive_detector = lambda: None
+
+        with mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_show_coordination_review_dialog", return_value=True
+        ):
+            self.messages._print_coordination_review_report(self.doc)
+            self.messages._print_coordination_review_report(self.doc)
+
+        self.assertEqual(calls, [False, False])
+
+
+class EmptyReportDiagnosisTests(unittest.TestCase):
+    """An empty capture must explain itself instead of showing a bare
+    Detection Error, and must fall back to Revit's own warning list when that
+    list still holds the warning the listener missed."""
+
+    def setUp(self):
+        self.messages = _load_messages()
+        self.doc = FakeDocument()
+
+    def _empty_report(self, **capture):
+        return {"detection_error": True, "capture": dict(capture)}
+
+    def test_verdict_and_text_are_attached_to_the_report(self):
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=3), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=0), \
+                mock.patch.object(self.messages, "_count_monitoring_elements", return_value=0):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1, registered_now=True, failures_seen=2),
+                self.doc,
+            )
+
+        self.assertEqual(report["diagnosis"]["code"], "not_applicable")
+        self.assertIn("Copy/Monitor", report["diagnosis_text"])
+
+    def test_warning_list_hit_recovers_the_links(self):
+        recovered = {"grouped": {"7": {"Needs Coordination Review": {"count": 1}}}}
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=2), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=1), \
+                mock.patch.object(self.messages, "_build_coordination_report", return_value=recovered):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=0), self.doc
+            )
+
+        self.assertFalse(report["detection_error"])
+        self.assertEqual(report["source"], "revit_warning_list")
+        self.assertEqual(report["grouped"], recovered["grouped"])
+        self.assertEqual(report["diagnosis"]["code"], "warning_list")
+
+    def test_warning_list_hit_without_usable_links_keeps_the_verdict(self):
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=2), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=1), \
+                mock.patch.object(self.messages, "_build_coordination_report", return_value={"grouped": {}}):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1), self.doc
+            )
+
+        self.assertTrue(report["detection_error"])
+        self.assertEqual(report["diagnosis"]["code"], "warning_list")
+
+    def test_copy_monitor_pass_is_skipped_once_the_verdict_is_settled(self):
+        """The only costly probe must not run when cheaper evidence decides."""
+        monitoring = mock.Mock(return_value=0)
+        with mock.patch.object(self.messages, "_count_link_instances", return_value=0), \
+                mock.patch.object(self.messages, "_count_warning_list_matches", return_value=0), \
+                mock.patch.object(self.messages, "_count_monitoring_elements", monitoring):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1, registered_now=True), self.doc
+            )
+
+        monitoring.assert_not_called()
+        self.assertEqual(report["diagnosis"]["code"], "no_links")
+
+    def test_a_broken_probe_never_breaks_the_report(self):
+        with mock.patch.object(
+            self.messages, "_count_link_instances", side_effect=RuntimeError("boom")
+        ):
+            report = self.messages._diagnose_empty_coordination_report(
+                self._empty_report(register_count=1), self.doc
+            )
+
+        self.assertTrue(report["detection_error"])
+
+    def _run_report(self, computed=None, computed_error=None):
+        """Drive _print_coordination_review_report and capture what it shows."""
+        observed = {}
+        fake_passive = types.ModuleType("easybim.coordination_review_passive")
+        fake_passive.build_passive_coordination_report = lambda doc, consume=True: {
+            "detection_error": True,
+            "capture": {"register_count": 0},
+        }
+        fake_passive.unregister_passive_detector = lambda source="": None
+
+        if computed_error is not None:
+            build = mock.Mock(side_effect=computed_error)
+        else:
+            build = mock.Mock(return_value=computed)
+
+        with mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_build_computed_coordination_report", build
+        ), mock.patch.object(
+            self.messages, "_count_link_instances", return_value=2
+        ), mock.patch.object(
+            self.messages, "_count_warning_list_matches", return_value=0
+        ), mock.patch.object(
+            self.messages, "_count_monitoring_elements", return_value=5
+        ), mock.patch.object(
+            self.messages,
+            "_show_coordination_review_dialog",
+            side_effect=lambda report, doc=None, uiapp=None: observed.setdefault("report", report)
+            or True,
+        ):
+            self.messages._print_coordination_review_report(self.doc)
+        return observed["report"], build
+
+    def test_the_computed_comparison_replaces_the_captured_warning(self):
+        """Detection no longer waits for Revit's one-shot warning: the report
+        shown is the comparison of the monitored links."""
+        computed = {
+            "source": "computed",
+            "monitored_link_count": 2,
+            "problem_count": 1,
+            "total_issues": 3,
+            "links": [{"link_id": 7, "name": "ARCH.rvt", "issue_count": 3}],
+        }
+        report, build = self._run_report(computed=computed)
+
+        self.assertIs(report, computed)
+        self.assertNotIn("diagnosis", report)
+        # The captured warning is handed over only as a per-link hint.
+        passive_report = build.call_args[0][1]
+        self.assertTrue(passive_report.get("detection_error"))
+
+    def test_a_failed_comparison_falls_back_to_the_diagnosed_report(self):
+        report, _build = self._run_report(computed_error=RuntimeError("collector blew up"))
+
+        self.assertTrue(report["detection_error"])
+        self.assertEqual(report["diagnosis"]["code"], "listener_off")
+
+
+class FakeOutput(object):
+    """pyRevit's output console: the HTML fallback when WPF will not open."""
+
+    def __init__(self):
+        self.html = ""
+
+    def print_html(self, html):
+        self.html = html
+
+
+class FallbackRendererTests(unittest.TestCase):
+    """When the WPF window fails to build, the report is printed into pyRevit's
+    output console instead.  Those renderers were written for the old
+    warning-shaped report, so a computed one used to print "No Revit links
+    found in this document" over a model with real differences - a false
+    all-clear on the backup screen."""
+
+    def setUp(self):
+        self.messages = _load_messages()
+
+    def _computed(self, **overrides):
+        report = {
+            "doc_title": "11070-MHGC-AEI-001",
+            "source": "computed",
+            "monitored_link_count": 4,
+            "checked_count": 4,
+            "problem_count": 1,
+            "total_issues": 3,
+            "links": [
+                {
+                    "link_id": 11,
+                    "name": "ARCH.rvt",
+                    "issue_count": 3,
+                    "estimated_count": 1,
+                    "monitoring_count": 12,
+                    "error": "",
+                    "report": {
+                        "groups": [
+                            {"kind": "level_moved", "title": "Level moved", "issues": [{}, {}]},
+                            {
+                                "kind": "element_moved",
+                                "title": "Element moved",
+                                "estimated": True,
+                                "issues": [{}],
+                            },
+                        ]
+                    },
+                },
+                {
+                    "link_id": 12,
+                    "name": "STR.rvt",
+                    "issue_count": 0,
+                    "monitoring_count": 5,
+                    "error": "",
+                    "report": {"groups": []},
+                },
+            ],
+        }
+        report.update(overrides)
+        return report
+
+    def test_html_fallback_reports_the_computed_differences(self):
+        output = FakeOutput()
+        self.messages._render_report_html(output, self._computed())
+
+        self.assertNotIn("No Revit links found in this document", output.html)
+        self.assertIn("11070-MHGC-AEI-001", output.html)
+        self.assertIn("3 differences across 1 link of 4 monitored links", output.html)
+        self.assertIn("ARCH.rvt", output.html)
+        self.assertIn("3 differences found (12 monitored elements)", output.html)
+        self.assertIn("Level moved: 2", output.html)
+        self.assertIn("Element moved (estimated): 1", output.html)
+        # A clean link still gets a row, as in the window.
+        self.assertIn("STR.rvt", output.html)
+        self.assertIn("No differences found (5 monitored elements)", output.html)
+
+    def test_html_fallback_states_the_proved_not_applicable(self):
+        output = FakeOutput()
+        self.messages._render_report_html(
+            output, self._computed(monitored_link_count=0, checked_count=0, links=[])
+        )
+
+        self.assertIn("Nothing in this model uses Copy/Monitor", output.html)
+        self.assertNotIn("No Revit links found in this document", output.html)
+
+    def test_html_fallback_still_renders_a_warning_shaped_report(self):
+        """The passive report is still what shows when the comparison fails."""
+        output = FakeOutput()
+        self.messages._render_report_html(
+            output,
+            {
+                "doc_title": "Tower.rvt",
+                "link_map": {7: {"name": "ARCH.rvt"}},
+                "grouped": {7: {"Needs Coordination Review": {"count": 1, "instance_ids": set()}}},
+                "link_totals": {7: 1},
+                "total_matching_warnings": 1,
+                "total_link_assignments": 1,
+            },
+        )
+
+        self.assertIn("ARCH.rvt", output.html)
+        self.assertIn("Needs Coordination Review", output.html)
+
+    def test_text_fallback_reports_the_computed_differences(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.messages._render_report_text(self._computed())
+        text = buffer.getvalue()
+
+        self.assertNotIn("No Revit links found in this document", text)
+        self.assertIn("3 differences across 1 link of 4 monitored links", text)
+        self.assertIn("ARCH.rvt", text)
+        self.assertIn("Level moved: 2", text)
+
+    def test_text_fallback_still_renders_a_warning_shaped_report(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.messages._render_report_text(
+                {
+                    "doc_title": "Tower.rvt",
+                    "link_map": {7: {"name": "ARCH.rvt"}},
+                    "grouped": {7: {"Needs Coordination Review": {"count": 1, "instance_ids": set()}}},
+                    "link_totals": {7: 1},
+                }
+            )
+        self.assertIn("ARCH.rvt", buffer.getvalue())
+
+    def test_a_computed_report_is_recognised_without_the_source_marker(self):
+        self.assertTrue(self.messages._is_computed_report({"links": []}))
+        self.assertTrue(self.messages._is_computed_report({"source": "computed"}))
+        self.assertFalse(self.messages._is_computed_report({"link_map": {}, "grouped": {}}))
+        self.assertFalse(self.messages._is_computed_report({}))
+
+    def test_a_failing_fallback_never_escapes_the_report(self):
+        """_print_coordination_review_report swallows fallback failures; a
+        broken console must not take Start Message down with it."""
+        computed = self._computed()
+        with mock.patch.object(
+            self.messages, "_show_coordination_review_dialog", return_value=False
+        ), mock.patch.object(
+            self.messages, "_build_computed_coordination_report", return_value=computed
+        ), mock.patch.object(
+            self.messages, "_get_output_window", return_value=None
+        ), mock.patch.object(
+            self.messages, "_render_report_text", side_effect=RuntimeError("no stream")
+        ), mock.patch.object(
+            self.messages, "_disable_passive_coordination_review_detector"
+        ):
+            self.messages._print_coordination_review_report(FakeDocument())
+
+
+class FakeControlledApp(object):
+    """pyRevit's ``__revit__`` in the startup/Idling engine: no ActiveUIDocument."""
+
+
+class LiveUiappForReportTests(unittest.TestCase):
+    """At file open the report is raised from the Idling delegate, where the
+    module-level ``__revit__`` is a UIControlledApplication.  The window must
+    get the live UIApplication (the Idling sender / hook ``__revit__``), or
+    View Issues sees no UI document until Start Message is pressed again."""
+
+    def setUp(self):
+        self.messages = _load_messages()
+        self.doc = FakeDocument()
+        self.uiapp = FakeUiapp(self.doc)
+        self.messages._LIVE_UIAPP = None
+
+    def _with_controlled_revit(self):
+        import builtins
+
+        return mock.patch.object(builtins, "__revit__", FakeControlledApp(), create=True)
+
+    def test_get_uiapp_prefers_the_remembered_live_application(self):
+        with self._with_controlled_revit():
+            self.messages._remember_live_uiapp(self.uiapp)
+            self.assertIs(self.uiapp, self.messages._get_uiapp())
+
+    def test_get_uiapp_falls_back_to_revit_when_nothing_usable_exists(self):
+        with self._with_controlled_revit():
+            import builtins
+
+            self.assertIs(builtins.__revit__, self.messages._get_uiapp())
+
+    def test_controlled_application_is_never_remembered(self):
+        self.assertIsNone(self.messages._remember_live_uiapp(FakeControlledApp()))
+        self.assertIsNone(self.messages._LIVE_UIAPP)
+
+    def test_report_hands_the_live_application_to_the_window(self):
+        observed = {}
+        fake_passive = types.ModuleType("easybim.coordination_review_passive")
+        fake_passive.build_passive_coordination_report = lambda doc, consume=True: {}
+        fake_passive.unregister_passive_detector = lambda: None
+
+        def _dialog(report, doc=None, uiapp=None):
+            observed["uiapp"] = uiapp
+            return True
+
+        with self._with_controlled_revit(), mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_passive": fake_passive}
+        ), mock.patch.object(
+            self.messages, "_show_coordination_review_dialog", side_effect=_dialog
+        ):
+            self.messages._print_coordination_review_report(self.doc, uiapp=self.uiapp)
+
+        self.assertIs(self.uiapp, observed["uiapp"])
+
+    def test_dialog_wrapper_replaces_a_controlled_application(self):
+        observed = {}
+        fake_window = types.ModuleType("easybim.coordination_review_window")
+
+        def _show(report, doc=None, uiapp=None):
+            observed["uiapp"] = uiapp
+            return True
+
+        fake_window.show_coordination_review_dialog = _show
+        with self._with_controlled_revit(), mock.patch.dict(
+            sys.modules, {"easybim.coordination_review_window": fake_window}
+        ):
+            self.messages._remember_live_uiapp(self.uiapp)
+            self.messages._show_coordination_review_dialog({}, doc=self.doc, uiapp=FakeControlledApp())
+
+        self.assertIs(self.uiapp, observed["uiapp"])
+
+    def test_process_startup_jobs_remembers_the_sender(self):
+        with mock.patch.object(
+            self.messages, "_process_file_open_trigger_pending"
+        ), mock.patch.object(
+            self.messages, "_load_startup_state", return_value={"next_id": 1, "jobs": []}
+        ):
+            self.messages.process_startup_jobs(self.uiapp)
+
+        self.assertIs(self.uiapp, self.messages._LIVE_UIAPP)
 
 
 if __name__ == "__main__":

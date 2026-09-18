@@ -15,6 +15,17 @@ try:
 except Exception:
     pass
 
+# Safety net: if startup and doc-opening both failed to find an event source,
+# this session would otherwise carry no Coordination Review listener at all.
+# Too late for this document's load-time warning, but it restores the hint for
+# the next one.  Registration is idempotent - it detaches before attaching.
+try:
+    from easybim import coordination_review_passive
+    if not coordination_review_passive.is_registered():
+        coordination_review_passive.register_passive_detector(__revit__, source="doc-opened")
+except Exception:
+    pass
+
 # Try hook event args first (most reliable in hook context), then fall back
 # to active UIDocument.
 doc = None

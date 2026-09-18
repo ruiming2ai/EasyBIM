@@ -1,0 +1,12 @@
+title: "Links\nLoader"
+tooltip: >-
+  Export and import Revit link file paths as a JSON file.
+
+  Export saves every link's name, type, current file path and loaded state.
+  Import reads a saved file and updates each link to point at its new
+  path, using RevitLinkType.LoadFrom for RVT links. CAD link paths are
+  exported for reference but cannot be changed through the API.
+
+  Useful for swapping between a live-link folder and a consume folder,
+  or for moving a project to another machine where paths differ.
+author: Ruiming Liu

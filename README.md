@@ -151,22 +151,23 @@ typically a downstream panelboard, whose own rating is what the feeder has to
 be. This command reads that value off the elements and writes it onto the
 circuits.
 
-1. Pick the **current parameter on circuited elements**. Every parameter that
-   actually holds a value somewhere is listed; parameters measured in amps come
-   first, and each is labelled with where it was found (`Instance`, `Type`, or
-   both — the instance value wins, the type value fills a gap).
-2. Tick the **target circuit parameters**. Every writable numeric parameter on
-   the circuits is offered, so a shared rating parameter works as well as the
-   native ones; **Rating** (the trip rating) and **Frame** are ticked by
-   default.
+1. Pick the **current parameter on circuited elements**. Only populated
+   parameters defined with Revit's Current spec are listed, labelled with where
+   they were found (`Instance`, `Type`, or both — the instance value wins, the
+   type value fills a gap).
+2. Tick the **target circuit parameters**. Only writable Current parameters
+   found on circuits are offered, so a shared current parameter works as well
+   as the native ones; **Rating** (the trip rating) and **Frame** are ticked by
+   default when available.
 3. Review the list and press **Update**. All rows start checked; **All** and
    **None** toggle the lot, and **Cancel** writes nothing.
 
 Per circuit, the **highest** value found across its elements wins — a tie goes
 to an Electrical Equipment element, so a panel and a receptacle both reading
 20 A credit the panel. The `From Element` column names the element the value
-came from, and `Existing` shows what the ticked targets hold right now, so a
-row that would change nothing is marked `no change`.
+came from, and `Existing` shows what the ticked targets hold right now. Values
+that differ from `New Value` are red, and a row that would change nothing is
+marked `no change`.
 
 Elements without the parameter are simply ignored: a circuit is still listed
 and still updated as long as *one* of its elements carries a value. A circuit
@@ -657,12 +658,12 @@ list are.
 ## My Ribbon (General)
 
 My Ribbon puts buttons from **other pyRevit extensions, Revit's own tabs, other
-add-ins and Dynamo graphs** on panels of your own. Pick an extension or a tab
+add-ins and Dynamo** on panels of your own. Pick an extension or a tab
 from the **Extension & Tab List** — everything already on this computer — or
 choose `.dyn` files; tick the buttons you want; say where they go — any panel on
 the EasyBIM tab, a new panel there, a tab of your own, or a panel on another
 tab. Press **Apply** and they are there. No reload is needed to re-arrange; only
-a new Dynamo graph needs one, and My Ribbon offers it.
+a new Dynamo needs one, and My Ribbon offers it.
 
 Installing an extension is pyRevit's job, not this window's: add it in
 **pyRevit ▸ Extensions**, which has both the catalogue of community extensions
@@ -702,7 +703,7 @@ too new for this Revit is marked missing on its row; a repository already
 installed here is reused instead of downloaded twice; a download you cancel
 leaves nothing behind.
 
-### Tabs, Uninstall, Revit's own buttons, Dynamo graphs
+### Tabs, Revit's own buttons, Dynamo
 
 **Show/Hide tabs...** (on the My buttons side) lists every ribbon tab with a
 tick. EasyBIM stays on (this button lives there, so there is always a way back)
@@ -712,9 +713,10 @@ there) - can be hidden. Confirm stages, **Apply** makes it real and closes the
 window.
 
 On the Sources side, **Remove** forgets a source and its placed buttons and
-leaves every file alone. **Uninstall** also deletes what My Ribbon installed for
-it - a downloaded repository, a Dynamo button - and is greyed for everything
-that was already on the computer. Both happen on Apply.
+leaves every file alone - the one exception is a Dynamo button, which is nothing
+but the bundle My Ribbon wrote, so that bundle goes too. It happens on Apply.
+Uninstalling an extension itself belongs to pyRevit's own **Extensions** window,
+which is also where extensions are installed.
 
 The **Extension & Tab List** also lists **Revit's own tabs and other add-ins'
 tabs**.
@@ -722,7 +724,7 @@ Their buttons can be placed exactly like pyRevit's (it is the same live button
 object); galleries and drop-down lists that only work on their own panel are
 greyed with the reason. They can only ever be Removed.
 
-**Add Dynamo graph...** makes a button out of a `.dyn` file. The button runs
+**Add Dynamo...** makes a button out of a `.dyn` file. The button runs
 the graph from where the file is, so later edits count the next time you click
 (Ctrl+click opens it in Dynamo instead); its icon is Revit's own Dynamo icon
 unless you pick a PNG; the title is yours. My Ribbon keeps a copy of the graph
@@ -750,6 +752,25 @@ between a button that runs and one that silently does nothing:
   **IronPython2** graph skips that — it is about three times slower to start —
   and its tooltip reminds you that Dynamo 2.7 and newer need the
   `DynamoIronPython2.7` package for those nodes.
+
+### Several Revit sessions at once
+
+**Apply reads the settings file again before it saves.** If another Revit
+session saved since this window opened, only this window's own changes are
+replayed onto that file: what the other session added stays, what it removed
+stays removed, and anything that could not be kept is listed as a conflict. An
+outdated window never writes over what it never saw.
+
+Every open session watches the file while Revit is idle and re-places buttons
+and re-hides tabs as soon as it changes, with no reload. A new Dynamo button or
+a newly installed extension still needs a pyRevit reload in that session, and
+it says so once rather than reloading a Revit someone is working in.
+
+One graph is one source and one bundle. A duplicate left by an older session is
+folded in on the next Apply, and a bundle folder no source claims is removed.
+
+An import's results window lists only what changed - extensions, buttons,
+tabs, panels and settings on their own tabs, buttons by name.
 
 ### Stacks, separators and the slide-out
 
@@ -893,10 +914,35 @@ the export finishes.
 
 ## Batch Duplicate Host (Misc Tools)
 
-Duplicates a selected element onto multiple target host family instances. Pick
-the source element, then choose targets from categories and types in any open
-document. Set **X**, **Y** and **Z offsets** and an **orientation alignment**
-option, and the tool places a copy at each target location.
+Duplicate a selected local element at reference family locations, or enable
+**Copy Original Family Type** to use each selected reference's family/type and
+instance values. **Monitored** is checked by default. Category/type selection,
+local X/Y/Z offsets, Align Orientation and Back navigation remain available.
+
+MEP and Generic Model point instances use independent placement when their
+native family is standalone. Physical-host and work-plane conversions are not
+yet certified and are skipped. Categories outside this scope keep legacy copying
+with monitoring unavailable. Independent placement verifies actual coordinates
+and orientation after regeneration and commit.
+
+## Copy Monitor (Misc Tools)
+
+A separate command offers **Copy and Monitor**, **Monitor Existing** explicit
+pairing, and **Check Changes**. Review source/local conflicts and parameter
+changes, then apply **Match Source**, **Keep Relative Location**, **Accept
+Difference**, **Postpone**, or **Stop Monitoring** in batches. Relative location
+includes orientation and follows source rotation. Checks run only on command;
+links are not reloaded automatically.
+
+Relationships are stored in the destination RVT by link-instance and element
+UniqueId. Missing sources do not delete local copies. Hosted destinations and
+connected MEP updates are reported as unavailable when independence or safe
+movement cannot be established.
+
+Targets Revit 2024–2027, with **live Revit acceptance still pending**. Hosted
+conversion is disabled. Read the [workflows and limitations](Development%20Space/docs/copy-monitor-workflows.md)
+and [compatibility/performance evidence](Development%20Space/docs/copy-monitor-compatibility.md)
+before project use. Desktop benchmarks do not measure Revit placement speed.
 
 ## Flip Multiple (Misc Tools)
 
@@ -946,6 +992,285 @@ and **SpaceTag**. Choose between scanning the **entire project** or the **active
 view only**. Results are shown in a checklist so you can selectively delete
 rather than removing them all at once.
 
+## Damper Check (Misc Tools)
+
+Finds every HVAC end branch that has no isolation damper. The scan changes
+nothing in the model; the report is the deliverable.
+
+**What counts as an end branch.** The check walks the *physical* duct
+connections, never system membership. Ducts, flex ducts, fittings,
+accessories, air terminals and mechanical equipment are the nodes; a connected
+pair of connectors is an edge, so a tap on a main is an edge like any other.
+Mechanical equipment is a boundary the walk never passes through, which is why
+a VAV box splits its inlet side from its downstream side and each downstream
+run roots at the VAV. From every **air terminal** the walk climbs toward the
+trunk and stops at the nearest damper; when there is none it reports what it
+reached instead - the equipment, an open duct end, or nothing at all.
+
+**What counts as a damper.** Whatever family types you tick. The setup window
+lists every family type that takes part in the duct network, grouped by
+category with **Duct Accessories open on top** and every other category
+(Duct Fittings, Air Terminals, Mechanical Equipment, and anything else that
+turned out to carry duct connectors) collapsed beneath. Keywords only pre-tick
+the list - *damper*, *VCD*, *OBD*, *isolation*, *shut-off*, *volume*,
+*balancing* and friends, with *fire*, *smoke*, *backdraft*, *relief*,
+*silencer* and *access* excluded until you say otherwise. Ticking an air
+terminal type means "integral damper"; ticking a VAV type means "the unit
+isolates its run". Your ticks are remembered **by family and type name** on
+this computer, so the next model with the same content library needs no
+re-ticking and an ElementId never crosses documents.
+
+**One damper may serve up to N terminals.** With N = 1 (the default) every
+terminal needs its own damper before the first junction that serves another
+terminal; a tee whose other leg is a capped stub does not end the branch. A
+higher N lets one damper cover a small sub-branch - two diffusers in one room
+off one tee. N changes live in the report without rescanning, and every row
+names the nearest damper and how many terminals it serves.
+
+**The report.** One expander per verdict, problems first: no damper before the
+equipment; no damper and the branch ends at an open duct (a branch never joined
+to its main, or a system left unassigned); no damper and the network reaches no
+equipment; nearest damper serves more terminals than N; terminal not connected
+to any duct; walk truncated by a guard; connectors unreadable. Then the covered
+buckets: own damper, damper shared within N, terminal type with an integral
+damper, served by isolating equipment. **Show** selects the whole run - terminal
+to damper, or to the junction, or to the root - and zooms to it. Search matches
+ids whole (12 does not find 112) and names by substring. **Refresh** re-reads the
+model with search, N and the expanded groups preserved. A **Scan notes**
+expander lists every named skip and limit: unreadable elements, terminals
+outside the active view, looped networks (counts approximate), a scan that hit
+its time budget or element cap.
+
+**Setting a finding aside.** Every row carries an **Ignore** button. It moves the
+finding into an **Ignored** group, out of the problem tally, and writes that
+decision into the model itself (Revit's Extensible Storage, the mechanism Tag
+Align uses for its "This model" presets). So the decision comes back the next
+time anyone runs the check, and reaches the team after a Sync to Central. The
+row keeps a note of the group it came from, and **Restore** puts it back. This
+is the only thing either checker writes: if the model will not take the write
+(read-only, or no permission), the row stays where it is and the status line
+says why, rather than showing a decision that was never saved.
+
+**Scope.** Whole model, or the air terminals in the active view; the walk
+always follows the whole model's ducts so a branch that leaves the view is
+still traced to its damper. Supply / Return / Exhaust / Other / Unknown chips
+filter terminals by their own system type, which exists whether or not a
+system was ever assigned - a class left unticked is named in the footer.
+
+The command runs in a persistent pyRevit engine because the modeless report
+owns an ExternalEvent whose handler is Python; a recycled engine would kill
+it. A persistent engine keeps its loaded modules across a pyRevit reload, so
+the command drops its own modules on each launch when no report is open - that
+is what lets an update take effect on the next click. Linked models are not
+traversed.
+
+## Fire Damper Check (Misc Tools)
+
+Finds every duct that crosses a fire-rated wall or floor without a fire damper
+at the crossing. Links are read, never written, and the scan changes nothing in
+the host model.
+
+**Where the rated barriers come from.** Usually a linked architectural model,
+and often the rating is only drawn. So three sources are combined, each
+confirmed in the setup and remembered **by name per link**:
+
+- **A rating parameter.** Revit's built-in *Fire Rating* on wall and floor
+  types, or any text parameter you pick per link (offices disagree on which one
+  carries it); non-empty means rated.
+- **The wall and floor types you tick.** Every type in each link is listed with
+  its instance count, pre-ticked by the parameter and by name (*fire*, *FR*,
+  *HR*, *rated*, *FW*, *1h*, *2h*); you confirm. Stacked walls are judged by
+  their members; curtain walls have no solid body and are named as skipped.
+- **The drawn fire-rating lines.** Model and detail lines whose line style you
+  tick (*Fire Rating 1HR* and friends) become vertical barriers standing on
+  their view's level up to the next level (or a fixed height). Lines have no
+  thickness (200 mm is assumed) and mark where the architect drew them.
+
+**What counts as a fire damper.** The family types you tick, pre-ticked by
+*fire*, *smoke*, *FD*, *FSD* and *combination* (a duct smoke *detector* is not
+a damper). Duct Accessories open on top; every other category folds beneath.
+
+**What counts as covered.** A ticked fire damper within the tolerance
+(default 600 mm) of the crossing **on the same run** (within 3 connections),
+or one whose body sits in the barrier. Two parallel ducts through one wall are
+two crossings: a damper within tolerance on the *other* duct is reported as
+such, never as covering both. Both numbers change live in the report.
+
+**The report.** One expander per verdict, problems first: no fire damper; a
+flex duct through a rated barrier (wrong regardless of dampers); a damper
+within tolerance but on another run. Then the review rows: a fitting whose box
+overlaps a barrier; a duct running along or inside a barrier; a barrier whose
+geometry could not be read. Then covered (in the barrier / within tolerance),
+and finally the fire dampers at no identified barrier - the wall may not be
+ticked, or the damper is misplaced. **Show** selects the duct and damper and
+frames the crossing; on Revit 2023 and later the linked wall is selected too.
+**Refresh** re-reads the model and the links with search, tolerance and
+expanded groups preserved. A **Scan notes** expander lists every named skip:
+unloaded links, scaled link instances, curtain walls, lines outside plan
+views, a scan that hit its budget.
+
+**Setting a finding aside.** Every row carries an **Ignore** button. It moves the
+finding into an **Ignored** group, out of the problem tally, and writes that
+decision into the model itself (Revit's Extensible Storage, the mechanism Tag
+Align uses for its "This model" presets). So the decision comes back the next
+time anyone runs the check, and reaches the team after a Sync to Central. The
+row keeps a note of the group it came from, and **Restore** puts it back. This
+is the only thing either checker writes: if the model will not take the write
+(read-only, or no permission), the row stays where it is and the status line
+says why, rather than showing a decision that was never saved.
+
+**How the crossing is found.** The duct's line is mapped into the link's
+coordinates with the link's own transform and intersected with the wall's
+solid, so a duct through a door opening is not a crossing - the geometry
+decides. A per-link bounding-box query and a spatial hash keep a campus link
+and thirty thousand ducts to a few thousand real tests.
+
+The command runs in a persistent pyRevit engine because the modeless report
+owns an ExternalEvent whose handler is Python; the command drops its own
+modules on each launch when no report is open, so an update takes effect on
+the next click. Nested links cannot be reached. A rating is a transcription of
+the link, not a compliance judgement.
+
+## Space Boundary (Misc Tools, Revit 2022+)
+
+Draws room and space boundaries as filled regions, remembers which region
+belongs to which room **inside the model**, and later reports how far each one
+has drifted — and brings it back with one click.
+
+**Where the rooms come from** is a checked list, not a single choice: this
+model and every loaded link, in any combination. Rooms tick whichever sources
+actually hold some — on an MEP job that is the architectural link. Spaces tick
+this model only; a link's spaces are offered unticked. A link placed twice is
+two sources at their own positions, each with its own regions. An unloaded
+link stays listed with the reason rather than vanishing. Choices are
+remembered by name. A link whose Rooms category the view hides — often by its
+view template, the norm in an MEP view — plans nothing for that link, and the
+preview says so by name rather than showing an empty count.
+
+**Where the regions go** is either the active view or the views you tick. Each
+view is drawn with the rooms **it actually shows** — visibility and graphics
+overrides, filters, view range, phase filter and hidden elements all count,
+because Revit itself is asked what the view displays. A room the view shows
+from another level (a view range that reaches down a storey) is offered in the
+preview under its own heading, ticked like the rest; a room the view hides is
+not planned, and the preview says how many. You can also convert only the rooms or spaces
+you pick — as many as you like — instead of all of them; a picked room is
+ticked in every chosen view that shows it, whatever level it sits on, because
+picking it was the decision.
+
+**What the boundary means** follows this model's own Area and Volume
+Computation setting — the same rule Revit itself follows when it makes a space
+from a linked room — shown as a sentence, and overridable to wall finish,
+centre, core boundary or core centre. Whatever was used is stored with each
+region, so a later comparison judges by the rule that region was drawn with.
+The region's edge takes the line style you choose; `<Invisible lines>` by
+default, found by its category rather than its name so it survives a Revit
+in another language.
+
+Nothing is written until you have seen the **preview**: every pair that would
+be drawn, every pair that would be skipped and exactly why, with an explicit
+tick for anything surprising (a large batch, or replacing regions somebody may
+have edited). The run itself is one undo step — a transaction group for the
+run, a transaction per view, a subtransaction per room — so a room Revit
+refuses rolls back on its own without costing the other nineteen in that view.
+A view that could not be committed is removed from the counters too, because a
+report must never claim work that no longer exists.
+
+A room Revit's sketch validator refuses — a stub wall the boundary walks in
+and out of, an arc it will not build, loops touching at a vertex — is drawn
+again from its cleaned outline with straight edges, within a millimetre, and
+the note says so; only if that is refused too does the room fail, and then it
+is named with Revit's own words in a dialog before the report opens, never
+left as a debug line. The loop repair reads the session's real short-curve
+tolerance, drops what Revit would not build, and closes small gaps by moving
+an endpoint rather than inserting a bridge — a bridge that small is itself a
+curve Revit refuses.
+
+### Linked rooms and what a view shows
+
+Revit cannot be asked what a host view shows of a link, so the link's display
+mode in that view decides which rule applies. **By linked view** (or Custom):
+the linked view itself is asked, exactly — its own visibility, phase, range
+and design option. **By host view**: the host view's rules are applied to the
+linked rooms one by one — the Rooms category not hidden, the phase matching
+the view's, the design option primary unless opted in, and the view's cut
+plane passing through the room's height, which is the rule Revit draws a room
+by in a plan. A link hidden in the view shows nothing. Anything Revit will
+not answer leaves that link's rooms offered on the view's level, with a note
+saying so — a room is never dropped by an unanswered question.
+
+### The relationship, and where it lives
+
+The record rides on the **filled region itself**, in Extensible Storage. A
+region's link to its room is a property of that region, so the record is
+created, copied and destroyed with the thing it describes: deleting the region
+takes the record with it, and a two-thousand-room job costs no extra elements.
+It is written inside the same transaction as the region — after one
+regeneration per view, so the outline it records is the one Revit actually
+drew — and an undo can never leave one without the other. Because it is in the
+.rvt, it survives a Sync to Central and reaches everyone who opens the job, on
+a cloud or ACC model too.
+
+The record holds the room's id and number, its level, phase and view, the
+boundary location and line style used, and a digest of both outlines — about
+half a kilobyte, with no polygon stored. Names travel beside the ids on
+purpose: when the room is deleted, its name is the only thing left that says
+what the orphaned region used to be, and that is exactly when it matters.
+
+### Check Differences
+
+Answers one question per region: **does it still match its room?** Both
+outlines are re-read and reduced to a canonical form — tessellated, quantised
+to a millimetre grid, stripped of duplicate and collinear vertices, forced
+counter-clockwise and rotated to a fixed start — because Revit does not
+promise to hand the same boundary back the same way twice. Then the largest
+gap between the two is measured, both ways; within 2 mm is in step, anything
+more is drift, reported in millimetres. The digests the record kept only say
+*who* moved — the room, or somebody's hand on the region — and when they
+cannot, the row still says the region drifted and by how much. "Nothing to
+compare" is a named row, never a quiet "in step".
+
+| What happened | What is offered |
+| --- | --- |
+| The room's boundary changed | Update |
+| A region was reshaped by hand | Update, or Accept Difference |
+| A region was dragged | Update, or Accept Difference — the offset is reported |
+| Both changed | Listed apart; the row says updating discards the edit |
+| The region no longer matches and the record cannot say why | Update, or Accept Difference — with the gap in mm |
+| The room is gone | Delete or Accept Difference, never automatic |
+| A region was copied into another view | Delete or Accept Difference — its record names the wrong view, so it cannot be trusted |
+| Two regions for one room in one view | The oldest wins; the rest are offered for deletion |
+| The view no longer shows the room | Delete or Accept Difference — updating would not fix it |
+| The link is not loaded | Reported, never judged: there is nothing to compare against |
+| A source was not in this run | Reported under its own heading, never treated as orphaned |
+
+**Update** deletes the region and draws it again from the room as it is now;
+**Update All** does that for every drifted row the search leaves visible, in
+one undo step. Each room is measured the way its own region was drawn, so
+changing the model's Area and Volume Computation setting afterwards is not read
+as thousands of false drifts. When most regions from one link move together,
+the report says so once instead of listing every row as a surprise.
+**Accept Difference** is the one review action: it records that this region
+deliberately differs from its room, moves the row to its own group and out of
+the tally, and is permanent — the row stays accepted whatever the room or the
+region do next, until **Restore**. The list is stored in this model, in a
+hidden record beside the relationship, so it survives a Sync to Central and
+reaches the team; it is kept apart from the record on the region because a
+region another user owns cannot be written, yet its difference still has to
+be acceptable.
+
+Requires Revit 2022 or later. Reading a region's own outline —
+`FilledRegion.GetBoundaries()` — arrived then, and it is the only way to notice
+that somebody reshaped a region, so no degraded branch is carried. A filled
+region cannot be added to a group, so a room inside a group drifts when its
+group moves. Rooms in a link cannot be picked one by one — a pick on a link
+lands on the link — so they are converted by ticking the link and choosing the
+views.
+
+The command runs in a persistent pyRevit engine because the modeless report
+owns an ExternalEvent whose handler is Python; it drops its own modules on each
+launch when no report is open, so an update takes effect on the next click.
+
 ## Clash Detection Mode (Misc Tools, Revit 2023-2027)
 
 A live, forward-only interference checker. Pick two sets of categories, and from
@@ -972,30 +1297,6 @@ editable in one grid.
 Nothing is written until **Apply Changes**. The window stays open while you work
 in Revit; clicking back into it re-syncs the grid with the current model state,
 so edits made in Revit between visits are not lost.
-
-## Print Sheets (Sheet)
-
-Prints sheets in order from a sheet index or schedule. The tool supports
-**combined PDF** output, **individual printing**, **variable paper sizes** per
-sheet, and a **custom naming format** built from template variables (sheet
-number, name, revision, date and others). Revision-based filtering narrows the
-set to sheets carrying a particular revision, and linked-document printing
-handles sheets coming from a Revit link.
-
-Shift-clicking the button runs a cleanup pass that strips non-printable
-characters from sheet numbers — useful when pasted or imported sheet numbers
-carry invisible formatting.
-
-## Print Set (Sheet)
-
-A pulldown with two buttons for creating or updating native Revit print sets
-(Revit 2023+). Both support revision-based filtering.
-
-- **From Excel** — import an `.xlsx` or `.xlsm` file. The tool reads the first
-  visible worksheet and takes the first two visible columns as sheet number and
-  sheet name.
-- **From Schedule** — pick a Sheet List schedule already in the model and use
-  its order.
 
 ## Revision Manager (Sheet)
 
@@ -1089,3 +1390,36 @@ Runs the startup workflow on demand: the **Active Workset** picker and the
 automatically when a document is opened, surfaced as a button for the times you
 want to revisit the workset choice or review coordination changes without
 closing and reopening the file.
+
+The **Coordination Review** summary does not wait for Revit's warning. Revit
+raises "needs Coordination Review" only once, while a link loads, and it
+cannot be raised again on demand, so a report built from that single event
+kept coming back empty for reasons outside EasyBIM's control. Instead EasyBIM
+compares the links itself every time the summary opens:
+
+- It finds every link this model monitors with **Copy/Monitor**. Links that
+  nothing monitors are skipped: without a monitored element a link has nothing
+  for Coordination Review to report.
+- Each monitored link is compared with its current contents, in host
+  coordinates, across every Copy/Monitor category. Levels and grids are matched
+  by name (a prefix or suffix is tolerated) and reported as moved, deleted in
+  the link, or renamed. Columns, walls, floors, openings and MEP fixtures are
+  matched to the nearest link element of the same category and reported as
+  moved, deleted in the link, or type changed; those rows are estimates and are
+  badged as such.
+- Every monitored link gets a row, whether or not it has differences, so a
+  clean row is a **proved** result rather than the absence of a warning. A link
+  Revit did flag also carries a *Revit flagged* badge.
+- **View Issues** on any link opens the full detail, where **Show** selects the
+  host element and frames it in the current view (no other views are opened)
+  and **Refresh** recomputes that link.
+
+Because the comparison is the detector, the two empty states are honest:
+"Nothing in this model uses Copy/Monitor", or "No differences found across N
+monitored links". Revit's own Coordination Review remains the place to Accept,
+Modify, Postpone or Reject a difference.
+
+The check runs when the summary opens, at file open and on every Start Message,
+with a progress bar you can cancel; a cancelled run reports what it finished
+and never claims an all-clear. Only monitored links are read, so a model that
+uses no Copy/Monitor costs a single pass and stops.

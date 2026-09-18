@@ -128,6 +128,7 @@ def run_pending_file_open_startup(uiapp=None):
     same trigger through ``process_startup_jobs``; whichever fires first
     wins, and the consumed flag makes the other a no-op.
     """
+    _remember_live_uiapp(uiapp)
     _process_file_open_trigger_pending(uiapp=uiapp)
 
 
@@ -191,6 +192,7 @@ def _run_startup_actions_now(doc, open_worksets_after, run_coord_report_after):
 
 def process_startup_jobs(uiapp=None):
     """Process queued startup jobs. Called from the easybim.idling delegate."""
+    _remember_live_uiapp(uiapp)
     uiapp = uiapp or _get_uiapp()
     if not uiapp:
         return
@@ -307,15 +309,15 @@ def _process_startup_job(uiapp, job, now):
         return False
 
     if stage == "run_report":
-        # Marked done before the modal report for the same reason.  A second
-        # pass would also report a bogus detection error, because the first one
-        # consumes the recorded warnings.
+        # Marked done before the modal report for the same reason: a
+        # re-entrant Idling pass behind the dialog must not stack a second
+        # report window.
         job["stage"] = "done"
         if job.get("run_coord_report_after", False):
             report_doc = target_doc
             if not _is_doc_valid(report_doc) and not has_identity:
                 report_doc = active_doc
-            _print_coordination_review_report(report_doc)
+            _print_coordination_review_report(report_doc, uiapp=uiapp)
         return True
 
     return True
@@ -425,6 +427,7 @@ def _process_file_open_trigger_pending(uiapp=None):
         _disable_passive_coordination_review_detector()
         return
 
+    _remember_live_uiapp(uiapp)
     uiapp = uiapp or _get_uiapp()
     if not uiapp:
         return
@@ -847,15 +850,144 @@ def _show_workset_picker_dialog_wpfwindow(context):
     return True, None
 
 
-def _print_coordination_review_report(doc):
+def _count_link_instances(doc):
+    try:
+        return len(_collect_link_instances(doc))
+    except Exception:
+        return None
+
+
+def _count_monitoring_elements(doc):
+    """Whether anything in the model uses Copy/Monitor (0 or 1; None if unknown)."""
+    try:
+        from easybim import coordination_review_diff_revit
+
+        return coordination_review_diff_revit.count_monitoring_elements(doc)
+    except Exception:
+        return None
+
+
+def _count_warning_list_matches(doc):
+    """Coordination Review entries in Revit's own warning list (None if unreadable).
+
+    The warning is raised once while a link loads and does not always persist,
+    so a zero proves nothing on its own - but a hit means the listener missed
+    an event that Revit still remembers.
+    """
+    if not _is_doc_valid(doc):
+        return None
+    try:
+        warnings = _get_document_warnings(doc)
+    except Exception:
+        return None
+    matches = 0
+    for warning in warnings:
+        description = _clean_warning_text(_get_warning_description(warning)).lower()
+        if "coordination review" in description:
+            matches += 1
+    return matches
+
+
+def _diagnose_empty_coordination_report(report, doc):
+    """Explain an empty capture instead of showing a bare Detection Error.
+
+    Diagnosis is a nicety on top of the report, so nothing it does may cost
+    the user their window: any failure hands back the plain empty report.
+    """
+    try:
+        return _build_empty_coordination_diagnosis(report, doc)
+    except Exception as ex:
+        logger = _get_logger()
+        if logger:
+            logger.warning("Coordination Review diagnosis failed: %s", ex)
+        return report
+
+
+def _build_empty_coordination_diagnosis(report, doc):
+    try:
+        from easybim import coordination_review_diagnosis
+    except Exception:
+        return report
+
+    evidence = dict(report.get("capture") or {})
+    if not evidence:
+        try:
+            from easybim.coordination_review_passive import capture_evidence
+
+            evidence = dict(capture_evidence(doc) or {})
+        except Exception:
+            evidence = {}
+
+    evidence["link_count"] = _count_link_instances(doc)
+    evidence["warning_list_matches"] = _count_warning_list_matches(doc)
+    # The Copy/Monitor pass is the only costly probe, so it runs last and only
+    # when the cheap evidence has not already settled the verdict.
+    if not evidence.get("warning_list_matches") and evidence.get("link_count"):
+        evidence["monitoring_count"] = _count_monitoring_elements(doc)
+
+    try:
+        verdict = coordination_review_diagnosis.diagnose(evidence)
+    except Exception:
+        return report
+
+    report["diagnosis"] = verdict
+    report["diagnosis_text"] = coordination_review_diagnosis.summary_text(verdict)
+
+    # Revit still holds the warning: report those links rather than nothing.
+    if verdict.get("code") == coordination_review_diagnosis.VERDICT_WARNING_LIST:
+        try:
+            recovered = _build_coordination_report(doc)
+        except Exception:
+            recovered = None
+        if recovered and recovered.get("grouped"):
+            recovered["source"] = "revit_warning_list"
+            recovered["detection_error"] = False
+            recovered["diagnosis"] = verdict
+            recovered["diagnosis_text"] = report.get("diagnosis_text", "")
+            return recovered
+    return report
+
+
+def _build_computed_coordination_report(doc, passive_report):
+    """Compare every monitored link instead of waiting for Revit's warning.
+
+    Revit raises the Coordination Review warning once, while a link loads, so
+    a report built only from that event keeps coming back empty for reasons
+    outside our control.  Comparing the monitored links proves the answer
+    either way; the captured warning survives only as a per-link hint.
+    """
+    from easybim import coordination_review_revit
+    from easybim.progress import ProgressSession
+
+    with ProgressSession("Checking monitored links", cancellable=True) as progress:
+        return coordination_review_revit.build_document_review_report(
+            doc, passive_report=passive_report, progress=progress
+        )
+
+
+def _print_coordination_review_report(doc, uiapp=None):
     try:
         try:
             from easybim.coordination_review_passive import build_passive_coordination_report
-            report = build_passive_coordination_report(doc, consume=True)
+            # Keep the captured warnings: Start Message can be re-run and must
+            # show the same issues.  hooks/doc-closing.py clears them on close.
+            report = build_passive_coordination_report(doc, consume=False)
         except Exception:
             report = _build_coordination_detection_error_report(doc)
 
-        if _show_coordination_review_dialog(report, doc=doc):
+        passive_report = report
+        try:
+            report = _build_computed_coordination_report(doc, passive_report)
+        except Exception as ex:
+            logger = _get_logger()
+            if logger:
+                logger.warning("Coordination Review comparison failed: %s", ex)
+            report = passive_report
+
+        if report.get("detection_error"):
+            report = _diagnose_empty_coordination_report(report, doc)
+
+        if _show_coordination_review_dialog(report, doc=doc, uiapp=uiapp):
             return
 
         output = _get_output_window()
@@ -885,19 +1017,22 @@ def _print_coordination_review_report(doc):
 def _disable_passive_coordination_review_detector():
     try:
         from easybim.coordination_review_passive import unregister_passive_detector
-        unregister_passive_detector()
+        unregister_passive_detector(source="report")
     except Exception:
         pass
 
 
-def _show_coordination_review_dialog(report, doc=None):
+def _show_coordination_review_dialog(report, doc=None, uiapp=None):
     try:
         from easybim.coordination_review_window import show_coordination_review_dialog
     except Exception:
         return False
 
+    # Prefer the live UIApplication of the entry point; the module-level
+    # ``__revit__`` is a UIControlledApplication in the startup/Idling engine.
+    uiapp = _usable_uiapp(uiapp) or _get_uiapp()
     try:
-        return bool(show_coordination_review_dialog(report, doc=doc, uiapp=_get_uiapp()))
+        return bool(show_coordination_review_dialog(report, doc=doc, uiapp=uiapp))
     except Exception:
         return False
 
@@ -1101,9 +1236,75 @@ def _sum_link_warning_counts(link_bucket):
     return total
 
 
+def _is_computed_report(report):
+    """True for the comparison-built report, false for the warning-built one.
+
+    Both reach these renderers: the comparison is what normally runs, and the
+    passive report is the fallback when the comparison itself fails.
+    """
+    report = report or {}
+    return report.get("source") == "computed" or "links" in report
+
+
+def _computed_report_lines(report):
+    """``(headline, [(link name, status, [group lines])])`` for a computed report.
+
+    Built from the very records the WPF window renders, so the console
+    fallbacks cannot drift from it and claim something different.
+    """
+    from easybim import coordination_review_model
+
+    summary = coordination_review_model.summarize_checked_links(report)
+    records = coordination_review_model.build_checked_link_records(report)
+
+    rows = []
+    for record in records:
+        groups = []
+        for group in list(record.get("groups", []) or []):
+            title = _safe_text(group.get("title")) or _safe_text(group.get("kind"))
+            count = len(list(group.get("issues", []) or []))
+            if group.get("estimated"):
+                title = "{} (estimated)".format(title)
+            groups.append("{}: {}".format(title, count))
+        rows.append(
+            (
+                _safe_text(record.get("name")),
+                _safe_text(record.get("status_text")),
+                groups,
+            )
+        )
+    return _safe_text(summary.get("headline")), _safe_text(summary.get("detail")), rows
+
+
+def _render_computed_report_html(output, report):
+    html = ["<h3>Coordination Review Summary</h3>"]
+    html.append(
+        "<p><b>Document:</b> {}</p>".format(_escape_html(report.get("doc_title", "(Unknown)")))
+    )
+    headline, detail, rows = _computed_report_lines(report)
+    html.append("<p><b>{}</b></p>".format(_escape_html(headline)))
+    if detail:
+        html.append("<p>{}</p>".format(_escape_html(detail)))
+
+    for name, status, groups in rows:
+        html.append("<h4>{}</h4>".format(_escape_html(name)))
+        html.append("<p>{}</p>".format(_escape_html(status)))
+        if groups:
+            html.append("<ul>")
+            for line in groups:
+                html.append("<li>{}</li>".format(_escape_html(line)))
+            html.append("</ul>")
+
+    output.print_html("\n".join(html))
+
+
 def _render_report_html(output, report):
     if output is None or not hasattr(output, "print_html"):
         raise RuntimeError("pyRevit output html not available")
+
+    if _is_computed_report(report):
+        _render_computed_report_html(output, report)
+        return
 
     link_map = report.get("link_map", {})
     grouped = report.get("grouped", {})
@@ -1163,7 +1364,27 @@ def _render_report_html(output, report):
     output.print_html("\n".join(html))
 
 
+def _render_computed_report_text(report):
+    headline, detail, rows = _computed_report_lines(report)
+    print("Coordination Review Summary")
+    print("Document: {}".format(report.get("doc_title", "(Unknown)")))
+    print(headline)
+    if detail:
+        print(detail)
+
+    for name, status, groups in rows:
+        print("")
+        print(name)
+        print("  {}".format(status))
+        for line in groups:
+            print("  - {}".format(line))
+
+
 def _render_report_text(report):
+    if _is_computed_report(report):
+        _render_computed_report_text(report)
+        return
+
     link_map = report.get("link_map", {})
     grouped = report.get("grouped", {})
     link_totals = report.get("link_totals", {})
@@ -1326,14 +1547,51 @@ def _get_logger():
         return None
 
 
-def _get_uiapp():
+#: The live ``UIApplication`` handed to the last file-open entry point (the
+#: Idling sender or a hook's ``__revit__``).  The module-level ``__revit__``
+#: seen from the startup/Idling engine is a ``UIControlledApplication`` with
+#: no ``ActiveUIDocument``, which left the Coordination Review window without
+#: a UI document at file open while the Start Message button (a command
+#: engine, full ``UIApplication``) worked.
+_LIVE_UIAPP = None
+
+
+def _usable_uiapp(candidate):
+    """``candidate`` when it exposes ``ActiveUIDocument`` (a UIApplication)."""
+    if candidate is None:
+        return None
     try:
-        return __revit__
+        if hasattr(candidate, "ActiveUIDocument"):
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
+def _remember_live_uiapp(uiapp):
+    global _LIVE_UIAPP
+    usable = _usable_uiapp(uiapp)
+    if usable is not None:
+        _LIVE_UIAPP = usable
+    return usable
+
+
+def _get_uiapp():
+    candidates = [_LIVE_UIAPP]
+    try:
+        candidates.append(__revit__)
+    except Exception:
+        pass
+    try:
+        from pyrevit import HOST_APP
+        candidates.append(HOST_APP.uiapp)
     except Exception:
         pass
 
-    try:
-        from pyrevit import HOST_APP
-        return HOST_APP.uiapp
-    except Exception:
-        return None
+    for candidate in candidates:
+        if _usable_uiapp(candidate) is not None:
+            return candidate
+    for candidate in candidates:
+        if candidate is not None:
+            return candidate
+    return None

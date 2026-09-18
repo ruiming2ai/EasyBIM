@@ -1,35 +1,16 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Select Source Element"
-        Width="380"
-        Height="160"
-        ResizeMode="NoResize"
-        WindowStartupLocation="CenterScreen"
-        ShowInTaskbar="False">
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <TextBlock Text="Select your element to duplicate and host"
-                   FontSize="14"
-                   VerticalAlignment="Center"
-                   TextWrapping="Wrap" />
-
-        <StackPanel Grid.Row="1"
-                    Orientation="Horizontal"
-                    HorizontalAlignment="Right"
-                    Margin="0,16,0,0">
-            <Button Content="Select"
-                    Width="88"
-                    Margin="0,0,8,0"
-                    IsDefault="True"
-                    Click="select_click" />
-            <Button Content="Cancel"
-                    Width="88"
-                    IsCancel="True"
-                    Click="cancel_click" />
+        Title="Select Source" Width="470" SizeToContent="Height"
+        ResizeMode="NoResize" WindowStartupLocation="CenterScreen" ShowInTaskbar="False">
+    <StackPanel Margin="20">
+        <TextBlock Text="Choose what to copy" FontSize="18" Margin="0,0,0,14"/>
+        <CheckBox x:Name="CopyOriginalTypeCheckBox" Content="Copy Original Family Type" Margin="0,0,0,8"/>
+        <TextBlock Text="Checked: use each selected linked instance's family type and values. Unchecked: select an element in this project to duplicate." TextWrapping="Wrap" Margin="20,0,0,16"/>
+        <CheckBox x:Name="MonitoredCheckBox" Content="Monitored" IsChecked="True" Margin="0,0,0,8"/>
+        <TextBlock Text="Track linked MEP and Generic Model instances. Review changes with Copy Monitor. Other categories and Current Project references cannot be monitored in this version." TextWrapping="Wrap" Margin="20,0,0,18"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Continue" Width="92" Margin="0,0,8,0" IsDefault="True" Click="select_click"/>
+            <Button Content="Cancel" Width="92" IsCancel="True" Click="cancel_click"/>
         </StackPanel>
-    </Grid>
+    </StackPanel>
 </Window>

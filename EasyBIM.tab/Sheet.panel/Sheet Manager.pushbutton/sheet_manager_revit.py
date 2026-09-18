@@ -7,6 +7,8 @@ importable on desktop Python.
 
 from __future__ import print_function
 
+from contextlib import contextmanager
+
 from pyrevit import DB
 from pyrevit import HOST_APP
 from pyrevit import framework
@@ -113,6 +115,286 @@ def build_rows(doc, row_factory):
         sheets_by_id[eid_to_int(sheet.Id)] = sheet
         rows.append(build_row_for_sheet(sheet, row_factory, tb_map))
     return rows, tb_map, sheets_by_id
+
+
+def collect_sheet_template_options(doc):
+    """Usable empty-sheet templates as ``(sheet_id, label)`` pairs."""
+    tblock_map = collect_titleblock_map(doc)
+    options = []
+    for sheet in collect_sheets(doc):
+        try:
+            if bool(sheet.IsPlaceholder):
+                continue
+        except Exception:
+            pass
+        sheet_id = eid_to_int(sheet.Id)
+        if len(tblock_map.get(sheet_id) or []) != 1:
+            continue
+        number = getattr(sheet, "SheetNumber", u"") or u""
+        name = getattr(sheet, "Name", u"") or u""
+        options.append((sheet_id, u"{0} - {1}".format(number, name)))
+    return options
+
+
+def _copy_writable_parameter_values(source, target, excluded_ids=None):
+    """Copy compatible String/Integer/Double instance values by name."""
+    excluded_ids = set(excluded_ids or [])
+    copied = 0
+    try:
+        source_params = source.Parameters
+    except Exception:
+        return copied
+    for source_param in source_params:
+        try:
+            if source_param.IsReadOnly:
+                continue
+            param_id = eid_to_int(source_param.Id)
+            if param_id in excluded_ids:
+                continue
+            storage = source_param.StorageType
+            if storage == DB.StorageType.ElementId:
+                continue
+            name = source_param.Definition.Name
+            target_param = target.LookupParameter(name)
+            if target_param is None or target_param.IsReadOnly:
+                continue
+            target_param_id = eid_to_int(target_param.Id)
+            if target_param_id in excluded_ids:
+                continue
+            if target_param.StorageType != storage:
+                continue
+            if storage == DB.StorageType.String:
+                target_param.Set(source_param.AsString() or u"")
+            elif storage == DB.StorageType.Integer:
+                target_param.Set(source_param.AsInteger())
+            elif storage == DB.StorageType.Double:
+                target_param.Set(source_param.AsDouble())
+            else:
+                continue
+            copied += 1
+        except Exception:
+            continue
+    return copied
+
+
+def _is_invalid_element_id(element_id):
+    if element_id is None:
+        return True
+    try:
+        return eid_to_int(element_id) == \
+            eid_to_int(DB.ElementId.InvalidElementId)
+    except Exception:
+        return element_id == DB.ElementId.InvalidElementId
+
+
+def _ensure_direct_model_sheet(doc, sheet):
+    """Keep a newly numbered sheet outside collections on Revit 2025+."""
+    try:
+        collection_id = sheet.SheetCollectionId
+    except AttributeError:
+        return
+    if _is_invalid_element_id(collection_id):
+        return
+    try:
+        sheet.SheetCollectionId = DB.ElementId.InvalidElementId
+    except Exception as err:
+        raise ValueError(
+            "Could not remove the new sheet from its Sheet Collection: {0}"
+            .format(exception_text(err)))
+    doc.Regenerate()
+    if not _is_invalid_element_id(sheet.SheetCollectionId):
+        raise ValueError(
+            "The new sheet is still associated with a Sheet Collection.")
+
+
+def _create_sheet_from_template(doc, template_sheet, template_tblock,
+                                sheet_number, sheet_name):
+    """Create one direct-model sheet and copy the allowed template values."""
+    operation = "Create sheet with template title block"
+    try:
+        sheet = DB.ViewSheet.Create(doc, template_tblock.GetTypeId())
+        operation = "Assign Excel sheet number/name"
+        sheet.SheetNumber = sheet_number
+        sheet.Name = sheet_name
+        operation = "Set direct-model sheet membership"
+        _ensure_direct_model_sheet(doc, sheet)
+        operation = "Copy template sheet values"
+        _copy_writable_parameter_values(
+            template_sheet, sheet, _EXCLUDED_SHEET_PARAM_IDS)
+        operation = "Regenerate template title block"
+        doc.Regenerate()
+        new_tblocks = collect_titleblock_map(doc).get(eid_to_int(sheet.Id)) or []
+        if len(new_tblocks) != 1:
+            raise ValueError("The new sheet has no single title block.")
+        operation = "Copy template title-block values"
+        # Title-block fields can write through to the owning sheet. Protect
+        # identity on both sides of the name lookup, just as for sheet values.
+        _copy_writable_parameter_values(
+            template_tblock, new_tblocks[0], _EXCLUDED_SHEET_PARAM_IDS)
+        operation = "Copy additional revisions"
+        revision_ids = clr_id_list_factory()()
+        for revision_id in template_sheet.GetAdditionalRevisionIds():
+            revision_ids.Add(revision_id)
+        sheet.SetAdditionalRevisionIds(revision_ids)
+        operation = "Verify Excel sheet number/name"
+        sheet.SheetNumber = sheet_number
+        sheet.Name = sheet_name
+        doc.Regenerate()
+        if sheet.SheetNumber != sheet_number or sheet.Name != sheet_name:
+            raise ValueError("The new sheet did not retain its Excel number/name.")
+        return sheet
+    except Exception as err:
+        raise ValueError(u"{0}: {1}".format(operation, exception_text(err)))
+
+
+class _SheetCreationFailures(DB.IFailuresPreprocessor):
+    """Capture native errors and roll back the row, without hiding failures."""
+
+    def __init__(self):
+        self.messages = []
+
+    def PreprocessFailures(self, accessor):
+        has_error = False
+        for failure in accessor.GetFailureMessages():
+            if failure.GetSeverity() in (DB.FailureSeverity.Error,
+                                          DB.FailureSeverity.DocumentCorruption):
+                has_error = True
+                message = failure.GetDescriptionText()
+                if message not in self.messages:
+                    self.messages.append(message)
+        if has_error:
+            return DB.FailureProcessingResult.ProceedWithRollBack
+        return DB.FailureProcessingResult.Continue
+
+
+def _try_create_sheet(doc, sheet_number, sheet_name, titleblock_type_id,
+                      template_sheet=None, template_tblock=None):
+    """Return a committed sheet or a row error; never leave a partial sheet.
+
+    Must run outside a transaction (an enclosing TransactionGroup is fine).
+    Rollback failures propagate so callers cannot continue modifying a document
+    whose transaction has not safely ended.
+    """
+    transaction = DB.Transaction(
+        doc, u"Sheet Manager - Create Sheet {0}".format(sheet_number))
+    failures = _SheetCreationFailures()
+    operation = "Start sheet transaction"
+    try:
+        if transaction.Start() != DB.TransactionStatus.Started:
+            raise ValueError("Revit did not start the transaction.")
+        operation = "Configure sheet failure handling"
+        options = transaction.GetFailureHandlingOptions()
+        options.SetFailuresPreprocessor(failures)
+        # A pending/modeless commit must not let the next row start early.
+        options.SetForcedModalHandling(True)
+        transaction.SetFailureHandlingOptions(options)
+        operation = "Create sheet"
+        if template_sheet is not None:
+            sheet = _create_sheet_from_template(
+                doc, template_sheet, template_tblock, sheet_number, sheet_name)
+        else:
+            sheet = DB.ViewSheet.Create(doc, titleblock_type_id)
+            operation = "Assign sheet number/name"
+            sheet.SheetNumber = sheet_number
+            if sheet_name:
+                sheet.Name = sheet_name
+            operation = "Set direct-model sheet membership"
+            _ensure_direct_model_sheet(doc, sheet)
+        operation = "Commit sheet"
+        status = transaction.Commit()
+        final_status = transaction.GetStatus()
+        if (status != DB.TransactionStatus.Committed
+                or final_status != DB.TransactionStatus.Committed):
+            detail = u"; ".join(failures.messages) or (
+                u"Revit returned {0} (current status: {1})."
+                .format(status, final_status))
+            raise ValueError(detail)
+        return sheet, None
+    except Exception as err:
+        return None, u"{0}: {1}".format(operation, exception_text(err))
+    finally:
+        try:
+            status = transaction.GetStatus()
+            if status == DB.TransactionStatus.Started:
+                try:
+                    status = transaction.RollBack()
+                except Exception as err:
+                    raise RuntimeError(
+                        u"Sheet {0}: rollback failed: {1}."
+                        .format(sheet_number, exception_text(err)))
+                if status != DB.TransactionStatus.RolledBack:
+                    raise RuntimeError(
+                        u"Sheet {0}: rollback did not finish ({1})."
+                        .format(sheet_number, status))
+                status = transaction.GetStatus()
+            if status not in (DB.TransactionStatus.Uninitialized,
+                              DB.TransactionStatus.Committed,
+                              DB.TransactionStatus.RolledBack):
+                raise RuntimeError(
+                    u"Sheet {0}: transaction did not finish safely ({1})."
+                    .format(sheet_number, status))
+        finally:
+            transaction.Dispose()
+
+
+@contextmanager
+def _committed_sheet_group(doc, name):
+    """Keep the single undo item, but require confirmed group finalization."""
+    group = DB.TransactionGroup(doc, name)
+    try:
+        if group.Start() != DB.TransactionStatus.Started:
+            raise ValueError(u"{0}: Revit did not start the group.".format(name))
+        yield
+        if (group.Assimilate() != DB.TransactionStatus.Committed
+                or group.GetStatus() != DB.TransactionStatus.Committed):
+            raise ValueError(u"{0}: Revit did not commit the group.".format(name))
+    finally:
+        try:
+            if group.GetStatus() == DB.TransactionStatus.Started:
+                if (group.RollBack() != DB.TransactionStatus.RolledBack
+                        or group.GetStatus() != DB.TransactionStatus.RolledBack):
+                    raise RuntimeError(
+                        u"{0}: group rollback did not finish.".format(name))
+        finally:
+            group.Dispose()
+
+
+def create_sheets_from_template(doc, template_sheet_id, import_rows):
+    """Create empty sheets from one template.
+
+    Returns ``(created_sheets, failure_messages)``. Each candidate has an
+    independent transaction so one invalid Excel row cannot leave a
+    partially-created sheet or block other selected rows.
+    """
+    sheets_by_id = dict(
+        (eid_to_int(sheet.Id), sheet) for sheet in collect_sheets(doc))
+    template_sheet = sheets_by_id.get(template_sheet_id)
+    tblock_map = collect_titleblock_map(doc)
+    template_tblocks = tblock_map.get(template_sheet_id) or []
+    if template_sheet is None or len(template_tblocks) != 1:
+        raise ValueError("The selected sheet template is no longer usable.")
+    try:
+        if bool(template_sheet.IsPlaceholder):
+            raise ValueError("Placeholder sheets cannot be used as templates.")
+    except ValueError:
+        raise
+    except Exception:
+        pass
+
+    template_tblock = template_tblocks[0]
+    created = []
+    failures = []
+    with _committed_sheet_group(doc, "Sheet Manager - Create Excel Sheets"):
+        for import_row in import_rows or []:
+            sheet, error = _try_create_sheet(
+                doc, import_row.sheet_number, import_row.sheet_name,
+                template_tblock.GetTypeId(), template_sheet, template_tblock)
+            if error:
+                failures.append(u"{0}: {1}".format(
+                    import_row.sheet_number, error))
+            else:
+                created.append(sheet)
+    return created, failures
 
 
 def read_light_snapshot(doc, known_ids):
@@ -328,6 +610,7 @@ def _builtin_int(builtin_param):
 _EXCLUDED_SHEET_PARAM_IDS = set(x for x in (
     _builtin_int(getattr(DB.BuiltInParameter, "SHEET_NUMBER", None)),
     _builtin_int(getattr(DB.BuiltInParameter, "SHEET_NAME", None)),
+    _builtin_int(getattr(DB.BuiltInParameter, "SHEET_COLLECTION", None)),
 ) if x is not None)
 
 
@@ -672,7 +955,8 @@ def apply_staged_changes(doc, changes, sheets_by_id, tb_map,
 
     ``cloud_decisions``: {"hide_approved": bool,
                           "unhide_mode": "unhide" | "add" | "skip"}.
-    Returns a state.ApplyResults; per-item failures never abort a phase.
+    Returns a state.ApplyResults. Ordinary per-item failures are reported;
+    unsafe transaction failures abort the group and preserve staged rows.
     """
     results = state.ApplyResults()
     eid_from_int = element_id_factory(DB.ElementId)
@@ -711,17 +995,29 @@ def apply_staged_changes(doc, changes, sheets_by_id, tb_map,
     for row, column, revision_id in cloud_hides:
         removal_targets.setdefault(row.sheet_id, set()).add(revision_id)
 
-    with revit.TransactionGroup("Sheet Manager - Apply Changes", doc=doc):
-        _apply_renumbers(doc, changes, sheets_by_id, results)
-        _apply_creates(doc, changes, sheets_by_id, tb_map, results,
-                       eid_from_int)
-        _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results)
-        _apply_copy_content(doc, changes.copy_content_ops, sheets_by_id,
-                            results, clr_factory)
-        _apply_revisions(doc, revision_adds, changes.revision_removes,
-                         sheets_by_id, results, eid_from_int, clr_factory)
-        _apply_clouds(doc, cloud_hides, cloud_unhides, sheets_by_id,
-                      results, eid_from_int, clr_factory)
+    pending_identity = [(row, row.sheet_id, row.is_pending)
+                        for row in changes.pending_sheets]
+    try:
+        with _committed_sheet_group(doc, "Sheet Manager - Apply Changes"):
+            _apply_renumbers(doc, changes, sheets_by_id, results)
+            _apply_creates(doc, changes, sheets_by_id, tb_map, results,
+                           eid_from_int)
+            _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results)
+            _apply_copy_content(doc, changes.copy_content_ops, sheets_by_id,
+                                results, clr_factory)
+            _apply_revisions(doc, revision_adds, changes.revision_removes,
+                             sheets_by_id, results, eid_from_int, clr_factory)
+            _apply_clouds(doc, cloud_hides, cloud_unhides, sheets_by_id,
+                          results, eid_from_int, clr_factory)
+    except Exception:
+        # A later failure can undo earlier, individually committed creations.
+        # Do not leave the table/index pointing at those rolled-back sheets.
+        for row, sheet_id, is_pending in pending_identity:
+            if row.sheet_id != sheet_id:
+                sheets_by_id.pop(row.sheet_id, None)
+            row.sheet_id = sheet_id
+            row.is_pending = is_pending
+        raise
 
     _leftover_check(removal_targets, sheets_by_id, results)
     return results
@@ -815,25 +1111,37 @@ def _apply_creates(doc, changes, sheets_by_id, tb_map, results,
     if not changes.pending_sheets:
         return
     tb_type_id = _default_titleblock_type_id(doc, tb_map, eid_from_int)
-    with revit.Transaction("Sheet Manager - Create Sheets", doc=doc):
-        for row in changes.pending_sheets:
-            try:
-                sheet = DB.ViewSheet.Create(doc, tb_type_id)
-                sheet.SheetNumber = row.number
-                if row.name:
-                    sheet.Name = row.name
-                row.sheet_id = eid_to_int(sheet.Id)
-                row.is_pending = False
-                sheets_by_id[row.sheet_id] = sheet
-                results.created_count += 1
-                results.modified_sheet_ids.add(row.sheet_id)
-                results.sheet_changes.append(state.ResultItem(
-                    row.number, "Create sheet", u"", row.name, "applied"))
-                results.applied_cells.append((row, "number"))
-                results.applied_cells.append((row, "name"))
-            except Exception as err:
-                results.add_error(row.number, "Create sheet",
-                                  exception_text(err))
+    for row in changes.pending_sheets:
+        try:
+            template_sheet_id = getattr(row, "template_sheet_id", None)
+            template_sheet = sheets_by_id.get(template_sheet_id)
+            template_tblocks = tb_map.get(template_sheet_id) or []
+            if template_sheet_id is not None:
+                if (template_sheet is None or len(template_tblocks) != 1
+                        or template_sheet.IsPlaceholder):
+                    raise ValueError(
+                        "The selected sheet template is no longer usable.")
+        except Exception as err:
+            results.add_error(row.number, "Create sheet",
+                              u"Validate sheet template: {0}"
+                              .format(exception_text(err)))
+            continue
+        sheet, error = _try_create_sheet(
+            doc, row.number, row.name, tb_type_id, template_sheet,
+            template_tblocks[0] if template_tblocks else None)
+        if error:
+            results.add_error(row.number, "Create sheet", error)
+            continue
+        # Publish row identity and results only after a confirmed native commit.
+        row.sheet_id = eid_to_int(sheet.Id)
+        row.is_pending = False
+        sheets_by_id[row.sheet_id] = sheet
+        results.created_count += 1
+        results.modified_sheet_ids.add(row.sheet_id)
+        results.sheet_changes.append(state.ResultItem(
+            row.number, "Create sheet", u"", row.name, "applied"))
+        results.applied_cells.append((row, "number"))
+        results.applied_cells.append((row, "name"))
 
 
 def _apply_names_and_params(doc, changes, sheets_by_id, tb_map, results):

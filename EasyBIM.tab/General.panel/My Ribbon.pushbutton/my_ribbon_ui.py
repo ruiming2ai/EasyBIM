@@ -180,7 +180,7 @@ class MyRibbonWindow(forms.WPFWindow):
         if not count:
             item = Windows.Controls.ListBoxItem()
             item.Content = _text_block("No sources yet. Press Add source... to pick an installed "
-                                       "extension, a tab already on the ribbon, or a Dynamo graph.",
+                                       "extension, a tab already on the ribbon, or a Dynamo.",
                                        grey=True)
             item.IsEnabled = False
             self.SourcesList.Items.Add(item)
@@ -196,7 +196,7 @@ class MyRibbonWindow(forms.WPFWindow):
         elif kind == "ribbon":
             origin = "tab on the ribbon: " + _safe_text(source.get("ext_name"))
         elif kind == "dynamo":
-            origin = "Dynamo graph: " + _safe_text(source.get("path"))
+            origin = "Dynamo: " + _safe_text(source.get("path"))
         else:
             origin = "installed extension: " + _safe_text(source.get("ext_name"))
         status = self.source_status.get(source.get("id"), "")
@@ -288,11 +288,6 @@ class MyRibbonWindow(forms.WPFWindow):
         has_source = source is not None
         kind = source.get("kind") if has_source else None
         self.remove_source_btn.IsEnabled = has_source
-        self.uninstall_btn.IsEnabled = bool(has_source and source.get("installed_by_my_ribbon"))
-        self.uninstall_btn.ToolTip = (
-            "Remove it and delete the files My Ribbon installed for it (on Apply)."
-            if self.uninstall_btn.IsEnabled else
-            "Only what My Ribbon installed itself can be uninstalled here.")
         self.open_folder_btn.IsEnabled = has_source and self.open_folder is not None \
             and kind != "ribbon"
         self.locate_btn.Visibility = Windows.Visibility.Visible if kind == "dynamo" \
@@ -387,36 +382,14 @@ class MyRibbonWindow(forms.WPFWindow):
         elif source.get("kind") == "ribbon":
             message += "\n\nThe tab itself is not touched."
         else:
-            message += "\n\nThe extension stays installed (use Uninstall to delete it)."
+            message += "\n\nThe extension stays installed; pyRevit's Extensions window " \
+                       "is where it can be uninstalled."
         if not forms.alert(message, title=TITLE, yes=True, no=True):
             return
         state.remove_source(self.working, source.get("id"))
         if source.get("kind") == "dynamo" and source.get("installed_by_my_ribbon"):
             # a Dynamo button is nothing but the bundle My Ribbon wrote
             self.pending_deletes.append(source)
-        self._selected_source_id = None
-        self._rebuild()
-
-    def uninstall_source_click(self, sender, args):
-        del sender, args
-        source = state.find_source_by_id(self.working, self._selected_source_id)
-        if source is None or not source.get("installed_by_my_ribbon"):
-            return
-        message = "Uninstall {0}?".format(source.get("label") or source.get("ext_name"))
-        message += self._placed_count_text(source)
-        if source.get("kind") == "dynamo":
-            message += "\n\nThe button My Ribbon created is deleted when you press Apply; the graph " \
-                       "file stays where it is."
-        elif source.get("extra_root"):
-            message += "\n\nThe downloaded repository folder is deleted when you press Apply " \
-                       "(unless another source still uses it)."
-        else:
-            message += "\n\nThe extension folder My Ribbon downloaded is deleted when you press " \
-                       "Apply. pyRevit needs a reload afterwards."
-        if not forms.alert(message, title=TITLE, yes=True, no=True):
-            return
-        state.remove_source(self.working, source.get("id"))
-        self.pending_deletes.append(source)
         self._selected_source_id = None
         self._rebuild()
 
@@ -664,7 +637,7 @@ class MyRibbonWindow(forms.WPFWindow):
 
 class SourceSelectionWindow(forms.WPFWindow):
     """Two cards: what is already on this computer (pyRevit extensions, Revit's
-    own tabs and other add-ins) and Dynamo graphs.  An extension this computer
+    own tabs and other add-ins) and Dynamo.  An extension this computer
     does not have yet is installed in pyRevit's own Extensions window first.
 
     ``result`` is ``("installed", ext)``, ``("ribbon", tab)``,
@@ -753,7 +726,7 @@ class SourceSelectionWindow(forms.WPFWindow):
     def add_dynamo_click(self, sender, args):
         del sender, args
         picked = forms.pick_file(file_ext="dyn", multi_file=True,
-                                 title="Choose Dynamo graphs (.dyn)")
+                                 title="Choose Dynamo (.dyn)")
         if not picked:
             return
         if isinstance(picked, type(u"")) or isinstance(picked, str):
@@ -1200,6 +1173,51 @@ class ImportPreviewWindow(forms.WPFWindow):
         self.Close()
 
 
+class _ImportResultRow(object):
+    """One grid line.  The names are what ImportResultsDialog.xaml binds to."""
+
+    __slots__ = ("name", "change", "detail")
+
+    def __init__(self, name, change, detail):
+        self.name = name
+        self.change = change
+        self.detail = detail
+
+
+#: One tab per kind of thing an import can change, in the order shown.
+IMPORT_RESULT_TABS = (("extensions", "Extensions"), ("buttons", "Buttons"), ("tabs", "Tabs"),
+                      ("panels", "Panels"), ("settings", "Settings"))
+
+
+class ImportResultsWindow(forms.WPFWindow):
+    """What an import changed, one tab per kind: extensions, buttons, tabs,
+    panels, settings.  ``results`` is what ``state.build_import_report``
+    returns; the first tab with anything in it is the one shown."""
+
+    def __init__(self, xaml_file_name, results):
+        self._is_ready = False
+        forms.WPFWindow.__init__(self, xaml_file_name)
+        results = results or {}
+        first = None
+        for key, label in IMPORT_RESULT_TABS:
+            rows = [_ImportResultRow(_safe_text(r.get("name")), _safe_text(r.get("change")),
+                                     _safe_text(r.get("detail")))
+                    for r in (results.get(key) or [])]
+            getattr(self, key + "_dg").ItemsSource = rows
+            tab = getattr(self, key + "_tab")
+            tab.Header = "{0} ({1})".format(label, len(rows))
+            if rows and first is None:
+                first = tab
+        if first is not None:
+            first.IsSelected = True
+        self.summary_tb.Text = "  |  ".join(results.get("summary") or [])
+        self._is_ready = True
+
+    def ok_clicked(self, sender, args):
+        del sender, args
+        self.Close()
+
+
 # -- credentials -------------------------------------------------------------------
 
 
@@ -1350,9 +1368,9 @@ class DynamoButtonWindow(forms.WPFWindow):
         fmt = (facts or {}).get("format")
         lines = []
         if fmt == "2.x":
-            lines.append("Dynamo 2.x graph" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
+            lines.append("Dynamo 2.x" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
         elif fmt == "1.x":
-            lines.append("Dynamo 1.x graph" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
+            lines.append("Dynamo 1.x" + (' "{0}"'.format(facts.get("name")) if facts.get("name") else ""))
         for tag in tags:
             if not tag.startswith("Dynamo 1.x"):
                 lines.append(tag[0].upper() + tag[1:])

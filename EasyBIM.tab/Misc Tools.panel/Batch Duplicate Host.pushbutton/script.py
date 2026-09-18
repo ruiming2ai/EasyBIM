@@ -74,7 +74,10 @@ def _show_summary(summary, target_count):
     TaskDialog.Show(__title__, build_summary_text(summary, target_count))
 
 
-def _run():
+def _run(default_copy_original=False, command_title=None):
+    global __title__
+    if command_title:
+        __title__ = command_title
     uidoc = revit.uidoc
     doc = revit.doc
     if uidoc is None or doc is None:
@@ -82,7 +85,7 @@ def _run():
         return
 
     active_view = doc.ActiveView
-    wizard_state = WizardState()
+    wizard_state = WizardState(copy_original=default_copy_original)
     target_documents = None
     selected_document = None
     source_element = None
@@ -90,11 +93,18 @@ def _run():
 
     while True:
         if step == STEP_SOURCE:
-            source_window = SourceSelectionWindow("SourceSelectionWindow.xaml")
+            source_window = SourceSelectionWindow(os.path.join(SCRIPT_DIR, "SourceSelectionWindow.xaml"),
+                                                  wizard_state.monitored, wizard_state.copy_original)
             source_window.ShowDialog()
             if not source_window.should_select:
                 return
 
+            wizard_state.monitored = source_window.monitored
+            wizard_state.copy_original = source_window.copy_original
+            if wizard_state.copy_original:
+                source_element = None
+                step = STEP_CATEGORIES
+                continue
             try:
                 source_element = _pick_source_element(uidoc)
             except Exception as ex:
@@ -119,7 +129,7 @@ def _run():
                 target_documents = get_target_documents(doc)
 
             category_window = CategorySelectionWindow(
-                "CategorySelectionWindow.xaml",
+                os.path.join(SCRIPT_DIR, "CategorySelectionWindow.xaml"),
                 target_documents,
                 get_categories,
                 wizard_state.selected_document_key,
@@ -156,7 +166,7 @@ def _run():
                 continue
 
             family_type_window = FamilyTypeSelectionWindow(
-                "FamilyTypeSelectionWindow.xaml",
+                os.path.join(SCRIPT_DIR, "FamilyTypeSelectionWindow.xaml"),
                 family_groups,
                 wizard_state.selected_type_ids,
             )
@@ -173,7 +183,7 @@ def _run():
             return
 
         if step == STEP_OFFSET:
-            if source_element is None or selected_document is None or not wizard_state.selected_type_ids:
+            if (source_element is None and not wizard_state.copy_original) or selected_document is None or not wizard_state.selected_type_ids:
                 step = STEP_FAMILY_TYPES
                 continue
 
@@ -188,7 +198,7 @@ def _run():
             )
             parse_length = lambda label, text: try_parse_length_value(doc.GetUnits(), label, text)
             offset_window = OffsetWindow(
-                "OffsetWindow.xaml",
+                os.path.join(SCRIPT_DIR, "OffsetWindow.xaml"),
                 unit_text,
                 parse_length,
                 wizard_state.x_offset_text,
@@ -216,6 +226,8 @@ def _run():
                     targets,
                     offset,
                     wizard_state.align_orientation,
+                    monitored=wizard_state.monitored,
+                    copy_original=wizard_state.copy_original,
                 )
                 _show_summary(summary, len(targets))
                 return

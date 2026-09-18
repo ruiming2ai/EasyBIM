@@ -412,7 +412,7 @@ def try_parse_length_value(units, label, value_text):
     return False, None, "{}: enter a valid length, for example 6\", 2', or 1' 6\".".format(label)
 
 
-def place_copies(host_document, active_view, source_element, targets, offset, align_orientation):
+def _place_legacy_copies(host_document, active_view, source_element, targets, offset, align_orientation):
     summary = PlacementSummary()
     source_point = _get_element_point(source_element, active_view)
     source_coordinate_frame = _get_source_coordinate_frame(source_element)
@@ -671,3 +671,80 @@ def _build_element_id_list(element_ids):
             continue
         clr_ids.Add(element_id)
     return clr_ids
+
+
+def _independent_reference_frame(reference, link, placement, adapter, transform_cache):
+    # Re-read current link placement; do not inherit the legacy identity fallback.
+    key = link.UniqueId if link is not None else "current-project"
+    if key not in transform_cache:
+        transform_cache[key] = link.GetTotalTransform() if link is not None else DB.Transform.Identity
+    transform = transform_cache[key]
+    if transform is None:
+        raise ValueError("The link transform is unavailable.")
+    if isinstance(reference.Location, DB.LocationPoint):
+        return adapter.instance_frame(reference, transform)
+    point = _get_instance_point_in_host_coordinates(reference, DB.Transform.Identity)
+    x, y, z, error = _get_target_coordinate_frame_in_host_coordinates(reference, transform)
+    if point is None or error:
+        raise ValueError(error or "The reference location is unavailable.")
+    return placement.validate_frame(placement.frame(adapter.vector(transform.OfPoint(point)),
+        adapter.vector(x), adapter.vector(y), adapter.vector(z)))
+
+
+def place_copies(host_document, active_view, source_element, targets, offset,
+                 align_orientation, monitored=True, copy_original=False):
+    from easybim import independent_placement as placement
+    from easybim import independent_placement_revit as adapter
+    from easybim import copy_monitor_revit as monitor
+    from pyrevit import forms
+
+    if not copy_original and not adapter.supported_category(source_element):
+        result = _place_legacy_copies(host_document, active_view, source_element,
+                                     targets, offset, align_orientation)
+        if monitored:
+            result.notes.append("Monitoring is unavailable for this category; legacy copying was used.")
+        return result
+    summary = PlacementSummary()
+    requests, transform_cache = [], {}
+    for target in targets:
+        try:
+            reference = target.source_option.document.GetElement(target.instance_id)
+            source = reference if copy_original else source_element
+            if not adapter.supported_category(source):
+                raise ValueError("Copy Original Family Type supports MEP and Generic Model instances only.")
+            reason = adapter.independent_reason(source)
+            if reason:
+                raise ValueError(reason)
+            link = target.source_option.link_instance
+            frame = _independent_reference_frame(reference, link, placement, adapter, transform_cache)
+            source_frame = adapter.instance_frame(source)
+            desired = placement.desired_frame(frame, adapter.vector(offset), source_frame,
+                                              align_orientation)
+            can_monitor = bool(monitored and link is not None and adapter.supported_category(reference)
+                               and isinstance(reference.Location, DB.LocationPoint))
+            if monitored and not can_monitor:
+                summary.notes.append(target.display_label + ": monitoring is unavailable for this reference.")
+            requests.append(dict(source=source, reference=reference, link=link,
+                                 desired=desired, mode="original" if copy_original else "duplicate",
+                                 recipe=dict(offset=adapter.vector(offset), align=bool(align_orientation),
+                                             orientation=source_frame),
+                                 monitored=can_monitor, label=target.display_label))
+        except Exception as error:
+            summary.skipped.append(SkippedPlacement(target.display_label, adapter.text(error)))
+    if not requests:
+        return summary
+    with forms.ProgressBar(title="Independent placement ({value} of {max_value})", cancellable=True) as bar:
+        def progress(index, total):
+            bar.update_progress(index, total)
+            return not bar.cancelled
+        results = monitor.copy_requests(host_document, requests, progress)
+    for result in results:
+        if result["ok"]:
+            value = result["value"]
+            summary.created_element_ids.append(value["element"].Id)
+            for issue in value["parameter_issues"]:
+                summary.notes.append("{} / {}: {}".format(result["request"]["label"], issue["name"], issue["reason"]))
+        else:
+            label = (result.get("request") or {}).get("label", "Remaining instances")
+            summary.skipped.append(SkippedPlacement(label, result["error"]))
+    return summary

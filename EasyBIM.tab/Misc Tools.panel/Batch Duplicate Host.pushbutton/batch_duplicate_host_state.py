@@ -25,6 +25,8 @@ class WizardState:
         y_offset_text="0",
         z_offset_text="0",
         align_orientation=True,
+        monitored=True,
+        copy_original=False,
     ):
         self.selected_document_key = selected_document_key
         self.selected_category_ids = set(selected_category_ids or [])
@@ -33,6 +35,8 @@ class WizardState:
         self.y_offset_text = y_offset_text
         self.z_offset_text = z_offset_text
         self.align_orientation = align_orientation
+        self.monitored = bool(monitored)
+        self.copy_original = bool(copy_original)
 
 
 class TargetDocumentOption:
