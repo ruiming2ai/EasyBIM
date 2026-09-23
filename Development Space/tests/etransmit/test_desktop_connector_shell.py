@@ -53,6 +53,19 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
         self.assertEqual(result.get('copy_method'), 'WINDOWS_SHELL')
         self.assertEqual(result.get('source_stability'), 'SHELL_SNAPSHOT')
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows Shell integration check')
+    def test_shell_copy_to_local_roundtrip_on_windows(self):
+        source = self.base / 'Shell Source.rvt'
+        source.write_bytes(b'shell copy payload')
+        local, folder = f.shell_copy_to_local(str(source))
+        try:
+            self.assertEqual(Path(local).name, source.name)
+            self.assertEqual(Path(local).read_bytes(), source.read_bytes())
+            self.assertNotEqual(Path(local).parent, source.parent)
+        finally:
+            f.remove_tree_retry(folder)
+        self.assertFalse(os.path.exists(folder))
+
     def test_shell_snapshot_does_not_restat_connector_after_copy(self):
         helper = getattr(f, 'source_snapshot_changed', None)
         self.assertTrue(callable(helper), 'source snapshot stability helper is missing')
