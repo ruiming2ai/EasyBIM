@@ -107,11 +107,17 @@ class PipelineRegression(unittest.TestCase):
         self.assertEqual(result['files'][0]['inventory_status'],'FAILED')
     def test_final_hash_error_still_writes_report(self):
         digest=f.digest
+        intercepted=[]
         def unavailable(path,*args):
-            if path.endswith('/host.rvt') and '/Sources/' in path: raise IOError('verification read denied')
+            normalized=str(path).replace('\\','/')
+            if normalized.endswith('/host.rvt') and '/Sources/' in normalized:
+                intercepted.append(path)
+                raise IOError('verification read denied')
             return digest(path,*args)
         with patch.object(f,'digest',unavailable): result=e.transmit([self.model],self.out,self.backend)
+        self.assertTrue(intercepted, 'The verification failure must be exercised on every platform')
         self.assertEqual(result['status'],'NEEDS_REVIEW')
+        self.assertTrue(any(i['code']=='FINAL_VERIFICATION_FAILED' for i in result['issues']))
         self.assertTrue((Path(self.out)/'manifest.json').exists())
     def test_collaboration_cache_not_treated_as_source(self):
         for path in [r'C:\Users\u\CollaborationCache\foo.rvt',r'C:\Users\u\PacCache\foo.rvt']:
