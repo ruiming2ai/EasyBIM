@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """Portable file operations. Windows source names are never renamed."""
 from __future__ import unicode_literals
+import base64
 import hashlib
 import io
 import ntpath
 import os
 import re
+import shutil
+import subprocess
 import tempfile
+import time
 import uuid
 
 try:
@@ -142,6 +146,127 @@ class PathLengthError(ValueError):
     """A package path cannot safely be passed to legacy Windows/Revit APIs."""
 
 
+class ShellCopyError(IOError):
+    """Windows Shell could not materialize/copy a Desktop Connector source."""
+
+
+def is_desktop_connector_path(path):
+    """Recognize current and legacy Desktop Connector workspace path shapes.
+
+    Desktop Connector is a Windows Shell namespace.  Autodesk explicitly
+    documents direct non-Shell access as unsupported, so these paths are
+    materialized through Shell.Application before Python reads their bytes.
+    """
+    parts = [p.lower() for p in text(path or '').replace('\\', '/').split('/') if p]
+    return ('accdocs' in parts or 'autodesk docs' in parts or 'bim 360' in parts)
+
+
+def _ps_quote(value):
+    return "'" + text(value).replace("'", "''") + "'"
+
+
+def shell_copy_to_local(source, cancelled=None):
+    """Copy one Shell namespace file to an isolated local temp folder.
+
+    Folder.CopyHere is asynchronous, so the PowerShell host waits until the
+    destination size matches the Shell item's size and remains stable.  The
+    returned tuple is (local_file, temp_folder).  Callers own temp_folder.
+    """
+    if os.name != 'nt':
+        raise ShellCopyError('Windows Shell copy is available only on Windows.')
+    check(cancelled)
+    folder = tempfile.mkdtemp(prefix='EasyBIM_ET_DC_')
+    name = ntpath.basename(source)
+    local = os.path.join(folder, name)
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$src = %s
+$dst = %s
+$name = [System.IO.Path]::GetFileName($src)
+$srcDir = [System.IO.Path]::GetDirectoryName($src)
+$shell = New-Object -ComObject Shell.Application
+$srcNs = $shell.NameSpace($srcDir)
+if ($null -eq $srcNs) { throw 'Windows Shell could not open the Desktop Connector source folder.' }
+$item = $srcNs.ParseName($name)
+if ($null -eq $item) { throw 'Windows Shell could not resolve the selected Desktop Connector file.' }
+$dstNs = $shell.NameSpace($dst)
+if ($null -eq $dstNs) { throw 'Windows Shell could not open the local staging folder.' }
+$expected = 0
+try { $expected = [int64]$item.Size } catch { $expected = 0 }
+# Silent, no confirmation, no error UI, no connected-file expansion.
+$dstNs.CopyHere($item, 9748)
+$out = Join-Path $dst $name
+$deadline = (Get-Date).AddMinutes(20)
+$stable = 0
+$last = -1
+while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 250
+    try {
+        if (Test-Path -LiteralPath $out -PathType Leaf) {
+            $length = [int64](Get-Item -LiteralPath $out).Length
+            if (($expected -gt 0 -and $length -eq $expected) -or
+                ($expected -le 0 -and $length -eq $last -and $length -gt 0)) {
+                $stable++
+            } else {
+                $stable = 0
+            }
+            $last = $length
+            if ($stable -ge 4) { exit 0 }
+        }
+    } catch { $stable = 0 }
+}
+throw 'Windows Shell copy timed out before the local snapshot became stable.'
+""" % (_ps_quote(source), _ps_quote(folder))
+    encoded = base64.b64encode(script.encode('utf-16-le'))
+    if not isinstance(encoded, str):
+        encoded = encoded.decode('ascii')
+    powershell = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                              'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    proc = None
+    try:
+        proc = subprocess.Popen([powershell, '-NoLogo', '-NoProfile', '-NonInteractive',
+                                 '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        while proc.poll() is None:
+            try:
+                check(cancelled)
+            except Cancelled:
+                try: proc.kill()
+                except Exception: pass
+                raise
+            time.sleep(0.2)
+        out, err = proc.communicate()
+        if proc.returncode != 0 or not os.path.isfile(local):
+            def readable(value):
+                try: return value.decode('utf-8', 'replace')
+                except AttributeError: return text(value or '')
+            detail = readable(err).strip() or readable(out).strip() or 'Windows Shell copy failed.'
+            raise ShellCopyError(detail)
+        return local, folder
+    except Exception:
+        if proc is not None and proc.poll() is None:
+            try: proc.kill()
+            except Exception: pass
+        try: remove_tree_retry(folder)
+        except Exception: pass
+        raise
+
+
+def remove_tree_retry(path, attempts=10, delay=0.2):
+    """Remove local scratch with short retries for antivirus/provider handles."""
+    if not path or not os.path.exists(path): return
+    last = None
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as exc:
+            last = exc
+            time.sleep(delay * (attempt + 1))
+    if os.path.exists(path):
+        raise last
+
+
 def path_units(path):
     # Windows budgets are UTF-16 code units, not Unicode code points.
     return len(text(path).encode('utf-16-le')) // 2
@@ -239,7 +364,7 @@ def publish(temp, target):
         os.remove(temp)
 
 
-def copy_file(source, target, cancelled=None, pulse=None):
+def _copy_file_direct(source, target, cancelled=None, pulse=None, display_source=None):
     check(cancelled)
     validate_destination_path(target)
     if os.path.exists(target): raise IOError('Refusing to overwrite: ' + target)
@@ -250,17 +375,13 @@ def copy_file(source, target, cancelled=None, pulse=None):
     if not os.path.isdir(folder): os.makedirs(folder)
     temp = None
     h, size = hashlib.sha256(), 0
+    label = display_source or source
     try:
         with open(source, 'rb') as inp:
-            # A first read may hydrate a Desktop Connector placeholder and set
-            # its metadata. Establish the snapshot AFTER that read, then rewind.
-            # No refresh, cloud lookup or substitution of a different source.
             inp.read(1)
             inp.seek(0)
             before = signature(source)
             check(cancelled)
-            # Do not append a long suffix to the ORIGINAL filename. A source
-            # basename can already use nearly the whole Windows path budget.
             fd, temp = tempfile.mkstemp(prefix='.et-', suffix='.tmp', dir=folder)
             with os.fdopen(fd, 'wb') as out:
                 while True:
@@ -268,16 +389,48 @@ def copy_file(source, target, cancelled=None, pulse=None):
                     block = inp.read(1024 * 1024)
                     if not block: break
                     out.write(block); h.update(block); size += len(block)
-                    if pulse: pulse(source, size, before[0])
+                    if pulse: pulse(label, size, before[0])
                 out.flush()
         if signature(source) != before or size != before[0]:
-            raise IOError('Source changed during collection; rerun after saving/sync completes: ' + source)
-        if digest(temp, cancelled) != h.hexdigest(): raise IOError('Copy checksum mismatch: ' + source)
+            raise IOError('Source changed during collection; rerun after saving/sync completes: ' + label)
+        if digest(temp, cancelled) != h.hexdigest(): raise IOError('Copy checksum mismatch: ' + label)
         check(cancelled)
         publish(temp, target)
         return {'sha256': h.hexdigest(), 'size': size, 'source_mtime': before[1]}
     finally:
         if temp and os.path.exists(temp): os.remove(temp)
+
+
+def copy_file(source, target, cancelled=None, pulse=None):
+    """Verified copy, using Windows Shell for Desktop Connector namespaces."""
+    shell_folder = None
+    shell_local = None
+    metadata = None
+    cleanup_warning = None
+    try:
+        if os.name == 'nt' and is_desktop_connector_path(source):
+            shell_local, shell_folder = shell_copy_to_local(source, cancelled)
+            metadata = _copy_file_direct(shell_local, target, cancelled, pulse, source)
+            metadata['copy_method'] = 'WINDOWS_SHELL'
+            metadata['source_stability'] = 'SHELL_SNAPSHOT'
+        else:
+            metadata = _copy_file_direct(source, target, cancelled, pulse, source)
+            metadata['copy_method'] = 'DIRECT'
+            metadata['source_stability'] = 'DIRECT'
+    finally:
+        if shell_folder:
+            try: remove_tree_retry(shell_folder)
+            except Exception as exc: cleanup_warning = text(exc)
+    if metadata is not None and cleanup_warning:
+        metadata['staging_cleanup_warning'] = cleanup_warning
+    return metadata
+
+
+def source_snapshot_changed(source, metadata):
+    """Shell snapshots are immutable local acquisition points; never restat DC."""
+    if metadata.get('source_stability') == 'SHELL_SNAPSHOT':
+        return False
+    return signature(source) != (metadata.get('size'), metadata.get('source_mtime'))
 
 
 def csv_cell(value):
