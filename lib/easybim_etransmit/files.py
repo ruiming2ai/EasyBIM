@@ -6,6 +6,7 @@ import io
 import ntpath
 import os
 import re
+import tempfile
 import uuid
 
 try:
@@ -137,14 +138,75 @@ def mirror_path(source):
     return '/'.join(parts)
 
 
+class PathLengthError(ValueError):
+    """A package path cannot safely be passed to legacy Windows/Revit APIs."""
+
+
+def path_units(path):
+    # Windows budgets are UTF-16 code units, not Unicode code points.
+    return len(text(path).encode('utf-16-le')) // 2
+
+
+def validate_destination_path(path):
+    """Keep file IO, short sibling temporaries and RVT backup names below MAX_PATH.
+
+    This deliberately does not enable registry settings or pass extended paths
+    to Revit. Extended-path filesystem support does not prove Revit portability.
+    """
+    if os.name != 'nt' and not is_windows(path): return path
+    value = ntpath.normpath(path)
+    directory = ntpath.dirname(value)
+    # MAX_PATH includes the terminator. RVT SaveAs can append '.0001'.
+    file_limit = 254 if value.lower().endswith('.rvt') else 259
+    # mkstemp('.et-', '.tmp') uses 16 characters including its random component.
+    directory_limit = min(247, 259 - 1 - 16)
+    length, folder_length = path_units(value), path_units(directory)
+    if length > file_limit or folder_length > directory_limit:
+        raise PathLengthError(
+            'Destination path is too long: {0} characters (file budget {1}); '
+            'folder {2} characters (budget {3}, including temporary-file space).\n'
+            'Destination: {4}\n'
+            'Choose a shorter output folder, for example C:\\ET. '
+            'Original filenames and source subfolders will not be shortened.'.format(
+                length, file_limit, folder_length, directory_limit, value))
+    return path
+
+
+def new_run_root(output, stamp):
+    """Short tool-generated wrapper, never a shortened source filename."""
+    pm = ntpath if is_windows(output) else os.path
+    name = 'ET_' + stamp
+    root = pm.join(output, name)
+    n = 2
+    while os.path.exists(root):
+        root = pm.join(output, name + '_' + text(n)); n += 1
+    return root
+
+
+def package_root(root, index, separate=True):
+    # The complete model basename already occurs inside Sources. Repeating it
+    # as an outer folder caused otherwise-valid Desktop Connector paths to fail.
+    pm = ntpath if is_windows(root) else os.path
+    return pm.join(root, '{0:02d}'.format(index + 1)) if separate else root
+
+
+def temporary_path(folder, suffix='.rvt'):
+    """Short internal name; copy_file publishes it without overwriting a race."""
+    for attempt in range(128):
+        value = os.path.join(folder, '.et-' + uuid.uuid4().hex[:8] + suffix)
+        if not os.path.exists(value):
+            validate_destination_path(value)
+            return value
+    raise IOError('Unable to allocate an unused temporary filename.')
+
+
 def destination(root, relative):
     if absolute(relative) or relative.startswith(('/', '\\')):
         raise ValueError('Package entry must be relative.')
     parts = clean_parts(relative)
     target = os.path.join(root, *parts)
     if not within(target, root): raise ValueError('Destination escapes package root.')
-    if os.name == 'nt' and len(target) >= 248:
-        raise ValueError('Destination is too long. Choose a shorter output root; filenames are not shortened.')
+    validate_destination_path(target)
     return target
 
 
@@ -179,26 +241,35 @@ def publish(temp, target):
 
 def copy_file(source, target, cancelled=None, pulse=None):
     check(cancelled)
+    validate_destination_path(target)
     if os.path.exists(target): raise IOError('Refusing to overwrite: ' + target)
     if cache_source(source): raise IOError('CollaborationCache/PacCache copies are not supported.')
     if not os.path.isfile(source): raise IOError('Source missing or not a file: ' + source)
     if os.path.islink(source): raise IOError('Symlink sources require an explicit real file path: ' + source)
     folder = os.path.dirname(target)
     if not os.path.isdir(folder): os.makedirs(folder)
-    temp = target + '.partial-' + uuid.uuid4().hex
-    before = signature(source)
+    temp = None
     h, size = hashlib.sha256(), 0
     try:
-        with open(source, 'rb') as inp, open(temp, 'wb') as out:
-            while True:
-                check(cancelled)
-                block = inp.read(1024 * 1024)
-                if not block: break
-                out.write(block); h.update(block); size += len(block)
-                if pulse: pulse(source, size, before[0])
-            out.flush()
-        # Reading a Desktop Connector placeholder normally triggers hydration.
-        # No arbitrary HTTP fetch, version refresh or collaboration-cache access.
+        with open(source, 'rb') as inp:
+            # A first read may hydrate a Desktop Connector placeholder and set
+            # its metadata. Establish the snapshot AFTER that read, then rewind.
+            # No refresh, cloud lookup or substitution of a different source.
+            inp.read(1)
+            inp.seek(0)
+            before = signature(source)
+            check(cancelled)
+            # Do not append a long suffix to the ORIGINAL filename. A source
+            # basename can already use nearly the whole Windows path budget.
+            fd, temp = tempfile.mkstemp(prefix='.et-', suffix='.tmp', dir=folder)
+            with os.fdopen(fd, 'wb') as out:
+                while True:
+                    check(cancelled)
+                    block = inp.read(1024 * 1024)
+                    if not block: break
+                    out.write(block); h.update(block); size += len(block)
+                    if pulse: pulse(source, size, before[0])
+                out.flush()
         if signature(source) != before or size != before[0]:
             raise IOError('Source changed during collection; rerun after saving/sync completes: ' + source)
         if digest(temp, cancelled) != h.hexdigest(): raise IOError('Copy checksum mismatch: ' + source)
@@ -206,7 +277,7 @@ def copy_file(source, target, cancelled=None, pulse=None):
         publish(temp, target)
         return {'sha256': h.hexdigest(), 'size': size, 'source_mtime': before[1]}
     finally:
-        if os.path.exists(temp): os.remove(temp)
+        if temp and os.path.exists(temp): os.remove(temp)
 
 
 def csv_cell(value):

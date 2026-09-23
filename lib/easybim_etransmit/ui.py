@@ -139,6 +139,14 @@ class Dialog(forms.WPFWindow):
             if not path: unresolved.append(row.Name+' : '+row.Source)
         if unresolved:
             return forms.alert('Choose an exact saved source using "Use saved copy" or add a prefix mapping.\n\n'+'\n'.join(unresolved))
+        root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
+        long_paths=engine.preflight_paths([x.Source for x in models],root,opts,self.extras)
+        if long_paths:
+            message=long_paths[0]['message']+'\n\nNo files were copied and no transmittal was created. '
+            message+='Choose a shorter output folder now?'
+            if forms.alert(message,yes=True,no=True,title='e-transmit: output path too long'):
+                self.browse_output(sender,args)
+            return
         if opts['cleanup']:
             try: cleanup.view_deletions([],opts['views'],opts['view_types'])
             except ValueError as exc: return forms.alert(f.text(exc))
@@ -155,16 +163,13 @@ class Dialog(forms.WPFWindow):
                 if not os.path.isdir(folder): os.makedirs(folder)
                 with io.open(self.settings,'w',encoding='utf-8') as out: out.write(f.text(json.dumps(saved,indent=2)))
             except IOError as exc: forms.alert('Settings could not be saved: '+f.text(exc))
-        self.result=([x.Source for x in models],output,opts,list(self.extras)); self.Close()
+        self.result=([x.Source for x in models],root,opts,list(self.extras)); self.Close()
 
 
 def run(uiapp,xaml):
     dialog=Dialog(uiapp,xaml); dialog.ShowDialog()
     if not dialog.result: return
-    models,output,opts,extras=dialog.result
-    name='Transmittal_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    root=os.path.join(output,name); n=2
-    while os.path.exists(root): root=os.path.join(output,name+'_'+f.text(n)); n+=1
+    models,root,opts,extras=dialog.result
     results=[]
     with forms.ProgressBar(title='e-transmit',cancellable=True,indeterminate=True) as pb:
         def cancel(): return pb.cancelled
@@ -174,7 +179,7 @@ def run(uiapp,xaml):
         groups=[[m] for m in models] if opts['per_model'] else [models]
         for index,group in enumerate(groups):
             if cancel(): break
-            package=os.path.join(root,'{0:02d}_'.format(index+1)+os.path.splitext(os.path.basename(group[0]))[0]) if opts['per_model'] else root
+            package=f.package_root(root,index,opts['per_model'])
             backend=Backend(DB,uiapp.Application,package,cancel)
             results.append(engine.transmit(group,package,backend,opts,extras,cancel,pulse))
         if results and opts['per_model']:
@@ -183,8 +188,7 @@ def run(uiapp,xaml):
                 if cancel(): out.write('\nCANCELLED: not all selected models were processed.')
         if results and opts['zip'] and not cancel(): engine.zip_package(root,root+'.zip',cancel)
     if not results: return forms.alert('Transmission cancelled before any models were processed.')
-    warnings=sum(len([i for i in r['issues'] if i['severity']!='info']) for r in results)
-    state='cancelled (partial output)' if any(r['status']=='CANCELLED' for r in results) or len(results)<len(groups) else ('failed or incomplete' if any(r['status']=='FAILED' for r in results) else 'finished')
-    forms.alert('e-transmit '+state+' with {0} issue(s).\n\n{1}\n\nRead START_HERE.txt and verify the packaged models before delivery. '
-                'A successful copy is not proof every link is portable.'.format(warnings,root),title='EasyBIM e-transmit')
+    message=engine.completion_message(results,len(models),cancelled=cancel())
+    forms.alert(message+'\n\nOutput: '+root+'\n\nRead START_HERE.txt and verify copied models before delivery.',
+                title='EasyBIM e-transmit')
     os.startfile(root)

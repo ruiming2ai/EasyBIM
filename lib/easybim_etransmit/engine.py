@@ -5,6 +5,7 @@ import collections
 import io
 import json
 import os
+import ntpath
 import shutil
 import uuid
 import zipfile
@@ -26,13 +27,74 @@ def folder_files(folder):
             if not os.path.islink(p): yield p
 
 
+def preflight_paths(models, root, options, extras=None):
+    """Check known destinations BEFORE creating a report-only empty package.
+
+    Nested references are still checked individually when discovered. This does
+    not load a model or change the configured Desktop Connector source location.
+    """
+    errors = []
+    groups = [[m] for m in models] if options.get('per_model') else [models]
+    for index, group in enumerate(groups):
+        package = f.package_root(root, index, options.get('per_model'))
+        pm = ntpath if f.is_windows(package) else os.path
+        for requested in list(group) + list(extras or []):
+            try:
+                source = f.resolve_source(requested, mappings=options.get('mappings'))
+                if not source: continue  # Existing source-resolution validation reports this.
+                relative = f.mirror_path(source)
+                target = pm.join(package, *relative.split('/'))
+                f.validate_destination_path(target)
+            except f.PathLengthError as exc:
+                errors.append(dict(code='DESTINATION_PATH_TOO_LONG', source=requested,
+                                   target=target, message=f.text(exc)))
+            except ValueError:
+                continue  # Mapping errors are not mislabelled as path-length failures.
+        stage = pm.join(package, '_work', '.et-00000000.rvt')
+        try: f.validate_destination_path(stage)
+        except f.PathLengthError as exc:
+            errors.append(dict(code='DESTINATION_PATH_TOO_LONG', source='', target=stage, message=f.text(exc)))
+    return errors
+
+
+def package_counts(result):
+    copied = dict((f.canonical(r['source']), r) for r in result['files'] if r['status'] == 'COPIED')
+    hosts = sum(1 for model in result['models'] if f.canonical(model['source']) in copied)
+    return dict(hosts_requested=len(result.get('requested_models', result['models'])),
+                hosts_copied=hosts, files_copied=len(copied))
+
+
+def completion_message(results, requested, cancelled=False):
+    """Never describe a zero-host transmission as merely finished with issues."""
+    hosts = sum(package_counts(r)['hosts_copied'] for r in results)
+    files = sum(package_counts(r)['files_copied'] for r in results)
+    issues = [i for r in results for i in r['issues'] if i['severity'] != 'info']
+    if cancelled or any(r['status'] == 'CANCELLED' for r in results):
+        state = 'cancelled (partial output)'
+    elif hosts < requested or any(r['status'] == 'FAILED' for r in results):
+        state = 'failed or incomplete'
+    elif issues:
+        state = 'completed with issues; review required'
+    else:
+        state = 'completed'
+    lines = ['e-transmit ' + state + '.',
+             'Host models copied: {0} / {1}'.format(hosts, requested),
+             'Files copied: {0} | Issues: {1}'.format(files, len(issues))]
+    if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    for item in issues[:3]:
+        lines.append('\n' + item['code'] + ': ' + item['message'])
+    if len(issues) > 3: lines.append('\nSee START_HERE.txt for the remaining issues.')
+    return '\n'.join(lines)
+
+
 def transmit(models, root, backend, options=None, extras=None, cancelled=None, pulse=None):
+    models = list(models)
     opts = options or f.defaults()
     if os.path.exists(root) and os.listdir(root):
         raise ValueError('Choose a new, empty package folder; existing files are never overwritten.')
     if not os.path.isdir(root): os.makedirs(root)
     result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[],
-                  references=[], issues=[], options=opts)
+                  references=[], issues=[], options=opts, requested_models=list(models))
     work = os.path.join(root, '_work')
     os.makedirs(work)
     queue, records, edges = collections.deque(), {}, []
@@ -76,20 +138,19 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                         queue.append((child, '', False, None))
                     continue
                 relative = f.mirror_path(source)
-                target = f.destination(root, relative)
+                target = os.path.join(root, *relative.split('/'))
                 record = dict(source=source, requested=requested, relative=relative,
                               target=target, category=cat, status='PENDING')
                 records[key] = record
                 result['files'].append(record)
+                f.destination(root, relative)  # Validate before copying; failed paths remain in the report.
                 if pulse: pulse('Copying ' + source, 0, 1)
                 record.update(f.copy_file(source, target, cancelled, pulse))
                 record['status'] = 'COPIED'
                 if edge is not None: edge['status'] = 'COPIED'
                 ext = os.path.splitext(source)[1].lower()
                 if ext == '.rvt':
-                    stage_dir = os.path.join(work, uuid.uuid4().hex)
-                    os.makedirs(stage_dir)
-                    stage = os.path.join(stage_dir, os.path.basename(source))
+                    stage = f.temporary_path(work)
                     f.copy_file(target, stage, cancelled)
                     if pulse: pulse('Inspecting saved model ' + source, 0, 1)
                     record['inventory_status']='RUNNING'
@@ -125,7 +186,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 raise
             except Exception as exc:
                 if edge is not None: edge['status'] = 'UNRESOLVED'
-                code = 'UNRESOLVED_SOURCE' if not source else 'COLLECTION_FAILED'
+                code = ('DESTINATION_PATH_TOO_LONG' if isinstance(exc, f.PathLengthError) else
+                        ('UNRESOLVED_SOURCE' if not source else 'COLLECTION_FAILED'))
                 if record and record.get('inventory_status') == 'RUNNING': record['inventory_status']='FAILED'
                 add_issue(code, requested, exc, 'error')
                 if key in records and records[key]['status'] == 'PENDING':
@@ -142,9 +204,10 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 f.check(cancelled)
                 if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
                 target = record['target']
-                # The mutable file is beside the output so saved relative paths have the correct base.
-                stage = os.path.join(os.path.dirname(target), '.etransmit-' + uuid.uuid4().hex + '.rvt')
-                backup = os.path.join(work, uuid.uuid4().hex + '.rvt')
+                # Backend.finish receives the final target explicitly and stages absolute
+                # references before opening. Internal paths need not repeat the source tree.
+                stage = f.temporary_path(work)
+                backup = f.temporary_path(work)
                 f.copy_file(target, backup, cancelled)
                 f.copy_file(target, stage, cancelled)
                 model_edges = [r for r in edges if f.canonical(r['owner']) == f.canonical(record['source'])]
@@ -189,6 +252,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     add_issue('FINAL_VERIFICATION_FAILED',rec['source'],exc,'error')
         if result['status']=='COLLECTED' and any(i['severity']!='info' for i in result['issues']):
             result['status']='NEEDS_REVIEW'
+        counts = package_counts(result)
+        if result['status'] != 'CANCELLED' and counts['hosts_copied'] < counts['hosts_requested']:
+            result['status'] = 'FAILED'
         write_reports(result)
     return result
 
@@ -201,8 +267,12 @@ def write_reports(result):
     by_source = dict((f.canonical(r['source']), r) for r in result['files'])
     for model in result['models']:
         r = by_source.get(f.canonical(model['source']))
-        if r: hosts.append(r['relative'])
-    lines = ['EasyBIM e-transmit ' + VERSION, 'Status: ' + result['status'], '', 'HOST MODELS:'] + hosts
+        if r and r['status'] == 'COPIED': hosts.append(r['relative'])
+    counts = package_counts(result)
+    lines = ['EasyBIM e-transmit ' + VERSION, 'Status: ' + result['status'],
+             'Host models copied: {0} / {1}'.format(counts['hosts_copied'], counts['hosts_requested']),
+             'Files copied: {0}'.format(counts['files_copied']), '', 'HOST MODELS:'] + hosts
+    if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     lines += ['', 'Keep the complete Sources folder hierarchy. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'COLLECTED means no detected collection errors, not an in-Revit opening test.',
