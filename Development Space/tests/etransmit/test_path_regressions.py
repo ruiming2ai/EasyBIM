@@ -150,13 +150,18 @@ class PathRegression(unittest.TestCase):
         self.assertEqual(e.package_counts(r)['hosts_copied'], 0)
         self.assertFalse((out / 'Sources').exists())
 
-    def test_internal_processing_paths_are_under_short_work_directory(self):
+    def test_internal_processing_paths_are_in_local_temp_not_output(self):
         source = self.base / 'Host.rvt'; source.write_bytes(b'rvt')
         out = self.base / 'out'; backend = Backend()
+        seen = []
+        backend.set_staging_root = lambda path: seen.append(path)
         r = e.transmit([str(source)], str(out), backend)
         self.assertEqual(r['status'], 'COLLECTED')
-        self.assertEqual(Path(backend.finished[0][0]).parent, out / '_work')
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(Path(backend.finished[0][0]).parent, Path(seen[0]))
+        self.assertFalse(f.within(seen[0], str(out)))
         self.assertFalse((out / '_work').exists())
+        self.assertFalse(os.path.exists(seen[0]))
 
     def test_preflight_prompt_leaves_dialog_open_without_creating_package(self):
         # Execute the real event handler with WPF-shaped objects, not a Revit session.
