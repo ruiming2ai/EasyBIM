@@ -27,9 +27,17 @@ def load_intent(status):
 class Backend(object):
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
+        self.staging_root = None
+
+    def set_staging_root(self, path):
+        self.staging_root = path
 
     def guard(self, path):
-        if not f.within(path,self.root): raise ValueError('Model write outside package refused: ' + path)
+        allowed = f.within(path, self.root)
+        if not allowed and self.staging_root:
+            allowed = f.within(path, self.staging_root)
+        if not allowed:
+            raise ValueError('Model write outside package/staging refused: ' + path)
 
     def mp(self, path): return self.DB.ModelPathUtils.ConvertUserVisiblePathToModelPath(path)
     def visible(self, path):
@@ -42,7 +50,7 @@ class Backend(object):
                         central=f.text(getattr(info,'CentralPath','')))
         finally: dispose(info)
 
-    def rows(self, path):
+    def rows(self, path, owner=''):
         td=self.DB.TransmissionData.ReadTransmissionData(self.mp(path))
         rows=[]
         try:
@@ -52,8 +60,16 @@ class Backend(object):
                 ref=td.GetDesiredReferenceData(ident) if td.IsTransmitted else None
                 if ref is None: ref=td.GetLastSavedReferenceData(ident)
                 raw=self.visible(ref.GetPath())
-                try: source=self.visible(ref.GetAbsolutePath())
-                except Exception: source=raw if f.absolute(raw) or '://' in raw else ''
+                # TransmissionData is read from the local snapshot.  Resolve
+                # relative saved paths against the ORIGINAL owner model path,
+                # never against the temporary staging directory.
+                if f.absolute(raw) or '://' in raw:
+                    source=raw
+                elif owner:
+                    source=f.resolve_source(raw, owner) or raw
+                else:
+                    try: source=self.visible(ref.GetAbsolutePath())
+                    except Exception: source=''
                 state=f.text(ref.GetLinkedFileStatus())
                 rows.append(dict(id=eid(ident),element_id=eid(ident),source=source,
                                  saved_path=raw,kind=f.text(ref.ExternalFileReferenceType),
@@ -101,7 +117,7 @@ class Backend(object):
         self.guard(stage)
         info=self.basic(stage)
         result=dict(references=[],issues=[],version=info['version'])
-        try: result['references']=self.rows(source)
+        try: result['references']=self.rows(stage, source)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
         if not options.get('deep',True):
             result['issues'].append(issue('METADATA_ONLY_SCAN',source,
