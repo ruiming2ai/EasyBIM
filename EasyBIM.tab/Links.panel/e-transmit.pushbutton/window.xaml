@@ -1,0 +1,92 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="EasyBIM | e-transmit" Width="900" Height="840" MinWidth="700" MinHeight="620"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize" Background="#F6F7F9">
+  <Window.Resources>
+    <Style TargetType="Button"><Setter Property="Padding" Value="10,5"/><Setter Property="Margin" Value="0,3,6,3"/></Style>
+    <Style TargetType="CheckBox"><Setter Property="Margin" Value="3,5"/></Style>
+    <Style TargetType="GroupBox"><Setter Property="Padding" Value="10"/><Setter Property="Margin" Value="0,0,0,10"/></Style>
+    <Style TargetType="TextBox"><Setter Property="Padding" Value="6"/></Style>
+  </Window.Resources>
+  <DockPanel Margin="18">
+    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+      <TextBlock Text="e-transmit" FontSize="25" FontWeight="SemiBold"/>
+      <TextBlock x:Name="VersionLabel" Foreground="#536273"/>
+      <TextBlock Text="Preserve source folders and filenames. Follow configured link locations, not the latest live model."
+                 TextWrapping="Wrap" Margin="0,7,0,0"/>
+    </StackPanel>
+    <StackPanel DockPanel.Dock="Bottom">
+      <TextBlock Text="Revit must be running, but you do not need to open the source models. Internal copies may be opened; source files are never saved or synchronized."
+                 TextWrapping="Wrap" Foreground="#536273" Margin="0,7,0,7"/>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Content="Transmit model(s)" Click="transmit_click" MinWidth="165" IsDefault="True"/>
+        <Button Content="Cancel" Click="cancel_click" IsCancel="True" MinWidth="95"/>
+      </StackPanel>
+    </StackPanel>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel>
+        <GroupBox Header="1  Source model(s)">
+          <StackPanel>
+            <DataGrid x:Name="Models" Height="155" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+              <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="Use" Binding="{Binding Checked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="45"/>
+                <DataGridTextColumn Header="Model" Binding="{Binding Name}" Width="190" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Saved source / configured location" Binding="{Binding Source}" Width="*" IsReadOnly="True"/>
+              </DataGrid.Columns>
+            </DataGrid>
+            <WrapPanel>
+              <Button Content="Browse models..." Click="browse_models"/>
+              <Button Content="Browse folder..." Click="browse_model_folder"/>
+              <Button Content="Use saved copy for selected row..." Click="replace_source"/>
+              <Button Content="Remove selected" Click="remove_model"/>
+            </WrapPanel>
+            <TextBlock Text="The active project is checked by default. Only saved file contents are transmitted. For a cloud-only host, select its intended downloaded/Connector source; no live model is substituted." TextWrapping="Wrap" Foreground="#536273"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="2  Destination and collection">
+          <StackPanel>
+            <DockPanel><Button DockPanel.Dock="Right" Content="Browse..." Click="browse_output"/><TextBox x:Name="Output"/></DockPanel>
+            <WrapPanel>
+              <CheckBox x:Name="Separate" Content="Output folder for each source model" IsChecked="True"/>
+              <CheckBox x:Name="Reports" Content="Detailed transmittal/error reports" IsChecked="True"/>
+              <CheckBox x:Name="Zip" Content="Also create ZIP"/>
+            </WrapPanel>
+            <CheckBox x:Name="DeepScan" Content="Inspect temporary model copies for additional dependencies (recommended)" IsChecked="True"/>
+            <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="3  Related files — all included by default">
+          <StackPanel>
+            <ItemsControl x:Name="Categories">
+              <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate><DataTemplate><CheckBox Width="245" Content="{Binding Name}" IsChecked="{Binding Checked, Mode=TwoWay}"/></DataTemplate></ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Text="Imports are not extracted. CAD Xrefs, RCP scans outside the Support folder, and NWF dependencies need verification; add any extra files/folders below." TextWrapping="Wrap" Foreground="#536273"/>
+            <WrapPanel><Button Content="Add files..." Click="add_files"/><Button Content="Add folder..." Click="add_folder"/><Button Content="Remove extra" Click="remove_extra"/></WrapPanel>
+            <ListBox x:Name="Extras" Height="70"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="4  ACC / network source mappings">
+          <StackPanel>
+            <TextBlock Text="Accessible Desktop Connector paths are copied on demand. Prefix mappings must point to the SAME configured source hierarchy, including Shared/Consumed. Never map a consumed source to WIP. Cloud version IDs are recorded but not downloaded through an ACC API." TextWrapping="Wrap" Foreground="#536273"/>
+            <ListBox x:Name="Mappings" Height="65" DisplayMemberPath="Name"/>
+            <WrapPanel><Button Content="Add exact prefix mapping..." Click="add_mapping"/><Button Content="Remove mapping" Click="remove_mapping"/></WrapPanel>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="5  Upgrade and cleanup — package copies only">
+          <StackPanel>
+            <CheckBox x:Name="Upgrade" Content="Upgrade package models to this running Revit version"/>
+            <CheckBox x:Name="Cleanup" Content="Enable cleanup (older package models will also be upgraded)" Click="cleanup_toggle"/>
+            <StackPanel x:Name="CleanupOptions" IsEnabled="False" Margin="18,0,0,0">
+              <CheckBox x:Name="DiscardWorksets" Content="Disable worksets / remove worksharing"/>
+              <CheckBox x:Name="Purge" Content="Purge unused definitions (requires GetUnusedElements API)"/>
+              <ComboBox x:Name="ViewMode" DisplayMemberPath="Name" Margin="0,5"/>
+              <Button Content="Select view types to retain..." Click="select_view_types" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="ViewTypesLabel" Text="No additional view types selected" TextWrapping="Wrap"/>
+            </StackPanel>
+            <CheckBox x:Name="SaveSettings" Content="Remember destination, mappings and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
+          </StackPanel>
+        </GroupBox>
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
+</Window>

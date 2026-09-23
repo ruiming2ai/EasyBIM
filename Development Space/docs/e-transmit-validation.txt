@@ -1,0 +1,23 @@
+EasyBIM e-transmit 2.0.0 verification
+Date: 2026-09-23
+Environment: Linux / CPython (not Autodesk Revit or IronPython)
+
+Executed from the repository-root layout:
+python -m unittest discover -s "Development Space/tests/etransmit" -v
+Result: Ran 77 tests. OK. No failures or errors.
+
+Coverage: real temporary filesystem copies, source-path preservation, duplicate
+names, mapping ambiguity, cancellation, checksums, source changes, rollback,
+recursive dependencies, ZIP round-trip, CSV safety, view-cleanup selection,
+API-shaped metadata/load-state/image-save lifecycle tests, and XAML structure.
+
+Additional checks: seven production Python files compile; XAML parses as XML;
+light/dark icon resources are valid transparent 32 x 32 RGBA PNGs.
+
+Not executed: Revit, IronPython, WPF rendering, Desktop Connector hydration,
+native Windows filesystem behavior, actual RVT opening/upgrade/repath/cleanup.
+These unit tests are not proof of runtime Revit API compatibility or complete
+project dependency discovery. Follow e-transmit-desktop-checklist.md.
+
+Review: inline code review with added regression tests. No independent reviewer
+or licensed Revit session was available during development.
