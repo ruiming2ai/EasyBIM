@@ -7,6 +7,7 @@ import json
 import os
 import ntpath
 import shutil
+import tempfile
 import uuid
 import zipfile
 from . import files as f
@@ -50,10 +51,6 @@ def preflight_paths(models, root, options, extras=None):
                                    target=target, message=f.text(exc)))
             except ValueError:
                 continue  # Mapping errors are not mislabelled as path-length failures.
-        stage = pm.join(package, '_work', '.et-00000000.rvt')
-        try: f.validate_destination_path(stage)
-        except f.PathLengthError as exc:
-            errors.append(dict(code='DESTINATION_PATH_TOO_LONG', source='', target=stage, message=f.text(exc)))
     return errors
 
 
@@ -95,8 +92,12 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
     if not os.path.isdir(root): os.makedirs(root)
     result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
-    work = os.path.join(root, '_work')
-    os.makedirs(work)
+    # Revit inspection/processing scratch must not live in OneDrive or another
+    # synchronized output tree.  Keep it in the local OS temp area and register
+    # that one directory explicitly with the Revit backend write guard.
+    work = tempfile.mkdtemp(prefix='EasyBIM_ET_')
+    if hasattr(backend, 'set_staging_root'):
+        backend.set_staging_root(work)
     queue, records, edges = collections.deque(), {}, []
     origins = list(models)
     for source in origins: queue.append((source, '', True, None))
@@ -127,7 +128,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if key in records:
                     if edge is not None: edge['status'] = records[key]['status']
                     continue
-                if os.path.isdir(source):
+                if not f.is_desktop_connector_path(source) and os.path.isdir(source):
                     if f.within(root,source):
                         raise ValueError('Output must be outside a recursively collected input folder.')
                     # Directories are explicit Add Folder or systems-report references only.
@@ -146,6 +147,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 f.destination(root, relative)  # Validate before copying; failed paths remain in the report.
                 if pulse: pulse('Copying ' + source, 0, 1)
                 record.update(f.copy_file(source, target, cancelled, pulse))
+                if record.get('staging_cleanup_warning'):
+                    add_issue('SOURCE_STAGING_CLEANUP_FAILED', source,
+                              record['staging_cleanup_warning'])
                 record['status'] = 'COPIED'
                 if edge is not None: edge['status'] = 'COPIED'
                 ext = os.path.splitext(source)[1].lower()
@@ -158,7 +162,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     record['inventory_status']='NEEDS_REVIEW' if scan.get('issues') else 'SCANNED'
                     record['revit_version'] = scan.get('version', '')
                     result['issues'].extend(scan.get('issues', []))
-                    if f.signature(source) != (record['size'], record['source_mtime']):
+                    if f.source_snapshot_changed(source, record):
                         record['inventory_status']='UNSTABLE'
                         raise IOError('Model changed during inspection; dependency inventory is not a stable snapshot.')
                     for ref in scan.get('references', []):
@@ -241,7 +245,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         add_issue('PACKAGE_FAILED', '', exc, 'error')
     finally:
         result['references'] = edges
-        try: shutil.rmtree(work)
+        try: f.remove_tree_retry(work)
         except Exception as exc: add_issue('STAGING_CLEANUP_FAILED', work, exc)
         # Hash the final bytes, not just the pre-repath source snapshot.
         for rec in result['files']:
