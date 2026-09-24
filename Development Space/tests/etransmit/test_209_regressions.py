@@ -83,9 +83,14 @@ class PortableImageAliases(unittest.TestCase):
         self.assertEqual(len(seen),1,repr(result['issues']))
         ref=seen[0]
         self.assertNotEqual(f.canonical(ref['target']),f.canonical(ref['mirror_target']))
-        self.assertEqual(open(ref['target'],'rb').read(),open(ref['mirror_target'],'rb').read())
+        with open(ref['target'],'rb') as a:
+            alias_bytes=a.read()
+        with open(ref['mirror_target'],'rb') as b:
+            mirror_bytes=b.read()
+        self.assertEqual(alias_bytes,mirror_bytes)
         self.assertTrue(ref.get('portable_alias'))
-        report=open(os.path.join(result['root'],'START_HERE.txt'),'rb').read().decode('utf-8')
+        with open(os.path.join(result['root'],'START_HERE.txt'),'rb') as report_file:
+            report=report_file.read().decode('utf-8')
         self.assertIn('_Refs',report)
         self.assertIn('Sources',report)
 
