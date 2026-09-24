@@ -16,10 +16,10 @@ class LongPaths(unittest.TestCase):
         with self.assertRaises(ValueError): f.validate_destination_path(path[:-4]+'.rvt')
     def test_unc_extended_path_keeps_name_and_share(self):
         self.assertIsNotNone(lp)
-        self.assertEqual(lp.extended(r'\\server\share\Project\Same.pdf'),r'\\?\UNC\server\share\Project\Same.pdf')
+        self.assertEqual(lp.extended('\\\\server\\share\\Project\\Same.pdf'),'\\\\?\\UNC\\server\\share\\Project\\Same.pdf')
     def test_native_paths_reject_relative_and_devices(self):
         self.assertIsNotNone(lp)
-        for path in ('relative.pdf',r'\\.\GLOBALROOT\bad',r'C:foo'):
+        for path in ('relative.pdf','\\\\.\\GLOBALROOT\\bad','C:foo'):
             with self.assertRaises(ValueError):lp.extended(path)
     @unittest.skipUnless(os.name=='nt','Windows Win32 API integration')
     def test_real_ironpython_copy_and_checksum_past_260_characters(self):
