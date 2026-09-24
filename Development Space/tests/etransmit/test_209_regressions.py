@@ -16,10 +16,10 @@ class HostOnlyAdcResolution(unittest.TestCase):
         self.addCleanup(shutil.rmtree,self.root)
 
     def test_native_adc_staging_link_resolves_only_to_exact_owner_sibling(self):
-        owner=r'C:\Users\tester\DC\ACCDocs\Firm\Project\Project Files\MEP\Host.rvt'
+        owner=u'C:\\Users\\tester\\DC\\ACCDocs\\Firm\\Project\\Project Files\\MEP\\Host.rvt'
         stage=r'C:\Temp\EasyBIM_ET_x\stage.rvt'
         temporary=r'C:\Temp\EasyBIM_ET_x\Arch.rvt'
-        expected=r'C:\Users\tester\DC\ACCDocs\Firm\Project\Project Files\MEP\Arch.rvt'
+        expected=u'C:\\Users\\tester\\DC\\ACCDocs\\Firm\\Project\\Project Files\\MEP\\Arch.rvt'
         store=p.Store(os.path.join(self.root,'payloads'))
         store.bind_stage(stage,owner)
         old=getattr(f,'connector_file_exists',None)
@@ -31,7 +31,7 @@ class HostOnlyAdcResolution(unittest.TestCase):
             else: f.connector_file_exists=old
 
     def test_native_adc_staging_link_is_not_guessed_if_exact_sibling_is_absent(self):
-        owner=r'C:\Users\tester\DC\ACCDocs\Firm\Project\Project Files\MEP\Host.rvt'
+        owner=u'C:\\Users\\tester\\DC\\ACCDocs\\Firm\\Project\\Project Files\\MEP\\Host.rvt'
         stage=r'C:\Temp\EasyBIM_ET_x\stage.rvt'
         temporary=r'C:\Temp\EasyBIM_ET_x\Arch.rvt'
         store=p.Store(os.path.join(self.root,'payloads'))
@@ -102,8 +102,8 @@ class ExternalImageAndNoise(unittest.TestCase):
                     ExternalResourceTypes=Obj(BuiltInExternalResourceTypes=builtin),
                     ExternalResourceUtils=Obj(GetAllExternalResourceReferences=lambda d:[]),
                     BuiltInCategory=Obj())
-        self.b=Backend(self.db,Obj(VersionNumber='2024'),'C:\Out')
-        self.b.staging_root='C:\Temp\ET'
+        self.b=Backend(self.db,Obj(VersionNumber='2024'),r'C:\Out')
+        self.b.staging_root=r'C:\Temp\ET'
         self.b.elements=lambda d,k:[]
 
     def test_external_only_image_is_repathable_image_with_page_resolution(self):
@@ -115,7 +115,7 @@ class ExternalImageAndNoise(unittest.TestCase):
                   PageNumber=2,Resolution=450,Status='Loaded')
         self.db.ExternalResourceUtils.GetAllExternalResourceReferences=lambda d:[ident]
         result=dict(references=[],issues=[])
-        self.b.scan_open(Obj(GetElement=lambda i:image),'C:\Host.rvt',
+        self.b.scan_open(Obj(GetElement=lambda i:image),r'C:\Host.rvt',
                          dict(central='',workshared=False),result)
         self.assertEqual(len(result['references']),1)
         row=result['references'][0]
