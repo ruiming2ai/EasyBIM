@@ -13,6 +13,7 @@ import traceback
 import uuid
 import zipfile
 from . import files as f
+from .pathnames import relative as relative_path
 from . import VERSION
 
 
@@ -451,7 +452,7 @@ def zip_package(root, target, cancelled=None):
         with zipfile.ZipFile(temp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
             for path in folder_files(root):
                 f.check(cancelled)
-                arcname = os.path.relpath(path, root)
+                arcname = relative_path(path, root)
                 if os.name == 'nt' and f.path_units(path)>240:
                     stage_dir=tempfile.mkdtemp(prefix='ET_Zip_')
                     stage=os.path.join(stage_dir,'file.bin')
