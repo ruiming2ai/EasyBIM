@@ -138,6 +138,46 @@ class Backend(object):
                 if not doc.Close(False): raise RuntimeError('Temporary inspection document could not be closed.')
         return result
 
+    def library_paths(self):
+        """Configured Revit content/library roots, without inventing defaults."""
+        try:
+            paths = self.app.GetLibraryPaths()
+        except Exception:
+            return []
+        try:
+            if hasattr(paths, 'Values'):
+                values = list(paths.Values)
+            elif hasattr(paths, 'values'):
+                values = list(paths.values())
+            else:
+                values = []
+            return [f.text(value) for value in values if f.text(value)]
+        except Exception:
+            return []
+
+    def resource_source(self, display, metadata, kind):
+        """Choose only exact source identities exposed by Revit/server metadata."""
+        candidates = [f.text(display or '')]
+        candidates.extend(f.text(value) for value in metadata.values() if f.text(value))
+        for value in candidates:
+            if f.absolute(value):
+                return value
+        for value in candidates:
+            if '://' in value:
+                return value
+        if kind in ('AssemblyCodeTable', 'KeynoteTable'):
+            roots = self.library_paths()
+            for value in candidates:
+                if not value:
+                    continue
+                try:
+                    resolved = f.resolve_library_resource(value, roots)
+                except ValueError:
+                    raise
+                if resolved:
+                    return resolved
+        return f.text(display or '')
+
     def scan_open(self, doc, source, info, result):
         refs, issues=result['references'],result['issues']
         by_id=dict((r['id'],r) for r in refs)
@@ -234,12 +274,16 @@ class Backend(object):
                     meta=resource.GetReferenceInformation()
                     meta_keys=list(meta.Keys) if hasattr(meta,'Keys') else list(meta.keys())
                     metadata=dict((f.text(k),f.text(meta[k])) for k in meta_keys)
-                    # The display path is not a resource identity. Cloud/server paths require
-                    # an explicit prefix mapping. No name search, live model fetch or cache scraping.
-                    row=dict(id=key+':'+f.text(index),element_id=key,source=display,kind=kind,
+                    resolved_source=self.resource_source(display,metadata,kind)
+                    # Prefer an exact file/URI exposed by the server metadata or
+                    # configured Revit library roots.  For server-managed paths
+                    # this remains an identity, not permission to substitute a
+                    # different live/latest model.
+                    row=dict(id=key+':'+f.text(index),element_id=key,source=resolved_source,kind=kind,
                              special='external',loaded=None,td=False,server=f.text(resource.ServerId),
                              resource_version=f.text(resource.Version),resource_information=metadata,
-                             note='External-resource identity recorded; local/prefix-mapped copy is not a cloud version download.')
+                             optional_library=(kind=='AssemblyCodeTable'),
+                             note='External-resource identity recorded; exact source resolution preserves the configured resource.')
                     add(row)
                     if resource.Version:
                         issues.append(issue('EXTERNAL_RESOURCE_VERSION_UNVERIFIED',display,
