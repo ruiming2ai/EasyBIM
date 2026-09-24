@@ -109,26 +109,176 @@ def default_connector_roots():
 
 def _connector_uri_parts(source):
     value = text(source or '').strip()
-    match = re.match(r'^(Autodesk Docs|Autodesk Forma|Autodesk Construction Cloud|BIM 360|ACC)://(.+)    """Map only an exact prefix, never a filename or a newer cloud model."""
+    match = re.match(r'^(Autodesk Docs|Autodesk Forma|Autodesk Construction Cloud|BIM 360|ACC)://(.+)$',
+                     value, re.I)
+    if not match:
+        return None
+    return clean_parts(match.group(2))
+
+
+def _release_com(value):
+    if value is None:
+        return
+    try:
+        import System
+        marshal = System.Runtime.InteropServices.Marshal
+        if marshal.IsComObject(value):
+            marshal.FinalReleaseComObject(value)
+    except Exception:
+        pass
+
+
+def _shell_folder_names(folder):
+    """Enumerate a Desktop Connector folder through Windows Shell."""
+    if os.name != 'nt':
+        try:
+            return sorted(name for name in os.listdir(folder)
+                          if os.path.isdir(os.path.join(folder, name)))
+        except OSError:
+            return []
+    shell = namespace = items = None
+    names = []
+    try:
+        import System
+        prog = System.Type.GetTypeFromProgID('Shell.Application')
+        if prog is None:
+            return []
+        shell = System.Activator.CreateInstance(prog)
+        namespace = shell.NameSpace(folder)
+        if namespace is None:
+            return []
+        items = namespace.Items()
+        for item in items:
+            try:
+                if bool(item.IsFolder):
+                    names.append(text(item.Name))
+            except Exception:
+                pass
+        return sorted(names)
+    except Exception:
+        return []
+    finally:
+        _release_com(items)
+        _release_com(namespace)
+        _release_com(shell)
+
+
+def _shell_file_exists(path):
+    if os.name != 'nt':
+        return os.path.isfile(path)
+    shell = namespace = item = None
+    try:
+        import System
+        prog = System.Type.GetTypeFromProgID('Shell.Application')
+        if prog is None:
+            return False
+        shell = System.Activator.CreateInstance(prog)
+        namespace = shell.NameSpace(ntpath.dirname(path))
+        if namespace is None:
+            return False
+        item = namespace.ParseName(ntpath.basename(path))
+        return item is not None and not bool(getattr(item, 'IsFolder', False))
+    except Exception:
+        return False
+    finally:
+        _release_com(item)
+        _release_com(namespace)
+        _release_com(shell)
+
+
+def resolve_connector_uri(source, roots=None):
+    """Resolve one Autodesk display URI to one exact Connector hierarchy."""
+    parts = _connector_uri_parts(source)
+    if not parts:
+        return None
+    candidates = []
+    seen = set()
+    for root in roots or default_connector_roots():
+        if not root:
+            continue
+        trials = [os.path.join(root, *parts)]
+        for account in _shell_folder_names(root):
+            trials.append(os.path.join(root, account, *parts))
+        for candidate in trials:
+            key = canonical(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if _shell_file_exists(candidate):
+                candidates.append(candidate)
+    unique = dict((canonical(path), path) for path in candidates)
+    if len(unique) > 1:
+        raise ValueError('Ambiguous Desktop Connector hierarchy for: ' + text(source))
+    return next(iter(unique.values())) if unique else None
+
+
+def resolve_library_resource(source, roots):
+    """Find the exact referenced library filename inside Revit library roots."""
+    value = text(source or '').strip()
+    if not value or '://' in value:
+        return None
+    if absolute(value) and os.path.isfile(value):
+        return value
+    relative = value.replace('\\', '/').lstrip('/')
+    wanted = ntpath.basename(relative).lower()
+    if not wanted:
+        return None
+    matches = []
+    seen = set()
+    for root in list(roots or []):
+        root = text(root or '').strip()
+        if not root or not os.path.isdir(root):
+            continue
+        exact = os.path.normpath(os.path.join(root, *clean_parts(relative)))
+        if os.path.isfile(exact):
+            key = canonical(exact)
+            if key not in seen:
+                seen.add(key)
+                matches.append(exact)
+            continue
+        for current, dirs, names in os.walk(root):
+            dirs[:] = sorted(dirs)
+            for name in names:
+                if name.lower() == wanted:
+                    candidate = os.path.join(current, name)
+                    key = canonical(candidate)
+                    if key not in seen:
+                        seen.add(key)
+                        matches.append(candidate)
+            if len(matches) > 1:
+                break
+        if len(matches) > 1:
+            break
+    if len(matches) > 1:
+        raise ValueError('Ambiguous Revit library resource: ' + value)
+    return matches[0] if matches else None
+
+
+def resolve_source(source, owner='', mappings=None):
+    """Map exact identities only; never a filename-only or newest-model guess."""
     source = text(source or '').strip()
-    if cache_source(source): return None
+    if cache_source(source):
+        return None
     normalized = source.replace('\\', '/').rstrip('/')
     candidates = []
     for prefix, folder in mappings or []:
         pre = text(prefix).replace('\\', '/').rstrip('/')
-        if not pre: continue
+        if not pre:
+            continue
         if normalized.lower() == pre.lower() or normalized.lower().startswith(pre.lower() + '/'):
             tail = normalized[len(pre):].lstrip('/')
             parts = clean_parts(tail)
             pm = ntpath if is_windows(folder) else os.path
             candidate = pm.normpath(pm.join(folder, *parts)) if parts else folder
-            if not absolute(candidate): raise ValueError('Mapping destination must be absolute.')
+            if not absolute(candidate):
+                raise ValueError('Mapping destination must be absolute.')
             candidates.append((len(pre), candidate))
     if candidates:
         best = max(n for n, p in candidates)
         paths = set(canonical(p) for n, p in candidates if n == best)
-        if len(paths) != 1: raise ValueError('Ambiguous source-prefix mappings: ' + source)
-        selected=next(p for n, p in candidates if n == best)
+        if len(paths) != 1:
+            raise ValueError('Ambiguous source-prefix mappings: ' + source)
+        selected = next(p for n, p in candidates if n == best)
         return None if cache_source(selected) else selected
     connector = resolve_connector_uri(source)
     if connector:
@@ -140,7 +290,7 @@ def _connector_uri_parts(source):
         return None
     if source and absolute(owner):
         pm = ntpath if is_windows(owner) else os.path
-        selected=pm.normpath(pm.join(pm.dirname(owner), source))
+        selected = pm.normpath(pm.join(pm.dirname(owner), source))
         return None if cache_source(selected) else selected
     return None
 
@@ -217,18 +367,6 @@ def _wait_shell_copy(local, expected, cancelled=None):
             stable = 0
         time.sleep(0.25)
     raise ShellCopyError('Windows Shell copy timed out before the local snapshot became stable.')
-
-
-def _release_com(value):
-    if value is None:
-        return
-    try:
-        import System
-        marshal = System.Runtime.InteropServices.Marshal
-        if marshal.IsComObject(value):
-            marshal.FinalReleaseComObject(value)
-    except Exception:
-        pass
 
 
 def _shell_copy_inprocess(source, cancelled=None):
