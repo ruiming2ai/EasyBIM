@@ -5,6 +5,7 @@ import os
 import ntpath
 import shutil
 from . import files as f
+from .pathnames import relative as relative_path
 from .engine import issue
 from . import model_payload
 
@@ -356,7 +357,7 @@ class Backend(object):
         path=row['target']
         if relative and model_path:
             pm=ntpath if f.is_windows(model_path) else os.path
-            path=pm.relpath(path,pm.dirname(model_path))
+            path=relative_path(path,pm.dirname(model_path))
         opts=self.DB.ImageTypeOptions(path,relative,self.DB.ImageTypeSource.Link)
         try:
             if row['target'].lower().endswith('.pdf'): opts.PageNumber=row['page']
@@ -376,7 +377,7 @@ class Backend(object):
             for row in rows:
                 ident_key=row.get('element_id',row['id'])
                 if not row.get('target') or ident_key not in ids or row.get('loaded') is None: continue
-                value=os.path.relpath(row['target'],os.path.dirname(target)) if relative else row['target']
+                value=relative_path(row['target'],os.path.dirname(target)) if relative else row['target']
                 typ=self.DB.PathType.Relative if relative else self.DB.PathType.Absolute
                 td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(row['loaded']))
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
