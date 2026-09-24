@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -165,13 +166,97 @@ def _ps_quote(value):
     return "'" + text(value).replace("'", "''") + "'"
 
 
-def shell_copy_to_local(source, cancelled=None):
-    """Copy one Shell namespace file to an isolated local temp folder.
+def shell_copy_backend():
+    """Prefer in-process COM inside pyRevit; CPython CI falls back to PowerShell."""
+    try:
+        import System
+        if getattr(System, 'Type', None) is not None and getattr(System, 'Activator', None) is not None:
+            return 'INPROCESS_COM'
+    except Exception:
+        pass
+    return 'POWERSHELL'
 
-    Folder.CopyHere is asynchronous, so the PowerShell host waits until the
-    destination size matches the Shell item's size and remains stable.  The
-    returned tuple is (local_file, temp_folder).  Callers own temp_folder.
-    """
+
+def _wait_shell_copy(local, expected, cancelled=None):
+    deadline = time.time() + (20 * 60)
+    stable, last = 0, -1
+    while time.time() < deadline:
+        check(cancelled)
+        try:
+            if os.path.isfile(local):
+                length = os.path.getsize(local)
+                if ((expected and length == expected) or
+                        (not expected and length == last and length > 0)):
+                    stable += 1
+                else:
+                    stable = 0
+                last = length
+                if stable >= 4:
+                    return local
+        except OSError:
+            stable = 0
+        time.sleep(0.25)
+    raise ShellCopyError('Windows Shell copy timed out before the local snapshot became stable.')
+
+
+def _release_com(value):
+    if value is None:
+        return
+    try:
+        import System
+        marshal = System.Runtime.InteropServices.Marshal
+        if marshal.IsComObject(value):
+            marshal.FinalReleaseComObject(value)
+    except Exception:
+        pass
+
+
+def _shell_copy_inprocess(source, cancelled=None):
+    """Use Shell.Application directly in the pyRevit process; no child process."""
+    if os.name != 'nt':
+        raise ShellCopyError('Windows Shell copy is available only on Windows.')
+    check(cancelled)
+    folder = tempfile.mkdtemp(prefix='EasyBIM_ET_DC_')
+    name = ntpath.basename(source)
+    local = os.path.join(folder, name)
+    shell = src_ns = item = dst_ns = None
+    try:
+        import System
+        prog = System.Type.GetTypeFromProgID('Shell.Application')
+        if prog is None:
+            raise ShellCopyError('Shell.Application COM registration was not found.')
+        shell = System.Activator.CreateInstance(prog)
+        src_dir = ntpath.dirname(source)
+        src_ns = shell.NameSpace(src_dir)
+        if src_ns is None:
+            raise ShellCopyError('Windows Shell could not open the Desktop Connector source folder.')
+        item = src_ns.ParseName(name)
+        if item is None:
+            raise ShellCopyError('Windows Shell could not resolve the selected Desktop Connector file.')
+        dst_ns = shell.NameSpace(folder)
+        if dst_ns is None:
+            raise ShellCopyError('Windows Shell could not open the local staging folder.')
+        try:
+            expected = int(item.Size)
+        except Exception:
+            expected = 0
+        # FOF_SILENT | NOCONFIRMATION | NOCONFIRMMKDIR | NOERRORUI | NO_UI.
+        dst_ns.CopyHere(item, 9748)
+        _wait_shell_copy(local, expected, cancelled)
+        return local, folder
+    except Exception:
+        try: remove_tree_retry(folder)
+        except Exception: pass
+        raise
+    finally:
+        _release_com(dst_ns)
+        _release_com(item)
+        _release_com(src_ns)
+        _release_com(shell)
+
+
+def _shell_copy_powershell(source, cancelled=None):
+    """CPython fallback for verification environments without .NET COM interop."""
     if os.name != 'nt':
         raise ShellCopyError('Windows Shell copy is available only on Windows.')
     check(cancelled)
@@ -193,7 +278,6 @@ $dstNs = $shell.NameSpace($dst)
 if ($null -eq $dstNs) { throw 'Windows Shell could not open the local staging folder.' }
 $expected = 0
 try { $expected = [int64]$item.Size } catch { $expected = 0 }
-# Silent, no confirmation, no error UI, no connected-file expansion.
 $dstNs.CopyHere($item, 9748)
 $out = Join-Path $dst $name
 $deadline = (Get-Date).AddMinutes(20)
@@ -207,9 +291,7 @@ while ((Get-Date) -lt $deadline) {
             if (($expected -gt 0 -and $length -eq $expected) -or
                 ($expected -le 0 -and $length -eq $last -and $length -gt 0)) {
                 $stable++
-            } else {
-                $stable = 0
-            }
+            } else { $stable = 0 }
             $last = $length
             if ($stable -ge 4) { exit 0 }
         }
@@ -240,7 +322,9 @@ throw 'Windows Shell copy timed out before the local snapshot became stable.'
             def readable(value):
                 try: return value.decode('utf-8', 'replace')
                 except AttributeError: return text(value or '')
-            detail = readable(err).strip() or readable(out).strip() or 'Windows Shell copy failed.'
+            detail = readable(err).strip() or readable(out).strip()
+            if not detail:
+                detail = 'Windows Shell subprocess exited with code {0}.'.format(proc.returncode)
             raise ShellCopyError(detail)
         return local, folder
     except Exception:
@@ -250,6 +334,26 @@ throw 'Windows Shell copy timed out before the local snapshot became stable.'
         try: remove_tree_retry(folder)
         except Exception: pass
         raise
+
+
+def shell_copy_to_local(source, cancelled=None):
+    """Materialize a Desktop Connector item via Windows Shell."""
+    backend = shell_copy_backend()
+    try:
+        if backend == 'INPROCESS_COM':
+            return _shell_copy_inprocess(source, cancelled)
+        return _shell_copy_powershell(source, cancelled)
+    except Cancelled:
+        raise
+    except Exception as exc:
+        if isinstance(exc, ShellCopyError):
+            detail = text(exc)
+        else:
+            detail = '{0}: {1}'.format(type(exc).__name__, text(exc))
+        raise ShellCopyError(
+            'Desktop Connector Windows Shell acquisition failed [{0}] for {1}: {2}'.format(
+                backend, source, detail))
+
 
 
 def remove_tree_retry(path, attempts=10, delay=0.2):
@@ -409,9 +513,12 @@ def copy_file(source, target, cancelled=None, pulse=None):
     cleanup_warning = None
     try:
         if os.name == 'nt' and is_desktop_connector_path(source):
+            backend_name = shell_copy_backend()
             shell_local, shell_folder = shell_copy_to_local(source, cancelled)
             metadata = _copy_file_direct(shell_local, target, cancelled, pulse, source)
-            metadata['copy_method'] = 'WINDOWS_SHELL'
+            metadata['copy_method'] = ('WINDOWS_SHELL_COM' if backend_name == 'INPROCESS_COM'
+                                       else 'WINDOWS_SHELL_POWERSHELL')
+            metadata['shell_backend'] = backend_name
             metadata['source_stability'] = 'SHELL_SNAPSHOT'
         else:
             metadata = _copy_file_direct(source, target, cancelled, pulse, source)
