@@ -134,6 +134,28 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             progress_disabled[0] = True
             add_issue('PROGRESS_UI_FAILED', label, exc)
 
+    def copied_alias(edge):
+        """Return an exact already-copied source for the same Revit element."""
+        if edge is None or not edge.get('element_id'):
+            return None, ''
+        owner_key = f.canonical(edge.get('owner', ''))
+        for previous in edges:
+            if previous is edge:
+                continue
+            if f.canonical(previous.get('owner', '')) != owner_key:
+                continue
+            if previous.get('element_id') != edge.get('element_id'):
+                continue
+            candidate = previous.get('local') or previous.get('source') or ''
+            if not candidate:
+                continue
+            if not f.is_desktop_connector_path(candidate) and f.within(candidate, work):
+                continue
+            rec = records.get(f.canonical(candidate))
+            if rec and rec.get('status') == 'COPIED':
+                return rec, candidate
+        return None, ''
+
     try:
         while queue:
             f.check(cancelled)
@@ -143,8 +165,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             try:
                 source = f.resolve_source(requested, owner, opts.get('mappings'))
                 if not source:
-                    raise ValueError('No exact local/Connector path. Add an explicit source-prefix mapping; '
-                                     'no live/latest or basename substitution is permitted.')
+                    alias_record, alias_source = copied_alias(edge)
+                    if alias_record is not None:
+                        edge['local'] = alias_source
+                        edge['target'] = alias_record['target']
+                        edge['status'] = 'DUPLICATE_ALIAS'
+                        edge['skip_repath'] = True
+                        continue
+                    raise ValueError('No exact local/Connector path was exposed for this reference; '
+                                     'no live/latest or basename substitution was performed.')
                 if f.is_desktop_connector_path(source):
                     # Desktop Connector is a Windows Shell namespace.  Do not
                     # call realpath/stat/isfile on it before Shell materializes
@@ -174,25 +203,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     # If element identity proves it is the same already-copied
                     # reference, keep that exact source and ignore only the
                     # staging alias. Never search by basename.
-                    alias_record = None
-                    alias_source = ''
-                    if edge is not None and edge.get('element_id'):
-                        for previous in edges:
-                            if previous is edge:
-                                continue
-                            if previous.get('owner') != edge.get('owner'):
-                                continue
-                            if previous.get('element_id') != edge.get('element_id'):
-                                continue
-                            candidate = previous.get('local') or previous.get('source') or ''
-                            if not candidate or (not f.is_desktop_connector_path(candidate) and
-                                                 f.within(candidate, work)):
-                                continue
-                            candidate_record = records.get(f.canonical(candidate))
-                            if candidate_record and candidate_record.get('status') == 'COPIED':
-                                alias_record = candidate_record
-                                alias_source = candidate
-                                break
+                    alias_record, alias_source = copied_alias(edge)
                     if alias_record is not None:
                         edge['local'] = alias_source
                         edge['target'] = alias_record['target']
