@@ -4,6 +4,7 @@ import os, sys, tempfile, shutil, unittest
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
 from easybim_etransmit import files as f
+from easybim_etransmit.pathnames import relative
 try: from easybim_etransmit import longpaths as lp
 except ImportError: lp=None
 
@@ -14,6 +15,10 @@ class LongPaths(unittest.TestCase):
         self.assertTrue(callable(getattr(f,'validate_copy_path',None)))
         f.validate_copy_path(path)
         with self.assertRaises(ValueError): f.validate_destination_path(path[:-4]+'.rvt')
+    def test_relative_long_path_does_not_call_legacy_fullpath(self):
+        self.assertEqual(relative('C:\\Output\\'+'Folder\\'*40+'Original.pdf',
+                                  'C:\\Output\\Model'), '..\\'+'Folder\\'*40+'Original.pdf')
+        with self.assertRaises(ValueError):relative('D:\\A.pdf','C:\\Output')
     def test_unc_extended_path_keeps_name_and_share(self):
         self.assertIsNotNone(lp)
         self.assertEqual(lp.extended('\\\\server\\share\\Project\\Same.pdf'),'\\\\?\\UNC\\server\\share\\Project\\Same.pdf')
@@ -31,7 +36,7 @@ class LongPaths(unittest.TestCase):
         target=os.path.join(directory,'Original Details.pdf')
         self.assertGreater(len(target),260)
         try:
-            f.destination(root,os.path.relpath(target,root))
+            f.destination(root,relative(target,root))
             metadata=f.copy_file(short,target)
             self.assertEqual(f.digest(short),metadata['sha256'])
             self.assertEqual(f.digest(target),metadata['sha256'])
