@@ -7,12 +7,14 @@ on:
       - 'lib/easybim_etransmit/**'
       - 'EasyBIM.tab/Links.panel/**'
       - 'Development Space/tests/etransmit/**'
+      - 'Development Space/native/EasyBIM.FileIO/**'
       - '.github/workflows/etransmit-tests.yml'
   pull_request:
     paths:
       - 'lib/easybim_etransmit/**'
       - 'EasyBIM.tab/Links.panel/**'
       - 'Development Space/tests/etransmit/**'
+      - 'Development Space/native/EasyBIM.FileIO/**'
       - '.github/workflows/etransmit-tests.yml'
   workflow_dispatch:
 
@@ -60,6 +62,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Verify shipped helper matches compiled source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          dotnet build 'Development Space/native/EasyBIM.FileIO/EasyBIM.FileIO.csproj' -c Release -o "$env:RUNNER_TEMP/ETNative"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $built=(Get-FileHash "$env:RUNNER_TEMP/ETNative/EasyBIM.FileIO.dll" -Algorithm SHA256).Hash
+          $shipped=(Get-FileHash 'lib/easybim_etransmit/native/EasyBIM.FileIO.dll' -Algorithm SHA256).Hash
+          if ($built -ne $shipped) { throw 'Bundled file IO helper does not match the compiled source.' }
+          Write-Output "Verified bundled helper SHA256: $shipped"
       - name: Download pinned official IronPython runtime
         shell: pwsh
         run: |
@@ -81,3 +93,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $env:IPY_EXE 'Development Space/tests/etransmit/test_source_automation.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:IPY_EXE 'Development Space/tests/etransmit/test_payload_acquisition.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_longpaths.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_reference_repairs.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Archive native helper tested under IronPython
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etransmit-native-fileio
+          path: lib/easybim_etransmit/native/EasyBIM.FileIO.dll
+          if-no-files-found: error
+          retention-days: 7

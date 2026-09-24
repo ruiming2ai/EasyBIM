@@ -113,6 +113,11 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
         self.assertIn('INPROCESS_COM', message)
         self.assertNotEqual(message.strip(), 'Unknown error "-1073741816".')
 
+    def test_snapshot_wait_uses_writer_completion_check(self):
+        import inspect
+        self.assertTrue(callable(getattr(f,'snapshot_ready',None)))
+        self.assertIn('snapshot_ready',inspect.getsource(f._wait_shell_copy))
+
     def test_shell_snapshot_does_not_restat_connector_after_copy(self):
         helper = getattr(f, 'source_snapshot_changed', None)
         self.assertTrue(callable(helper), 'source snapshot stability helper is missing')
