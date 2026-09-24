@@ -66,6 +66,52 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
             f.remove_tree_retry(folder)
         self.assertFalse(os.path.exists(folder))
 
+    def test_pyRevit_prefers_inprocess_com_shell_when_system_is_available(self):
+        chooser = getattr(f, 'shell_copy_backend', None)
+        self.assertTrue(callable(chooser), 'Shell backend chooser is missing')
+        fake_system = types.SimpleNamespace(Type=object(), Activator=object())
+        with patch.dict(sys.modules, {'System': fake_system}):
+            self.assertEqual(chooser(), 'INPROCESS_COM')
+
+    def test_copy_file_uses_inprocess_shell_without_subprocess(self):
+        source = r'C:\Users\tester\DC\ACCDocs\Account\Project\Project Files\Host.rvt'
+        hydrated_dir = self.base / 'hydrated_com'
+        hydrated_dir.mkdir()
+        hydrated = hydrated_dir / 'Host.rvt'
+        hydrated.write_bytes(b'inprocess shell bytes')
+        target = self.base / 'Host.rvt'
+        calls = []
+
+        def fake_inprocess(src, cancelled=None):
+            calls.append(src)
+            return str(hydrated), None
+
+        with patch.object(f, 'is_desktop_connector_path', return_value=True), \
+             patch.object(f, 'shell_copy_backend', return_value='INPROCESS_COM'), \
+             patch.object(f, '_shell_copy_inprocess', fake_inprocess), \
+             patch.object(f, '_shell_copy_powershell') as powershell, \
+             patch.object(f.os, 'name', 'nt'):
+            result = f.copy_file(source, str(target))
+
+        self.assertEqual(calls, [source])
+        powershell.assert_not_called()
+        self.assertEqual(target.read_bytes(), hydrated.read_bytes())
+        self.assertEqual(result.get('copy_method'), 'WINDOWS_SHELL_COM')
+
+    def test_shell_failures_report_stage_and_do_not_surface_raw_invalid_handle(self):
+        source = r'C:\Users\tester\DC\ACCDocs\Account\Project\Project Files\Host.rvt'
+        target = self.base / 'Host.rvt'
+        with patch.object(f, 'is_desktop_connector_path', return_value=True), \
+             patch.object(f, 'shell_copy_backend', return_value='INPROCESS_COM'), \
+             patch.object(f, '_shell_copy_inprocess', side_effect=OSError(-1073741816, 'Unknown error')), \
+             patch.object(f.os, 'name', 'nt'):
+            with self.assertRaises(f.ShellCopyError) as ctx:
+                f.copy_file(source, str(target))
+        message = str(ctx.exception)
+        self.assertIn('Desktop Connector Windows Shell acquisition failed', message)
+        self.assertIn('INPROCESS_COM', message)
+        self.assertNotEqual(message.strip(), 'Unknown error "-1073741816".')
+
     def test_shell_snapshot_does_not_restat_connector_after_copy(self):
         helper = getattr(f, 'source_snapshot_changed', None)
         self.assertTrue(callable(helper), 'source snapshot stability helper is missing')
