@@ -9,7 +9,7 @@ import re
 import traceback
 from pyrevit import forms, script, DB
 from . import VERSION, files as f
-from . import cleanup, engine
+from . import cleanup, engine, source_tracker
 from .revit import Backend
 
 
@@ -54,8 +54,8 @@ class Dialog(forms.WPFWindow):
         active=uiapp.ActiveUIDocument.Document if uiapp.ActiveUIDocument else None
         for doc in uiapp.Application.Documents:
             if doc.IsLinked or doc.IsFamilyDocument: continue
-            source=f.text(doc.PathName)
-            self.models.append(Choice(f.text(doc.Title),checked=doc==active,source=source,modified=bool(doc.IsModified)))
+            source=source_tracker.source_for_document(doc, application=uiapp.Application)
+            self.models.append(Choice(f.text(doc.Title),checked=doc==active,source=f.text(source),modified=bool(doc.IsModified)))
         self.models.sort(key=lambda x:(not x.Checked,x.Name.lower()))
         if self.models and not any(x.Checked for x in self.models): self.models[0].Checked=True
         self.Purge.IsEnabled=hasattr(DB.Document,'GetUnusedElements')
@@ -153,7 +153,10 @@ class Dialog(forms.WPFWindow):
             except ValueError: path=None
             if not path: unresolved.append(row.Name+' : '+row.Source)
         if unresolved:
-            return forms.alert('Choose an exact saved source using "Use saved copy" or add a prefix mapping.\n\n'+'\n'.join(unresolved))
+            return forms.alert('EasyBIM could not determine one exact saved source automatically for the item(s) below. '
+                               'For a detached model, reopen it once after updating EasyBIM so the opening path can be captured. '
+                               'The saved-copy and prefix-mapping controls are fallback tools for genuinely ambiguous sources.\n\n'
+                               +'\n'.join(unresolved))
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
         long_paths=engine.preflight_paths([x.Source for x in models],root,opts,self.extras)
         if long_paths:
