@@ -125,7 +125,7 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
         stat.assert_not_called()
 
     def test_engine_does_not_realpath_desktop_connector_source_before_shell_copy(self):
-        source = r'C:\\Users\\tester\\DC\\ACCDocs\\Account\\Project\\Project Files\\Host.rvt'
+        source = r'C:\Users\tester\DC\ACCDocs\Account\Project\Project Files\Host.rvt'
         out = self.base / 'out'
         original_within = f.within
         copied = []
