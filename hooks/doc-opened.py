@@ -43,4 +43,14 @@ if doc is None:
     except Exception:
         doc = None
 
+
+# Bind the pre-open source to the resulting document.  This is read-only
+# bookkeeping for e-transmit and does not save/sync/modify the model.
+try:
+    from easybim_etransmit import source_tracker
+    _app = getattr(__revit__, "Application", None)
+    source_tracker.record_opened(doc, application=_app) if doc is not None else None
+except Exception:
+    pass
+
 run_start_message_on_file_open(doc=doc)
