@@ -51,3 +51,29 @@ jobs:
             Development Space/tests/etransmit/
             !**/__pycache__/**
           if-no-files-found: error
+
+  ironpython-copy-tests:
+    name: Real IronPython 2.7 local copy (Windows, no Revit)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download pinned official IronPython runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'IronPython.2.7.12.zip'
+          $folder = Join-Path $env:RUNNER_TEMP 'IronPython-2.7.12'
+          Invoke-WebRequest 'https://github.com/IronLanguages/ironpython2/releases/download/ipy-2.7.12/IronPython.2.7.12.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $folder
+          $ipy = Get-ChildItem -LiteralPath $folder -Recurse -Filter ipy.exe | Where-Object { $_.FullName -match 'net45' } | Select-Object -First 1
+          if (-not $ipy) { $ipy = Get-ChildItem -LiteralPath $folder -Recurse -Filter ipy.exe | Select-Object -First 1 }
+          if (-not $ipy) { throw 'Official archive did not contain ipy.exe' }
+          "IPY_EXE=$($ipy.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run unchanged copy code under IronPython (not a Revit test)
+        shell: pwsh
+        run: |
+          & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_copy.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
