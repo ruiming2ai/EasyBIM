@@ -124,6 +124,37 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
         self.assertFalse(changed)
         stat.assert_not_called()
 
+    def test_engine_does_not_realpath_desktop_connector_source_before_shell_copy(self):
+        source = r'C:\\Users\\tester\\DC\\ACCDocs\\Account\\Project\\Project Files\\Host.rvt'
+        out = self.base / 'out'
+        original_within = f.within
+        copied = []
+
+        def guarded_within(path, root):
+            if f.is_desktop_connector_path(path):
+                raise OSError(-1073741816, 'Unknown error')
+            return original_within(path, root)
+
+        def fake_copy(src, target, cancelled=None, pulse=None):
+            copied.append(src)
+            folder = os.path.dirname(target)
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+            Path(target).write_bytes(b'local shell snapshot bytes')
+            return {'sha256': 'x', 'size': 26, 'source_mtime': 0,
+                    'copy_method': 'WINDOWS_SHELL_COM',
+                    'source_stability': 'SHELL_SNAPSHOT'}
+
+        backend = FakeBackend()
+        with patch.object(f, 'within', side_effect=guarded_within), \
+             patch.object(f, 'copy_file', side_effect=fake_copy):
+            result = e.transmit([source], str(out), backend)
+
+        self.assertIn(result['status'], ('COLLECTED', 'NEEDS_REVIEW'))
+        self.assertEqual(copied[0], source)
+        self.assertEqual(e.package_counts(result)['hosts_copied'], 1)
+        self.assertFalse(any('1073741816' in str(i.get('message', '')) for i in result['issues']))
+
     def test_engine_staging_is_outside_output_tree(self):
         source = self.base / 'Host.rvt'
         source.write_bytes(b'fake rvt')
