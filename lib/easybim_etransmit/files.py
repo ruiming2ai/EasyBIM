@@ -91,19 +91,94 @@ def cache_source(path):
     return any(p in ('collaborationcache','paccache') for p in parts)
 
 
+def _desktop_connector_workspace_locations():
+    """Read Desktop Connector custom workspace roots without modifying settings.
+
+    Desktop Connector Advanced Settings stores WorkspaceLocation per Autodesk
+    documentation. Check user then machine scope; support Python 2/IronPython
+    and Python 3 registry module names.
+    """
+    if os.name != 'nt':
+        return []
+    try:
+        try:
+            import winreg
+        except ImportError:
+            import _winreg as winreg
+    except ImportError:
+        return []
+
+    key_path = r'SOFTWARE\Autodesk\Desktop Connector Advanced Settings'
+    values = []
+    seen = set()
+    hives = []
+    for name in ('HKEY_CURRENT_USER', 'HKEY_LOCAL_MACHINE'):
+        hive = getattr(winreg, name, None)
+        if hive is not None:
+            hives.append(hive)
+
+    access_modes = [getattr(winreg, 'KEY_READ', 0x20019)]
+    wow64 = getattr(winreg, 'KEY_WOW64_64KEY', 0)
+    if wow64:
+        access_modes.insert(0, getattr(winreg, 'KEY_READ', 0x20019) | wow64)
+
+    for hive in hives:
+        for access in access_modes:
+            key = None
+            try:
+                key = winreg.OpenKey(hive, key_path, 0, access)
+                value, _kind = winreg.QueryValueEx(key, 'WorkspaceLocation')
+                value = os.path.expandvars(text(value or '').strip().strip('"'))
+                if value:
+                    value = ntpath.normpath(value)
+                    canonical_value = ntpath.normcase(value)
+                    if canonical_value not in seen:
+                        seen.add(canonical_value)
+                        values.append(value)
+                break
+            except (IOError, OSError):
+                pass
+            finally:
+                if key is not None:
+                    try:
+                        winreg.CloseKey(key)
+                    except Exception:
+                        pass
+    return values
+
+
 def default_connector_roots():
-    """Known Desktop Connector workspace roots; exact hierarchy matching only."""
+    """Known Desktop Connector ACCDocs roots; exact hierarchy matching only."""
     roots = []
+    seen = set()
+
+    def add(value):
+        value = text(value or '').strip()
+        if not value:
+            return
+        value = ntpath.normpath(value) if os.name == 'nt' else os.path.normpath(value)
+        key = ntpath.normcase(value) if os.name == 'nt' else value
+        if key not in seen:
+            seen.add(key)
+            roots.append(value)
+
     configured = os.environ.get('EASYBIM_DESKTOP_CONNECTOR_ROOTS', '')
     for value in configured.split(os.pathsep):
-        value = text(value).strip()
-        if value and value not in roots:
-            roots.append(value)
+        add(value)
+
+    for workspace in _desktop_connector_workspace_locations():
+        workspace = text(workspace).strip()
+        if ntpath.basename(ntpath.normpath(workspace)).lower() == 'accdocs':
+            add(workspace)
+        else:
+            add(ntpath.join(workspace, 'ACCDocs'))
+
     profile = os.environ.get('USERPROFILE') or os.path.expanduser('~')
-    for value in (os.path.join(profile, 'DC', 'ACCDocs'),
-                  os.path.join(profile, 'ACCDocs')):
-        if value not in roots:
-            roots.append(value)
+    # Desktop Connector v16+ default, then legacy v15 location.
+    add(ntpath.join(profile, 'DC', 'ACCDocs') if os.name == 'nt'
+        else os.path.join(profile, 'DC', 'ACCDocs'))
+    add(ntpath.join(profile, 'ACCDocs') if os.name == 'nt'
+        else os.path.join(profile, 'ACCDocs'))
     return roots
 
 
