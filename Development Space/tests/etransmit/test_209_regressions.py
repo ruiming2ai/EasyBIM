@@ -48,7 +48,14 @@ class HostOnlyAdcResolution(unittest.TestCase):
 class PortableImageAliases(unittest.TestCase):
     def setUp(self):
         self.root=tempfile.mkdtemp(prefix='ET_209_alias_')
-        self.addCleanup(shutil.rmtree,self.root)
+        def cleanup():
+            if not os.path.exists(self.root):
+                return
+            if sys.platform=='cli':
+                lp.remove_tree(self.root)
+            else:
+                shutil.rmtree(self.root)
+        self.addCleanup(cleanup)
 
     def test_long_image_keeps_mirrored_copy_but_revit_uses_short_alias(self):
         host=os.path.join(self.root,'Host.rvt')
@@ -88,11 +95,7 @@ class PortableImageAliases(unittest.TestCase):
         self.assertEqual(len(seen),1,repr(result['issues']))
         ref=seen[0]
         self.assertNotEqual(f.canonical(ref['target']),f.canonical(ref['mirror_target']))
-        with open(ref['target'],'rb') as a:
-            alias_bytes=a.read()
-        with open(ref['mirror_target'],'rb') as b:
-            mirror_bytes=b.read()
-        self.assertEqual(alias_bytes,mirror_bytes)
+        self.assertEqual(f.digest(ref['target']),f.digest(ref['mirror_target']))
         self.assertTrue(ref.get('portable_alias'))
         with open(os.path.join(result['root'],'START_HERE.txt'),'rb') as report_file:
             report=report_file.read().decode('utf-8')
