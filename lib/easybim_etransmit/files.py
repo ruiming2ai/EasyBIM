@@ -74,6 +74,12 @@ def canonical(path):
 
 
 def within(path, root):
+    if os.name == 'nt' and (path_units(path) > 240 or path_units(root) > 240):
+        from . import longpaths
+        p, r = ntpath.normcase(ntpath.normpath(path)), ntpath.normcase(ntpath.normpath(root))
+        if not (p == r or p.startswith(r.rstrip('\\') + '\\')): return False
+        longpaths.no_reparse(path)
+        return True
     p, r = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(root))
     return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
@@ -423,6 +429,13 @@ def shell_copy_backend():
     return 'POWERSHELL'
 
 
+def snapshot_ready(path):
+    if os.name == 'nt':
+        from . import longpaths
+        return longpaths.snapshot_ready(path)
+    return os.path.isfile(path)
+
+
 def _wait_shell_copy(local, expected, cancelled=None):
     deadline = time.time() + (20 * 60)
     stable, last = 0, -1
@@ -437,7 +450,7 @@ def _wait_shell_copy(local, expected, cancelled=None):
                 else:
                     stable = 0
                 last = length
-                if stable >= 4:
+                if stable >= 4 and snapshot_ready(local):
                     return local
         except OSError:
             stable = 0
@@ -527,7 +540,13 @@ while ((Get-Date) -lt $deadline) {
                 $stable++
             } else { $stable = 0 }
             $last = $length
-            if ($stable -ge 4) { exit 0 }
+            if ($stable -ge 4) {
+                try {
+                    $test = [System.IO.File]::Open($out, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+                    $test.Dispose()
+                    exit 0
+                } catch { $stable = 0 }
+            }
         }
     } catch { $stable = 0 }
 }
@@ -635,6 +654,23 @@ def validate_destination_path(path):
     return path
 
 
+def validate_copy_path(path):
+    """Filesystem budget is separate from Revit's model/SaveAs path budget."""
+    if os.name != 'nt' and not is_windows(path): return path
+    value = ntpath.normpath(path)
+    parts = ntpath.splitdrive(value)[1].strip('\\').split('\\')
+    if path_units(value) > 32700 or any(path_units(part) > 255 for part in parts):
+        raise PathLengthError('Windows dependency path/component exceeds the Unicode filesystem limit: ' + path)
+    return path
+
+
+def file_exists(path):
+    if os.name == 'nt' and path_units(path) > 240:
+        from . import longpaths
+        return longpaths.isfile(path)
+    return os.path.isfile(path)
+
+
 def new_run_root(output, stamp):
     """Short tool-generated wrapper, never a shortened source filename."""
     pm = ntpath if is_windows(output) else os.path
@@ -668,8 +704,8 @@ def destination(root, relative):
         raise ValueError('Package entry must be relative.')
     parts = clean_parts(relative)
     target = os.path.join(root, *parts)
+    validate_copy_path(target)
     if not within(target, root): raise ValueError('Destination escapes package root.')
-    validate_destination_path(target)
     return target
 
 
@@ -678,11 +714,17 @@ def check(cancelled=None):
 
 
 def signature(path):
+    if os.name == 'nt' and path_units(path) > 240:
+        from . import longpaths
+        return longpaths.signature(path)
     s = os.stat(path)
     return (s.st_size, s.st_mtime)
 
 
 def digest(path, cancelled=None):
+    if os.name == 'nt' and path_units(path) > 240:
+        from . import longpaths
+        return longpaths.digest(path, cancelled)
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         while True:
@@ -704,7 +746,11 @@ def publish(temp, target):
 
 def _copy_file_direct(source, target, cancelled=None, pulse=None, display_source=None):
     check(cancelled)
-    validate_destination_path(target)
+    validate_copy_path(target)
+    if cache_source(source): raise IOError('CollaborationCache/PacCache copies are not supported.')
+    if os.name == 'nt' and (path_units(source) > 240 or path_units(target) > 240):
+        from . import longpaths
+        return longpaths.copy_file(source, target, cancelled, pulse, display_source)
     if os.path.exists(target): raise IOError('Refusing to overwrite: ' + target)
     if cache_source(source): raise IOError('CollaborationCache/PacCache copies are not supported.')
     if not os.path.isfile(source): raise IOError('Source missing or not a file: ' + source)
@@ -774,7 +820,7 @@ def copy_file(source, target, cancelled=None, pulse=None):
 
 def source_snapshot_changed(source, metadata):
     """Shell snapshots are immutable local acquisition points; never restat DC."""
-    if metadata.get('source_stability') == 'SHELL_SNAPSHOT':
+    if metadata.get('source_stability') in ('SHELL_SNAPSHOT', 'ARCHIVE_SNAPSHOT'):
         return False
     return signature(source) != (metadata.get('size'), metadata.get('source_mtime'))
 

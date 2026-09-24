@@ -2,9 +2,11 @@
 """Revit API boundary. All document writes are restricted to package copies."""
 from __future__ import unicode_literals
 import os
+import ntpath
 import shutil
 from . import files as f
 from .engine import issue
+from . import model_payload
 
 
 def eid(value):
@@ -28,9 +30,18 @@ class Backend(object):
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
         self.staging_root = None
+        self.payloads = None
 
     def set_staging_root(self, path):
         self.staging_root = path
+        self.payloads = model_payload.Store(os.path.join(path, 'acquired'))
+
+    def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
+        self.guard(target)
+        return self.payloads.copy(source, target, owner, cancelled, pulse)
+
+    def resolve_acquired_source(self, source, owner=''):
+        return self.payloads.resolve(source, owner) if self.payloads else source
 
     def guard(self, path):
         allowed = f.within(path, self.root)
@@ -44,11 +55,42 @@ class Backend(object):
         return f.text(self.DB.ModelPathUtils.ConvertModelPathToUserVisiblePath(path)) if path else ''
 
     def basic(self, path):
-        info=self.DB.BasicFileInfo.Extract(path)
         try:
-            return dict(version=f.text(info.Format),workshared=bool(info.IsWorkshared),
-                        central=f.text(getattr(info,'CentralPath','')))
-        finally: dispose(info)
+            info = self.DB.BasicFileInfo.Extract(path)
+            try:
+                return dict(version=f.text(info.Format), workshared=bool(info.IsWorkshared),
+                            central=f.text(getattr(info, 'CentralPath', '')))
+            finally: dispose(info)
+        except Exception as exc:
+            # A valid CFB metadata stream can still be inspected when the API's
+            # BasicFileInfo extractor refuses it. This does NOT certify Revit
+            # readability; OpenDocumentFile must succeed separately.
+            info = model_payload.probe(path)
+            if info['container'] != 'CFB' or not info.get('worksharing_known'):
+                raise model_payload.PayloadError('Archive/unknown payload reached the Revit API boundary.')
+            info['metadata_warning'] = 'BasicFileInfo API failed; read-only container metadata used: ' + f.text(exc)
+            return info
+
+    def reference_row(self, ref, ident, owner, td=False):
+        raw = self.visible(ref.GetPath())
+        kind = f.text(ref.ExternalFileReferenceType)
+        path_type = f.text(getattr(ref, 'PathType', ''))
+        try: saved_absolute = self.visible(ref.GetAbsolutePath())
+        except Exception: saved_absolute = ''
+        if path_type == 'Content':
+            # Revit content paths are relative to LIBRARIES, not the host RVT.
+            source = saved_absolute
+            if not source:
+                source = f.resolve_library_resource(raw, self.library_paths()) or ''
+        elif f.absolute(raw) or '://' in raw:
+            source = raw
+        else:
+            source = f.resolve_source(raw, owner) or saved_absolute or raw
+        return dict(id=eid(ident), element_id=eid(ident), source=source,
+                    saved_path=raw, saved_absolute_path=saved_absolute, path_type=path_type,
+                    kind=kind, loaded=load_intent(f.text(ref.GetLinkedFileStatus())),
+                    optional_library=(kind=='AssemblyCodeTable' and path_type=='Content'),
+                    td=td, special='native')
 
     def rows(self, path, owner=''):
         td=self.DB.TransmissionData.ReadTransmissionData(self.mp(path))
@@ -59,21 +101,7 @@ class Backend(object):
                 f.check(self.cancelled)
                 ref=td.GetDesiredReferenceData(ident) if td.IsTransmitted else None
                 if ref is None: ref=td.GetLastSavedReferenceData(ident)
-                raw=self.visible(ref.GetPath())
-                # TransmissionData is read from the local snapshot.  Resolve
-                # relative saved paths against the ORIGINAL owner model path,
-                # never against the temporary staging directory.
-                if f.absolute(raw) or '://' in raw:
-                    source=raw
-                elif owner:
-                    source=f.resolve_source(raw, owner) or raw
-                else:
-                    try: source=self.visible(ref.GetAbsolutePath())
-                    except Exception: source=''
-                state=f.text(ref.GetLinkedFileStatus())
-                rows.append(dict(id=eid(ident),element_id=eid(ident),source=source,
-                                 saved_path=raw,kind=f.text(ref.ExternalFileReferenceType),
-                                 loaded=load_intent(state),td=True,special='native'))
+                rows.append(self.reference_row(ref, ident, owner, True))
         finally: dispose(td)
         return rows
 
@@ -87,6 +115,9 @@ class Backend(object):
     def open_copy(self, path, discard=False):
         self.guard(path)
         info=self.basic(path)
+        current = f.text(getattr(self.app, 'VersionNumber', ''))
+        if current.isdigit() and info['version'].isdigit() and int(info['version']) > int(current):
+            raise model_payload.PayloadError('Model saved in Revit '+info['version']+' cannot be opened by Revit '+current+'.')
         opts=self.DB.OpenOptions()
         worksets=None
         try:
@@ -116,7 +147,13 @@ class Backend(object):
     def scan(self, source, stage, options):
         self.guard(stage)
         info=self.basic(stage)
-        result=dict(references=[],issues=[],version=info['version'])
+        current=f.text(getattr(self.app,'VersionNumber',''))
+        if current.isdigit() and info['version'].isdigit() and int(info['version'])>int(current):
+            raise model_payload.PayloadError('Saved Revit '+info['version']+' requires that version or newer; running '+current+'.')
+        result=dict(references=[],issues=[],version=info['version'],opened_in_revit=False)
+        if getattr(self, 'payloads', None): self.payloads.bind_stage(stage, source)
+        if info.get('metadata_warning'):
+            result['issues'].append(issue('BASIC_METADATA_FALLBACK',source,info['metadata_warning']))
         base=info.get('central') if info.get('workshared') and f.absolute(info.get('central', '')) else source
         try: result['references']=self.rows(stage, base)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
@@ -128,9 +165,11 @@ class Backend(object):
         try:
             self.prepare_scan(stage,result['references'])
             doc=self.open_copy(stage)
+            result['opened_in_revit']=True
             self.scan_open(doc,source,info,result)
         except f.Cancelled: raise
         except Exception as exc:
+            result['open_failed']=True
             result['issues'].append(issue('DEEP_SCAN_FAILED',source,
                                          'Saved metadata was retained, but deeper dependency inspection failed: '+f.text(exc),'error'))
         finally:
@@ -156,26 +195,22 @@ class Backend(object):
             return []
 
     def resource_source(self, display, metadata, kind):
-        """Choose only exact source identities exposed by Revit/server metadata."""
-        candidates = [f.text(display or '')]
-        candidates.extend(f.text(value) for value in metadata.values() if f.text(value))
+        """Named path fields are evidence; arbitrary identity/version strings are not."""
+        candidates=[]
+        lowered=dict((f.text(k).lower(),v) for k,v in metadata.items())
+        for key in ('absolutepath','fullpath','filepath','path','savedpath'):
+            value=f.text(lowered.get(key,'') or '').strip()
+            if value: candidates.append(value)
+        if display: candidates.append(f.text(display))
         for value in candidates:
-            if f.absolute(value):
+            if f.absolute(value) and self.staging_root and f.within(value,self.staging_root): continue
+            if f.absolute(value) or '://' in value: return value
+            if lowered.get('pathtype','') == 'Relative' and value:
                 return value
-        for value in candidates:
-            if '://' in value:
-                return value
-        if kind in ('AssemblyCodeTable', 'KeynoteTable'):
-            roots = self.library_paths()
+        if kind in ('AssemblyCodeTable','KeynoteTable'):
             for value in candidates:
-                if not value:
-                    continue
-                try:
-                    resolved = f.resolve_library_resource(value, roots)
-                except ValueError:
-                    raise
-                if resolved:
-                    return resolved
+                resolved=f.resolve_library_resource(value,self.library_paths())
+                if resolved: return resolved
         return f.text(display or '')
 
     def scan_open(self, doc, source, info, result):
@@ -188,8 +223,15 @@ class Backend(object):
             if row['id'] in by_id:
                 old=by_id[row['id']]
                 row['td']=old.get('td',False)
-                if old.get('source'): row['source']=old['source']
-                if row.get('special')!='image': row['loaded']=old.get('loaded')
+                # A second API representation may supply the missing original
+                # path. Never throw that information away because the ID was seen.
+                if row.get('special') != 'external' or not row.get('source'):
+                    if old.get('source'): row['source']=old['source']
+                if row.get('special')=='external':
+                    row['native_source']=old.get('source','')
+                    if old.get('special')=='image': row['special']='image'
+                    if old.get('special')=='pointcloud': row['special']='pointcloud'
+                if row.get('special')!='image' and old.get('loaded') is not None: row['loaded']=old.get('loaded')
                 old.update(row)
             else:
                 refs.append(row); by_id[row['id']]=row
@@ -243,10 +285,7 @@ class Backend(object):
             if key in seen or key in imported: continue
             try:
                 ref=self.DB.ExternalFileUtils.GetExternalFileReference(doc,ident)
-                raw=self.visible(ref.GetPath())
-                add(dict(id=key,element_id=key,source=f.resolve_source(raw,base) or raw,
-                         kind=f.text(ref.ExternalFileReferenceType),loaded=load_intent(f.text(ref.GetLinkedFileStatus())),
-                         special='native',td=False))
+                add(self.reference_row(ref, ident, base))
             except Exception as exc: issues.append(issue('FILE_REFERENCE_UNRESOLVED',source+' #'+key,exc))
         # The built-in external-resource API includes decals, report paths, keynotes and IFC.
         builtin=getattr(self.DB.ExternalResourceTypes,'BuiltInExternalResourceTypes',None)
@@ -262,7 +301,7 @@ class Backend(object):
             f.check(self.cancelled)
             try:
                 key=eid(ident)
-                if key in seen or key in imported: continue
+                if key in imported: continue
                 element=doc.GetElement(ident)
                 if element is None or bool(getattr(element,'IsNestedLink',False)): continue
                 resources=element.GetExternalResourceReferences()
@@ -279,9 +318,16 @@ class Backend(object):
                     # configured Revit library roots.  For server-managed paths
                     # this remains an identity, not permission to substitute a
                     # different live/latest model.
-                    row=dict(id=key+':'+f.text(index),element_id=key,source=resolved_source,kind=kind,
-                             special='external',loaded=None,td=False,server=f.text(resource.ServerId),
+                    resolved_source=f.resolve_source(resolved_source,base) or resolved_source
+                    row_id=key if key in by_id and index==0 else key+':'+f.text(index)
+                    loaded=None
+                    if kind=='RevitLink':
+                        try: loaded=bool(self.DB.RevitLinkType.IsLoaded(doc,ident))
+                        except Exception: pass
+                    row=dict(id=row_id,element_id=key,source=resolved_source,kind=kind,
+                             special='external',loaded=loaded,td=False,server=f.text(resource.ServerId),
                              resource_version=f.text(resource.Version),resource_information=metadata,
+                             in_session_path=display,
                              optional_library=(kind=='AssemblyCodeTable'),
                              note='External-resource identity recorded; exact source resolution preserves the configured resource.')
                     add(row)
@@ -305,9 +351,13 @@ class Backend(object):
                                             'Add its original NWC/NWD manually; no geometry export is substituted.'))
             finally: dispose(col)
 
-    def image_options(self, row, relative):
+    def image_options(self, row, relative, model_path=None):
         self.guard(row['target'])
-        opts=self.DB.ImageTypeOptions(row['target'],relative,self.DB.ImageTypeSource.Link)
+        path=row['target']
+        if relative and model_path:
+            pm=ntpath if f.is_windows(model_path) else os.path
+            path=pm.relpath(path,pm.dirname(model_path))
+        opts=self.DB.ImageTypeOptions(path,relative,self.DB.ImageTypeSource.Link)
         try:
             if row['target'].lower().endswith('.pdf'): opts.PageNumber=row['page']
             opts.Resolution=row['resolution']
@@ -324,10 +374,11 @@ class Backend(object):
         try:
             ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds())
             for row in rows:
-                if not row.get('target') or row['id'] not in ids or row.get('loaded') is None: continue
+                ident_key=row.get('element_id',row['id'])
+                if not row.get('target') or ident_key not in ids or row.get('loaded') is None: continue
                 value=os.path.relpath(row['target'],os.path.dirname(target)) if relative else row['target']
                 typ=self.DB.PathType.Relative if relative else self.DB.PathType.Absolute
-                td.SetDesiredReferenceData(ids[row['id']],self.mp(value),typ,bool(row['loaded']))
+                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(row['loaded']))
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
             td.IsTransmitted=True
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
@@ -342,7 +393,7 @@ class Backend(object):
             if row.get('target'): self.guard(row['target'])
         transmitted=self.apply_metadata(stage,target,rows) if options.get('repath') else False
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
-        external=[r for r in rows if r.get('target') and r.get('special')=='external' and r.get('kind')=='RevitLink']
+        external=[r for r in rows if r.get('target') and not r.get('td') and r.get('kind')=='RevitLink']
         needs_document=options.get('cleanup') or options.get('upgrade') or (options.get('repath') and (special or external))
         if needs_document and info['version']!=f.text(self.app.VersionNumber) and not options.get('upgrade'):
             issues.append(issue('UPGRADE_CONSENT_REQUIRED',target,
@@ -370,26 +421,9 @@ class Backend(object):
                         result=link.LoadFrom(self.mp(row['target']),None)
                         if f.text(result.LoadResult) not in ('LinkLoaded','LinkAlreadyLoaded'):
                             raise RuntimeError('Revit link reload failed: '+f.text(result.LoadResult))
+                        dispose(result)
+                        if row.get('loaded') is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
-                    for row in special:
-                        f.check(self.cancelled)
-                        number=int(row['element_id'])
-                        ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
-                        image=doc.GetElement(ident)
-                        # First save establishes the package central-path base; use absolute paths
-                        # during the first reload, then a second relative-path reload after SaveAs.
-                        opts=self.image_options(row,False)
-                        tx=self.DB.Transaction(doc,'e-transmit: relink package image')
-                        tx.Start()
-                        try:
-                            image.ReloadFrom(opts)
-                            if row.get('loaded') is False: image.Unload()
-                            if tx.Commit()!=self.DB.TransactionStatus.Committed: raise RuntimeError('Image reload not committed.')
-                        except Exception:
-                            if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
-                            raise
-                        finally: dispose(tx); dispose(opts)
-                        row['repath']='API_IMAGE_ABSOLUTE'
                 if options.get('cleanup'):
                     from .cleanup import run
                     run(doc,self.DB,options,self.cancelled)
@@ -402,27 +436,33 @@ class Backend(object):
                     doc.SaveAs(target,save)
                 finally: dispose(ws); dispose(save)
                 if options.get('repath') and special:
-                    # After SaveAs the central/project base is the final output folder.
-                    tx=self.DB.Transaction(doc,'e-transmit: relative image paths')
-                    tx.Start()
-                    try:
-                        for row in special:
+                    # SaveAs has established the correct final base. Revit may
+                    # accept a short relative path when the absolute dependency
+                    # path exceeds MAX_PATH. Keep each reload isolated.
+                    for row in special:
+                        f.check(self.cancelled)
+                        tx=self.DB.Transaction(doc,'e-transmit: relative image path')
+                        opts=None
+                        try:
                             number=int(row['element_id'])
                             ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
                             image=doc.GetElement(ident)
                             if image is None:
                                 row['repath']='REMOVED_BY_CLEANUP'; continue
-                            opts=self.image_options(row,True)
-                            try:
-                                image.ReloadFrom(opts)
-                                if row.get('loaded') is False: image.Unload()
-                                row['repath']='API_IMAGE_RELATIVE'
-                            finally: dispose(opts)
-                        if tx.Commit()!=self.DB.TransactionStatus.Committed: raise RuntimeError('Relative path transaction not committed.')
-                    except Exception:
-                        if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
-                        raise
-                    finally: dispose(tx)
+                            opts=self.image_options(row,True,target)
+                            tx.Start()
+                            image.ReloadFrom(opts)
+                            if row.get('loaded') is False: image.Unload()
+                            if tx.Commit()!=self.DB.TransactionStatus.Committed:
+                                raise RuntimeError('Relative image reload not committed.')
+                            row['repath']='API_IMAGE_RELATIVE'
+                        except f.Cancelled: raise
+                        except Exception as exc:
+                            if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
+                            row['repath']='FAILED'
+                            issues.append(issue('IMAGE_REPATH_FAILED',row.get('source',''),exc,'error'))
+                        finally:
+                            dispose(tx); dispose(opts)
                     doc.Save()
             finally:
                 if doc is not None:
@@ -435,4 +475,53 @@ class Backend(object):
                     issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),
                                         'Source copied, but this reference cannot be repathed safely by the exposed API. '
                                         'Repair in the packaged model and verify after moving the package.'))
+        return issues
+
+    def verify_package(self, target, rows, options):
+        """Open the output read-only in intent, close without saving; verify paths/loads.
+
+        This is executed by the user's Revit process, not by portable CI. Do not
+        open a host with unresolved RVTs and silently fall back to cloud links.
+        """
+        self.guard(target)
+        missing=[r for r in rows if r.get('kind')=='RevitLink' and not r.get('target')
+                 and r.get('status')!='EXCLUDED']
+        if missing:
+            return [issue('MODEL_VERIFICATION_DEFERRED',target,
+                          'A linked RVT is unresolved. Final opening was not attempted to avoid source/cloud fallback.','error')]
+        doc=None
+        issues=[]
+        try:
+            doc=self.open_copy(target)
+            from System import Int64,Int32
+            for row in rows:
+                if not row.get('target') or row.get('skip_repath'): continue
+                kind=row.get('kind')
+                if kind!='RevitLink' and row.get('special')!='image': continue
+                f.check(self.cancelled)
+                try:
+                    number=int(row['element_id'])
+                    ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                    element=doc.GetElement(ident)
+                    if element is None:
+                        if options.get('cleanup'): continue
+                        raise RuntimeError('Original reference element is missing from the packaged model.')
+                    if kind=='RevitLink':
+                        reference=element.GetExternalFileReference()
+                        actual=self.visible(reference.GetAbsolutePath())
+                        if row.get('loaded') is True and not self.DB.RevitLinkType.IsLoaded(doc,ident):
+                            raise RuntimeError('Packaged Revit link did not load.')
+                    else:
+                        actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
+                    if f.canonical(actual)!=f.canonical(row['target']):
+                        raise RuntimeError('Packaged reference still points elsewhere: '+actual)
+                    row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
+                except Exception as exc:
+                    issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
+        except f.Cancelled: raise
+        except Exception as exc:
+            issues.append(issue('MODEL_OPEN_VERIFICATION_FAILED',target,exc,'error'))
+        finally:
+            if doc is not None and not doc.Close(False):
+                issues.append(issue('MODEL_CLOSE_FAILED',target,'Verification document could not be closed.','error'))
         return issues

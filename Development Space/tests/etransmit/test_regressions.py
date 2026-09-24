@@ -51,6 +51,11 @@ class APIBoundary(unittest.TestCase):
         self.backend.apply_metadata(self.stage,self.target,rows)
         self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',False))
         self.assertTrue(self.td.IsTransmitted); self.assertTrue(self.td.disposed)
+    def test_external_alias_id_repaths_using_original_element_id(self):
+        rows=[dict(id='100:0',element_id='100',target=str(self.root/'Consumed'/'a.rvt'),loaded=True)]
+        self.backend.apply_metadata(self.stage,self.target,rows)
+        self.assertEqual(len(self.td.writes),1)
+        self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',True))
     def test_original_transmitted_desired_source_not_overridden(self):
         self.td.IsTransmitted=True
         row=self.backend.rows('source.rvt')[0]

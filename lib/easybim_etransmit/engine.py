@@ -31,6 +31,10 @@ class StagingSourceError(ValueError):
 
 def folder_files(folder):
     """Skip exposed symlinks and surface unreadable directories instead of hiding them."""
+    if os.name == 'nt':
+        from . import longpaths
+        for path in longpaths.walk_files(folder): yield path
+        return
     def fail(exc): raise exc
     for root, dirs, names in os.walk(folder, onerror=fail, followlinks=False):
         dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(root, d)))
@@ -56,7 +60,7 @@ def preflight_paths(models, root, options, extras=None):
                 if not source: continue  # Existing source-resolution validation reports this.
                 relative = f.mirror_path(source)
                 target = pm.join(package, *relative.split('/'))
-                f.validate_destination_path(target)
+                (f.validate_destination_path if target.lower().endswith('.rvt') else f.validate_copy_path)(target)
             except f.PathLengthError as exc:
                 errors.append(dict(code='DESTINATION_PATH_TOO_LONG', source=requested,
                                    target=target, message=f.text(exc)))
@@ -163,7 +167,13 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             source, key, record = None, None, None
             operation = 'resolve_source'
             try:
-                source = f.resolve_source(requested, owner, opts.get('mappings'))
+                resolver=getattr(backend,'resolve_acquired_source',None)
+                resolved_request=resolver(requested,owner) if resolver else requested
+                source = f.resolve_source(resolved_request, owner, opts.get('mappings'))
+                if not source and edge is not None and edge.get('optional_library'):
+                    edge['status']='OPTIONAL_MISSING'
+                    add_issue('OPTIONAL_LIBRARY_REFERENCE_MISSING',requested,'Exact optional Revit content-library resource is not installed.')
+                    continue
                 if not source:
                     alias_record, alias_source = copied_alias(edge)
                     if alias_record is not None:
@@ -230,7 +240,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                         queue.append((child, '', False, None))
                     continue
                 if (edge is not None and edge.get('optional_library') and
-                        not f.is_desktop_connector_path(source) and not os.path.isfile(source)):
+                        not f.is_desktop_connector_path(source) and not f.file_exists(source)):
                     edge['status'] = 'OPTIONAL_MISSING'
                     add_issue('OPTIONAL_LIBRARY_REFERENCE_MISSING', requested,
                               'Optional Revit library resource is not installed at this exact location. '
@@ -246,7 +256,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 f.destination(root, relative)  # Validate before copying; failed paths remain in the report.
                 notify('Copying ' + source, 0, 1)
                 operation = 'copy_file'
-                record.update(f.copy_file(source, target, cancelled, notify))
+                acquire=getattr(backend,'acquire_file',None)
+                metadata=acquire(source,target,owner,cancelled,notify) if acquire else f.copy_file(source,target,cancelled,notify)
+                record.update(metadata)
                 if record.get('staging_cleanup_warning'):
                     add_issue('SOURCE_STAGING_CLEANUP_FAILED', source,
                               record['staging_cleanup_warning'])
@@ -261,8 +273,10 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     record['inventory_status']='RUNNING'
                     operation = 'inspect_model'
                     scan = backend.scan(source, stage, opts)
-                    record['inventory_status']='NEEDS_REVIEW' if scan.get('issues') else 'SCANNED'
+                    record['inventory_status']='PARTIAL' if scan.get('open_failed') else ('NEEDS_REVIEW' if scan.get('issues') else 'SCANNED')
                     record['revit_version'] = scan.get('version', '')
+                    record['opened_in_revit'] = scan.get('opened_in_revit', False)
+                    record['inspection_status'] = 'OPENED' if scan.get('opened_in_revit') else 'METADATA_ONLY'
                     result['issues'].extend(scan.get('issues', []))
                     if f.source_snapshot_changed(source, record):
                         record['inventory_status']='UNSTABLE'
@@ -310,9 +324,12 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'DUPLICATE_ALIAS', 'OPTIONAL_MISSING'):
                 ref['target'] = rec['target']; ref['status'] = 'COPIED'
         if opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
-            for record in result['files']:
+            for record in reversed(result['files']):
                 f.check(cancelled)
                 if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
+                if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
+                    record['processing_status']='SKIPPED_INVENTORY_FAILURE'
+                    continue
                 target = record['target']
                 # Backend.finish receives the final target explicitly and stages absolute
                 # references before opening. Internal paths need not repeat the source tree.
@@ -325,7 +342,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                                and not r.get('skip_repath')]
                 try:
                     notify('Repath / cleanup ' + record['source'], 0, 1)
-                    result['issues'].extend(backend.finish(stage, target, model_edges, opts) or [])
+                    processing_issues=backend.finish(stage, target, model_edges, opts) or []
+                    result['issues'].extend(processing_issues)
+                    record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
                 except f.Cancelled:
                     shutil.copyfile(backup, target)
@@ -334,6 +353,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 except Exception as exc:
                     shutil.copyfile(backup, target)
                     for ref in model_edges: ref['repath']='ROLLED_BACK'
+                    record['processing_status']='FAILED'
                     add_issue('MODEL_PROCESSING_FAILED', record['source'],
                               'Unmodified collected copy retained: ' + f.text(exc), 'error')
                 finally:
@@ -344,6 +364,20 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                             path=os.path.join(os.path.dirname(stage),name)
                             if os.path.isdir(path): shutil.rmtree(path)
                             else: os.remove(path)
+        verifier=getattr(backend,'verify_package',None)
+        if verifier and opts.get('repath'):
+            for record in reversed(result['files']):
+                if record['status']!='COPIED' or not record['source'].lower().endswith('.rvt'): continue
+                if record.get('inventory_status') in ('FAILED','UNSTABLE','RUNNING','PARTIAL'):
+                    record['model_verification']='SKIPPED_INVENTORY_FAILURE'; continue
+                if record.get('processing_status')=='FAILED':
+                    record['model_verification']='SKIPPED_PROCESSING_FAILURE'; continue
+                f.check(cancelled)
+                notify('Verifying packaged model '+record['source'],0,1)
+                model_edges=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source'])]
+                problems=verifier(record['target'],model_edges,opts) or []
+                result['issues'].extend(problems)
+                record['model_verification']='FAILED' if problems else 'OPENED_AND_REFERENCES_CHECKED'
         result['status'] = 'NEEDS_REVIEW' if any(x['severity'] != 'info' for x in result['issues']) else 'COLLECTED'
     except f.Cancelled:
         result['status'] = 'CANCELLED'
@@ -357,7 +391,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         except Exception as exc: add_issue('STAGING_CLEANUP_FAILED', work, exc)
         # Hash the final bytes, not just the pre-repath source snapshot.
         for rec in result['files']:
-            if rec['status'] == 'COPIED' and os.path.isfile(rec['target']):
+            if rec['status'] == 'COPIED' and f.file_exists(rec['target']):
                 try: rec['packaged_sha256'] = f.digest(rec['target'])
                 except Exception as exc:
                     rec['verification_status']='FAILED'
@@ -383,7 +417,8 @@ def write_reports(result):
     counts = package_counts(result)
     lines = ['EasyBIM e-transmit ' + VERSION, 'Status: ' + result['status'],
              'Host models copied: {0} / {1}'.format(counts['hosts_copied'], counts['hosts_requested']),
-             'Files copied: {0}'.format(counts['files_copied']), '', 'HOST MODELS:'] + hosts
+             'Files copied: {0}'.format(counts['files_copied']),
+             'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     lines += ['', 'Keep the complete Sources folder hierarchy. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
@@ -397,7 +432,7 @@ def write_reports(result):
     if result['options'].get('reports', True):
         with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
-                    ['source','requested','relative','category','status','inventory_status','verification_status','size','sha256','packaged_sha256'])
+                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','model_verification','acquisition_container','verification_status','size','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
                     ['owner','id','kind','source','local','target','loaded','status','repath','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','operation','exception_type','message'])
@@ -416,7 +451,15 @@ def zip_package(root, target, cancelled=None):
         with zipfile.ZipFile(temp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
             for path in folder_files(root):
                 f.check(cancelled)
-                archive.write(path, os.path.relpath(path, root))
+                arcname = os.path.relpath(path, root)
+                if os.name == 'nt' and f.path_units(path)>240:
+                    stage_dir=tempfile.mkdtemp(prefix='ET_Zip_')
+                    stage=os.path.join(stage_dir,'file.bin')
+                    try:
+                        f.copy_file(path,stage,cancelled)
+                        archive.write(stage,arcname)
+                    finally: f.remove_tree_retry(stage_dir)
+                else: archive.write(path,arcname)
         f.check(cancelled)
         f.publish(temp, target)
     finally:
