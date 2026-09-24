@@ -497,10 +497,15 @@ def _copy_file_direct(source, target, cancelled=None, pulse=None, display_source
                 out.flush()
         if signature(source) != before or size != before[0]:
             raise IOError('Source changed during collection; rerun after saving/sync completes: ' + label)
-        if digest(temp, cancelled) != h.hexdigest(): raise IOError('Copy checksum mismatch: ' + label)
+        # Finalize once: IronPython's Windows crypto provider can invalidate
+        # the native handle when hexdigest() is called again on this object.
+        # Cache the value for BOTH verification and the success metadata.
+        expected = h.hexdigest()
+        if digest(temp, cancelled) != expected: raise IOError('Copy checksum mismatch: ' + label)
+        metadata = {'sha256': expected, 'size': size, 'source_mtime': before[1]}
         check(cancelled)
         publish(temp, target)
-        return {'sha256': h.hexdigest(), 'size': size, 'source_mtime': before[1]}
+        return metadata
     finally:
         if temp and os.path.exists(temp): os.remove(temp)
 
