@@ -72,7 +72,13 @@ class SourceAutomationTests(unittest.TestCase):
         wanted = self.make(os.path.join('ACCDocs', 'Account A', 'Project X', 'Project Files',
                                         'Shared', 'Architecture', 'A.rvt'), b'rvt')
         uri = 'Autodesk Docs://Project X/Project Files/Shared/Architecture/A.rvt'
-        self.assertEqual(resolver(uri, [root]), wanted)
+        old_names, old_exists = f._shell_folder_names, f._shell_file_exists
+        f._shell_folder_names = lambda folder: sorted(os.listdir(folder))
+        f._shell_file_exists = lambda path: os.path.isfile(path)
+        try:
+            self.assertEqual(resolver(uri, [root]), wanted)
+        finally:
+            f._shell_folder_names, f._shell_file_exists = old_names, old_exists
 
     def test_connector_uri_never_guesses_when_exact_hierarchy_is_ambiguous(self):
         resolver = getattr(f, 'resolve_connector_uri', None)
@@ -83,8 +89,14 @@ class SourceAutomationTests(unittest.TestCase):
         self.make(os.path.join('ACCDocs', 'Account B', 'Project X', 'Project Files',
                                'Shared', 'Architecture', 'A.rvt'), b'b')
         uri = 'Autodesk Docs://Project X/Project Files/Shared/Architecture/A.rvt'
-        with self.assertRaises(ValueError):
-            resolver(uri, [root])
+        old_names, old_exists = f._shell_folder_names, f._shell_file_exists
+        f._shell_folder_names = lambda folder: sorted(os.listdir(folder))
+        f._shell_file_exists = lambda path: os.path.isfile(path)
+        try:
+            with self.assertRaises(ValueError):
+                resolver(uri, [root])
+        finally:
+            f._shell_folder_names, f._shell_file_exists = old_names, old_exists
 
     def test_uniformat_at_library_location_resolves_from_revit_library_root(self):
         resolver = getattr(f, 'resolve_library_resource', None)
