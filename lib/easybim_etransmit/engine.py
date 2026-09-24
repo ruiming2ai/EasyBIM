@@ -102,13 +102,33 @@ def completion_message(results, requested, cancelled=False):
     return '\n'.join(lines)
 
 
+def portable_image_alias(root, row):
+    """Return a short package-local alias only when Revit cannot safely address the mirror.
+
+    The full source hierarchy remains untouched at mirror_target. The alias keeps
+    the original basename and exists solely as the portable path stored by Revit.
+    """
+    if row.get('special') != 'image' or not row.get('target'):
+        return None
+    if f.path_units(row['target']) <= 240:
+        return None
+    target=row['target']
+    pm=ntpath if f.is_windows(target) else os.path
+    name=pm.basename(target)
+    ident=f.text(row.get('element_id') or row.get('id') or 'ref').replace(':','_')
+    alias=os.path.join(root,'_Refs',ident,name)
+    if f.path_units(alias) > 240:
+        raise f.PathLengthError('Portable Revit reference path is still too long: '+alias)
+    return alias
+
+
 def transmit(models, root, backend, options=None, extras=None, cancelled=None, pulse=None):
     models = list(models)
     opts = options or f.defaults()
     if os.path.exists(root) and os.listdir(root):
         raise ValueError('Choose a new, empty package folder; existing files are never overwritten.')
     if not os.path.isdir(root): os.makedirs(root)
-    result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[],
+    result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[], aliases=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
     # Revit inspection/processing scratch must not live in OneDrive or another
     # synchronized output tree.  Keep it in the local OS temp area and register
@@ -244,8 +264,16 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                         not f.is_desktop_connector_path(source) and not f.file_exists(source)):
                     edge['status'] = 'OPTIONAL_MISSING'
                     add_issue('OPTIONAL_LIBRARY_REFERENCE_MISSING', requested,
-                              'Optional Revit library resource is not installed at this exact location. '
+                              'Optional Revit content-library resource is not installed at this exact location. '
                               'The model was collected without substituting another filename.')
+                    continue
+                if (edge is not None and cat == 'analysis' and
+                        not f.is_desktop_connector_path(source) and
+                        not f.file_exists(source) and not os.path.isdir(source)):
+                    edge['status'] = 'OPTIONAL_MISSING'
+                    add_issue('ANALYSIS_RESOURCE_UNAVAILABLE', requested,
+                              'Systems-analysis support resource is unavailable on this workstation; '
+                              'the model and other dependencies continue to be collected.')
                     continue
                 relative = f.mirror_path(source)
                 target = os.path.join(root, *relative.split('/'))
@@ -324,6 +352,34 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             rec = records.get(f.canonical(ref.get('local', '')))
             if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'DUPLICATE_ALIAS', 'OPTIONAL_MISSING'):
                 ref['target'] = rec['target']; ref['status'] = 'COPIED'
+
+        # Revit's image/PDF API still rejects some paths after Windows itself
+        # successfully copied them past MAX_PATH. Preserve the complete mirror,
+        # then create a second short package-local alias only for Revit storage.
+        if opts.get('repath'):
+            for ref in edges:
+                if ref.get('status') != 'COPIED':
+                    continue
+                try:
+                    alias=portable_image_alias(root,ref)
+                    if not alias:
+                        continue
+                    mirror=ref['target']
+                    parent=os.path.dirname(alias)
+                    if not os.path.isdir(parent):
+                        os.makedirs(parent)
+                    f.copy_file(mirror,alias,cancelled,notify)
+                    ref['mirror_target']=mirror
+                    ref['target']=alias
+                    ref['portable_alias']=True
+                    result['aliases'].append(dict(source=ref.get('source',''),
+                                                  mirror_target=mirror,target=alias,
+                                                  element_id=ref.get('element_id',''),
+                                                  reason='REVIT_PATH_LIMIT'))
+                except f.Cancelled:
+                    raise
+                except Exception as exc:
+                    add_issue('PORTABLE_ALIAS_FAILED',ref.get('source',''),exc,'error')
         if opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
             for record in reversed(result['files']):
                 f.check(cancelled)
