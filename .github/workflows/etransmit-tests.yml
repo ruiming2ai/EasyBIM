@@ -7,12 +7,14 @@ on:
       - 'lib/easybim_etransmit/**'
       - 'EasyBIM.tab/Links.panel/**'
       - 'Development Space/tests/etransmit/**'
+      - 'Development Space/native/EasyBIM.FileIO/**'
       - '.github/workflows/etransmit-tests.yml'
   pull_request:
     paths:
       - 'lib/easybim_etransmit/**'
       - 'EasyBIM.tab/Links.panel/**'
       - 'Development Space/tests/etransmit/**'
+      - 'Development Space/native/EasyBIM.FileIO/**'
       - '.github/workflows/etransmit-tests.yml'
   workflow_dispatch:
 
@@ -60,6 +62,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Build pinned in-process Win32 helper
+        shell: pwsh
+        run: |
+          dotnet build 'Development Space/native/EasyBIM.FileIO/EasyBIM.FileIO.csproj' -c Release -o "$env:RUNNER_TEMP/ETNative"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force 'lib/easybim_etransmit/native' | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/ETNative/EasyBIM.FileIO.dll" 'lib/easybim_etransmit/native/EasyBIM.FileIO.dll' -Force
       - name: Download pinned official IronPython runtime
         shell: pwsh
         run: |
@@ -87,3 +96,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_reference_repairs.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Archive native helper tested under IronPython
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etransmit-native-fileio
+          path: lib/easybim_etransmit/native/EasyBIM.FileIO.dll
+          if-no-files-found: error
+          retention-days: 7

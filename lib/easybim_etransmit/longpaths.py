@@ -28,6 +28,30 @@ def extended(path):
     return '\\\\?\\' + path
 
 
+_NATIVE = None
+
+
+def managed():
+    """Use pinned P/Invoke methods, which capture errors before the dynamic binder."""
+    global _NATIVE
+    if _NATIVE is None:
+        import clr
+        assembly = os.path.join(os.path.dirname(__file__), 'native', 'EasyBIM.FileIO.dll')
+        if not os.path.isfile(assembly):
+            raise IOError('Missing e-transmit native helper. Update the whole EasyBIM extension, including native/EasyBIM.FileIO.dll.')
+        clr.AddReferenceToFileAndPath(assembly)
+        from EasyBIM.FileIO import Native
+        _NATIVE = Native
+    return _NATIVE
+
+
+def invoke(name, *args):
+    try:
+        return getattr(managed(), name)(*args)
+    except Exception as exc:
+        raise IOError(text(exc))
+
+
 def api():
     # Lazy load keeps package imports portable and does not require pythonnet.
     k = c.WinDLL('kernel32', use_last_error=(sys.platform != 'cli'))
@@ -46,9 +70,8 @@ def api():
 
 
 def last_error():
-    # IronPython does not populate ctypes' private swapped LastError slot.
-    # Its public GetLastError reads the native thread error instead.
-    return int(c.GetLastError()) if sys.platform == 'cli' else c.get_last_error()
+    # Only CPython uses ctypes. IronPython errors are captured inside P/Invoke.
+    return c.get_last_error()
 
 
 def error(path):
@@ -57,6 +80,9 @@ def error(path):
 
 
 def attributes(path):
+    if sys.platform == 'cli':
+        value = int(invoke('Attributes', extended(path)))
+        return None if value == -1 else value
     k = api(); value = int(k.GetFileAttributesW(extended(path))) & 0xffffffff
     if value == 0xffffffff:
         number = last_error()
@@ -92,6 +118,9 @@ def makedirs(path):
         if parent == current: raise IOError('Cannot find destination volume/share: ' + path)
         current = parent
     if not attributes(current) & 16: raise IOError('Destination parent is not a directory: ' + current)
+    if sys.platform == 'cli':
+        for current in reversed(missing): invoke('MakeDirectory', extended(current))
+        return
     k = api()
     for current in reversed(missing):
         if not k.CreateDirectoryW(extended(current), None):
@@ -99,6 +128,9 @@ def makedirs(path):
 
 
 def signature(path):
+    if sys.platform == 'cli':
+        stamp = invoke('Signature', extended(path))
+        return (int(stamp.Size), (int(stamp.Written) - 116444736000000000) / 10000000.0)
     class Data(c.Structure):
         _pack_ = 4
         _fields_ = [('attrs',c.c_uint32),('created',c.c_uint64),('accessed',c.c_uint64),
@@ -112,23 +144,43 @@ def signature(path):
 
 class Stream(object):
     def __init__(self, path, writing=False):
-        self.path, self.k, self.writing = path, api(), writing
+        self.path, self.writing = path, writing
+        self.dotnet = sys.platform == 'cli'
+        if self.dotnet:
+            self.handle = invoke('Open', extended(path), writing)
+            return
+        self.k = api()
         self.handle = self.k.CreateFileW(extended(path),0x40000000 if writing else 0x80000000,
                                        0 if writing else 7, None, 1 if writing else 3,128,None)
         if self.handle in (None, -1, c.c_void_p(-1).value): raise error(path)
     def read(self, count=1024*1024):
+        if self.dotnet:
+            from System import Array, Byte
+            buf = Array.CreateInstance(Byte, count)
+            done = self.handle.Read(buf, 0, count)
+            return str(bytearray(buf)[:done])
         buf = c.create_string_buffer(count); done = c.c_uint32()
         if not self.k.ReadFile(self.handle,buf,count,c.byref(done),None): raise error(self.path)
         return buf.raw[:done.value]
     def write(self, value):
+        if self.dotnet:
+            from System import Array, Byte
+            data = Array[Byte](bytearray(value))
+            self.handle.Write(data, 0, len(data))
+            return
         done = c.c_uint32(); buf = c.create_string_buffer(value, len(value))
         if not self.k.WriteFile(self.handle,buf,len(value),c.byref(done),None): raise error(self.path)
         if done.value != len(value): raise IOError('Incomplete write: ' + self.path)
     def flush(self):
+        if self.dotnet:
+            self.handle.Flush()
+            return
         if not self.k.FlushFileBuffers(self.handle): raise error(self.path)
     def close(self):
         if self.handle is not None:
-            self.k.CloseHandle(self.handle); self.handle = None
+            if self.dotnet: self.handle.Dispose()
+            else: self.k.CloseHandle(self.handle)
+            self.handle = None
     def __enter__(self): return self
     def __exit__(self,*args): self.close()
 
@@ -145,6 +197,9 @@ def digest(path, cancelled=None):
 
 
 def unlink(path):
+    if sys.platform == 'cli':
+        invoke('Delete', extended(path))
+        return
     k = api()
     if not k.DeleteFileW(extended(path)):
         if last_error() not in (2, 3): raise error(path)
@@ -173,8 +228,10 @@ def copy_file(source, target, cancelled=None, pulse=None, label=None):
             raise IOError('Source changed during collection: ' + source)
         if digest(temp, cancelled) != expected: raise IOError('Copy checksum mismatch: ' + source)
         f.check(cancelled)
-        k = api()
-        if not k.MoveFileW(extended(temp),extended(target)): raise error(target)
+        if sys.platform == 'cli': invoke('Move', extended(temp), extended(target))
+        else:
+            k = api()
+            if not k.MoveFileW(extended(temp),extended(target)): raise error(target)
         return dict(size=total, source_mtime=before[1], sha256=expected, filesystem_io='WIN32_UNICODE')
     finally:
         if exists(temp): unlink(temp)
@@ -182,6 +239,10 @@ def copy_file(source, target, cancelled=None, pulse=None, label=None):
 
 def children(path):
     """Enumerate directory entries through Unicode Win32 APIs, without following links."""
+    if sys.platform == 'cli':
+        for entry in invoke('Entries', extended(path)):
+            yield text(entry.Name), int(entry.Attributes)
+        return
     class FindData(c.Structure):
         _pack_ = 4
         _fields_ = [('attributes',c.c_uint32),('times',c.c_uint32*6),
@@ -217,19 +278,24 @@ def walk_files(path):
 
 def remove_tree(path):
     """Explicit test/scratch cleanup; do not follow reparse points."""
-    k = api()
+    def remove_directory(value):
+        if sys.platform == 'cli': invoke('RemoveDirectory', extended(value))
+        else:
+            k = api()
+            if not k.RemoveDirectoryW(extended(value)): raise error(value)
     for name,flags in list(children(path)):
         child = ntpath.join(path, name)
         if flags & 16:
             if flags & 1024:
-                if not k.RemoveDirectoryW(extended(child)): raise error(child)
+                remove_directory(child)
             else: remove_tree(child)
         else: unlink(child)
-    if not k.RemoveDirectoryW(extended(path)): raise error(path)
+    remove_directory(path)
 
 
 def snapshot_ready(path):
     """An exclusive read handle must be obtainable after the shell writer closes."""
+    if sys.platform == 'cli': return bool(invoke('CanReadExclusively', extended(path)))
     k=api()
     handle=k.CreateFileW(extended(path),0x80000000,0,None,3,128,None)
     if handle in (None,-1,c.c_void_p(-1).value): return False
