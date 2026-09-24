@@ -50,7 +50,7 @@ def error(path):
 
 
 def attributes(path):
-    k = api(); value = k.GetFileAttributesW(extended(path))
+    k = api(); value = int(k.GetFileAttributesW(extended(path))) & 0xffffffff
     if value == 0xffffffff:
         number = c.get_last_error()
         if number in (2, 3): return None
@@ -108,7 +108,7 @@ class Stream(object):
         self.path, self.k, self.writing = path, api(), writing
         self.handle = self.k.CreateFileW(extended(path),0x40000000 if writing else 0x80000000,
                                        0 if writing else 7, None, 1 if writing else 3,128,None)
-        if self.handle in (None, c.c_void_p(-1).value): raise error(path)
+        if self.handle in (None, -1, c.c_void_p(-1).value): raise error(path)
     def read(self, count=1024*1024):
         buf = c.create_string_buffer(count); done = c.c_uint32()
         if not self.k.ReadFile(self.handle,buf,count,c.byref(done),None): raise error(self.path)
@@ -186,7 +186,7 @@ def children(path):
     k.FindClose.argtypes=[c.c_void_p]; k.FindClose.restype=c.c_int
     data=FindData()
     handle=k.FindFirstFileW(extended(ntpath.join(path,'*')),c.byref(data))
-    if handle in (None,c.c_void_p(-1).value):
+    if handle in (None,-1,c.c_void_p(-1).value):
         if c.get_last_error()==2: return
         raise error(path)
     try:
@@ -225,6 +225,6 @@ def snapshot_ready(path):
     """An exclusive read handle must be obtainable after the shell writer closes."""
     k=api()
     handle=k.CreateFileW(extended(path),0x80000000,0,None,3,128,None)
-    if handle in (None,c.c_void_p(-1).value): return False
+    if handle in (None,-1,c.c_void_p(-1).value): return False
     k.CloseHandle(handle)
     return True
