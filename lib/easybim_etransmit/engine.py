@@ -167,10 +167,42 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 # That is not evidence of an original link location. Never collect
                 # our own scratch or guess its original root by the basename.
                 if not f.is_desktop_connector_path(source) and f.within(source, work):
+                    # Deep inspection can expose the same Revit link twice:
+                    # once from saved TransmissionData with its real source,
+                    # and once from an in-session external-resource view whose
+                    # display path points at our temporary inspection copy.
+                    # If element identity proves it is the same already-copied
+                    # reference, keep that exact source and ignore only the
+                    # staging alias. Never search by basename.
+                    alias_record = None
+                    alias_source = ''
+                    if edge is not None and edge.get('element_id'):
+                        for previous in edges:
+                            if previous is edge:
+                                continue
+                            if previous.get('owner') != edge.get('owner'):
+                                continue
+                            if previous.get('element_id') != edge.get('element_id'):
+                                continue
+                            candidate = previous.get('local') or previous.get('source') or ''
+                            if not candidate or (not f.is_desktop_connector_path(candidate) and
+                                                 f.within(candidate, work)):
+                                continue
+                            candidate_record = records.get(f.canonical(candidate))
+                            if candidate_record and candidate_record.get('status') == 'COPIED':
+                                alias_record = candidate_record
+                                alias_source = candidate
+                                break
+                    if alias_record is not None:
+                        edge['local'] = alias_source
+                        edge['target'] = alias_record['target']
+                        edge['status'] = 'DUPLICATE_ALIAS'
+                        edge['skip_repath'] = True
+                        continue
                     raise StagingSourceError(
                         'The reference points into the temporary inspection folder, not an original source. '
-                        'Its saved source location could not be verified. Select/map the intended original '
-                        'location; no live/latest or same-name model was substituted.')
+                        'Its saved source location could not be verified automatically. No live/latest or '
+                        'same-name model was substituted.')
                 key = f.canonical(source)
                 if host: result['models'].append(dict(requested=requested, source=source))
                 if key in records:
@@ -185,6 +217,13 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     if edge is not None: edge['status'] = 'DIRECTORY'
                     for child in folder_files(source):
                         queue.append((child, '', False, None))
+                    continue
+                if (edge is not None and edge.get('optional_library') and
+                        not f.is_desktop_connector_path(source) and not os.path.isfile(source)):
+                    edge['status'] = 'OPTIONAL_MISSING'
+                    add_issue('OPTIONAL_LIBRARY_REFERENCE_MISSING', requested,
+                              'Optional Revit library resource is not installed at this exact location. '
+                              'The model was collected without substituting another filename.')
                     continue
                 relative = f.mirror_path(source)
                 target = os.path.join(root, *relative.split('/'))
@@ -257,7 +296,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         # Resolve targets only to successfully copied files. Never repath to a missing file.
         for ref in edges:
             rec = records.get(f.canonical(ref.get('local', '')))
-            if rec and rec['status'] == 'COPIED' and ref['status'] != 'EXCLUDED':
+            if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'DUPLICATE_ALIAS', 'OPTIONAL_MISSING'):
                 ref['target'] = rec['target']; ref['status'] = 'COPIED'
         if opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
             for record in result['files']:
@@ -270,7 +309,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 backup = f.temporary_path(work)
                 f.copy_file(target, backup, cancelled)
                 f.copy_file(target, stage, cancelled)
-                model_edges = [r for r in edges if f.canonical(r['owner']) == f.canonical(record['source'])]
+                model_edges = [r for r in edges
+                               if f.canonical(r['owner']) == f.canonical(record['source'])
+                               and not r.get('skip_repath')]
                 try:
                     notify('Repath / cleanup ' + record['source'], 0, 1)
                     result['issues'].extend(backend.finish(stage, target, model_edges, opts) or [])
