@@ -85,6 +85,9 @@ class PortableImageAliases(unittest.TestCase):
         self.assertNotEqual(f.canonical(ref['target']),f.canonical(ref['mirror_target']))
         self.assertEqual(open(ref['target'],'rb').read(),open(ref['mirror_target'],'rb').read())
         self.assertTrue(ref.get('portable_alias'))
+        report=open(os.path.join(result['root'],'START_HERE.txt'),'rb').read().decode('utf-8')
+        self.assertIn('_Refs',report)
+        self.assertIn('Sources',report)
 
     def test_short_image_does_not_get_duplicate_alias(self):
         helper=getattr(e,'portable_image_alias',None)
