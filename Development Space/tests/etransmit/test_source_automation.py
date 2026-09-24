@@ -111,6 +111,8 @@ class SourceAutomationTests(unittest.TestCase):
             def set_staging_root(self, value):
                 scratch_root[0] = value
             def scan(self, source, stage, options):
+                if f.canonical(source) != f.canonical(host):
+                    return dict(references=[], issues=[], version='2024')
                 staged_alias = os.path.join(scratch_root[0], 'Arch.rvt')
                 with open(staged_alias, 'wb') as out:
                     out.write(b'alias')
