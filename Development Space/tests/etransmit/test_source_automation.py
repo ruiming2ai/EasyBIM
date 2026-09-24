@@ -132,6 +132,35 @@ class SourceAutomationTests(unittest.TestCase):
         self.assertEqual(len(aliases), 1)
         self.assertEqual(aliases[0].get('status'), 'DUPLICATE_ALIAS')
 
+    def test_same_element_blank_external_alias_uses_saved_reference(self):
+        host = self.make('HostBlank.rvt', b'host')
+        linked = self.make('Refs/ArchBlank.rvt', b'arch')
+
+        class Backend(object):
+            def set_staging_root(self, value):
+                pass
+            def scan(self, source, stage, options):
+                if f.canonical(source) != f.canonical(host):
+                    return dict(references=[], issues=[], version='2024')
+                return dict(references=[
+                    dict(id='200', element_id='200', source=linked, kind='RevitLink', td=True),
+                    dict(id='200:0', element_id='200', source='', kind='RevitLink', td=False,
+                         special='external')
+                ], issues=[], version='2024')
+            def finish(self, *args):
+                return []
+
+        opts = f.defaults()
+        opts['repath'] = False
+        result = e.transmit([host], os.path.join(self.root, 'out_blank'), Backend(), opts)
+        self.assertEqual(e.package_counts(result)['files_copied'], 2, repr(result['issues']))
+        self.assertFalse(any(x['code'] == 'UNRESOLVED_SOURCE' for x in result['issues']))
+        aliases = [x for x in result['references'] if x.get('id') == '200:0']
+        self.assertEqual(len(aliases), 1)
+        self.assertEqual(aliases[0].get('status'), 'DUPLICATE_ALIAS')
+        self.assertEqual(aliases[0].get('target'),
+                         [x for x in result['references'] if x.get('id') == '200'][0].get('target'))
+
     def test_missing_optional_assembly_code_is_warning_not_file_failure(self):
         host = self.make('Host.rvt', b'host')
 
