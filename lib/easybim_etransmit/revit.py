@@ -322,18 +322,34 @@ class Backend(object):
                     resolved_source=f.resolve_source(resolved_source,base) or resolved_source
                     row_id=key if key in by_id and index==0 else key+':'+f.text(index)
                     loaded=None
+                    special='external'
+                    page=1
+                    resolution=72.0
                     if kind=='RevitLink':
                         try: loaded=bool(self.DB.RevitLinkType.IsLoaded(doc,ident))
                         except Exception: pass
+                    elif kind=='Image':
+                        # Some saved image/PDF links are exposed only through
+                        # ExternalResourceUtils, not the ImageType collector.
+                        # They are still ImageType elements and can be repathed.
+                        special='image'
+                        try: page=int(getattr(element,'PageNumber',1) or 1)
+                        except Exception: page=1
+                        try: resolution=float(getattr(element,'Resolution',72.0) or 72.0)
+                        except Exception: resolution=72.0
+                        try: loaded=f.text(getattr(element,'Status',''))!='Unloaded'
+                        except Exception: loaded=None
                     row=dict(id=row_id,element_id=key,source=resolved_source,kind=kind,
-                             special='external',loaded=loaded,td=False,server=f.text(resource.ServerId),
+                             special=special,loaded=loaded,td=False,server=f.text(resource.ServerId),
                              resource_version=f.text(resource.Version),resource_information=metadata,
                              in_session_path=display,
                              optional_library=(kind=='AssemblyCodeTable'),
                              note='External-resource identity recorded; exact source resolution preserves the configured resource.')
+                    if special=='image':
+                        row.update(page=page,resolution=resolution)
                     add(row)
-                    if resource.Version:
-                        issues.append(issue('EXTERNAL_RESOURCE_VERSION_UNVERIFIED',display,
+                    if resource.Version and (f.is_desktop_connector_path(resolved_source) or '://' in f.text(resolved_source)):
+                        issues.append(issue('EXTERNAL_RESOURCE_VERSION_UNVERIFIED',resolved_source,
                                             'Recorded server version '+f.text(resource.Version)+'. Desktop Connector files are copied '
                                             'at the selected location; historical version identity cannot be certified.'))
             except f.Cancelled: raise
