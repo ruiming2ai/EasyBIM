@@ -167,7 +167,7 @@ class PathRegression(unittest.TestCase):
         # Execute the real event handler with WPF-shaped objects, not a Revit session.
         pyrevit = types.ModuleType('pyrevit')
         prompts = []
-        pyrevit.forms = types.SimpleNamespace(WPFWindow=object,
+        pyrevit.forms = types.SimpleNamespace(WPFWindow=object, ProgressBar=object,
             alert=lambda message, **kwargs: prompts.append(message) or True)
         pyrevit.script = object(); pyrevit.DB = object()
         sys.modules.pop('easybim_etransmit.ui', None)

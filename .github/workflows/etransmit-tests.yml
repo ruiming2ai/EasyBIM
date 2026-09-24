@@ -77,3 +77,5 @@ jobs:
         run: |
           & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_copy.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_progress.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
