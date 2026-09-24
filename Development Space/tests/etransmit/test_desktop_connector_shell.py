@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -50,7 +51,7 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
 
         self.assertEqual(calls, [source])
         self.assertEqual(target.read_bytes(), hydrated.read_bytes())
-        self.assertEqual(result.get('copy_method'), 'WINDOWS_SHELL')
+        self.assertEqual(result.get('copy_method'), 'WINDOWS_SHELL_POWERSHELL')
         self.assertEqual(result.get('source_stability'), 'SHELL_SNAPSHOT')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows Shell integration check')
