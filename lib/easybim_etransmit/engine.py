@@ -480,7 +480,7 @@ def write_reports(result):
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
-              'COLLECTED means no detected collection errors, not an in-Revit opening test.',
+              'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
               'Review every warning before delivery. Reports contain original project paths.', '', 'ISSUES:']
     for i in result['issues']:
         lines.append('[{0}] {1}: {2} -- {3}'.format(i['severity'], i['code'], i['source'], i['message']))
