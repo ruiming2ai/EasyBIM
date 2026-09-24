@@ -116,7 +116,18 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if not source:
                     raise ValueError('No exact local/Connector path. Add an explicit source-prefix mapping; '
                                      'no live/latest or basename substitution is permitted.')
-                if f.within(source, root):
+                if f.is_desktop_connector_path(source):
+                    # Desktop Connector is a Windows Shell namespace.  Do not
+                    # call realpath/stat/isfile on it before Shell materializes
+                    # the selected item.  A lexical containment check is enough
+                    # here because the output itself is a normal filesystem path.
+                    source_key = f.canonical(source).replace('\\', '/').rstrip('/')
+                    root_key = f.canonical(root).replace('\\', '/').rstrip('/')
+                    source_in_output = (source_key == root_key or
+                                        source_key.startswith(root_key + '/'))
+                else:
+                    source_in_output = f.within(source, root)
+                if source_in_output:
                     raise ValueError('A source cannot be inside its output package.')
                 cat = (edge or {}).get('category') or f.category(source, (edge or {}).get('kind', ''))
                 if edge is not None: edge.update(local=source, category=cat)
