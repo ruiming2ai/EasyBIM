@@ -65,6 +65,18 @@ class SourceAutomationTests(unittest.TestCase):
         app = Obj(RecordingJournalFilename=journal)
         self.assertEqual(tracker.source_for_document(doc, application=app, state_path=self.state), source)
 
+    def test_default_connector_roots_include_custom_workspace(self):
+        helper = getattr(f, '_desktop_connector_workspace_locations', None)
+        self.assertTrue(callable(helper), 'Desktop Connector custom workspace discovery is missing')
+        old = f._desktop_connector_workspace_locations
+        custom = os.path.join(self.root, 'CustomDC')
+        f._desktop_connector_workspace_locations = lambda: [custom]
+        try:
+            roots = f.default_connector_roots()
+        finally:
+            f._desktop_connector_workspace_locations = old
+        self.assertIn(os.path.join(custom, 'ACCDocs'), roots)
+
     def test_connector_uri_uses_exact_project_hierarchy_without_manual_prefix_mapping(self):
         resolver = getattr(f, 'resolve_connector_uri', None)
         self.assertTrue(callable(resolver), 'automatic Desktop Connector URI resolver is missing')
