@@ -223,7 +223,7 @@ class Store(object):
         if exact: return exact
         context=self.contexts.get(f.canonical(owner),{})
         stage=self.stages.get(f.canonical(owner))
-        if stage and context and f.absolute(source):
+        if stage and f.absolute(source):
             pm=ntpath if f.is_windows(source) else os.path
             parent=pm.dirname(stage)
             key=f.canonical(source).replace('\\','/')
@@ -231,7 +231,16 @@ class Store(object):
             if key.startswith(prefix):
                 rel=pm.relpath(source,parent)
                 logical=pm.normpath(pm.join(pm.dirname(owner),rel))
-                if f.canonical(logical) in context: return logical
+                # Composite downloads have exact member provenance.
+                if context and f.canonical(logical) in context:
+                    return logical
+                # Newer host-only Autodesk Docs downloads can expose a loaded
+                # sibling RVT only as the disposable inspection path. Rebuild
+                # the exact owner-relative location and accept it only if that
+                # exact Desktop Connector item exists. This is not a basename
+                # search and never switches Shared/Consumed/WIP folders.
+                if f.is_desktop_connector_path(owner) and f.connector_file_exists(logical):
+                    return logical
         return source
 
     def bind_stage(self, stage, owner):
