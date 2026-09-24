@@ -91,13 +91,15 @@ def _best_pending(state, title):
     return None, ''
 
 
-def record_opened(doc, state_path=None, now=None):
+def record_opened(doc, application=None, state_path=None, now=None):
     state_path = state_path or _state_path()
     state = _load(state_path)
     path = text(getattr(doc, 'PathName', '') or '').strip()
     index = None
     if not path:
         index, path = _best_pending(state, getattr(doc, 'Title', ''))
+    if not path and application is not None:
+        path = journal_source_for_document(doc, application)
     if path:
         state['documents'][document_key(doc)] = {
             'path': path,
