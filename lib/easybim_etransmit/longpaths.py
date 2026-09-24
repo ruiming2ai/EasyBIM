@@ -6,6 +6,7 @@ use the ordinary file routines. Extended paths must never be passed to Revit.
 """
 from __future__ import unicode_literals
 import os
+import sys
 import ntpath
 import ctypes as c
 import hashlib
@@ -29,7 +30,7 @@ def extended(path):
 
 def api():
     # Lazy load keeps package imports portable and does not require pythonnet.
-    k = c.WinDLL('kernel32', use_last_error=True)
+    k = c.WinDLL('kernel32', use_last_error=(sys.platform != 'cli'))
     k.GetFileAttributesW.argtypes = [c.c_wchar_p]; k.GetFileAttributesW.restype = c.c_uint32
     k.CreateDirectoryW.argtypes = [c.c_wchar_p, c.c_void_p]; k.CreateDirectoryW.restype = c.c_int
     k.DeleteFileW.argtypes = [c.c_wchar_p]; k.DeleteFileW.restype = c.c_int
@@ -44,15 +45,21 @@ def api():
     return k
 
 
+def last_error():
+    # IronPython does not populate ctypes' private swapped LastError slot.
+    # Its public GetLastError reads the native thread error instead.
+    return int(c.GetLastError()) if sys.platform == 'cli' else c.get_last_error()
+
+
 def error(path):
-    number = c.get_last_error()
+    number = last_error()
     return IOError(number, 'Windows file operation failed ({0}): {1}'.format(number, path))
 
 
 def attributes(path):
     k = api(); value = int(k.GetFileAttributesW(extended(path))) & 0xffffffff
     if value == 0xffffffff:
-        number = c.get_last_error()
+        number = last_error()
         if number in (2, 3): return None
         raise error(path)
     return value
@@ -88,7 +95,7 @@ def makedirs(path):
     k = api()
     for current in reversed(missing):
         if not k.CreateDirectoryW(extended(current), None):
-            if c.get_last_error() != 183: raise error(current)
+            if last_error() != 183: raise error(current)
 
 
 def signature(path):
@@ -140,7 +147,7 @@ def digest(path, cancelled=None):
 def unlink(path):
     k = api()
     if not k.DeleteFileW(extended(path)):
-        if c.get_last_error() not in (2, 3): raise error(path)
+        if last_error() not in (2, 3): raise error(path)
 
 
 def copy_file(source, target, cancelled=None, pulse=None, label=None):
@@ -187,14 +194,14 @@ def children(path):
     data=FindData()
     handle=k.FindFirstFileW(extended(ntpath.join(path,'*')),c.byref(data))
     if handle in (None,-1,c.c_void_p(-1).value):
-        if c.get_last_error()==2: return
+        if last_error()==2: return
         raise error(path)
     try:
         while True:
             name=text(data.name)
             if name not in ('.','..'): yield name,int(data.attributes)
             if not k.FindNextFileW(handle,c.byref(data)):
-                if c.get_last_error()!=18: raise error(path)
+                if last_error()!=18: raise error(path)
                 break
     finally:k.FindClose(handle)
 
