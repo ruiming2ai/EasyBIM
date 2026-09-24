@@ -475,9 +475,10 @@ def write_reports(result):
     lines = ['EasyBIM e-transmit ' + VERSION, 'Status: ' + result['status'],
              'Host models copied: {0} / {1}'.format(counts['hosts_copied'], counts['hosts_requested']),
              'Files copied: {0}'.format(counts['files_copied']),
+             'Portable Revit aliases: {0}'.format(len(result.get('aliases', []))),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
-    lines += ['', 'Keep the complete Sources folder hierarchy. Filenames have not been changed.',
+    lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'COLLECTED means no detected collection errors, not an in-Revit opening test.',
               'Review every warning before delivery. Reports contain original project paths.', '', 'ISSUES:']
