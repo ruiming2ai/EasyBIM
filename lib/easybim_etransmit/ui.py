@@ -13,6 +13,21 @@ from . import cleanup, engine
 from .revit import Backend
 
 
+class TransferProgressBar(forms.ProgressBar):
+    """Keep the initial geometry while document hooks change pyRevit context.
+
+    ProgressBar redraws normally (including Cancel), but its update_window
+    normally looks up HOST_APP.uiapp.MainWindowHandle on every redraw. A
+    background document event can leave that mutable global without a UI app.
+    Do not monkeypatch pyRevit or disable any document hooks to work around it.
+    """
+    def update_window(self):
+        if getattr(self, '_etransmit_positioned', False):
+            return
+        forms.ProgressBar.update_window(self)
+        self._etransmit_positioned = True
+
+
 class Choice(object):
     def __init__(self, name, key='', checked=True, source='', modified=False):
         self.Name, self.Key, self.Checked, self.Source, self.Modified = name,key,checked,source,modified
@@ -171,7 +186,7 @@ def run(uiapp,xaml):
     if not dialog.result: return
     models,root,opts,extras=dialog.result
     results=[]
-    with forms.ProgressBar(title='e-transmit',cancellable=True,indeterminate=True) as pb:
+    with TransferProgressBar(title='e-transmit',cancellable=True,indeterminate=True) as pb:
         def cancel(): return pb.cancelled
         def pulse(label,current,total):
             pb.title='e-transmit | '+f.text(label)

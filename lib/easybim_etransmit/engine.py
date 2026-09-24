@@ -8,6 +8,8 @@ import os
 import ntpath
 import shutil
 import tempfile
+import sys
+import traceback
 import uuid
 import zipfile
 from . import files as f
@@ -15,7 +17,16 @@ from . import VERSION
 
 
 def issue(code, source, message, severity='warning'):
-    return dict(code=code, source=source, message=f.text(message), severity=severity)
+    row = dict(code=code, source=source, message=f.text(message), severity=severity)
+    if isinstance(message, BaseException):
+        row['exception_type'] = type(message).__name__
+        if sys.exc_info()[1] is message:
+            row['traceback'] = traceback.format_exc()
+    return row
+
+
+class StagingSourceError(ValueError):
+    pass
 
 
 def folder_files(folder):
@@ -70,6 +81,8 @@ def completion_message(results, requested, cancelled=False):
         state = 'cancelled (partial output)'
     elif hosts < requested or any(r['status'] == 'FAILED' for r in results):
         state = 'failed or incomplete'
+    elif any(i['severity'] == 'error' for i in issues):
+        state = 'incomplete; one or more files or model operations failed'
     elif issues:
         state = 'completed with issues; review required'
     else:
@@ -106,11 +119,27 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
     def add_issue(code, source, message, severity='warning'):
         result['issues'].append(issue(code, source, message, severity))
 
+    # Progress is advisory; a redraw failure must not be recorded as a failed
+    # file copy. Preserve the cancellation signal, log the first UI failure,
+    # and keep the verified file pipeline independent of the progress window.
+    progress_disabled = [False]
+    def notify(label, current, total):
+        if pulse is None or progress_disabled[0]:
+            return
+        try:
+            pulse(label, current, total)
+        except f.Cancelled:
+            raise
+        except Exception as exc:
+            progress_disabled[0] = True
+            add_issue('PROGRESS_UI_FAILED', label, exc)
+
     try:
         while queue:
             f.check(cancelled)
             requested, owner, host, edge = queue.popleft()
             source, key, record = None, None, None
+            operation = 'resolve_source'
             try:
                 source = f.resolve_source(requested, owner, opts.get('mappings'))
                 if not source:
@@ -134,6 +163,14 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if not host and not opts['include'].get(cat, True):
                     if edge is not None: edge['status'] = 'EXCLUDED'
                     continue
+                # Session display paths can relocate into the inspection folder.
+                # That is not evidence of an original link location. Never collect
+                # our own scratch or guess its original root by the basename.
+                if not f.is_desktop_connector_path(source) and f.within(source, work):
+                    raise StagingSourceError(
+                        'The reference points into the temporary inspection folder, not an original source. '
+                        'Its saved source location could not be verified. Select/map the intended original '
+                        'location; no live/latest or same-name model was substituted.')
                 key = f.canonical(source)
                 if host: result['models'].append(dict(requested=requested, source=source))
                 if key in records:
@@ -155,9 +192,11 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                               target=target, category=cat, status='PENDING')
                 records[key] = record
                 result['files'].append(record)
+                operation = 'validate_destination'
                 f.destination(root, relative)  # Validate before copying; failed paths remain in the report.
-                if pulse: pulse('Copying ' + source, 0, 1)
-                record.update(f.copy_file(source, target, cancelled, pulse))
+                notify('Copying ' + source, 0, 1)
+                operation = 'copy_file'
+                record.update(f.copy_file(source, target, cancelled, notify))
                 if record.get('staging_cleanup_warning'):
                     add_issue('SOURCE_STAGING_CLEANUP_FAILED', source,
                               record['staging_cleanup_warning'])
@@ -165,10 +204,12 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if edge is not None: edge['status'] = 'COPIED'
                 ext = os.path.splitext(source)[1].lower()
                 if ext == '.rvt':
+                    operation = 'stage_model'
                     stage = f.temporary_path(work)
                     f.copy_file(target, stage, cancelled)
-                    if pulse: pulse('Inspecting saved model ' + source, 0, 1)
+                    notify('Inspecting saved model ' + source, 0, 1)
                     record['inventory_status']='RUNNING'
+                    operation = 'inspect_model'
                     scan = backend.scan(source, stage, opts)
                     record['inventory_status']='NEEDS_REVIEW' if scan.get('issues') else 'SCANNED'
                     record['revit_version'] = scan.get('version', '')
@@ -201,10 +242,14 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 raise
             except Exception as exc:
                 if edge is not None: edge['status'] = 'UNRESOLVED'
-                code = ('DESTINATION_PATH_TOO_LONG' if isinstance(exc, f.PathLengthError) else
-                        ('UNRESOLVED_SOURCE' if not source else 'COLLECTION_FAILED'))
+                code = ('STAGING_REFERENCE_UNRESOLVED' if isinstance(exc, StagingSourceError) else
+                        ('DESTINATION_PATH_TOO_LONG' if isinstance(exc, f.PathLengthError) else
+                         ('UNRESOLVED_SOURCE' if not source else 'COLLECTION_FAILED')))
                 if record and record.get('inventory_status') == 'RUNNING': record['inventory_status']='FAILED'
-                add_issue(code, requested, exc, 'error')
+                diagnostic = issue(code, requested, exc, 'error')
+                diagnostic['operation'] = operation
+                diagnostic['owner'] = owner
+                result['issues'].append(diagnostic)
                 if key in records and records[key]['status'] == 'PENDING':
                     records[key]['status'] = 'FAILED'
 
@@ -227,7 +272,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 f.copy_file(target, stage, cancelled)
                 model_edges = [r for r in edges if f.canonical(r['owner']) == f.canonical(record['source'])]
                 try:
-                    if pulse: pulse('Repath / cleanup ' + record['source'], 0, 1)
+                    notify('Repath / cleanup ' + record['source'], 0, 1)
                     result['issues'].extend(backend.finish(stage, target, model_edges, opts) or [])
                     record['packaged_sha256'] = f.digest(target, cancelled)
                 except f.Cancelled:
@@ -298,12 +343,18 @@ def write_reports(result):
     with io.open(os.path.join(root, 'START_HERE.txt'), 'w', encoding='utf-8') as out:
         out.write('\n'.join(lines))
     if result['options'].get('reports', True):
-        with io.open(os.path.join(root, 'REPORT.txt'), 'w', encoding='utf-8') as out: out.write('\n'.join(lines))
+        with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
                     ['source','requested','relative','category','status','inventory_status','verification_status','size','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
                     ['owner','id','kind','source','local','target','loaded','status','repath','note'])
-        f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','message'])
+        f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','operation','exception_type','message'])
+        diagnostics = [i for i in result['issues'] if i.get('traceback')]
+        if diagnostics:
+            with io.open(os.path.join(root, 'DIAGNOSTICS.txt'), 'w', encoding='utf-8') as out:
+                for item in diagnostics:
+                    out.write('{0} | {1} | {2}\n{3}\n'.format(
+                        item['code'], item.get('operation', ''), item['source'], item['traceback']))
 
 
 def zip_package(root, target, cancelled=None):

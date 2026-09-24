@@ -117,7 +117,8 @@ class Backend(object):
         self.guard(stage)
         info=self.basic(stage)
         result=dict(references=[],issues=[],version=info['version'])
-        try: result['references']=self.rows(stage, source)
+        base=info.get('central') if info.get('workshared') and f.absolute(info.get('central', '')) else source
+        try: result['references']=self.rows(stage, base)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
         if not options.get('deep',True):
             result['issues'].append(issue('METADATA_ONLY_SCAN',source,
@@ -172,7 +173,19 @@ class Backend(object):
         for point in self.elements(doc,'PointCloudType'):
             f.check(self.cancelled)
             try:
-                key=eid(point.Id); raw=f.text(point.GetPath())
+                key=eid(point.Id)
+                model_path=point.GetPath()
+                if model_path is None:
+                    # Non-file engines return null. Never invent a file named None.
+                    refs[:]=[r for r in refs if r['id']!=key]
+                    by_id.pop(key,None); seen.add(key)
+                    issues.append(issue('POINT_CLOUD_NOT_FILE_BASED',source+' #'+key,
+                                        'Point-cloud engine has no file source to collect.'))
+                    continue
+                try:
+                    raw=f.text(model_path) if isinstance(model_path,f.string_types) else self.visible(model_path)
+                finally:
+                    if not isinstance(model_path,f.string_types): dispose(model_path)
                 point_base=f.text(getattr(self.app,'PointCloudsRootPath',''))
                 resolved=f.resolve_source(raw)
                 if not resolved and point_base:
