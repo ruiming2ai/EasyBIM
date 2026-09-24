@@ -4,7 +4,7 @@ import os, sys, shutil, tempfile, unittest
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
 
-from easybim_etransmit import files as f, engine as e, model_payload as p
+from easybim_etransmit import files as f, engine as e, model_payload as p, longpaths as lp
 from easybim_etransmit.revit import Backend
 
 class Obj(object):
@@ -56,9 +56,14 @@ class PortableImageAliases(unittest.TestCase):
         deep=self.root
         for i in range(9):
             deep=os.path.join(deep,'Very Long Original Folder %02d'%i)
-        os.makedirs(deep)
         image=os.path.join(deep,'Original Drawing With A Long But Unchanged Name.pdf')
-        with open(image,'wb') as out: out.write(b'%PDF-test')
+        if sys.platform=='cli':
+            lp.makedirs(deep)
+            with lp.Stream(image,True) as out:
+                out.write(b'%PDF-test');out.flush()
+        else:
+            os.makedirs(deep)
+            with open(image,'wb') as out: out.write(b'%PDF-test')
         seen=[]
         class B(object):
             def scan(self,source,stage,opts):
