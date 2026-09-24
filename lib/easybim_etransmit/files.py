@@ -268,6 +268,13 @@ def _shell_file_exists(path):
         _release_com(shell)
 
 
+def connector_file_exists(path):
+    """Return whether one exact Desktop Connector item exists; never search by name."""
+    if not is_desktop_connector_path(path):
+        return False
+    return _shell_file_exists(path)
+
+
 def resolve_connector_uri(source, roots=None):
     """Resolve one Autodesk display URI to one exact Connector hierarchy."""
     parts = _connector_uri_parts(source)

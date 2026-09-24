@@ -99,6 +99,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $env:IPY_EXE 'Development Space/tests/etransmit/test_runtime_reference_repairs.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:IPY_EXE 'Development Space/tests/etransmit/test_209_regressions.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Archive native helper tested under IronPython
         if: always()
         uses: actions/upload-artifact@v4
