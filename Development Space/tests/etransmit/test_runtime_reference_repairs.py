@@ -15,27 +15,27 @@ class References(unittest.TestCase):
                     ExternalFileUtils=Obj(GetAllExternalFileReferences=lambda d:[]),
                     ExternalResourceTypes=Obj(BuiltInExternalResourceTypes=Obj(RevitLink='RVT',SystemsAnalysisReport='Report')),
                     ExternalResourceUtils=Obj(GetAllExternalResourceReferences=lambda d:[]),BuiltInCategory=Obj())
-        self.b=Backend(self.db,Obj(VersionNumber='2024'),r'C:\Out')
-        self.b.staging_root=r'C:\Temp\ET';self.b.elements=lambda d,k:[]
+        self.b=Backend(self.db,Obj(VersionNumber='2024'),'C:\\Out')
+        self.b.staging_root='C:\\Temp\\ET';self.b.elements=lambda d,k:[]
     def test_content_library_path_uses_saved_absolute_not_host_folder(self):
-        path=r'C:\ProgramData\Autodesk\RVT 2024\Libraries\English-Imperial\US\UniformatClassifications.txt'
+        path='C:\\ProgramData\\Autodesk\\RVT 2024\\Libraries\\English-Imperial\\US\\UniformatClassifications.txt'
         ref=Obj(GetPath=lambda:'UniformatClassifications.txt',GetAbsolutePath=lambda:path,
                 PathType='Content',GetLinkedFileStatus=lambda:'Loaded',ExternalFileReferenceType='AssemblyCodeTable')
         td=Obj(IsTransmitted=False,GetAllExternalFileReferenceIds=lambda:[Obj(Value=1)],GetLastSavedReferenceData=lambda i:ref)
         self.db.TransmissionData=Obj(ReadTransmissionData=lambda p:td)
-        row=self.b.rows(r'C:\Temp\ET\stage.rvt',r'C:\Downloads\Host.rvt')[0]
+        row=self.b.rows('C:\\Temp\\ET\\stage.rvt','C:\\Downloads\\Host.rvt')[0]
         self.assertEqual(row['source'],path)
         self.assertTrue(row.get('optional_library'))
         self.assertEqual(row.get('path_type'),'Content')
     def test_seen_native_link_is_enriched_with_exact_external_source(self):
-        ident=Obj(Value=20);actual=r'C:\Users\tester\DC\ACCDocs\Account\Project\Project Files\Consumed\Arch.rvt'
-        resource=Obj(InSessionPath=r'C:\Temp\ET\Arch.rvt',ServerId='provider',Version='',
+        ident=Obj(Value=20);actual='C:\\Users\\tester\\DC\\ACCDocs\\Account\\Project\\Project Files\\Consumed\\Arch.rvt'
+        resource=Obj(InSessionPath='C:\\Temp\\ET\\Arch.rvt',ServerId='provider',Version='',
                      GetReferenceInformation=lambda:{'Path':actual,'PathType':'Absolute','ModelId':'id-only'})
         element=Obj(IsNestedLink=False,GetExternalResourceReferences=lambda:{'RVT':resource})
         self.db.ExternalResourceUtils.GetAllExternalResourceReferences=lambda d:[ident]
         result=dict(references=[dict(id='20',element_id='20',kind='RevitLink',td=False,special='native',
-                                   source=r'C:\Temp\ET\Arch.rvt',loaded=False)],issues=[])
-        self.b.scan_open(Obj(GetElement=lambda i:element),r'C:\Downloads\Host.rvt',dict(central='',workshared=False),result)
+                                   source='C:\\Temp\\ET\\Arch.rvt',loaded=False)],issues=[])
+        self.b.scan_open(Obj(GetElement=lambda i:element),'C:\\Downloads\\Host.rvt',dict(central='',workshared=False),result)
         self.assertEqual(len(result['references']),1)
         row=result['references'][0]
         self.assertEqual(row['source'],actual)
@@ -43,9 +43,9 @@ class References(unittest.TestCase):
         self.assertEqual(row['special'],'external')
         self.assertEqual(row['resource_information']['Path'],actual)
     def test_unknown_metadata_value_is_not_invented_as_source(self):
-        self.assertEqual(self.b.resource_source('',{'ModelIdentity':r'C:\NotAPathField.rvt'},'RevitLink'),'')
+        self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
-        path=r'L:\BIM\Reports'
+        path='L:\\BIM\\Reports'
         self.assertEqual(self.b.resource_source('',{'Path':path,'PathType':'Absolute'},'SystemsAnalysisReport'),path)
     def test_unknown_basic_metadata_can_fallback_to_valid_native_container(self):
         from test_payload_acquisition import compound
@@ -61,10 +61,10 @@ class References(unittest.TestCase):
         self.b.guard=lambda path:None  # Windows API path formatting test on either OS
         self.db.ImageTypeSource=Obj(Link='Link')
         self.db.ImageTypeOptions=lambda path,rel,src:Obj(Path=path)
-        row=dict(target=r'C:\Out\PDF\Details.pdf',page=1,resolution=300)
-        try:options=self.b.image_options(row,True,r'C:\Out\RVT\Host.rvt')
+        row=dict(target='C:\\Out\\PDF\\Details.pdf',page=1,resolution=300)
+        try:options=self.b.image_options(row,True,'C:\\Out\\RVT\\Host.rvt')
         except TypeError: self.fail('image_options must accept final model path for real relative paths')
-        self.assertEqual(options.Path,r'..\PDF\Details.pdf')
+        self.assertEqual(options.Path,'..\\PDF\\Details.pdf')
 
 class EngineRepairs(unittest.TestCase):
     def test_metadata_failure_is_not_retried_in_finishing(self):
