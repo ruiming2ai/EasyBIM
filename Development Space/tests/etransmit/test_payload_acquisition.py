@@ -25,7 +25,7 @@ def compound(version='2024', central='Autodesk Docs://Project/Host.rvt', suffix=
         return bytes(d) if sys.version_info[0]>=3 else str(d)
     directory=entry('Root Entry',5,1,3,chunks*64)+entry('BasicFileInfo',2,0xffffffff,0,len(data))+b'\0'*256
     mf=[i+1 for i in range(chunks)];mf[-1]=0xfffffffe;mf += [0xffffffff]*(128-chunks)
-    return (bytes(header) if sys.version_info[0]>=3 else str(header))+fat+directory+struct.pack('<128I',*mf)+data.ljust(512,b'\0')
+    return (bytes(header) if sys.version_info[0]>=3 else str(header))+fat+directory+struct.pack('<128I',*mf)+data+(b'\0'*(512-len(data)))
 
 class PayloadTests(unittest.TestCase):
     def setUp(self):
