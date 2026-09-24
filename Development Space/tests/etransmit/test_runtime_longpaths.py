@@ -30,6 +30,7 @@ class LongPaths(unittest.TestCase):
     def test_real_ironpython_copy_and_checksum_past_260_characters(self):
         self.assertIsNotNone(lp)
         root=tempfile.mkdtemp(prefix='ET_Long_')
+        self.assertIsNone(lp.attributes(os.path.join(root,'not-created-yet')))
         short=os.path.join(root,'source.pdf')
         with open(short,'wb') as out:out.write(b'%PDF-'+b'payload'*200000)
         directory=os.path.join(root,'nested'*12,'references'*8,'archive'*9)
