@@ -54,3 +54,25 @@ except Exception:
     pass
 
 run_start_message_on_file_open(doc=doc)
+
+# Tab Color integration. Independent of the existing file-open workflow.
+try:
+    from viewtabcolors import config as _tabcolor_config
+    from viewtabcolors import runtime as _tabcolor_runtime
+
+    if _tabcolor_config.load_profile().get("enabled", False):
+        try:
+            _tabcolor_event_args = __eventargs__
+        except Exception:
+            try:
+                _tabcolor_event_args = EXEC_PARAMS.event_args
+            except Exception:
+                _tabcolor_event_args = None
+        _tabcolor_runtime.apply_from_event(__revit__, _tabcolor_event_args)
+except Exception as _tabcolor_ex:
+    try:
+        _tabcolor_config.log(
+            "EasyBIM doc-opened hook failed: {0}".format(_tabcolor_ex)
+        )
+    except Exception:
+        pass

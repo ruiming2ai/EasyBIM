@@ -1,0 +1,145 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Tab Color"
+        Height="690"
+        Width="820"
+        MinHeight="560"
+        MinWidth="700"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip"
+        ShowInTaskbar="False">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="Tab Color"
+                       FontSize="22"
+                       FontWeight="SemiBold" />
+            <TextBlock Margin="0,5,0,0"
+                       TextWrapping="Wrap"
+                       Foreground="#666666"
+                       Text="Views are classified from Autodesk.Revit.DB.View.ViewType. Tab text is used only as a literal bridge to Revit's tab UI; it never decides the view type." />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                Margin="0,0,0,12"
+                Padding="12,9"
+                Background="#EEF4FA"
+                BorderBrush="#CAD8E5"
+                BorderThickness="1"
+                CornerRadius="3">
+            <DockPanel LastChildFill="True">
+                <CheckBox x:Name="master_enabled"
+                          DockPanel.Dock="Left"
+                          VerticalAlignment="Center"
+                          FontWeight="SemiBold"
+                          Content="Enable automatic view-type tab colors" />
+                <TextBlock x:Name="runtime_status"
+                           Margin="18,0,0,0"
+                           VerticalAlignment="Center"
+                           TextAlignment="Right"
+                           Foreground="#42566A" />
+            </DockPanel>
+        </Border>
+
+        <DataGrid x:Name="rules_grid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="False"
+                  CanUserSortColumns="False"
+                  HeadersVisibility="Column"
+                  GridLinesVisibility="Horizontal"
+                  RowHeaderWidth="0"
+                  SelectionMode="Single"
+                  AlternatingRowBackground="#F7F7F7">
+            <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="Use"
+                                        Width="52"
+                                        Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" />
+                <DataGridTemplateColumn Header="Color" Width="118">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Height="25"
+                                    Margin="3,2"
+                                    Padding="6,1"
+                                    Background="{Binding Color}"
+                                    Foreground="#202020"
+                                    BorderBrush="#777777"
+                                    Content="{Binding Color}"
+                                    Click="color_button_click" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="View category"
+                                    Width="220"
+                                    IsReadOnly="True"
+                                    Binding="{Binding Label}" />
+                <DataGridTextColumn Header="Revit API ViewType members"
+                                    Width="*"
+                                    IsReadOnly="True"
+                                    Binding="{Binding ViewTypes}" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="3" Margin="0,12,0,12">
+            <TextBlock x:Name="message_text"
+                       TextWrapping="Wrap"
+                       Foreground="#555555" />
+            <TextBlock Margin="0,5,0,0"
+                       TextWrapping="Wrap"
+                       Foreground="#777777"
+                       FontSize="11"
+                       Text="If identical visible captions belong to different colored view types in open documents, that caption is intentionally left unchanged." />
+        </StackPanel>
+
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="import_button"
+                    Grid.Column="0"
+                    Width="86"
+                    Margin="0,0,8,0"
+                    Padding="7,4"
+                    Content="Import..." />
+            <Button x:Name="export_button"
+                    Grid.Column="1"
+                    Width="86"
+                    Margin="0,0,8,0"
+                    Padding="7,4"
+                    Content="Export..." />
+            <Button x:Name="defaults_button"
+                    Grid.Column="2"
+                    Width="112"
+                    Padding="7,4"
+                    Content="Restore Defaults" />
+            <Button x:Name="cancel_button"
+                    Grid.Column="4"
+                    Width="88"
+                    Margin="0,0,8,0"
+                    Padding="7,4"
+                    IsCancel="True"
+                    Content="Cancel" />
+            <Button x:Name="save_button"
+                    Grid.Column="5"
+                    Width="122"
+                    Padding="7,4"
+                    IsDefault="True"
+                    FontWeight="SemiBold"
+                    Content="Save &amp; Apply" />
+        </Grid>
+    </Grid>
+</Window>

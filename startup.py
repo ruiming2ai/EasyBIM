@@ -116,3 +116,21 @@ try:
     auto_update.queue_startup_auto_update()
 except Exception:
     pass
+
+# Tab Color integration. Keep this isolated from existing EasyBIM startup tools.
+try:
+    from viewtabcolors import config as _tabcolor_config
+    from viewtabcolors import runtime as _tabcolor_runtime
+
+    _tabcolor_profile = _tabcolor_config.load_profile()
+    if _tabcolor_profile.get("enabled", False):
+        _tabcolor_runtime.apply(__revit__, force=True)
+    else:
+        _tabcolor_runtime.restore_previous(__revit__)
+except Exception as _tabcolor_ex:
+    try:
+        _tabcolor_config.log(
+            "EasyBIM startup failed: {0}".format(_tabcolor_ex)
+        )
+    except Exception:
+        pass

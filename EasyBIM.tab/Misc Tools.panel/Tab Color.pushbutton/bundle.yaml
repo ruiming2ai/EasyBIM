@@ -1,0 +1,8 @@
+title: Tab Color
+tooltip: >-
+  Opt in to full-tab colors based on actual Revit view types. Settings can be
+  saved, imported, exported, reset, enabled, or disabled without modifying the
+  Revit model.
+author: View Tab Colors contributors
+min_revit_version: 2019
+context: zero-doc
