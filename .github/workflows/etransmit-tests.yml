@@ -58,6 +58,8 @@ jobs:
     name: Real IronPython 2.7 local copy (Windows, no Revit)
     runs-on: windows-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,3 +106,23 @@ jobs:
           path: lib/easybim_etransmit/native/EasyBIM.FileIO.dll
           if-no-files-found: error
           retention-days: 7
+      - name: Stage tested binary on this repair branch only
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/etransmit-payload-links-208'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $branch='fix/etransmit-payload-links-208'
+          $path='lib/easybim_etransmit/native/EasyBIM.FileIO.dll'
+          $uri="$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/contents/$path"
+          $headers=@{Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'}
+          $body=@{message='build(etransmit): include Windows CI verified FileIO binary'; branch=$branch; content=[Convert]::ToBase64String([IO.File]::ReadAllBytes($path))}
+          try {
+            $old=Invoke-RestMethod -Uri "${uri}?ref=$branch" -Headers $headers
+            $body.sha=$old.sha
+          } catch {
+            if ([int]$_.Exception.Response.StatusCode -ne 404) {throw}
+          }
+          $result=Invoke-RestMethod -Method Put -Uri $uri -Headers $headers -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress)
+          Write-Output "Committed tested helper: $($result.commit.sha) blob $($result.content.sha)"
