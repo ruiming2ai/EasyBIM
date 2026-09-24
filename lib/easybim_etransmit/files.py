@@ -166,12 +166,13 @@ def default_connector_roots():
     for value in configured.split(os.pathsep):
         add(value)
 
+    pm = ntpath if os.name == 'nt' else os.path
     for workspace in _desktop_connector_workspace_locations():
         workspace = text(workspace).strip()
-        if ntpath.basename(ntpath.normpath(workspace)).lower() == 'accdocs':
+        if pm.basename(pm.normpath(workspace)).lower() == 'accdocs':
             add(workspace)
         else:
-            add(ntpath.join(workspace, 'ACCDocs'))
+            add(pm.join(workspace, 'ACCDocs'))
 
     profile = os.environ.get('USERPROFILE') or os.path.expanduser('~')
     # Desktop Connector v16+ default, then legacy v15 location.
