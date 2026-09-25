@@ -26,7 +26,7 @@ class SourceError(ValueError):
 def doc_version(doc):
     value=None
     try:
-        value=doc.GetDocumentVersion()
+        value=doc.GetDocumentVersion(doc)  # Static Revit API requires the Document argument.
         return dict(guid=f.text(value.VersionGUID).lower(),saves=int(value.NumberOfSaves))
     except Exception:return None
     finally:dispose(value)

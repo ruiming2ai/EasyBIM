@@ -20,7 +20,7 @@ class SessionTests(unittest.TestCase):
     def doc(self,title='Open',path='',modified=False,linked=False):
         return Obj(Title=title,PathName=path,IsModified=modified,IsLinked=linked,IsDetached=not path,
                    IsWorkshared=False,IsModelInCloud=False,IsFamilyDocument=False,IsReadOnly=False,
-                   IsModifiable=False,GetDocumentVersion=lambda:Obj(VersionGUID='guid',NumberOfSaves=4))
+                   IsModifiable=False,GetDocumentVersion=lambda document:Obj(VersionGUID='guid',NumberOfSaves=4))
     def registry(self):
         m=mod(self);return m.Registry(Obj(),Obj(VersionNumber='2024'),os.path.join(self.root,'working'))
     def test_capture_keeps_document_not_just_path_and_never_opens_or_saves(self):
@@ -92,7 +92,7 @@ class SnapshotSafety(unittest.TestCase):
         with open(path,'wb') as out:out.write(b'changed by another process')
         doc=Obj(Title='H',PathName=path,IsLinked=False,IsModified=False,IsDetached=False,
                 IsModelInCloud=False,IsWorkshared=False,IsReadOnly=False,IsModifiable=False,
-                GetDocumentVersion=lambda:Obj(VersionGUID='loaded',NumberOfSaves=1))
+                GetDocumentVersion=lambda document:Obj(VersionGUID='loaded',NumberOfSaves=1))
         db=Obj(BasicFileInfo=Obj(Extract=lambda p:Obj(GetDocumentVersion=lambda:Obj(VersionGUID='changed',NumberOfSaves=2))))
         r=session.Registry(db,Obj(),os.path.join(root,'r'),collect_plugins=False)
         r.scanner.scan_open=lambda *a:None;r.scanner.elements=lambda *a:[]
