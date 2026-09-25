@@ -92,7 +92,8 @@ class HostSafety(unittest.TestCase):
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
         self.assertEqual(host['model_verification'],'DEFERRED')
-        self.assertEqual(f.digest(host['target']),f.digest(host['current_state_backup']))
+        self.assertEqual(f.digest(host['target']),host['current_state_sha256'])
+        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
         self.assertEqual(host['current_state_integrity'],'VERIFIED')
     def test_cloud_link_skip_does_not_skip_selected_cloud_host(self):
         self.doc.IsModelInCloud=True

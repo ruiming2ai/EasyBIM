@@ -1,5 +1,8 @@
 # e-transmit 2.1.2 — verified saved-cache copies, without saving the working model
 
+Historical release: see [2.1.3](e-transmit-2.1.3.md) for the current saved-link
+revision policy, unloaded-link acquisition and removal of packaged `_HostState` copies.
+
 ## What changed
 
 Open-model rows now default to **saved local/cache state**, including locally

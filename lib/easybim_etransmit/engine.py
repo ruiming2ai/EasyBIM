@@ -62,8 +62,6 @@ def preflight_paths(models, root, options, extras=None, model_names=None):
                     name=names.get(requested,requested).replace('\\','/').rsplit('/',1)[-1]
                     if not name.lower().endswith('.rvt'):name+='.rvt'
                     target=pm.join(package,name);f.validate_destination_path(target)
-                    target=pm.join(package,'_HostState','0'*20,name)
-                    f.validate_copy_path(target)  # Raw baseline is never opened or modified.
                     if not options.get('saved_state_only',True):
                         target=pm.join(root+'_WorkingSnapshots','0'*20,name)
                         f.validate_destination_path(target)
@@ -82,8 +80,16 @@ def preflight_paths(models, root, options, extras=None, model_names=None):
 def package_counts(result):
     copied = dict((f.canonical(r['source']), r) for r in result['files'] if r['status'] == 'COPIED')
     hosts = sum(1 for model in result['models'] if f.canonical(model['source']) in copied)
+    links={}
+    for ref in result.get('references',[]):
+        if ref.get('kind')!='RevitLink' or ref.get('status') in ('EXCLUDED','DUPLICATE_ALIAS'):continue
+        key=(f.canonical(ref.get('owner','')),ref.get('element_id') or ref.get('id') or ref.get('source',''))
+        links[key]=ref
     return dict(hosts_requested=len(result.get('requested_models', result['models'])),
-                hosts_copied=hosts, files_copied=len(copied))
+                hosts_copied=hosts, files_copied=len(copied),
+                revit_links_requested=len(links),
+                revit_links_copied=sum(1 for r in links.values() if r.get('target') and r.get('status')=='COPIED'),
+                revit_links_verified=sum(1 for r in links.values() if r.get('verification')=='PATH_AND_LOAD_CHECKED'))
 
 
 def completion_message(results, requested, cancelled=False):
@@ -104,10 +110,13 @@ def completion_message(results, requested, cancelled=False):
     lines = ['e-transmit ' + state + '.',
              'Host models copied: {0} / {1}'.format(hosts, requested),
              'Files copied: {0} | Issues: {1}'.format(files, len(issues))]
+    counts=[package_counts(r) for r in results]
+    lines.append('Revit links requested / copied / verified: {0} / {1} / {2}'.format(
+        *(sum(c[k] for c in counts) for k in ('revit_links_requested','revit_links_copied','revit_links_verified'))))
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     issues=sorted(issues,key=lambda i:(i['severity']!='error',not i['code'].startswith('HOST_')))
     retained=sum(1 for r in results for frow in r['files'] if (frow.get('current_state_integrity') or frow.get('saved_state_integrity'))=='VERIFIED')
-    if retained:lines.append('Protected current-state host copies: {0}'.format(retained))
+    if retained:lines.append('Host acquisition checksums verified: {0}'.format(retained))
     for item in issues[:3]:
         lines.append('\n' + item['code'] + ': ' + item['message'])
     if len(issues) > 3: lines.append('\nSee START_HERE.txt for the remaining issues.')
@@ -146,6 +155,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
     if not os.path.isdir(root): os.makedirs(root)
     result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[], aliases=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
+    retained_recovery=[]
     # Revit inspection/processing scratch must not live in OneDrive or another
     # synchronized output tree.  Keep it in the local OS temp area and register
     # that one directory explicitly with the Revit backend write guard.
@@ -208,6 +218,10 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         result['issues'].extend(scan.get('issues',[]))
         for ref in scan.get('references',[]):
             ref=dict(ref);ref.update(owner=source,status='PENDING')
+            if ref.get('kind')=='RevitLink':
+                ref['original_loaded']=ref.get('loaded')
+                ref['package_loaded']=(True if opts.get('repath') and opts.get('load_unloaded_files',True)
+                                       and ref.get('loaded') is False else ref.get('loaded'))
             edges.append(ref);queue.append((ref.get('source',''),source,False,ref))
 
     try:
@@ -217,6 +231,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             source, key, record = None, None, None
             operation = 'resolve_source'
             try:
+                if edge is not None and edge.get('unconfigured'):
+                    edge['status']='UNCONFIGURED'
+                    continue
+                if edge is not None and edge.get('kind')=='RevitLink' and not opts['include'].get('revit',True):
+                    edge['status']='EXCLUDED'
+                    continue
+                if edge is not None and edge.get('resolution_failed'):
+                    edge['status']='UNRESOLVED'
+                    continue  # The inventory already contains a specific identity/name diagnostic.
                 skipper=getattr(backend,'skip_dependency',None)
                 if not host and skipper and skipper(requested,owner,opts):
                     if edge is not None:
@@ -292,6 +315,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 key = f.canonical(source)
                 if host: result['models'].append(dict(requested=requested, source=source))
                 if key in records:
+                    if host:records[key]['is_primary_host']=True
                     if edge is not None: edge['status'] = records[key]['status']
                     continue
                 if not virtual and not f.is_desktop_connector_path(source) and os.path.isdir(source):
@@ -322,7 +346,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 relative = backend.source_relative(source) if virtual else f.mirror_path(source)
                 target = os.path.join(root, *relative.split('/'))
                 record = dict(source=source, requested=requested, relative=relative,
-                              target=target, category=cat, status='PENDING')
+                              target=target, category=cat, status='PENDING',is_primary_host=host)
                 records[key] = record
                 result['files'].append(record)
                 before=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
@@ -405,6 +429,11 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 diagnostic = issue(code, requested, exc, 'error')
                 diagnostic['operation'] = operation
                 diagnostic['owner'] = owner
+                if edge is not None:
+                    for field in ('element_id','kind','link_name','cloud_identity','resource_information'):
+                        if field in edge:diagnostic[field]=edge[field]
+                if record and record.get('source_context',{}).get('cache_evidence'):
+                    diagnostic['cache_evidence']=record['source_context']['cache_evidence']
                 result['issues'].append(diagnostic)
                 if key in records and records[key]['status'] == 'PENDING':
                     records[key]['status'] = 'FAILED'
@@ -429,7 +458,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if ref.get('status') != 'COPIED':
                     continue
                 owner_record=records.get(f.canonical(ref.get('owner','')))
-                if owner_record and (owner_record.get('current_state_backup') or owner_record.get('saved_state_backup')):
+                if owner_record and owner_record.get('is_primary_host'):
                     unavailable=any(f.canonical(r.get('owner',''))==f.canonical(ref.get('owner',''))
                         and (r.get('kind')=='RevitLink' or r.get('category')=='revit')
                         and not r.get('target') for r in edges)
@@ -466,14 +495,14 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
-                if (record.get('current_state_backup') or record.get('saved_state_backup')):
+                if record.get('is_primary_host'):
                     missing=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])
                              and (r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target')]
                     if missing:
                         record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
                         record['model_verification']='DEFERRED'
                         add_issue('HOST_PRESERVED_WITHOUT_LINK_REPATH',record['source'],
-                                  'The host snapshot and protected baseline are retained unchanged. Repath/cleanup and link-opening verification were deferred because linked RVT files are not packaged.')
+                                  'The collected host is retained unchanged. Repath/cleanup and link-opening verification were deferred because linked RVT files are not packaged.')
                         continue
                 target = record['target']
                 # Backend.finish receives the final target explicitly and stages absolute
@@ -487,20 +516,36 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                                and not r.get('skip_repath')]
                 try:
                     notify('Repath / cleanup ' + record['source'], 0, 1)
-                    processing_issues=backend.finish(stage, target, model_edges, opts) or []
+                    processing_options=dict(opts)
+                    processing_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
+                    processing_issues=backend.finish(stage, target, model_edges, processing_options) or []
                     result['issues'].extend(processing_issues)
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
                 except f.Cancelled:
-                    shutil.copyfile(backup, target)
-                    for ref in model_edges: ref['repath']='ROLLED_BACK'
+                    try:
+                        shutil.copyfile(backup,target)
+                        record['processing_status']='ROLLED_BACK'
+                    except Exception as exc:
+                        record['processing_status']='ROLLBACK_FAILED'
+                        record['recovery_path']=backup;retained_recovery.append(backup)
+                        add_issue('HOST_ROLLBACK_FAILED',record['source'],
+                                  'Unmodified collected copy retained outside the package at '+backup+': '+f.text(exc),'error')
+                    for ref in model_edges: ref['repath']=record['processing_status']
                     raise
                 except Exception as exc:
-                    shutil.copyfile(backup, target)
-                    for ref in model_edges: ref['repath']='ROLLED_BACK'
                     record['processing_status']='FAILED'
+                    try:
+                        shutil.copyfile(backup,target)
+                        for ref in model_edges:ref['repath']='ROLLED_BACK'
+                    except Exception as rollback_exc:
+                        record['processing_status']='ROLLBACK_FAILED'
+                        record['recovery_path']=backup;retained_recovery.append(backup)
+                        for ref in model_edges:ref['repath']='ROLLBACK_FAILED'
+                        add_issue('HOST_ROLLBACK_FAILED',record['source'],
+                                  'Unmodified collected copy retained outside the package at '+backup+': '+f.text(rollback_exc),'error')
                     add_issue('MODEL_PROCESSING_FAILED', record['source'],
-                              'Unmodified collected copy retained: ' + f.text(exc), 'error')
+                              'Model processing failed; see processing/recovery status: ' + f.text(exc), 'error')
                 finally:
                     # Only files beginning with our newly allocated staging token belong to us.
                     prefix=os.path.splitext(os.path.basename(stage))[0]
@@ -515,7 +560,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if record['status']!='COPIED' or not record['source'].lower().endswith('.rvt'): continue
                 if record.get('inventory_status') in ('FAILED','UNSTABLE','RUNNING','PARTIAL'):
                     record['model_verification']='SKIPPED_INVENTORY_FAILURE'; continue
-                if record.get('processing_status')=='FAILED':
+                if record.get('processing_status') in ('FAILED','ROLLBACK_FAILED'):
                     record['model_verification']='SKIPPED_PROCESSING_FAILURE'; continue
                 if record.get('processing_status')=='HOST_PRESERVED_LINKS_UNAVAILABLE':
                     record['model_verification']='DEFERRED';continue
@@ -536,21 +581,17 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         add_issue('PACKAGE_FAILED', '', exc, 'error')
     finally:
         result['references'] = edges
-        try: f.remove_tree_retry(work)
+        try:
+            if not retained_recovery:f.remove_tree_retry(work)
         except Exception as exc: add_issue('STAGING_CLEANUP_FAILED', work, exc)
         # Hash the final bytes, not just the pre-repath source snapshot.
         for rec in result['files']:
-            basis='saved_state' if rec.get('saved_state_backup') else 'current_state'
-            if rec.get(basis+'_backup'):
-                try:
-                    if f.digest(rec[basis+'_backup'])!=rec[basis+'_sha256']:
-                        raise IOError('Protected host baseline changed after collection.')
-                    rec[basis+'_integrity']='VERIFIED'
-                except Exception as exc:
-                    rec[basis+'_integrity']='FAILED'
-                    add_issue('HOST_BACKUP_VERIFICATION_FAILED',rec['source'],exc,'error')
             if rec['status'] == 'COPIED' and f.file_exists(rec['target']):
-                try: rec['packaged_sha256'] = f.digest(rec['target'])
+                try:
+                    rec['packaged_sha256'] = f.digest(rec['target'])
+                    if rec.get('is_primary_host') and rec.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW'):
+                        if rec['packaged_sha256']!=rec['sha256']:
+                            raise IOError('Unprocessed/restored host differs from the acquired copy.')
                 except Exception as exc:
                     rec['verification_status']='FAILED'
                     add_issue('FINAL_VERIFICATION_FAILED',rec['source'],exc,'error')
@@ -565,6 +606,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
 
 def write_reports(result):
     root = result['root']
+    result['counts']=package_counts(result)
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
         out.write(f.text(json.dumps(result, ensure_ascii=False, indent=2)))
     hosts = []
@@ -576,15 +618,19 @@ def write_reports(result):
     lines = ['EasyBIM e-transmit ' + VERSION, 'Status: ' + result['status'],
              'Host models copied: {0} / {1}'.format(counts['hosts_copied'], counts['hosts_requested']),
              'Files copied: {0}'.format(counts['files_copied']),
+             'Revit links requested / copied / verified: {0} / {1} / {2}'.format(
+                 counts['revit_links_requested'],counts['revit_links_copied'],counts['revit_links_verified']),
              'Portable Revit aliases: {0}'.format(len(result.get('aliases', []))),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for record in result['files']:
+        if record.get('recovery_path'):
+            lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
         context=record.get('source_context',{})
         if context:
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
-            if (record.get('current_state_backup') or record.get('saved_state_backup')):
-                lines.append(('Protected saved-state host: ' if record.get('saved_state_backup') else 'Protected current-state host: ')+(record.get('saved_state_backup') or record['current_state_backup'])+' | '+(record.get('saved_state_integrity') or record.get('current_state_integrity','NOT_CHECKED')))
+            if record.get('is_primary_host'):
+                lines.append('Host acquisition checksum: '+record.get('sha256','NOT_ACQUIRED'))
             if context.get('saved_state_only'):
                 lines.append('Unsaved edits are excluded. Open/source models were not saved, synchronized, published, reloaded or relocated.')
                 metadata=context.get('cache_metadata',{})
@@ -599,12 +645,31 @@ def write_reports(result):
                 working=context.get('working_document_path_after') or context.get('snapshot_path') or context.get('snapshot_attempt_path')
                 if working:lines.append('Retained working document / SaveAs recovery file: '+working+
                                         ' -- review the active Revit file before continuing. This recovery file is outside the transmitted package.')
-    lines += ['', 'Keep the complete package together, including Sources, _Refs and _HostState when present. Filenames have not been changed.',
+    lines += ['', 'REVIT LINKS:']
+    for ref in result.get('references',[]):
+        if ref.get('kind')!='RevitLink':continue
+        record=by_source.get(f.canonical(ref.get('local') or ref.get('source','')),{})
+        context=record.get('source_context',{})
+        evidence=context.get('cache_evidence',{})
+        lines.append('Element {0} | {1} | {2} | Original loaded: {3} | Package loaded: {4}'.format(
+            ref.get('element_id','?'),ref.get('link_name') or context.get('name') or ref.get('source',''),
+            ref.get('status',''),ref.get('original_loaded',ref.get('loaded')),ref.get('package_loaded',ref.get('loaded'))))
+        lines.append('  ACC identity: '+f.text(ref.get('cloud_identity') or context.get('cloud') or ref.get('resource_information',{})))
+        if evidence:
+            lines.append('  Loaded revision: '+f.text(evidence.get('expected_document_version')))
+            lines.append('  Cache roots: '+f.text(evidence.get('roots',[])))
+            for attempt in evidence.get('attempts',[]):
+                lines.append('  Candidate: {0} | {1} | Revision: {2} | {3} {4}'.format(
+                    attempt.get('path',''),attempt.get('status',''),attempt.get('actual_document_version'),
+                    attempt.get('code',''),attempt.get('message','')))
+    lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
               'Review every warning before delivery. Reports contain original project paths.', '', 'ISSUES:']
     for i in result['issues']:
-        lines.append('[{0}] {1}: {2} -- {3}'.format(i['severity'], i['code'], i['source'], i['message']))
+        label=i['source'] or i.get('owner','')
+        if i.get('element_id'):label+=' #'+f.text(i['element_id'])+' '+i.get('kind','')
+        lines.append('[{0}] {1}: {2} -- {3}'.format(i['severity'], i['code'], label, i['message']))
     if not result['issues']: lines.append('No detected collection errors. Desktop opening test remains required.')
     with io.open(os.path.join(root, 'START_HERE.txt'), 'w', encoding='utf-8') as out:
         out.write('\n'.join(lines))
@@ -613,8 +678,8 @@ def write_reports(result):
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
                     ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','model_verification','acquisition_container','verification_status','size','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
-                    ['owner','id','kind','source','local','target','loaded','status','repath','note'])
-        f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','operation','exception_type','message'])
+                    ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','verification','cloud_identity','note'])
+        f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])
         diagnostics = [i for i in result['issues'] if i.get('traceback')]
         if diagnostics:
             with io.open(os.path.join(root, 'DIAGNOSTICS.txt'), 'w', encoding='utf-8') as out:

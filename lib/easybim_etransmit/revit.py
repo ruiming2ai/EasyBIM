@@ -27,6 +27,21 @@ def load_intent(status):
     return None
 
 
+def unconfigured_keynote(row):
+    if row.get('kind') != 'KeynoteTable': return False
+    fields=('source','saved_path','saved_absolute_path','native_source','in_session_path')
+    if any(f.text(row.get(key) or '').strip() for key in fields): return False
+    metadata=dict((f.text(k).lower(),v) for k,v in row.get('resource_information',{}).items())
+    if any(f.text(metadata.get(key) or '').strip() for key in
+           ('path','absolutepath','fullpath','filepath','savedpath')): return False
+    # Only the built-in empty configuration has this explicit all-zero identity.
+    return f.text(metadata.get('modelidentity','')).strip('{}').lower()=='00000000-0000-0000-0000-000000000000'
+
+
+def package_load_state(row):
+    return row.get('package_loaded',row.get('loaded'))
+
+
 class Backend(object):
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
@@ -329,6 +344,11 @@ class Backend(object):
         external_ids=[]
         try: external_ids=list(self.DB.ExternalResourceUtils.GetAllExternalResourceReferences(doc))
         except Exception as exc: issues.append(issue('EXTERNAL_RESOURCE_SCAN_FAILED',source,exc,'error'))
+        # Unloaded cloud links may expose identity only on their link type.
+        known_ids=set(eid(i) for i in external_ids)
+        for link_type in self.elements(doc,'RevitLinkType'):
+            if not bool(getattr(link_type,'IsNestedLink',False)) and eid(link_type.Id) not in known_ids:
+                external_ids.append(link_type.Id);known_ids.add(eid(link_type.Id))
         for ident in external_ids:
             f.check(self.cancelled)
             try:
@@ -378,6 +398,13 @@ class Backend(object):
                              in_session_path=display,
                              optional_library=(kind=='AssemblyCodeTable'),
                              note='External-resource identity recorded; exact source resolution preserves the configured resource.')
+                    if kind=='RevitLink':
+                        try: row['link_name']=f.text(element.Name)
+                        except Exception:
+                            try: row['link_name']=f.text(self.DB.Element.Name.GetValue(element))
+                            except Exception: pass
+                        identity=cache_sources.reference_identity(row)
+                        if identity:row['cloud_identity']=identity
                     if f.category(resolved_source)=='spreadsheets':
                         row.update(category='spreadsheets',special='plugin_spreadsheet',provider=kind,source_evidence='EXTERNAL_RESOURCE_PATH')
                     if special=='image':
@@ -390,6 +417,10 @@ class Backend(object):
             except f.Cancelled: raise
             except Exception as exc:
                 issues.append(issue('EXTERNAL_RESOURCE_UNRESOLVED',source+' #'+f.text(getattr(ident,'Id','?')),exc))
+        for row in refs:
+            if unconfigured_keynote(row):
+                row['unconfigured']=True
+                row['note']='No keynote file is configured.'
         # Some Revit versions do not expose Navisworks coordination paths publicly.
         coordination=getattr(self.DB.BuiltInCategory,'OST_Coordination_Model',None)
         if coordination is not None:
@@ -427,10 +458,13 @@ class Backend(object):
             ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds())
             for row in rows:
                 ident_key=row.get('element_id',row['id'])
-                if not row.get('target') or ident_key not in ids or row.get('loaded') is None: continue
+                if not row.get('target') or ident_key not in ids or package_load_state(row) is None: continue
+                # Cloud references need the resource-server conversion first,
+                # even if a native API representation also supplied a TD id.
+                if cache_sources.reference_identity(row) and row.get('repath')!='API_LOCAL_LINK':continue
                 value=relative_path(row['target'],os.path.dirname(target)) if relative else row['target']
                 typ=self.DB.PathType.Relative if relative else self.DB.PathType.Absolute
-                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(row['loaded']))
+                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(package_load_state(row)))
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
             td.IsTransmitted=True
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
@@ -445,8 +479,9 @@ class Backend(object):
             if row.get('target'): self.guard(row['target'])
         transmitted=self.apply_metadata(stage,target,rows) if options.get('repath') else False
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
-        external=[r for r in rows if r.get('target') and not r.get('td') and r.get('kind')=='RevitLink']
-        needs_document=options.get('cleanup') or options.get('upgrade') or (options.get('repath') and (special or external))
+        external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
+                  and (not r.get('td') or cache_sources.reference_identity(r))]
+        needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external))
         if needs_document and info['version']!=f.text(self.app.VersionNumber) and not options.get('upgrade'):
             issues.append(issue('UPGRADE_CONSENT_REQUIRED',target,
                                 'Saved format '+info['version']+' retained. Additional API repathing needs a save in Revit '
@@ -470,11 +505,20 @@ class Backend(object):
                         number=int(row['element_id'])
                         ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
                         link=doc.GetElement(ident)
-                        result=link.LoadFrom(self.mp(row['target']),None)
-                        if f.text(result.LoadResult) not in ('LinkLoaded','LinkAlreadyLoaded'):
-                            raise RuntimeError('Revit link reload failed: '+f.text(result.LoadResult))
-                        dispose(result)
-                        if row.get('loaded') is False: link.Unload(None)
+                        resource=result=model_path=None
+                        try:
+                            model_path=self.mp(row['target'])
+                            if cache_sources.reference_identity(row) or not bool(getattr(link,'IsFromLocalPath',True)):
+                                resource=self.DB.ExternalResourceReference.CreateLocalResource(doc,
+                                    self.DB.ExternalResourceTypes.BuiltInExternalResourceTypes.RevitLink,
+                                    model_path,self.DB.PathType.Absolute)
+                                result=link.LoadFrom(resource,None)
+                            else:
+                                result=link.LoadFrom(model_path,None)
+                            if f.text(result.LoadResult) not in ('LinkLoaded','LinkAlreadyLoaded'):
+                                raise RuntimeError('Revit link reload failed: '+f.text(result.LoadResult))
+                        finally:dispose(result);dispose(resource);dispose(model_path)
+                        if package_load_state(row) is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
                 if options.get('cleanup'):
                     from .cleanup import run
@@ -555,6 +599,7 @@ class Backend(object):
                 if not row.get('target') or row.get('skip_repath'): continue
                 kind=row.get('kind')
                 if kind!='RevitLink' and row.get('special')!='image': continue
+                row.pop('verification',None)
                 f.check(self.cancelled)
                 try:
                     number=int(row['element_id'])
@@ -566,8 +611,9 @@ class Backend(object):
                     if kind=='RevitLink':
                         reference=element.GetExternalFileReference()
                         actual=self.visible(reference.GetAbsolutePath())
-                        if row.get('loaded') is True and not self.DB.RevitLinkType.IsLoaded(doc,ident):
-                            raise RuntimeError('Packaged Revit link did not load.')
+                        expected_load=package_load_state(row)
+                        if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
+                            raise RuntimeError('Packaged Revit link load state does not match the requested state.')
                     else:
                         actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
                     if f.canonical(actual)!=f.canonical(row['target']):

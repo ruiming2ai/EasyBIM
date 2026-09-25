@@ -39,8 +39,9 @@ class SavedCacheSession(unittest.TestCase):
         self.assertEqual(f.digest(self.original),f.digest(host['target']))
         self.assertEqual(self.doc.PathName,before)
         self.assertEqual(host['source_context']['state_basis'],'VERIFIED_LOCAL_CACHE_SAVED_STATE')
-        self.assertTrue(host.get('saved_state_backup'))
-        self.assertEqual(f.digest(host['saved_state_backup']),f.digest(self.original))
+        self.assertNotIn('saved_state_backup',host)
+        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
+        self.assertEqual(host['saved_state_sha256'],f.digest(self.original))
     def test_loaded_link_cache_can_be_copied_without_SaveAs_or_APS(self):
         self.doc.IsLinked=True;key=self.r.add_live(self.doc)
         target=os.path.join(self.root,'package','Arch.rvt')
@@ -91,7 +92,7 @@ class SavedCacheSession(unittest.TestCase):
         self.doc.IsLinked=True;key=self.r.add_live(self.doc)
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
         self.assertFalse(b.skip_dependency(key,'owner',dict(skip_cloud_links=True)))
-    def test_two_named_jobs_and_zips_retain_saved_host_baselines(self):
+    def test_two_named_jobs_and_zips_retain_saved_hosts(self):
         key=self.r.add_live(self.doc)
         other=copy.copy(self.doc);other.Title='Second Host'
         other.GetCloudModelPath=lambda:Obj(GetModelGUID=lambda:W,GetProjectGUID=lambda:P,Dispose=lambda:None)
@@ -115,6 +116,7 @@ class SavedCacheSession(unittest.TestCase):
         self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
-        self.assertEqual(f.digest(host['target']),f.digest(host['saved_state_backup']))
+        self.assertEqual(f.digest(host['target']),f.digest(self.original))
+        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
 
 if __name__=='__main__':unittest.main(verbosity=2)

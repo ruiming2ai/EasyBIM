@@ -1,9 +1,9 @@
 title: e-transmit
 tooltip: >-
-  Transmit the verified locally saved/cache edition of open models and loaded
+  Transmit the verified locally saved/cache edition of open models and identified
   links. Unsaved edits are excluded. No Save, SaveAs, Sync, Publish or relocation
   of working documents. Original caches are read only; copied models alone may
-  be detached/repathed. Retains a checksum-verified _HostState baseline.
+  be detached/repathed. Load Unloaded Files is enabled by default for copied Revit links.
   Model-named job folders and individual ZIPs. Review the reports before delivery.
 author: Ruiming Liu
 context: zero-doc

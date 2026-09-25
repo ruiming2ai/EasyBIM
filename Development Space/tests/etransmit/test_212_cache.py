@@ -65,15 +65,17 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(result['metadata']['cache_path'],path)
         self.assertEqual(result['metadata']['revision_check'],'MATCHES_LOADED_SAVED_VERSION')
         self.assertEqual(result['metadata']['cache_document_version'],self.version)
-    def test_mismatched_link_revision_is_rejected_even_when_timestamp_is_newer(self):
+    def test_mismatched_link_revision_is_exported_as_explicit_saved_edition(self):
         c=cache_module(self);self.put();store=self.store(linked=True)
         store.read_info=lambda p:dict(version=dict(guid=W,saves=99),format='2024',workshared=True)
-        with self.assertRaises(c.CacheError) as ctx:store.capture(self.entry)
-        self.assertIn('VERSION',ctx.exception.code)
+        result=store.capture(self.entry)
+        self.assertEqual(result['metadata']['revision_check'],'SAVED_CACHE_DIFFERS_FROM_LOADED')
+        self.assertEqual(result['metadata']['cache_document_version'],dict(guid=W,saves=99))
     def test_save_count_is_checked_not_only_guid(self):
         c=cache_module(self);self.put();store=self.store(linked=True)
         store.read_info=lambda p:dict(version=dict(guid=V,saves=10),format='2024',workshared=True)
-        with self.assertRaises(c.CacheError):store.capture(self.entry)
+        result=store.capture(self.entry)
+        self.assertEqual(result['metadata']['revision_check'],'SAVED_CACHE_DIFFERS_FROM_LOADED')
     def test_modified_primary_can_export_unique_saved_cache_without_saving_edits(self):
         self.put();store=self.store(modified=True)
         store.read_info=lambda p:dict(version=dict(guid=W,saves=8),format='2024',workshared=True)

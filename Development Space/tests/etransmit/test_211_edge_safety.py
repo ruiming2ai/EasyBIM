@@ -9,7 +9,7 @@ Obj=fixtures.Obj
 
 class ExtraHostChecks(fixtures.HostSafety):
     # Inherit the same setup; explicitly add only these scenarios to this suite.
-    def test_processing_failure_restores_main_and_keeps_baseline(self):
+    def test_processing_failure_restores_main_without_packaged_baseline(self):
         key=self.live();self.authorize(key)
         class B(s.SessionBackend):
             def finish(inner,stage,target,*args):
@@ -20,7 +20,8 @@ class ExtraHostChecks(fixtures.HostSafety):
         result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
         rec=result['files'][0]
         with open(rec['target'],'rb') as inp:self.assertEqual(inp.read(),self.current)
-        self.assertEqual(f.digest(rec['target']),f.digest(rec['current_state_backup']))
+        self.assertEqual(f.digest(rec['target']),rec['current_state_sha256'])
+        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
         self.assertEqual(rec['current_state_integrity'],'VERIFIED')
         self.assertEqual(rec['processing_status'],'FAILED')
     def test_postsave_mutation_is_not_claimed_as_current_snapshot(self):

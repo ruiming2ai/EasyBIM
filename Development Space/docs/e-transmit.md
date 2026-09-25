@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.0.0
+# EasyBIM e-transmit 2.1.3
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -8,10 +8,9 @@ around Autodesk's add-in and not a claim of identical format coverage.
 ## Status and first use
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
-Python packages or extra installer are required. Development checks run under
-CPython; **Revit, IronPython, WPF, Desktop Connector and Windows integration have
-not been executed in the development environment**. Start on a non-production
-project and use `e-transmit-desktop-checklist.md` before office-wide deployment.
+Python packages or extra installer are required. Filesystem and API-shaped tests
+do not establish that company models open in Revit. See `e-transmit-2.1.3.md` for
+release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
 button works with no project open. Open project documents appear in the source
@@ -33,10 +32,11 @@ Files keep their original basenames and relative directory hierarchy. Different
 source roots are represented explicitly rather than merged by filename:
 
 ```
-Transmittal_<time>/
-  01_Host/
+ET_<time>/
+  Host/
+    Host.rvt
     Sources/
-      Drive_D/Project/Models/Host.rvt
+      Open_Models/<identity>/Architecture.rvt
       Drive_D/Project/Architecture/References/Details.pdf
       Drive_D/Project/Electrical/References/Details.pdf
       Network/server/share/Project/References/Site.dwg
@@ -76,31 +76,34 @@ found. The report and desktop opening check are part of transmission.
 
 ## ACC and exact source locations
 
-A readable local/Desktop Connector path is copied from that exact location. The
-tool does **not** search by basename, replace Shared/Consumed with WIP, fetch the
-latest live authoring model, or use CollaborationCache/PacCache files.
+Open cloud hosts use read-only snapshots of CollaborationCache, including custom
+Revit.ini locations. Loaded or unloaded cloud links are identified by project/model
+GUIDs and region from the saved host's references. The link type supplies its filename.
+No APS sign-in is needed for this cache route.
 
-For a cloud/server display path with no usable local filesystem path, add an
-**exact source-prefix mapping** to the corresponding Connector/download folder:
+Prefer a cache candidate matching both the loaded revision GUID and save count.
+Otherwise, a single unambiguous native saved cache edition of the same linked
+model is accepted, with its revision difference reported. When no linked document
+is loaded, report that no loaded-revision comparison was possible. Different
+candidates are never chosen by timestamp. Cache stability, hashes, native metadata
+and Revit format are checked before accepting a copy. A different saved revision
+is inspected for its own dependencies rather than borrowing the loaded inventory.
 
-```
-BIM 360://Project/Project Files/Consumed
-    -> C:\Users\you\DC\ACCDocs\Account\Project\Project Files\Consumed
-```
-
-The folder must represent the same configured source. Longest matching prefixes
-win; ambiguous mappings and path traversal are rejected. Only the prefix is
-mapped: the remaining hierarchy and filename are preserved. Mappings are logged.
-
-Cloud-only host models require choosing their intended saved/downloaded file or
-an exact mapping before transmission. The extension has **no ACC authentication
-or historical-version download client**. External resource version IDs are
-recorded when available, but a filesystem copy is not certified as that historical
-cloud revision. Missing/unverifiable sources are reported, never silently
-substituted. Desktop Connector may download the version available at the linked
-location; verify controlled snapshots before delivery.
+Separately browsed local/Desktop Connector files retain their exact source paths.
+Exact prefix mappings must preserve the configured source, including Shared/Consumed.
+The explicit **Add ACC published model** mode uses authenticated, version-specific
+downloads. It is not a fallback for unavailable cache sources. PacCache is not used.
 
 ## Repath, upgrade and cleanup
+
+**Load Unloaded Files** defaults on and loads successfully acquired Revit links
+in exported copies. Turn it off to preserve their recorded load states. The option
+is disabled when repathing is off and is retained with saved settings. Working
+models are never reloaded. Existing link elements are repathed rather than recreated.
+
+Packages and ZIPs contain no `_HostState` duplicate. Temporary staging outside the
+deliverable supports rollback on failure or cancellation. Reports separate requested,
+copied and verified Revit links; a copied host alone does not prove portability.
 
 The default is deep inspection plus supported repathing, with upgrade and all
 cleanup OFF. No source model transaction is performed. Inspection copies are

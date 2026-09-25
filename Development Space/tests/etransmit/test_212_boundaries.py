@@ -12,7 +12,8 @@ class SavedBoundary(fixtures.SavedCacheSession):
         result=engine.transmit([key],out,s.SessionBackend(self.db,self.app,out,self.r),opts)
         with open(os.path.join(out,'START_HERE.txt')) as inp:text=inp.read()
         self.assertIn('Unsaved edits are excluded',text)
-        self.assertIn('Protected saved-state host',text)
+        self.assertIn('Host acquisition checksum',text)
+        self.assertNotIn('_HostState',text)
         self.assertNotIn('Retained working document / SaveAs',text)
     def test_revit_open_must_never_return_a_working_document_for_processing(self):
         self.r.add_live(self.doc);b=s.SessionBackend(self.db,self.app,self.root,self.r)
@@ -35,8 +36,9 @@ class SavedBoundary(fixtures.SavedCacheSession):
                  cloud_identity=dict(model_guid='55555555-5555-4555-8555-555555555555',project_guid=P))
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
         b._bind_saved_links(entry,dict(references=[row]))
-        self.assertEqual(row['source'],'Autodesk Docs://Project/Original.rvt')
-    def test_normalization_failure_keeps_cached_host_and_raw_baseline(self):
+        self.assertNotEqual(row['source'],key)
+        self.assertEqual(self.r.get(row['source'])['cloud']['model_guid'],'55555555-5555-4555-8555-555555555555')
+    def test_normalization_failure_restores_cached_host_without_extra_baseline(self):
         key=self.r.add_live(self.doc)
         class B(s.SessionBackend):
             def finish(inner,stage,target,*args):
@@ -48,7 +50,7 @@ class SavedBoundary(fixtures.SavedCacheSession):
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'FAILED')
         self.assertEqual(f.digest(host['target']),f.digest(self.original))
-        self.assertEqual(f.digest(host['saved_state_backup']),f.digest(self.original))
+        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
 
 for name in fixtures.SavedCacheSession.__dict__:
     if name.startswith('test_') and name not in SavedBoundary.__dict__:setattr(SavedBoundary,name,None)

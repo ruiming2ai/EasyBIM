@@ -42,6 +42,26 @@ def version(value):
         return None
 
 
+def reference_identity(row):
+    """Cloud identity survives even when an unloaded resource has no path."""
+    metadata = dict((f.text(k).lower(), v) for k, v in row.get('resource_information', {}).items())
+    identity = row.get('cloud_identity') or {}
+    project = guid(identity.get('project_guid') or metadata.get('linkedmodelprojectid'))
+    model = guid(identity.get('model_guid') or metadata.get('linkedmodelmodelid'))
+    if not project or not model:
+        return {}
+    return dict(project_guid=project, model_guid=model,
+                region=f.text(identity.get('region') or metadata.get('linkedmodelregion') or '').upper())
+
+
+def same_identity(left, right):
+    return bool(guid(left.get('project_guid')) and guid(left.get('model_guid')) and
+                guid(left.get('project_guid')) == guid(right.get('project_guid')) and
+                guid(left.get('model_guid')) == guid(right.get('model_guid')) and
+                (not left.get('region') or not right.get('region') or
+                 f.text(left['region']).upper() == f.text(right['region']).upper()))
+
+
 def discover_roots(application, environ=None):
     """Read the current release's user Revit.ini; never change its settings."""
     env = os.environ if environ is None else environ
@@ -245,9 +265,10 @@ class Store(object):
         identity = entry.get('cloud') or {}
         expected = version(entry.get('document_version'))
         primary_modified = bool(entry.get('is_modified') and not entry.get('is_linked'))
+        saved_link = bool(entry.get('is_linked'))
         evidence = dict(roots=list(self.roots), identity=dict(identity),
                         expected_document_version=expected, attempts=[])
-        if not expected and not primary_modified:
+        if not expected and not (primary_modified or saved_link):
             raise CacheError('CACHE_VERSION_UNAVAILABLE', 'The loaded saved DocumentVersion is unavailable.', evidence)
         if f.cache_source(self.staging_root) or any(f.within(self.staging_root, r) for r in self.roots):
             raise CacheError('CACHE_DESTINATION_REFUSED', 'Snapshot destination must be outside every cache.', evidence)
@@ -280,12 +301,16 @@ class Store(object):
                     if not fmt.isdigit() or (release.isdigit() and int(fmt) > int(release)):
                         raise CacheError('CACHE_FORMAT_UNSUPPORTED', 'Copied cache format is unsupported by this Revit process.')
                     equal = actual == expected
-                    if not equal and not primary_modified:
+                    if not equal and not (primary_modified or saved_link):
                         raise CacheError('CACHE_VERSION_MISMATCH', 'Copied cache does not match both the loaded revision GUID and save count.')
-                    attempt.update(status='MATCH' if equal else 'SAVED_ONLY', actual_document_version=actual)
+                    revision_check = ('MATCHES_LOADED_SAVED_VERSION' if equal else
+                                      ('SAVED_CACHE_DIFFERS_FROM_LOADED' if expected else 'SAVED_CACHE_NO_LOADED_REVISION')
+                                      if saved_link else 'SAVED_CACHE_ONLY_UNSAVED_EXCLUDED')
+                    attempt.update(status='MATCH' if equal else 'SAVED_ONLY', actual_document_version=actual,
+                                   sha256=meta['sha256'])
                     meta.update(cache_path=path, cache_document_version=actual, loaded_document_version=expected,
                                 cache_model_identity=dict(identity), cache_format=fmt,
-                                revision_check='MATCHES_LOADED_SAVED_VERSION' if equal else 'SAVED_CACHE_ONLY_UNSAVED_EXCLUDED',
+                                revision_check=revision_check,
                                 unsaved_edits_excluded=bool(entry.get('is_modified')),
                                 source_stability='VERIFIED_CACHE_SNAPSHOT', copy_method='COLLABORATION_CACHE_READ_ONLY')
                     accepted.append((target, meta, equal))

@@ -1,3 +1,3 @@
 # -*- coding: utf-8 -*-
 """EasyBIM e-transmit. No Revit work is performed at import time."""
-VERSION = '2.1.2'
+VERSION = '2.1.3'

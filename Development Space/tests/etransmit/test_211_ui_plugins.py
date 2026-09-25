@@ -26,7 +26,7 @@ class UI(unittest.TestCase):
         d.result=None;d.snapshots_authorized=False;d.Models=Obj(CommitEdit=lambda:None)
         d.models=[self.ui.Choice('Open Host',document=Obj(Title='Open Host'),mode='LIVE_DOCUMENT')]
         d.Output=Obj(Text=self.root);d.categories=[];d.extras=[];d.mappings=[];d.view_types=[]
-        for name in ['DeepScan','Repath','Reports','Separate','SkipCloudLinks']:setattr(d,name,Obj(IsChecked=True))
+        for name in ['DeepScan','Repath','LoadUnloadedFiles','Reports','Separate','SkipCloudLinks']:setattr(d,name,Obj(IsChecked=True))
         for name in ['Cleanup','Upgrade','DiscardWorksets','Purge','Zip','ZipPerModel','SaveSettings']:setattr(d,name,Obj(IsChecked=False))
         d.ViewMode=Obj(SelectedItem=Obj(Key='all'));d.uiapp=Obj(Application=Obj(VersionNumber='2024'));d.Close=lambda:None
         return d

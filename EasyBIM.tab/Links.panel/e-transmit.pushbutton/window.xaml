@@ -15,7 +15,7 @@
                  TextWrapping="Wrap" Margin="0,7,0,0"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom">
-      <TextBlock Text="Cache copies are identified by cloud project/model and saved revision. Missing or mismatched files are reported, never replaced with a newer published model."
+      <TextBlock Text="ACC links use an exact loaded revision when available, otherwise one unambiguous saved cache edition of the same model. Reports identify revision differences. Published downloads remain a separate choice."
                  TextWrapping="Wrap" Foreground="#536273" Margin="0,7,0,7"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Content="Transmit saved copies" Click="transmit_click" MinWidth="165" IsDefault="True"/>
@@ -57,6 +57,9 @@
             <CheckBox x:Name="SkipCloudLinks" Content="Skip unresolved cloud downloads (verified local caches are still collected)" IsChecked="True"/>
             <CheckBox x:Name="DeepScan" Content="Deep inspection of saved copies (needed for modified open hosts)" IsChecked="True"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
+            <CheckBox x:Name="LoadUnloadedFiles" Content="Load Unloaded Files" IsChecked="True"
+                      IsEnabled="{Binding IsChecked, ElementName=Repath}"
+                      ToolTip="Load successfully copied Revit links in exported models, including links previously unloaded. Uncheck to preserve their saved load states. Working models are unchanged."/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="3  Related files — all included by default">

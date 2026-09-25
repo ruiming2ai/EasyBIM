@@ -16,7 +16,7 @@ import time
 from . import files as f, model_payload, cache_sources
 from .revit import Backend, eid, dispose
 from .engine import issue
-from .cloud_sources import identifier
+from .cloud_sources import identifier, validate_name
 
 
 class SourceError(ValueError):
@@ -66,6 +66,29 @@ class Registry(object):
         self.scanner=Backend(DB,application,recovery_root,cancelled)
     def get(self,key):return self.entries.get(key)
     def owns(self,key):return key in self.entries
+    def add_cached_reference(self,row):
+        """Register an identified saved link without requiring a live Document."""
+        identity=cache_sources.reference_identity(row)
+        if not identity:return None
+        for key,entry in self.entries.items():
+            if entry['mode']=='CACHED_CLOUD_REFERENCE' and cache_sources.same_identity(identity,entry.get('cloud',{})):
+                return key
+        name=f.text(row.get('link_name') or '')
+        if not name:
+            for field in ('configured_source','in_session_path','saved_path','source'):
+                value=f.text(row.get(field) or '')
+                if value.lower().endswith('.rvt'):
+                    name=value.replace('\\','/').rsplit('/',1)[-1];break
+        if name and not name.lower().endswith('.rvt'):name+='.rvt'
+        try:name=validate_name(name)
+        except ValueError:
+            raise SourceError('CACHE_LINK_NAME_UNAVAILABLE','Identified ACC link has no valid model filename; element '+f.text(row.get('element_id',''))+'.')
+        key='cache://'+identifier(identity['region']+'/'+identity['project_guid']+'/'+identity['model_guid'])+'/'+name
+        self.entries[key]=dict(source=key,mode='CACHED_CLOUD_REFERENCE',name=name,
+            cloud=identity,document_version=None,is_linked=True,is_modified=False,
+            original_path=f.text(row.get('source') or row.get('in_session_path') or ''),
+            state_basis='SAVED_CLOUD_REFERENCE',children=[],snapshot_path=None)
+        return key
     def add_live(self,doc,configured_source=None):
         for old,key in self._documents:
             if old is doc or old==doc:return key
@@ -182,13 +205,13 @@ class Registry(object):
 
     def _snapshot_saved_state(self,key,pulse=None):
         """Copy a saved edition, NEVER save or relocate the open Document."""
-        entry=self.entries[key];doc=entry['document']
+        entry=self.entries[key];doc=entry.get('document')
         if entry.get('snapshot_path'):
             path=entry['snapshot_path']
             if f.digest(path,self.cancelled)!=entry['snapshot_sha256']:
                 raise SourceError('CACHE_SNAPSHOT_CHANGED','The retained saved-state snapshot changed. It will not be reused.')
             return path
-        before=doc_version(doc)
+        before=doc_version(doc) if doc is not None else None
         if before!=entry.get('document_version'):
             raise SourceError('OPEN_DOCUMENT_VERSION_CHANGED','The open document revision changed after discovery. Start a fresh transmittal; no save was attempted.')
         entry['saved_state_only']=True
@@ -399,10 +422,9 @@ class SessionBackend(Backend):
         entry=self.registry.get(source)
         return copy.deepcopy(entry['inventory']) if entry and entry['mode']=='LIVE_DOCUMENT' else None
     def inventory_after_copy(self,source,options):
-        # Optional vendor inspection cannot prevent the initial host copy or its
-        # protected baseline. It runs only after acquire_file has retained both.
+        # Optional vendor inspection cannot prevent the initial host copy.
         entry=self.registry.get(source)
-        if not entry or entry['mode']!='LIVE_DOCUMENT' or not self.registry.collect_plugins or (self.registry.saved_state_only and entry.get('is_modified')):
+        if not entry or entry['mode']!='LIVE_DOCUMENT' or not self.registry.collect_plugins or (self.registry.saved_state_only and not self._can_use_live_inventory(entry)):
             return None
         if entry.get('plugins_scanned'):
             return copy.deepcopy(entry.get('plugin_inventory'))
@@ -419,7 +441,7 @@ class SessionBackend(Backend):
     def resolve_acquired_source(self,source,owner=''):
         if self.registry.owns(source):return source
         entry=self.registry.get(owner)
-        if self.registry.saved_state_only and entry and entry['mode']=='LIVE_DOCUMENT':
+        if self.registry.saved_state_only and entry and entry['mode'] in ('LIVE_DOCUMENT','CACHED_CLOUD_REFERENCE'):
             value=f.text(source or '')
             if value.lower().endswith('.rvt') and (f.is_desktop_connector_path(value) or '://' in value):
                 raise SourceError('CACHE_LINK_IDENTITY_UNRESOLVED','This cloud link was not matched to an identified loaded document/cache. No published model was downloaded instead.')
@@ -446,12 +468,7 @@ class SessionBackend(Backend):
             if meta.get('sha256')!=expected:
                 raise SourceError('CACHE_SNAPSHOT_COPY_MISMATCH','The package copy did not match the validated saved-state snapshot.')
             if not entry.get('is_linked'):
-                backup=os.path.join(self.root,'_HostState',identifier(source),entry['name'])
-                self.guard(backup)
-                baseline=f.copy_file(physical,backup,cancelled,pulse)
-                if baseline.get('sha256')!=expected:
-                    raise SourceError('HOST_BACKUP_COPY_MISMATCH','The protected saved-state host failed checksum verification.')
-                meta.update(saved_state_backup=backup,saved_state_sha256=expected,saved_state_integrity='VERIFIED')
+                meta.update(saved_state_sha256=expected,saved_state_integrity='VERIFIED')
             meta.update(copy_method=entry['cache_metadata']['copy_method'],source_stability='SESSION_SNAPSHOT',
                         source_context=self.registry.public(source))
             return meta
@@ -479,21 +496,18 @@ class SessionBackend(Backend):
             expected=entry['snapshot_sha256']
             if meta.get('sha256')!=expected:
                 raise SourceError('HOST_SNAPSHOT_COPY_MISMATCH','The host copy did not match the captured current state; the retained working snapshot was not changed.')
-            backup=os.path.join(self.root,'_HostState',identifier(source),entry['name'])
-            self.guard(backup)
-            # Retain a second, unprocessed baseline inside the delivered package.
-            # Neither finish() nor verify_package() receives this path.
-            baseline=f.copy_file(physical,backup,cancelled,pulse)
-            if baseline.get('sha256')!=expected:
-                raise SourceError('HOST_BACKUP_COPY_MISMATCH','The protected host backup did not match the current-state snapshot.')
-            meta.update(current_state_backup=backup,current_state_sha256=expected,
+            meta.update(current_state_sha256=expected,
                         current_state_integrity='VERIFIED')
         meta.update(source_stability='SESSION_SNAPSHOT',source_context=self.registry.public(source))
         return meta
+    def _can_use_live_inventory(self,entry):
+        return (entry.get('document') is not None and not entry.get('is_modified') and
+                entry.get('cache_metadata',{}).get('revision_check')=='MATCHES_LOADED_SAVED_VERSION')
+
     def scan(self,source,stage,options):
         entry=self.registry.get(source)
-        if self.registry.saved_state_only and entry and entry['mode']=='LIVE_DOCUMENT':
-            if not entry.get('is_modified'):
+        if self.registry.saved_state_only and entry and entry['mode'] in ('LIVE_DOCUMENT','CACHED_CLOUD_REFERENCE'):
+            if self._can_use_live_inventory(entry):
                 result=copy.deepcopy(entry['inventory'])
                 result['opened_in_revit']=False
                 result['inspection_status']='LOADED_SAVED_REVISION_INVENTORY'
@@ -502,10 +516,19 @@ class SessionBackend(Backend):
                 # Unsaved reference additions/deletions are not authoritative
                 # for the exported saved file. Inspect only its disposable copy.
                 result=Backend.scan(self,source,stage,options)
-                self._bind_saved_links(entry,result)
                 entry['inventory_basis']='SAVED_SNAPSHOT_INSPECTION'
-                result['issues'].append(issue('UNSAVED_EDITS_EXCLUDED',source,
-                    'The exported host is the locally saved file/cache, not the unsaved open state. No Save, Sync or Publish was performed.'))
+                if entry.get('is_modified'):
+                    result['issues'].append(issue('UNSAVED_EDITS_EXCLUDED',source,
+                        'The exported host is the locally saved file/cache, not the unsaved open state. No Save, Sync or Publish was performed.'))
+            if options.get('include',{}).get('revit',True):self._bind_saved_links(entry,result)
+            metadata=entry.get('cache_metadata',{})
+            revision=metadata.get('revision_check','')
+            if revision in ('SAVED_CACHE_DIFFERS_FROM_LOADED','SAVED_CACHE_NO_LOADED_REVISION'):
+                result['issues'].append(issue(revision,source,
+                    'Exported saved cache revision '+f.text(metadata.get('cache_document_version'))+
+                    '; loaded revision '+f.text(metadata.get('loaded_document_version'))+
+                    '. Dependencies were inspected from the saved copy.',
+                    'warning' if revision=='SAVED_CACHE_DIFFERS_FROM_LOADED' else 'info'))
             result['source_mode']='SAVED_LOCAL_STATE'
             return result
         before=self.inventory_before_copy(source,options)
@@ -514,20 +537,32 @@ class SessionBackend(Backend):
 
     def _bind_saved_links(self,entry,result):
         # Bind snapshot references only with persisted cloud identity evidence.
-        by_id=dict((r.get('element_id'),r) for r in entry['inventory'].get('references',[]) if r.get('kind')=='RevitLink')
+        by_id=dict((r.get('element_id'),r) for r in entry.get('inventory',{}).get('references',[]) if r.get('kind')=='RevitLink')
         for row in result.get('references',[]):
             if row.get('kind')!='RevitLink':continue
+            if self.registry.owns(row.get('source','')):continue
+            identity=cache_sources.reference_identity(row)
+            if identity:
+                row['cloud_identity']=identity
+                try:
+                    old=by_id.get(row.get('element_id'),{})
+                    child=self.registry.get(old.get('source',''))
+                    key=(old['source'] if child and cache_sources.same_identity(identity,child.get('cloud',{}))
+                         else self.registry.add_cached_reference(row))
+                except SourceError as exc:
+                    diagnostic=issue(exc.code,entry.get('source',''),exc,'error')
+                    diagnostic.update(element_id=row.get('element_id'),cloud_identity=identity)
+                    result.setdefault('issues',[]).append(diagnostic)
+                    row['resolution_failed']=True
+                    continue
+                row['configured_source']=row.get('source','')
+                row['source']=key;row['source_evidence']='SAVED_CLOUD_IDENTITY_CACHE_SOURCE'
+                continue
             old=by_id.get(row.get('element_id'),{})
             child=self.registry.get(old.get('source',''))
             if not child:continue
-            metadata=row.get('resource_information',{})
-            identity=row.get('cloud_identity') or dict(project_guid=metadata.get('LinkedModelProjectId'),
-                                                       model_guid=metadata.get('LinkedModelModelId'))
-            proven=(cache_sources.guid(identity.get('model_guid')) and
-                    cache_sources.guid(identity.get('model_guid'))==cache_sources.guid(child.get('cloud',{}).get('model_guid')) and
-                    cache_sources.guid(identity.get('project_guid'))==cache_sources.guid(child.get('cloud',{}).get('project_guid')))
-            if not child.get('cloud'):
-                proven=f.absolute(row.get('source','')) and f.canonical(row['source'])==f.canonical(child.get('original_path',''))
+            proven=(not child.get('cloud') and f.absolute(row.get('source','')) and
+                    f.canonical(row['source'])==f.canonical(child.get('original_path','')))
             if proven:
                 row['configured_source']=row.get('source','')
                 row['source']=old['source'];row['source_evidence']='SAVED_LINK_IDENTITY_MATCHED_TO_LOADED_DOCUMENT'

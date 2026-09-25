@@ -1,6 +1,19 @@
 # PyRevit_EasyBIM
 PyRevit Tools created by Ruiming Liu
 
+## e-transmit 2.1.3
+
+Exports identified ACC links from the local Revit cache, including unloaded links
+whose resource metadata supplies a project/model identity but no file path. An
+exact loaded revision is preferred; a different unambiguous saved edition is
+allowed and reported. Unsaved edits are excluded and working documents are not saved.
+
+**Load Unloaded Files** defaults on for packaged Revit links. Packages contain one
+host copy, with rollback copies kept temporarily outside the deliverable. Reports
+separate links requested, copied and verified. See the
+[2.1.3 release notes](Development%20Space/docs/e-transmit-2.1.3.md) and
+[desktop acceptance checklist](Development%20Space/docs/e-transmit-desktop-checklist.md).
+
 ## Temp Phase & View (Revit 2015-2027)
 
 Temp Phase & View is a Python-only pyRevit workflow driven by one ribbon

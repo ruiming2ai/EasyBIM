@@ -114,7 +114,12 @@ class FileTests(unittest.TestCase):
     def test_symlink_destination_refused(self):
         outside = self.root/'outside'; outside.mkdir()
         out = self.root/'out'; out.mkdir()
-        (out/'linked').symlink_to(outside, target_is_directory=True)
+        try:
+            (out/'linked').symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows account lacks the symlink creation privilege')
+            raise
         with self.assertRaises(ValueError): c.destination(str(out), 'linked/evil.txt')
 
 if __name__ == '__main__': unittest.main()
