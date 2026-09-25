@@ -1,10 +1,10 @@
 title: e-transmit
 tooltip: >-
-  Transmit current open documents, saved files, or explicitly selected published
-  ACC versions. Preserve filenames and source hierarchy where exposed. Includes
-  batch jobs, separate per-model ZIPs, readable plugin spreadsheet sources,
-  optional read-only Autodesk sign-in, and explicit current-state SaveAs consent.
-  Missing revisions and unsupported repathing are reported, never substituted.
+  Transmit the verified locally saved/cache edition of open models and loaded
+  links. Unsaved edits are excluded. No Save, SaveAs, Sync, Publish or relocation
+  of working documents. Original caches are read only; copied models alone may
+  be detached/repathed. Retains a checksum-verified _HostState baseline.
+  Model-named job folders and individual ZIPs. Review the reports before delivery.
 author: Ruiming Liu
 context: zero-doc
 min_revit_version: 2023
