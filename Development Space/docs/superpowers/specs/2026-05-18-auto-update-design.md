@@ -12,7 +12,9 @@ any sibling extensions in that repository.
 Two independent facts govern the result:
 
 - **Files are current:** a successful fetch of the configured upstream, followed
-  by matching local and upstream commits in a clean checkout.
+  by a clean checkout containing all upstream commits and matching its file tree.
+  Identical commit IDs establish both; extra local history requires separate
+  ancestry and tree checks.
 - **This session is current:** that verified commit matches the commit recorded
   when this Revit process loaded EasyBIM.
 
@@ -42,13 +44,19 @@ a notification before reloading.
    global connectivity/pending-update check or enumerate other extensions.
 5. Reopen only EasyBIM's repository and compare its commits. A changed local
    branch, upstream, or commit during the fetch invalidates the operation.
-   If commits differ, require a readable divergence with zero local commits and
-   positive upstream commits. Local-only or divergent commits require resolution.
+   If commits differ, require readable ahead/behind counts. Extra local history
+   is safe when its HEAD tree matches the upstream tree (nothing behind), or
+   matches their common ancestor's tree (behind upstream). Read the common
+   ancestor with the instance API `repo.ObjectDatabase.FindMergeBase(head, upstream)`.
+   This admits update-generated merge history without admitting committed file
+   edits. Missing common history or unreadable trees cannot authorize a pull.
 6. Pull only when behind using `updater.update_repo(repo_info)`. Consume the new
    `RepoInfo` returned by that call; the input wrapper retains its old hash.
    Reopen EasyBIM alone and verify its clean checkout, unchanged branch/upstream,
-   returned commit, and fetched upstream commit. A nonthrowing incomplete or
-   conflicted pull is still a failed update.
+   returned commit, and fetched upstream. A native merge can return a different
+   commit ID from upstream: accept it only with zero upstream commits missing
+   and a matching tree. Matching files alone do not prove upstream history was
+   incorporated. A nonthrowing incomplete or conflicted pull is still a failure.
 7. Release the mutex before dialogs and reload. Keep the process-local reentry
    guard active until the operation finishes.
 
@@ -89,8 +97,11 @@ failed reload so later checks do not silently treat the old session as current.
 Existing public entry points remain `run_startup_auto_update()`,
 `run_manual_auto_update()`, and the startup queue/guard helpers. Results preserve
 `status`, `trigger`, and `updated_repos`, and add `verified`, `reload_status`,
-`repo_key`, `branch`, `upstream`, `before_head`, `after_head`, `upstream_head`, and
-`message` for explicit verification and reload outcomes.
+`repo_key`, `branch`, `upstream`, `before_head`, `after_head`, `upstream_head`,
+`history_ahead`, and `message` for explicit verification and reload outcomes.
+`history_ahead` counts extra commits retained in a verified checkout; the manual
+current-version message explains that matching published files are installed
+and the extra history was preserved.
 
 Manual results distinguish:
 
@@ -108,7 +119,9 @@ credentials in authenticated URLs. Startup failures use pyRevit debug logging.
 
 The focused suite exercises immutable native-style `RepoInfo` snapshots, returned
 pull metadata, remote fetch failure, incomplete/nonthrowing conflicted pulls,
-local changes and divergence, branch races, direct discovery and core exclusion,
+local changes and divergence, extra history with matching published files,
+subsequent updates and repeated clicks after a native-style merge, missing
+ancestry/tree metadata, branch races, direct discovery and core exclusion,
 Windows path normalization, mutex cleanup and reentry, independent loaded-version
 state, repeated clicks, reload restoration, and the startup queue lifecycle.
 The adjacent Idling and startup-reentrancy suites must also pass.
@@ -116,6 +129,8 @@ The status test double requires a `StatusOptions` argument, matching the .NET
 instance overload. Native smoke checks use actual IronPython 2.7.12 and
 LibGit2Sharp 0.31.0 assemblies to check clean/dirty worktrees and the startup
 record/queue/fetch path against a disposable local upstream.
+History smoke checks also exercise actual native merge commits, consecutive
+updates, and protection of committed file edits with those assemblies.
 
 Live acceptance remains a separate check in Revit 2024 and an available newer
 version: one commit behind, already current, two sessions sharing a checkout,

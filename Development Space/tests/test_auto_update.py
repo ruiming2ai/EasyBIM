@@ -27,8 +27,8 @@ def _obj(**kwargs):
     return types.SimpleNamespace(**kwargs)
 
 
-def _commit(sha):
-    return _obj(Id=_obj(Sha=sha))
+def _commit(sha, tree=None):
+    return _obj(Id=_obj(Sha=sha), Tree=_obj(Id=_obj(Sha=tree or sha)))
 
 
 class StatusOptions:
@@ -43,7 +43,7 @@ class RepoInfo:
         self.last_commit_hash = disk.head
         self.branch = self.head_name = disk.branch
         self.username = self.password = None
-        tracked = (_obj(Tip=_commit(disk.upstream_head),
+        tracked = (_obj(Tip=_commit(disk.upstream_head, getattr(disk, "upstream_tree", None)),
                         CanonicalName=disk.upstream, RemoteName="origin")
                    if disk.upstream else None)
 
@@ -58,7 +58,11 @@ class RepoInfo:
 
         self.repo = _obj(
             Info=_obj(IsHeadDetached=disk.detached),
-            Head=_obj(FriendlyName=disk.branch, TrackedBranch=tracked),
+            Head=_obj(FriendlyName=disk.branch, TrackedBranch=tracked,
+                      Tip=_commit(disk.head, getattr(disk, "tree", None))),
+            ObjectDatabase=_obj(FindMergeBase=lambda first, second:
+                                _commit(disk.base_head, disk.base_tree)
+                                if getattr(disk, "base_head", None) else None),
             RetrieveStatus=retrieve_status)
 
 
@@ -82,7 +86,8 @@ class Git:
         if self.divergence is not None:
             return self.divergence
         return _obj(AheadBy=self.disk.ahead,
-                    BehindBy=0 if self.disk.head == self.disk.upstream_head else 1)
+                    BehindBy=getattr(self.disk, "behind",
+                                     0 if self.disk.head == self.disk.upstream_head else 1))
 
 
 class Updater:
@@ -112,7 +117,12 @@ class Updater:
         if self.pull_error:
             raise RuntimeError("https://user:SECRET@example.com/repository")
         if not self.incomplete:
-            self.git.disk.head = self.git.disk.upstream_head
+            disk = self.git.disk
+            disk.head = getattr(disk, "merge_result", disk.upstream_head)
+            if hasattr(disk, "tree"):
+                disk.tree = getattr(disk, "upstream_tree", disk.upstream_head)
+            if hasattr(disk, "behind"):
+                disk.behind = 0
         self.returned = RepoInfo(self.git.disk)
         self.after_pull()
         return self.returned
@@ -362,6 +372,132 @@ class UpdateTests(unittest.TestCase):
                 self.git.divergence = _obj(AheadBy=1, BehindBy=behind)
                 self._assert_failed(self._run(), self.module.STATUS_LOCAL_CHANGES)
                 self.assertEqual([], self.updater.pulled)
+
+    def test_extra_history_with_identical_published_files_is_current(self):
+        self.disk.head, self.disk.tree = C, A
+        self.disk.ahead, self.disk.behind = 1, 0
+        self.module.record_loaded_revision()
+        result = self._run()
+        self.assertEqual(self.module.STATUS_UP_TO_DATE, result["status"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(1, result["history_ahead"])
+        self.assertEqual([], self.updater.pulled)
+        self.reload.assert_not_called()
+        self.assertFalse(self.messages.call_args.kwargs["warn"])
+        self.assertIn("files match", result["message"])
+
+    def test_extra_history_can_still_reload_an_older_session(self):
+        self.disk.head, self.disk.tree = C, B
+        self.disk.upstream_head = self.disk.remote_head = B
+        self.disk.ahead, self.disk.behind = 1, 0
+        result = self._run()
+        self.assertEqual(self.module.STATUS_RELOADED, result["status"])
+        self.assertEqual([], self.updater.pulled)
+        self.reload.assert_called_once()
+
+    def test_current_extra_history_stays_quiet_at_startup(self):
+        self.disk.head, self.disk.tree = C, A
+        self.disk.ahead, self.disk.behind = 1, 0
+        self.module.record_loaded_revision()
+        self.assertTrue(self.module.queue_startup_auto_update())
+        result = self.module.run_pending_startup_auto_update()
+        self.assertEqual(self.module.STATUS_UP_TO_DATE, result["status"])
+        self.messages.assert_not_called()
+        self.reload.assert_not_called()
+
+    def _neutral_local_history_behind_remote(self):
+        self.disk.head, self.disk.tree = C, A
+        self.disk.base_head, self.disk.base_tree = A, A
+        self.disk.remote_head = B
+        self.disk.ahead, self.disk.behind = 1, 1
+        self.disk.merge_result = "d" * 40
+        self.module.record_loaded_revision()
+
+    def test_update_history_without_local_file_changes_can_receive_next_update(self):
+        self._neutral_local_history_behind_remote()
+        result = self._run()
+        self.assertEqual(self.module.STATUS_UPDATED, result["status"])
+        self.assertEqual(self.disk.merge_result, result["after_head"])
+        self.assertEqual(B, result["upstream_head"])
+        self.assertEqual(1, result["history_ahead"])
+        self.assertEqual(1, len(self.updater.pulled))
+        self.assertEqual(self.module.STATUS_UP_TO_DATE, self._run()["status"])
+        self.assertEqual(1, len(self.updater.pulled))
+        self.reload.assert_called_once()
+
+    def test_startup_updates_with_extra_history_and_does_not_queue_again(self):
+        self._neutral_local_history_behind_remote()
+        self.assertTrue(self.module.queue_startup_auto_update())
+        result = self.module.run_pending_startup_auto_update()
+        self.assertEqual(self.module.STATUS_UPDATED, result["status"])
+        self.assertTrue(result["verified"])
+        self.assertFalse(self.module.queue_startup_auto_update())
+        self.assertFalse(self.module.has_pending_startup_auto_update())
+        self.assertEqual(1, len(self.updater.pulled))
+        self.reload.assert_called_once()
+
+    def test_divergent_committed_file_edits_are_preserved(self):
+        self._neutral_local_history_behind_remote()
+        self.disk.tree = C
+        self._assert_failed(self._run(), self.module.STATUS_LOCAL_CHANGES)
+        self.assertEqual((C, C), (self.disk.head, self.disk.tree))
+        self.assertEqual([], self.updater.pulled)
+
+    def test_unrelated_histories_cannot_be_treated_as_a_safe_merge(self):
+        self._neutral_local_history_behind_remote()
+        self.disk.base_head = None
+        self._assert_failed(self._run(), self.module.STATUS_LOCAL_CHANGES)
+        self.assertEqual([], self.updater.pulled)
+
+    def test_merge_base_api_failure_is_reported_without_secrets(self):
+        self._neutral_local_history_behind_remote()
+        original_get_repo = self.git.get_repo
+
+        def get_repo(path):
+            info = original_get_repo(path)
+            info.repo.ObjectDatabase.FindMergeBase = mock.Mock(
+                side_effect=TypeError("https://user:SECRET@example.com/repository"))
+            return info
+
+        with mock.patch.object(self.git, "get_repo", side_effect=get_repo):
+            result = self._run()
+        self._assert_failed(result, self.module.STATUS_VERIFICATION_FAILED)
+        self.assertIn("common upstream history (TypeError)", result["message"])
+        self.assertNotIn("SECRET", str(self.messages.call_args_list))
+        self.assertEqual([], self.updater.pulled)
+
+    def test_missing_tree_metadata_is_not_current(self):
+        self.disk.head, self.disk.tree = C, A
+        self.disk.ahead, self.disk.behind = 1, 0
+        original_get_repo = self.git.get_repo
+
+        def get_repo(path):
+            info = original_get_repo(path)
+            info.repo.Head.Tip.Tree = None
+            return info
+
+        with mock.patch.object(self.git, "get_repo", side_effect=get_repo):
+            result = self._run()
+        self._assert_failed(result, self.module.STATUS_VERIFICATION_FAILED)
+        self.assertIn("committed files (AttributeError)", result["message"])
+        self.assertEqual([], self.updater.pulled)
+
+    def test_equal_trees_alone_do_not_prove_remote_history_was_installed(self):
+        self._neutral_local_history_behind_remote()
+        self.disk.tree = B
+        result = self._run()
+        self._assert_failed(result, self.module.STATUS_LOCAL_CHANGES)
+        self.assertEqual([], self.updater.pulled)
+
+    def test_merge_that_leaves_remote_commits_missing_is_not_success(self):
+        self._neutral_local_history_behind_remote()
+        self.updater.after_pull = lambda: setattr(self.disk, "behind", 1)
+        self._assert_failed(self._run(), self.module.STATUS_VERIFICATION_FAILED)
+
+    def test_merge_with_different_files_is_not_success(self):
+        self._neutral_local_history_behind_remote()
+        self.updater.after_pull = lambda: setattr(self.disk, "tree", C)
+        self._assert_failed(self._run(), self.module.STATUS_VERIFICATION_FAILED)
 
     def test_detached_head_is_left_alone(self):
         self.disk.detached = True

@@ -146,7 +146,7 @@ def _result(trigger, updated_repos=None, status=STATUS_NO_OP):
             "verified": False, "reload_status": "not_needed",
             "repo_key": "", "branch": "", "upstream": "",
             "before_head": "", "after_head": "", "upstream_head": "",
-            "message": ""}
+            "history_ahead": 0, "message": ""}
 
 
 def _run_easybim_update(trigger, updater=None):
@@ -224,20 +224,18 @@ def _verify_and_update(result, updater):
         raise _UpdateError(STATUS_VERIFICATION_FAILED,
                            "EasyBIM's local commit changed during the check. Try again.")
     result.update(current)
+    needs_pull = False
     if current["after_head"] != current["upstream_head"]:
-        divergence = git.compare_branch_heads(info)
-        ahead = getattr(divergence, "AheadBy", None)
-        behind = getattr(divergence, "BehindBy", None)
-        if ahead is None or behind is None or ahead < 0 or behind < 0:
-            raise _UpdateError(STATUS_VERIFICATION_FAILED,
-                               "Could not compare EasyBIM with its fetched upstream branch. Nothing was pulled.")
-        if ahead > 0:
-            reason = "has diverged from its upstream" if behind > 0 else "contains local commits"
+        ahead, behind = _branch_divergence(info)
+        if ahead > 0 and not _history_matches_published_files(info, behind):
             raise _UpdateError(STATUS_LOCAL_CHANGES,
-                               "EasyBIM {}. Resolve the local commits before updating; nothing was pulled.".format(reason))
-        if behind == 0:
+                               "EasyBIM's local history contains file changes that could not be verified against "
+                               "its published version. Nothing was pulled; local files and history were preserved.")
+        if ahead == 0 and behind == 0:
             raise _UpdateError(STATUS_VERIFICATION_FAILED,
                                "EasyBIM's commit comparison is inconsistent. Nothing was pulled.")
+        needs_pull = behind > 0
+    if needs_pull:
         try:
             updated = updater.update_repo(info)
         except Exception:
@@ -255,16 +253,63 @@ def _verify_and_update(result, updater):
             result["after_head"] = pulled_head
         # Reopen only our repository to verify actual on-disk state, including
         # conflicts (LibGit2Sharp can return from Pull without throwing).
-        current = _inspect_repo(git.get_repo(updated.directory))
+        info = git.get_repo(updated.directory)
+        current = _inspect_repo(info)
         _require_same_checkout(before, current)
         if current["after_head"] != pulled_head:
             raise _UpdateError(STATUS_VERIFICATION_FAILED,
                                "EasyBIM's files no longer match the commit returned by the updater. Try again.")
         result.update(current)
     if current["after_head"] != current["upstream_head"]:
-        raise _UpdateError(STATUS_VERIFICATION_FAILED,
-                           "The pull did not bring EasyBIM to its fetched upstream commit. Check the repository for conflicts.")
+        ahead, behind = _branch_divergence(info)
+        # A native pull can create a merge commit with a different ID from
+        # upstream. Require all upstream history AND identical published files.
+        if behind != 0 or ahead == 0 or not _history_matches_published_files(info, behind):
+            raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                               "EasyBIM does not contain all fetched upstream commits with matching files. "
+                               "Check the repository for an incomplete pull or conflicts.")
+        result["history_ahead"] = ahead
     result["verified"] = True
+
+
+def _branch_divergence(info):
+    divergence = _get_git().compare_branch_heads(info)
+    ahead = getattr(divergence, "AheadBy", None)
+    behind = getattr(divergence, "BehindBy", None)
+    if ahead is None or behind is None or ahead < 0 or behind < 0:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "Could not compare EasyBIM with its fetched upstream branch.")
+    return ahead, behind
+
+
+def _tree_hash(commit):
+    try:
+        tree = _safe_text(commit.Tree.Id.Sha).strip()
+        if not tree:
+            raise ValueError("missing tree ID")
+        return tree
+    except Exception as error:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "Could not inspect EasyBIM committed files ({}). "
+                           "The installed version could not be verified.".format(type(error).__name__))
+
+
+def _history_matches_published_files(info, behind):
+    head = info.repo.Head.Tip
+    upstream = info.repo.Head.TrackedBranch.Tip
+    published = upstream
+    if behind > 0:
+        try:
+            published = info.repo.ObjectDatabase.FindMergeBase(head, upstream)
+        except Exception as error:
+            raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                               "Could not inspect EasyBIM's common upstream history ({}). "
+                               "Nothing was pulled.".format(type(error).__name__))
+        if published is None:
+            return False
+    # Update buttons can leave extra merge commits. They are safe to retain
+    # when they introduce no file differences relative to the published base.
+    return _tree_hash(head) == _tree_hash(published)
 
 
 def _require_clean(info):
@@ -331,6 +376,10 @@ def _finish_verified_update(result):
                             "Reload pyRevit or restart Revit once to establish the loaded version.")
         result["status"] = STATUS_UP_TO_DATE
         result["message"] = "EasyBIM is already up to date, and this Revit session has that version loaded."
+        if result["history_ahead"]:
+            result["message"] = (
+                "EasyBIM's files match the latest published version, and this Revit session has that version loaded. "
+                "Extra local Git history was preserved.")
         _report(result)
         return result
     try:

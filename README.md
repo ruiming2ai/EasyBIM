@@ -896,10 +896,14 @@ nothing is reported, never guessed at.
 Auto Update checks **EasyBIM's configured upstream branch** by fetching its remote,
 compares its commit with the installed files, and pulls missing changes through
 pyRevit's Git APIs and saved repository credentials. An unchanged local commit alone is
-not proof of being current: a successful remote check and matching commits are
-required. Network, authentication, and repository errors are reported separately.
-Local edits, local commits, divergent branches, and detached checkouts are left
-for the user to resolve; Auto Update never resets files or switches branches.
+not proof of being current: a successful remote check, all upstream commits, and
+matching file contents are required. Extra merge history from an update can have
+a different commit ID while containing exactly the published files; this is
+accepted and preserved. Future updates can also merge that history when it adds
+no file differences relative to its common upstream base. Local file changes
+(including committed changes), detached checkouts, and unverifiable histories
+remain protected. Auto Update never resets files or switches branches. Network,
+authentication, and repository errors are reported separately.
 
 Each Revit session records the EasyBIM commit it loaded. Auto Update reloads
 pyRevit only when that session needs the verified files, including when another
