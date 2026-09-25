@@ -11,11 +11,11 @@
     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
       <TextBlock Text="e-transmit" FontSize="25" FontWeight="SemiBold"/>
       <TextBlock x:Name="VersionLabel" Foreground="#536273"/>
-      <TextBlock Text="Preserve source folders and filenames. Follow configured link locations, not the latest live model."
+      <TextBlock Text="Open models: save their current state, including unsaved edits. Preserve source filenames and folders."
                  TextWrapping="Wrap" Margin="0,7,0,0"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom">
-      <TextBlock Text="Revit must be running, but you do not need to open the source models. Internal copies may be opened; current-state SaveAs requires confirmation; no automatic Sync or Publish."
+      <TextBlock Text="Revit must be running, but you do not need to open the source models. Current-state SaveAs is authorized before the batch starts; original files are not overwritten; no automatic Sync or Publish."
                  TextWrapping="Wrap" Foreground="#536273" Margin="0,7,0,7"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Content="Transmit model(s)" Click="transmit_click" MinWidth="165" IsDefault="True"/>
@@ -49,11 +49,14 @@
           <StackPanel>
             <DockPanel><Button DockPanel.Dock="Right" Content="Browse..." Click="browse_output"/><TextBox x:Name="Output"/></DockPanel>
             <WrapPanel>
-              <CheckBox x:Name="Separate" Content="Output folder for each source model" IsChecked="True"/>
+              <CheckBox x:Name="Separate" Content="Model-named folder for each job" IsChecked="True"/>
               <CheckBox x:Name="Reports" Content="Detailed transmittal/error reports" IsChecked="True"/>
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
+            <CheckBox x:Name="PreserveHost" Content="Preserve current open host unchanged (no repath/cleanup of this RVT)" IsChecked="True"/>
+            <CheckBox x:Name="SkipCloudLinks" Content="Skip ACC linked RVT downloads; keep existing link references in the host" IsChecked="True"/>
+            <TextBlock Text="Each open host is saved first. HostSnapshot keeps the original current-state copy even if later material collection fails. SaveAs may change the working file path; one confirmation appears before starting." TextWrapping="Wrap" Foreground="#536273"/>
             <CheckBox x:Name="DeepScan" Content="Deep inspection of closed/saved models (open documents are read directly)" IsChecked="True"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
           </StackPanel>

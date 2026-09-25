@@ -40,7 +40,7 @@ class UIContract(unittest.TestCase):
         ui=self.read('lib/easybim_etransmit/ui.py')
         self.assertIn('document=doc',ui)
         self.assertIn("row.Mode=='LIVE_DOCUMENT'",ui)
-        self.assertIn('registry.add_live(',ui)
+        self.assertIn('registry.register_live(',ui)
         self.assertIn('batch.run_batch(',ui)
         self.assertNotIn('Only the saved versions will be packaged',ui)
     def test_settings_do_not_store_auth_secrets(self):

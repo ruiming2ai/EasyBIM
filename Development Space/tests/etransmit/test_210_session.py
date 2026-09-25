@@ -61,8 +61,11 @@ class SessionTests(unittest.TestCase):
         r=self.registry();doc=self.doc(modified=True);calls=[]
         def save(path,options):
             calls.append(path)
-            with open(path,'wb') as out:out.write(b'current unsaved geometry')
+            from test_payload_acquisition import compound
+            with open(path,'wb') as out:out.write(compound())
+            doc.IsModified=False
         doc.SaveAs=save;r.DB.SaveAsOptions=lambda:Obj(Dispose=lambda:None)
+        r.DB.BasicFileInfo=Obj(Extract=lambda path:Obj(GetDocumentVersion=lambda:Obj(VersionGUID='guid',NumberOfSaves=4)))
         r.scanner.elements=lambda *a:[];r.scanner.scan_open=lambda *a:None
         key=r.add_live(doc);r.confirm_snapshot=lambda d,p:True
         path=r.snapshot(key)

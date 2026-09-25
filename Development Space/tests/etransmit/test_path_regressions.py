@@ -181,6 +181,7 @@ class PathRegression(unittest.TestCase):
         dialog.categories = [ui.Choice(label, key) for key, label in f.CATEGORIES]
         dialog.Output = types.SimpleNamespace(Text=str(self.base))
         dialog.DeepScan = flag(True); dialog.Repath = flag(True)
+        dialog.PreserveHost = flag(True); dialog.SkipCloudLinks = flag(True)
         dialog.Cleanup = flag(False); dialog.Upgrade = flag(False)
         dialog.DiscardWorksets = flag(False); dialog.Purge = flag(False)
         dialog.Separate = flag(True); dialog.Reports = flag(True); dialog.Zip = flag(False); dialog.ZipPerModel = flag(False)

@@ -4,11 +4,11 @@ from __future__ import unicode_literals
 import io
 import json
 import os
-from . import VERSION, files as f, engine
+from . import VERSION, files as f, engine, jobnames
 
 
 def run_batch(models, root, backend_factory, options=None, extras=None,
-              cancelled=None, pulse=None):
+              cancelled=None, pulse=None, source_names=None):
     """Transmit every selected source, without one failed model losing the batch.
 
     backend_factory(package_root, first_source) runs on the caller/Revit thread.
@@ -17,12 +17,13 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
     models=list(models); opts=dict(options or f.defaults())
     if opts.get('zip_per_model'): opts['per_model']=True
     groups=[[m] for m in models] if opts.get('per_model') else [models]
+    planned=jobnames.plan(models,root,opts.get('per_model'),source_names)
     if not os.path.isdir(root): os.makedirs(root)
     jobs=[]; results=[]
     for index, group in enumerate(groups):
-        package=f.package_root(root,index,opts.get('per_model'))
+        package=planned[index]
         job=dict(index=index+1,models=list(group),root=package,status='NOT_STARTED',
-                 zip_status='NOT_REQUESTED')
+                 zip_status='NOT_REQUESTED',name=os.path.basename(package))
         jobs.append(job)
     try:
         for job in jobs:
@@ -42,7 +43,7 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
             results.append(result);job['status']=result['status']
             job.update(engine.package_counts(result))
             if opts.get('zip_per_model') and result['status']!='CANCELLED':
-                path=os.path.join(root,'{0:02d}.zip'.format(job['index']))
+                path=job['root']+'.zip'
                 job['zip_path']=path
                 try:
                     engine.zip_package(package,path,cancelled)
@@ -79,12 +80,12 @@ def write_index(root,jobs):
     with io.open(os.path.join(root,'batch.json'),'w',encoding='utf-8') as out:
         out.write(f.text(json.dumps(dict(version=VERSION,jobs=jobs),ensure_ascii=False,indent=2)))
     lines=['EasyBIM e-transmit '+VERSION,'Batch jobs: '+str(len(jobs)),
-           'Revit operations run sequentially. Each numbered folder is a separate transmittal.',
+           'Revit operations run sequentially. Each model-named folder is a separate transmittal.',
            'A ZIP marked VERIFIED passed archive CRC checks, not a new Revit opening test.',
            'Read each package START_HERE.txt before sending any model.','']
     for job in jobs:
         lines.append('{0:02d}: {1} | ZIP: {2} | {3}'.format(
-            job['index'],job['status'],job['zip_status'],'; '.join(job['models'])))
+            job['index'],job['status'],job['zip_status'],job['name']+' | '+'; '.join(job['models'])))
     # In combined mode the package's own START_HERE must not be overwritten.
     name='BATCH_SUMMARY.txt' if any(j['root']==root for j in jobs) else 'START_HERE.txt'
     with io.open(os.path.join(root,name),'w',encoding='utf-8') as out:out.write('\n'.join(lines))

@@ -101,7 +101,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $env:IPY_EXE 'Development Space/tests/etransmit/test_209_regressions.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($test in (Get-ChildItem 'Development Space/tests/etransmit' -Filter 'test_210_*.py' | Sort-Object Name)) {
+          foreach ($test in (Get-ChildItem 'Development Space/tests/etransmit' -Filter 'test_21*_*.py' | Sort-Object Name)) {
             & $env:IPY_EXE $test.FullName
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
