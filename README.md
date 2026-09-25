@@ -1383,7 +1383,7 @@ Select a linked DWG instance in the model and choose one of four actions:
 The DWG must be a link, not an import — imported DWGs have no external file path
 to act on, so the tool rejects them with a message.
 
-## Automation (Message)
+## Automation (Automation)
 
 Opens preferences for the two tools that run automatically when a project opens:
 
@@ -1397,6 +1397,12 @@ tool on the current model; enabled tools run on subsequent project opens.
 The window is available even when no document is open. Disabling Coordination
 Review also stops its passive warning capture. These settings do not affect
 Revit's native Coordination Review.
+
+Click **Run** beside either tool to run it immediately on the active project,
+even when its automatic setting is unchecked. Run does not save or change
+preferences, and the Automation window keeps any pending checkbox edits.
+Workset requires a workshared project; Coordination Review requires an open
+project. **Cancel** discards preference edits but does not undo a tool already run.
 
 The **Coordination Review** summary does not wait for Revit's warning. Revit
 raises "needs Coordination Review" only once, while a link loads, and it

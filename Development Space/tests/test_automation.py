@@ -114,6 +114,42 @@ class AutomationTests(unittest.TestCase):
             self.messages.run_start_message_workflow(self.doc)
         report.assert_not_called()
 
+    def test_manual_run_ignores_disabled_preferences_and_runs_only_selected_tool(self):
+        settings = self.save(False, False)
+        with mock.patch.object(self.messages, "_show_workset_picker_for_doc") as picker, mock.patch.object(
+            self.messages, "_print_coordination_review_report"
+        ) as report:
+            self.messages.run_automation("workset", self.uiapp)
+            picker.assert_called_once_with(self.doc)
+            report.assert_not_called()
+            picker.reset_mock()
+            self.messages.run_automation("coordination_review", self.uiapp)
+            report.assert_called_once_with(self.doc, uiapp=self.uiapp)
+            picker.assert_not_called()
+        self.assertEqual((settings, ""), self.automation_settings.load_settings())
+
+    def test_manual_run_rejects_invalid_context_without_running(self):
+        with mock.patch.object(self.messages, "_show_workset_picker_for_doc") as picker, mock.patch.object(
+            self.messages, "_print_coordination_review_report"
+        ) as report:
+            empty_uiapp = types.SimpleNamespace(ActiveUIDocument=None)
+            for tool in ("workset", "coordination_review"):
+                with self.assertRaisesRegex(ValueError, "Open a project"):
+                    self.messages.run_automation(tool, empty_uiapp)
+                self.doc.IsFamilyDocument = True
+                with self.assertRaisesRegex(ValueError, "Open a project"):
+                    self.messages.run_automation(tool, self.uiapp)
+                self.doc.IsFamilyDocument = False
+            self.doc.IsWorkshared = False
+            with self.assertRaisesRegex(ValueError, "workshared project"):
+                self.messages.run_automation("workset", self.uiapp)
+            with self.assertRaisesRegex(ValueError, "Unknown automation"):
+                self.messages.run_automation("unknown", self.uiapp)
+            picker.assert_not_called()
+            report.assert_not_called()
+            self.messages.run_automation("coordination_review", self.uiapp)
+            report.assert_called_once_with(self.doc, uiapp=self.uiapp)
+
     def test_listener_registration_is_gated_and_records_cleared(self):
         passive = self.coordination_review_passive
         self.save(True, False)
@@ -164,6 +200,8 @@ class AutomationTests(unittest.TestCase):
                 self.coordination_cb = types.SimpleNamespace(IsChecked=None)
                 self.status_tb = types.SimpleNamespace(Text="")
                 self.save_btn = types.SimpleNamespace(Click=Event())
+                self.run_workset_btn = types.SimpleNamespace(Click=Event())
+                self.run_coordination_btn = types.SimpleNamespace(Click=Event())
                 self.closed = False
                 windows.append(self)
             def ShowDialog(self):
@@ -182,6 +220,31 @@ class AutomationTests(unittest.TestCase):
             self.assertFalse(self.path.exists())
             apply.assert_not_called()
             window.workset_cb.IsChecked = False
+            with mock.patch.object(self.messages, "run_automation") as run:
+                window._run_workset(None, None)
+                run.assert_called_once_with("workset", uiapp=None)
+                run.reset_mock()
+                window._run_coordination(None, None)
+                run.assert_called_once_with("coordination_review", uiapp=None)
+                run.side_effect = ValueError("Open a project to run this tool.")
+                window._run_workset(None, None)
+                self.assertIn("Open a project", window.status_tb.Text)
+                self.assertTrue(window.run_workset_btn.IsEnabled)
+                self.assertTrue(window.run_coordination_btn.IsEnabled)
+                self.assertTrue(window.save_btn.IsEnabled)
+                run.side_effect = RuntimeError("tool failed")
+                window._run_coordination(None, None)
+                self.assertIn("tool failed", window.status_tb.Text)
+                self.assertFalse(window._running)
+                run.reset_mock()
+                window._running = True
+                window._run_workset(None, None)
+                run.assert_not_called()
+                window._running = False
+            self.assertFalse(window.workset_cb.IsChecked)
+            self.assertFalse(window.closed)
+            self.assertFalse(self.path.exists())
+            apply.assert_not_called()
             with mock.patch.object(self.automation_settings, "save_settings", return_value=(False, "write failed")):
                 window._save(None, None)
             self.assertFalse(window.closed)

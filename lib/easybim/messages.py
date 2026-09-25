@@ -84,6 +84,22 @@ def show_start_message(
             )
 
 
+def run_automation(tool, uiapp=None):
+    """Run one tool on demand, independently of saved startup preferences."""
+    if tool not in ("workset", "coordination_review"):
+        raise ValueError("Unknown automation tool: {0}".format(tool))
+    uiapp = uiapp or _get_uiapp()
+    doc = _get_active_doc_from_uiapp(uiapp)
+    if not _is_doc_valid(doc) or not _should_show_for_doc(doc):
+        raise ValueError("Open a project to run this tool.")
+    _remember_live_uiapp(uiapp)
+    if tool == "workset":
+        if not _get_doc_is_workshared(doc):
+            raise ValueError("Workset requires a workshared project.")
+        return _show_workset_picker_for_doc(doc)
+    return _print_coordination_review_report(doc, uiapp=uiapp)
+
+
 def run_start_message_workflow(doc=None, force=False):
     """Run the default EasyBIM start-message workflow."""
     return show_start_message(

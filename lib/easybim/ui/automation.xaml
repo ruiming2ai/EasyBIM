@@ -4,12 +4,22 @@
         ResizeMode="NoResize" WindowStartupLocation="CenterScreen" ShowInTaskbar="False">
     <StackPanel Margin="20">
         <TextBlock Text="Run automatically when a project opens:" Margin="0,0,0,16"/>
-        <CheckBox x:Name="workset_cb" Content="Workset" FontWeight="SemiBold"/>
+        <DockPanel>
+            <Button x:Name="run_workset_btn" Content="Run" Width="70" Height="28" DockPanel.Dock="Right"
+                    ToolTip="Run Workset now on the active workshared project."/>
+            <CheckBox x:Name="workset_cb" Content="Workset" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </DockPanel>
         <TextBlock Text="Choose the active workset." Margin="20,4,0,16" TextWrapping="Wrap"/>
-        <CheckBox x:Name="coordination_cb" Content="Coordination Review" FontWeight="SemiBold"/>
+        <DockPanel>
+            <Button x:Name="run_coordination_btn" Content="Run" Width="70" Height="28" DockPanel.Dock="Right"
+                    ToolTip="Run Coordination Review now on the active project."/>
+            <CheckBox x:Name="coordination_cb" Content="Coordination Review" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </DockPanel>
         <TextBlock Text="Review changes in links monitored with Copy/Monitor." Margin="20,4,0,16" TextWrapping="Wrap"/>
         <TextBlock Text="Saved for you across projects and Revit restarts. Enabling a tool does not run it now."
                    TextWrapping="Wrap" Foreground="#555555"/>
+        <TextBlock Text="Run starts a tool now, even when unchecked, without saving your settings."
+                   TextWrapping="Wrap" Foreground="#555555" Margin="0,8,0,0"/>
         <TextBlock x:Name="status_tb" TextWrapping="Wrap" Foreground="#B3261E" Margin="0,12,0,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button x:Name="save_btn" Content="Save" Width="90" Height="28" IsDefault="True" Margin="0,0,8,0"/>

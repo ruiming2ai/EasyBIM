@@ -17,6 +17,37 @@ def show_automation_window(uiapp=None):
             self.coordination_cb.IsChecked = settings["coordination_review_enabled"]
             self.status_tb.Text = error
             self.save_btn.Click += self._save
+            self.run_workset_btn.Click += self._run_workset
+            self.run_coordination_btn.Click += self._run_coordination
+            self._running = False
+
+        def _run_workset(self, sender, args):
+            self._run("workset")
+
+        def _run_coordination(self, sender, args):
+            self._run("coordination_review")
+
+        def _run(self, tool):
+            if self._running:
+                return
+            from easybim.messages import run_automation
+            self._running = True
+            self.run_workset_btn.IsEnabled = False
+            self.run_coordination_btn.IsEnabled = False
+            self.save_btn.IsEnabled = False
+            self.status_tb.Text = ""
+            try:
+                run_automation(tool, uiapp=uiapp)
+            except ValueError as ex:
+                self.status_tb.Text = str(ex)
+            except Exception as ex:
+                script.get_logger().warning("Manual automation failed: %s", ex)
+                self.status_tb.Text = "Could not run this tool: {0}".format(ex)
+            finally:
+                self._running = False
+                self.run_workset_btn.IsEnabled = True
+                self.run_coordination_btn.IsEnabled = True
+                self.save_btn.IsEnabled = True
 
         def _save(self, sender, args):
             settings = {
