@@ -684,6 +684,12 @@ def register_passive_detector(uiapp=None, source=""):
     """
     global _HANDLER_REF, _HANDLER_APP
 
+    from easybim import automation_settings
+    if not automation_settings.is_enabled("coordination_review_enabled"):
+        unregister_passive_detector(uiapp, source=source)
+        clear_all_records()
+        return False
+
     app = _revit_application(uiapp)
     if app is None:
         _log_debug("FailuresProcessing registration failed: event source not found.")
@@ -741,13 +747,20 @@ def unregister_passive_detector(uiapp=None, source=""):
     """Unregister the passive detector when the stored handler is available."""
     global _HANDLER_REF, _HANDLER_APP
 
-    handler = _HANDLER_REF or _get_envvar(HANDLER_ENVVAR, None)
-    app = _HANDLER_APP or _revit_application(uiapp)
-    if handler is not None and handler is not True and app is not None:
-        try:
-            app.FailuresProcessing -= handler
-        except Exception:
-            pass
+    app = _revit_application(uiapp) or _HANDLER_APP
+    # A different pyRevit engine may have replaced our local delegate.
+    # Detach both references so disabling cannot leave the current one live.
+    handlers = (_get_envvar(HANDLER_ENVVAR, None), _HANDLER_REF)
+    seen = []
+    for handler in handlers:
+        if handler is None or handler is True or any(handler is old for old in seen):
+            continue
+        seen.append(handler)
+        if app is not None:
+            try:
+                app.FailuresProcessing -= handler
+            except Exception:
+                pass
 
     _HANDLER_REF = None
     _HANDLER_APP = None

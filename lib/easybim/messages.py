@@ -2,10 +2,8 @@
 """
 EasyBIM messages.py
 
-This module centralizes the startup actions and helpers.  Both your
-`doc-opened.py` hook and the ribbon button call into `show_start_message`,
-which shows an EasyBIM Active Workset picker and prints a Coordination
-Review summary.
+This module centralizes the file-open Workset and Coordination Review actions.
+The Automation ribbon button configures their per-user preferences.
 
 Usage:
     from easybim.messages import show_start_message
@@ -25,6 +23,8 @@ Parameters:
 """
 
 import time
+
+from easybim import automation_settings
 
 # =============================
 #  Public API (what others call)
@@ -59,6 +59,10 @@ def show_start_message(
     # 1) Decide if we should run (unless the caller explicitly forces it)
     if not (force or _should_show_for_doc(doc)):
         return
+
+    # Preferences also apply to callers retaining the legacy workflow API.
+    open_worksets_after = open_worksets_after and automation_settings.is_enabled("workset_enabled")
+    run_coord_report_after = run_coord_report_after and automation_settings.is_enabled("coordination_review_enabled")
 
     # 2) Run/queue the startup actions.
     if open_worksets_after or run_coord_report_after:
@@ -103,6 +107,12 @@ def run_start_message_on_file_open(doc=None):
     activates the document - exactly when that OK click used to land.  The
     Idling delegate remains a second consumer of the same trigger.
     """
+    settings, _ = automation_settings.load_settings()
+    if not any(settings.values()):
+        _clear_file_open_trigger_pending()
+        _disable_passive_coordination_review_detector()
+        return None
+
     if _is_doc_valid(doc) and not _is_doc_eligible_for_file_open(doc):
         # A real but ineligible document (family, linked): nothing will run,
         # so drop any stale trigger and let the passive detector go.
@@ -165,9 +175,9 @@ def _enqueue_startup_actions(doc, open_worksets_after, run_coord_report_after):
         return
 
     # Fallback path only when env-var state cannot be used.
-    if open_worksets_after:
+    if open_worksets_after and automation_settings.is_enabled("workset_enabled"):
         _show_workset_picker_for_doc(doc)
-    if run_coord_report_after:
+    if run_coord_report_after and automation_settings.is_enabled("coordination_review_enabled"):
         _print_coordination_review_report(doc)
 
 
@@ -175,14 +185,14 @@ def _run_startup_actions_now(doc, open_worksets_after, run_coord_report_after):
     """Run the startup actions immediately for current valid document context."""
     logger = _get_logger()
 
-    if open_worksets_after:
+    if open_worksets_after and automation_settings.is_enabled("workset_enabled"):
         try:
             _show_workset_picker_for_doc(doc)
         except Exception as ex:
             if logger:
                 logger.warning("Workset picker failed after start message: %s", ex)
 
-    if run_coord_report_after:
+    if run_coord_report_after and automation_settings.is_enabled("coordination_review_enabled"):
         try:
             _print_coordination_review_report(doc)
         except Exception as ex:
@@ -254,6 +264,10 @@ def has_pending_startup_jobs():
 
 
 def _process_startup_job(uiapp, job, now):
+    settings, _ = automation_settings.load_settings()
+    if not any(settings.values()):
+        job["stage"] = "done"
+        return True
     stage = job.get("stage")
     target_doc = _resolve_doc_from_job(uiapp, job)
     active_doc = _get_active_doc_from_uiapp(uiapp)
@@ -264,7 +278,7 @@ def _process_startup_job(uiapp, job, now):
         stage = "run_report"
 
     if stage == "show_workset_picker":
-        if not job.get("open_worksets_after", False):
+        if not job.get("open_worksets_after", False) or not settings["workset_enabled"]:
             job["stage"] = "run_report"
             return False
 
@@ -313,7 +327,7 @@ def _process_startup_job(uiapp, job, now):
         # re-entrant Idling pass behind the dialog must not stack a second
         # report window.
         job["stage"] = "done"
-        if job.get("run_coord_report_after", False):
+        if job.get("run_coord_report_after", False) and settings["coordination_review_enabled"]:
             report_doc = target_doc
             if not _is_doc_valid(report_doc) and not has_identity:
                 report_doc = active_doc
@@ -407,6 +421,11 @@ def _clear_file_open_trigger_pending():
 def _process_file_open_trigger_pending(uiapp=None):
     state = _load_file_open_trigger_state()
     if not state.get("pending", False):
+        return
+
+    if not any(automation_settings.load_settings()[0].values()):
+        _clear_file_open_trigger_pending()
+        _disable_passive_coordination_review_detector()
         return
 
     now = time.time()
@@ -969,7 +988,7 @@ def _print_coordination_review_report(doc, uiapp=None):
     try:
         try:
             from easybim.coordination_review_passive import build_passive_coordination_report
-            # Keep the captured warnings: Start Message can be re-run and must
+            # Keep the captured warnings: The workflow API can be re-run and must
             # show the same issues.  hooks/doc-closing.py clears them on close.
             report = build_passive_coordination_report(doc, consume=False)
         except Exception:
@@ -1551,7 +1570,7 @@ def _get_logger():
 #: Idling sender or a hook's ``__revit__``).  The module-level ``__revit__``
 #: seen from the startup/Idling engine is a ``UIControlledApplication`` with
 #: no ``ActiveUIDocument``, which left the Coordination Review window without
-#: a UI document at file open while the Start Message button (a command
+#: a UI document at file open while the legacy workflow button (a command
 #: engine, full ``UIApplication``) worked.
 _LIVE_UIAPP = None
 

@@ -1383,13 +1383,20 @@ Select a linked DWG instance in the model and choose one of four actions:
 The DWG must be a link, not an import — imported DWGs have no external file path
 to act on, so the tool rejects them with a message.
 
-## Start Message (Message)
+## Automation (Message)
 
-Runs the startup workflow on demand: the **Active Workset** picker and the
-**Coordination Review** summary. This is the same sequence that runs
-automatically when a document is opened, surfaced as a button for the times you
-want to revisit the workset choice or review coordination changes without
-closing and reopening the file.
+Opens preferences for the two tools that run automatically when a project opens:
+
+- **Workset**: show the Active Workset picker.
+- **Coordination Review**: show the monitored-link change summary.
+
+Both are enabled initially. Toggle them independently and click **Save**.
+Preferences are remembered per user across projects and Revit restarts.
+**Cancel** discards edits. Opening or saving this window does not run either
+tool on the current model; enabled tools run on subsequent project opens.
+The window is available even when no document is open. Disabling Coordination
+Review also stops its passive warning capture. These settings do not affect
+Revit's native Coordination Review.
 
 The **Coordination Review** summary does not wait for Revit's warning. Revit
 raises "needs Coordination Review" only once, while a link loads, and it
@@ -1419,7 +1426,7 @@ Because the comparison is the detector, the two empty states are honest:
 monitored links". Revit's own Coordination Review remains the place to Accept,
 Modify, Postpone or Reject a difference.
 
-The check runs when the summary opens, at file open and on every Start Message,
+The check runs when the enabled summary opens after a project opens,
 with a progress bar you can cancel; a cancelled run reports what it finished
 and never claims an all-clear. Only monitored links are read, so a model that
 uses no Copy/Monitor costs a single pass and stops.
