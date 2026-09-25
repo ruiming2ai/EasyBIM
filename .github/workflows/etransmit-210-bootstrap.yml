@@ -1,0 +1,51 @@
+name: e-transmit 2.1 source delivery (temporary)
+on:
+  push:
+    branches: [feat/etransmit-live-acc-batch-210]
+    paths: [.github/workflows/etransmit-210-bootstrap.yml]
+permissions:
+  contents: write
+jobs:
+  apply-tested-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/etransmit-live-acc-batch-210
+      - name: Reconstruct and verify reviewed source patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          shas = ['4baf0a5d3b1f9c9c1e940eedc6f90263cb51194b', 'b9fbebb07707f964fc3a718ff58417d5369f08d4', '5080e2e4f23a798433ece79bea3969cc3c6c520f', '19d10deb60f2132fa845ad7974bfdbf2c075b8cc', 'bedefe8d6282347ec3bf277c2c8d105a61e2ed59', 'b8ec7c8cd4c61cab5f1c28f238a91cfe8ea00431']
+          parts = []
+          for sha in shas:
+              req = urllib.request.Request('https://api.github.com/repos/ruiming2ai/EasyBIM/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  data = json.load(response)
+              part = base64.b64decode(data['content'])
+              assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
+              parts.append(part)
+          compressed = base64.b64decode(b''.join(parts), validate=True)
+          assert hashlib.sha256(compressed).hexdigest() == '7ceb610e262ad3730fd02c0d40aa2eb12617bd36f968ba0c38484165010ee0b0'
+          patch = pathlib.Path(os.environ['RUNNER_TEMP']) / 'etransmit-210.patch'
+          patch.write_bytes(lzma.decompress(compressed))
+          stats = subprocess.check_output(['git', 'apply', '--numstat', str(patch)], text=True)
+          paths = [line.split('\t', 2)[2] for line in stats.splitlines()]
+          prefixes = ('lib/easybim_etransmit/', 'Development Space/tests/etransmit/', 'Development Space/docs/', 'EasyBIM.tab/Links.panel/e-transmit.pushbutton/')
+          assert len(paths) == 27 and len(set(paths)) == 27
+          for name in paths:
+              assert name.startswith(prefixes) and pathlib.PurePosixPath(name).suffix in ('.py', '.md', '.yaml', '.xaml')
+              assert '..' not in pathlib.PurePosixPath(name).parts and not pathlib.PurePosixPath(name).is_absolute()
+          subprocess.check_call(['git', 'apply', '--check', str(patch)])
+          subprocess.check_call(['git', 'apply', str(patch)])
+          subprocess.check_call(['python', '-m', 'unittest', 'discover', '-s', 'Development Space/tests/etransmit', '-v'])
+          subprocess.check_call(['git', 'add', '--'] + paths)
+          subprocess.check_call(['git', 'config', 'user.name', 'github-actions[bot]'])
+          subprocess.check_call(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'])
+          subprocess.check_call(['git', 'commit', '-m', 'feat(etransmit): implement live sources, exact ACC graph downloads, batch ZIPs and workbook discovery'])
+          subprocess.check_call(['git', 'push', 'origin', 'HEAD:refs/heads/feat/etransmit-live-acc-batch-210'])
+          print('Verified and committed 27 e-transmit source/test/documentation files.')
+          PY
