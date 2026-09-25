@@ -57,7 +57,7 @@ jobs:
           PY
       - name: Run full portable regression suite
         run: python -m unittest discover -s "Development Space/tests/etransmit" -v
-      - name: Remove temporary delivery files and publish feature commit
+      - name: Publish source files only; connector handles workflow changes
         shell: bash
         run: |
           set -euo pipefail
@@ -65,12 +65,16 @@ jobs:
           import json, os, pathlib, shutil, subprocess
           root = pathlib.Path.cwd()
           entries = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'etransmit-212-manifest.json').read_text())
-          paths = [e['path'] for e in entries]
+          ci = '.github/workflows/etransmit-tests.yml'
+          paths = [e['path'] for e in entries if e['path'] != ci]
+          # GITHUB_TOKEN has contents permission, not workflows permission.
+          # Restore the unchanged workflow; a separately authorized connector
+          # applies the one-line CI update and removes this delivery workflow.
+          subprocess.check_call(['git', 'restore', '--source=HEAD', '--', ci])
           shutil.rmtree(root / '.github/et212-delivery')
-          (root / '.github/workflows/etransmit-deliver-212.yml').unlink()
-          subprocess.check_call(['git', 'add', '--'] + paths + ['.github/et212-delivery', '.github/workflows/etransmit-deliver-212.yml'])
+          subprocess.check_call(['git', 'add', '--'] + paths + ['.github/et212-delivery'])
           changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '-z', '20b9da5dfbf33e530719d90428d27d57c509d223']).decode('utf-8').split('\0')
-          assert set(filter(None, changed)) == set(paths), 'Unrelated staged changes detected'
+          assert set(filter(None, changed)) == set(paths + ['.github/workflows/etransmit-deliver-212.yml']), 'Unrelated staged changes detected'
           subprocess.check_call(['git', 'config', 'user.name', 'github-actions[bot]'])
           subprocess.check_call(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'])
           subprocess.check_call(['git', 'commit', '-m', 'feat(etransmit): verified read-only cache copies and model-named jobs in 2.1.2'])
