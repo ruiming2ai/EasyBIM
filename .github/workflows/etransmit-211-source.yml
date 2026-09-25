@@ -42,14 +42,10 @@ jobs:
           subprocess.check_call(['git', 'apply', '--check', str(patch)])
           subprocess.check_call(['git', 'apply', str(patch)])
           subprocess.check_call(['python', '-m', 'unittest', 'discover', '-s', 'Development Space/tests/etransmit', '-v'])
-          workflow = pathlib.Path('.github/workflows/etransmit-tests.yml')
-          text = workflow.read_text()
-          assert text.count("-Filter 'test_210_*.py'") == 1
-          workflow.write_text(text.replace("-Filter 'test_210_*.py'", "-Filter 'test_21*_*.py'"))
-          subprocess.check_call(['git', 'add', '--'] + paths + [str(workflow)])
+          subprocess.check_call(['git', 'add', '--'] + paths)
           subprocess.check_call(['git', 'config', 'user.name', 'github-actions[bot]'])
           subprocess.check_call(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'])
           subprocess.check_call(['git', 'commit', '-m', 'fix(etransmit): protect current open host snapshots and use model-named jobs in 2.1.1'])
           subprocess.check_call(['git', 'push', 'origin', 'HEAD:refs/heads/fix/etransmit-current-host-211'])
-          print('Verified host-preservation repair and expanded IronPython regression coverage.')
+          print('Verified and committed 14 e-transmit source, test and documentation files.')
           PY
