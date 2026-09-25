@@ -82,10 +82,13 @@ class CacheTests(unittest.TestCase):
         result=store.capture(self.entry)
         self.assertEqual(result['metadata']['revision_check'],'SAVED_CACHE_ONLY_UNSAVED_EXCLUDED')
         self.assertTrue(result['metadata']['unsaved_edits_excluded'])
-    def test_unmodified_primary_mismatch_not_silently_accepted(self):
+    def test_unmodified_primary_mismatch_is_explicit_saved_edition(self):
         c=cache_module(self);self.put();store=self.store()
         store.read_info=lambda p:dict(version=dict(guid=W,saves=8),format='2024',workshared=True)
-        with self.assertRaises(c.CacheError):store.capture(self.entry)
+        result=store.capture(self.entry)
+        self.assertEqual(result['metadata']['revision_check'],'SAVED_CACHE_DIFFERS_FROM_LOADED')
+        self.assertEqual(result['metadata']['loaded_document_version'],self.version)
+        self.assertEqual(result['metadata']['cache_document_version'],dict(guid=W,saves=8))
     def test_ambiguous_cache_different_bytes_never_selects_newest(self):
         c=cache_module(self);self.put(account='ONE');self.put(account='TWO',payload=compound(suffix='different'))
         store=self.store(modified=True)

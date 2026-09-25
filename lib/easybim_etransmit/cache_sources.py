@@ -345,11 +345,12 @@ class Store(object):
                     if not fmt.isdigit() or (release.isdigit() and int(fmt) > int(release)):
                         raise CacheError('CACHE_FORMAT_UNSUPPORTED', 'Copied cache format is unsupported by this Revit process.')
                     equal = actual == expected
-                    if not equal and not (primary_modified or saved_link):
-                        raise CacheError('CACHE_VERSION_MISMATCH', 'Copied cache does not match both the loaded revision GUID and save count.')
+                    # Saved-cache export is a source policy, independent of IsModified.
+                    # Exact matches are preferred below; otherwise selection must prove
+                    # one unambiguous saved edition for this cloud identity.
                     revision_check = ('MATCHES_LOADED_SAVED_VERSION' if equal else
                                       ('SAVED_CACHE_DIFFERS_FROM_LOADED' if expected else 'SAVED_CACHE_NO_LOADED_REVISION')
-                                      if saved_link else 'SAVED_CACHE_ONLY_UNSAVED_EXCLUDED')
+                                      if not primary_modified else 'SAVED_CACHE_ONLY_UNSAVED_EXCLUDED')
                     attempt.update(status='MATCH' if equal else 'SAVED_ONLY', actual_document_version=actual,
                                    sha256=meta['sha256'])
                     meta.update(cache_path=path, cache_role=role['role'], cache_scope=role['scope'], cache_document_version=actual, loaded_document_version=expected,

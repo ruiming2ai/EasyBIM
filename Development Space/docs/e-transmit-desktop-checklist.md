@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.5.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.6.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -92,3 +92,12 @@ an unperformed check into a pass.
   cache bytes remain unchanged. Conflicting editions/accounts must still fail.
 - On failed host acquisition, confirm link discovery reads NOT_PERFORMED, not an
   implication that there are no links. Final-location verification stays separate.
+
+2.1.6 unmodified-host checks:
+
+- Repeat Greek Theater with the host unmodified and confirm the unique saved
+  cache edition is collected despite its different loaded revision GUID.
+- Confirm SAVED_CACHE_DIFFERS_FROM_LOADED shows both revision GUIDs and save
+  counts; dependencies must come from the saved snapshot, not live inventory.
+- Repeat Morrison and Anthropology, including relocation, and inspect real
+  link paths, requested load states, placement, PDFs/images and annotations.
