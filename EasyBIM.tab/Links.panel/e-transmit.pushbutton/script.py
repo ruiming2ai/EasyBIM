@@ -15,4 +15,4 @@ try:
 except Exception as exc:
     script.get_logger().error(traceback.format_exc())
     forms.alert('e-transmit stopped: {0}\n\nReview the pyRevit output and any package reports. '
-                'Original source models were not saved or synchronized.'.format(exc), title='EasyBIM e-transmit')
+                'No automatic Sync or Publish is performed. If you authorized a current-state SaveAs, retain and review its WorkingSnapshots recovery file.'.format(exc), title='EasyBIM e-transmit')

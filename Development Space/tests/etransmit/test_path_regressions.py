@@ -183,7 +183,7 @@ class PathRegression(unittest.TestCase):
         dialog.DeepScan = flag(True); dialog.Repath = flag(True)
         dialog.Cleanup = flag(False); dialog.Upgrade = flag(False)
         dialog.DiscardWorksets = flag(False); dialog.Purge = flag(False)
-        dialog.Separate = flag(True); dialog.Reports = flag(True); dialog.Zip = flag(False)
+        dialog.Separate = flag(True); dialog.Reports = flag(True); dialog.Zip = flag(False); dialog.ZipPerModel = flag(False)
         dialog.ViewMode = types.SimpleNamespace(SelectedItem=types.SimpleNamespace(Key='all'))
         dialog.view_types=[]; dialog.mappings=[]; dialog.extras=[]; dialog.result=None
         chosen=[]; closed=[]

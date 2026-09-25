@@ -26,7 +26,7 @@ CATEGORIES = [('revit', 'Linked Revit models'), ('ifc', 'IFC / coordination sour
               ('pointcloud', 'Point clouds + Support folders'),
               ('navisworks', 'Navisworks files'), ('dwf', 'DWF markups'),
               ('keynotes', 'Keynotes / assembly codes'), ('decals', 'Decal image files'),
-              ('analysis', 'Systems analysis reports'), ('other', 'Other external files')]
+              ('analysis', 'Systems analysis reports'), ('spreadsheets', 'Plugin spreadsheet sources (where readable)'), ('other', 'Other external files')]
 
 
 class Cancelled(Exception):
@@ -48,6 +48,7 @@ def category(path, kind=''):
     ext = ntpath.splitext(path)[1].lower()
     for name, extensions in [('revit', '.rvt'), ('ifc', '.ifc .ifczip'),
                              ('cad', '.dwg .dxf .dgn .sat .3dm .skp'),
+                             ('spreadsheets', '.xls .xlsx .xlsm .xlsb .xlt .xltx .xltm .csv'),
                              ('pdf', '.pdf'), ('images', '.png .jpg .jpeg .bmp .tif .tiff .gif'),
                              ('pointcloud', '.rcp .rcs .pcg .rcc .e57 .las .laz .pts .ptx'),
                              ('navisworks', '.nwd .nwc .nwf'), ('dwf', '.dwf .dwfx')]:
@@ -827,7 +828,7 @@ def copy_file(source, target, cancelled=None, pulse=None):
 
 def source_snapshot_changed(source, metadata):
     """Shell snapshots are immutable local acquisition points; never restat DC."""
-    if metadata.get('source_stability') in ('SHELL_SNAPSHOT', 'ARCHIVE_SNAPSHOT'):
+    if metadata.get('source_stability') in ('SHELL_SNAPSHOT', 'ARCHIVE_SNAPSHOT', 'SESSION_SNAPSHOT', 'AUTHENTICATED_SNAPSHOT'):
         return False
     return signature(source) != (metadata.get('size'), metadata.get('source_mtime'))
 

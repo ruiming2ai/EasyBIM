@@ -117,8 +117,8 @@ class ContextTests(unittest.TestCase):
         try:
             ui = importlib.import_module('easybim_etransmit.ui')
             options = f.defaults(); options['per_model'] = False
-            ui.Dialog = lambda *a: Obj(result=([self.host], self.output, options, []), ShowDialog=lambda: None)
-            ui.Backend = lambda *a: self.backend
+            ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
+            ui.SessionBackend = lambda *a: self.backend
             ui.run(Obj(Application=Obj()), 'unused.xaml')
             with io.open(os.path.join(self.output, 'manifest.json'), encoding='utf-8') as inp:
                 result = json.load(inp)

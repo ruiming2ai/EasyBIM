@@ -2,6 +2,7 @@
 """Recursive package engine. The injected backend is the only Revit boundary."""
 from __future__ import unicode_literals
 import collections
+import hashlib
 import io
 import json
 import os
@@ -115,7 +116,11 @@ def portable_image_alias(root, row):
     target=row['target']
     pm=ntpath if f.is_windows(target) else os.path
     name=pm.basename(target)
-    ident=f.text(row.get('element_id') or row.get('id') or 'ref').replace(':','_')
+    identity = '\n'.join([f.canonical(row.get('owner','')),
+                           f.canonical(row.get('source') or target),
+                           f.text(row.get('element_id') or row.get('id') or 'ref')])
+    # Document-scoped element IDs alone collide in combined packages.
+    ident = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
     alias=os.path.join(root,'_Refs',ident,name)
     if f.path_units(alias) > 240:
         raise f.PathLengthError('Portable Revit reference path is still too long: '+alias)
@@ -181,6 +186,18 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 return rec, candidate
         return None, ''
 
+    def add_inventory(source, record, scan):
+        record['inventory_status']='PARTIAL' if scan.get('open_failed') else ('NEEDS_REVIEW' if scan.get('issues') else 'SCANNED')
+        record['revit_version']=scan.get('version','')
+        record['opened_in_revit']=scan.get('opened_in_revit',False)
+        record['inspection_status']=scan.get('inspection_status') or ('OPENED' if scan.get('opened_in_revit') else 'METADATA_ONLY')
+        if scan.get('source_mode'): record['source_mode']=scan['source_mode']
+        if 'plugin_coverage' in scan: record['plugin_coverage']=scan['plugin_coverage']
+        result['issues'].extend(scan.get('issues',[]))
+        for ref in scan.get('references',[]):
+            ref=dict(ref);ref.update(owner=source,status='PENDING')
+            edges.append(ref);queue.append((ref.get('source',''),source,False,ref))
+
     try:
         while queue:
             f.check(cancelled)
@@ -190,7 +207,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             try:
                 resolver=getattr(backend,'resolve_acquired_source',None)
                 resolved_request=resolver(requested,owner) if resolver else requested
-                source = f.resolve_source(resolved_request, owner, opts.get('mappings'))
+                virtual=bool(getattr(backend,'is_virtual_source',lambda x:False)(resolved_request))
+                source = resolved_request if virtual else f.resolve_source(resolved_request, owner, opts.get('mappings'))
                 if not source and edge is not None and edge.get('optional_library'):
                     edge['status']='OPTIONAL_MISSING'
                     add_issue('OPTIONAL_LIBRARY_REFERENCE_MISSING',requested,'Exact optional Revit content-library resource is not installed.')
@@ -205,7 +223,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                         continue
                     raise ValueError('No exact local/Connector path was exposed for this reference; '
                                      'no live/latest or basename substitution was performed.')
-                if f.is_desktop_connector_path(source):
+                if virtual:
+                    source_in_output=False  # Only backend-registered identities reach this branch.
+                elif f.is_desktop_connector_path(source):
                     # Desktop Connector is a Windows Shell namespace.  Do not
                     # call realpath/stat/isfile on it before Shell materializes
                     # the selected item.  A lexical containment check is enough
@@ -226,7 +246,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 # Session display paths can relocate into the inspection folder.
                 # That is not evidence of an original link location. Never collect
                 # our own scratch or guess its original root by the basename.
-                if not f.is_desktop_connector_path(source) and f.within(source, work):
+                if not virtual and not f.is_desktop_connector_path(source) and f.within(source, work):
                     # Deep inspection can expose the same Revit link twice:
                     # once from saved TransmissionData with its real source,
                     # and once from an in-session external-resource view whose
@@ -250,7 +270,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if key in records:
                     if edge is not None: edge['status'] = records[key]['status']
                     continue
-                if not f.is_desktop_connector_path(source) and os.path.isdir(source):
+                if not virtual and not f.is_desktop_connector_path(source) and os.path.isdir(source):
                     if f.within(root,source):
                         raise ValueError('Output must be outside a recursively collected input folder.')
                     # Directories are explicit Add Folder or systems-report references only.
@@ -275,12 +295,21 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                               'Systems-analysis support resource is unavailable on this workstation; '
                               'the model and other dependencies continue to be collected.')
                     continue
-                relative = f.mirror_path(source)
+                relative = backend.source_relative(source) if virtual else f.mirror_path(source)
                 target = os.path.join(root, *relative.split('/'))
                 record = dict(source=source, requested=requested, relative=relative,
                               target=target, category=cat, status='PENDING')
                 records[key] = record
                 result['files'].append(record)
+                before=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
+                if before is not None:
+                    # Preserve live materials even when the host snapshot is
+                    # refused/unavailable. Do not wait for host bytes to scan.
+                    add_inventory(source,record,before)
+                companions=getattr(backend,'additional_sources',None)
+                if companions:
+                    for companion in companions(source):
+                        queue.append((companion,source,False,None))
                 operation = 'validate_destination'
                 f.destination(root, relative)  # Validate before copying; failed paths remain in the report.
                 notify('Copying ' + source, 0, 1)
@@ -295,26 +324,18 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if edge is not None: edge['status'] = 'COPIED'
                 ext = os.path.splitext(source)[1].lower()
                 if ext == '.rvt':
-                    operation = 'stage_model'
-                    stage = f.temporary_path(work)
-                    f.copy_file(target, stage, cancelled)
-                    notify('Inspecting saved model ' + source, 0, 1)
-                    record['inventory_status']='RUNNING'
-                    operation = 'inspect_model'
-                    scan = backend.scan(source, stage, opts)
-                    record['inventory_status']='PARTIAL' if scan.get('open_failed') else ('NEEDS_REVIEW' if scan.get('issues') else 'SCANNED')
-                    record['revit_version'] = scan.get('version', '')
-                    record['opened_in_revit'] = scan.get('opened_in_revit', False)
-                    record['inspection_status'] = 'OPENED' if scan.get('opened_in_revit') else 'METADATA_ONLY'
-                    result['issues'].extend(scan.get('issues', []))
+                    if before is None:
+                        operation = 'stage_model'
+                        stage = f.temporary_path(work)
+                        f.copy_file(target, stage, cancelled)
+                        notify('Inspecting saved model ' + source, 0, 1)
+                        record['inventory_status']='RUNNING'
+                        operation = 'inspect_model'
+                        scan = backend.scan(source, stage, opts)
+                        add_inventory(source,record,scan)
                     if f.source_snapshot_changed(source, record):
                         record['inventory_status']='UNSTABLE'
                         raise IOError('Model changed during inspection; dependency inventory is not a stable snapshot.')
-                    for ref in scan.get('references', []):
-                        ref = dict(ref)
-                        ref.update(owner=source, status='PENDING')
-                        edges.append(ref)
-                        queue.append((ref.get('source', ''), source, False, ref))
                 elif ext == '.rcp':
                     support = os.path.splitext(source)[0] + ' Support'
                     if os.path.isdir(support):
@@ -334,11 +355,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             except f.Cancelled:
                 raise
             except Exception as exc:
+                context=getattr(backend,'source_context',None)
+                if record is not None and context:
+                    record['source_context']=context(source)
                 if edge is not None: edge['status'] = 'UNRESOLVED'
                 code = ('STAGING_REFERENCE_UNRESOLVED' if isinstance(exc, StagingSourceError) else
                         ('DESTINATION_PATH_TOO_LONG' if isinstance(exc, f.PathLengthError) else
                          ('UNRESOLVED_SOURCE' if not source else 'COLLECTION_FAILED')))
                 if record and record.get('inventory_status') == 'RUNNING': record['inventory_status']='FAILED'
+                code=getattr(exc,'code',code)
                 diagnostic = issue(code, requested, exc, 'error')
                 diagnostic['operation'] = operation
                 diagnostic['owner'] = owner
@@ -434,7 +459,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 model_edges=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source'])]
                 problems=verifier(record['target'],model_edges,opts) or []
                 result['issues'].extend(problems)
-                record['model_verification']='FAILED' if problems else 'OPENED_AND_REFERENCES_CHECKED'
+                record['model_verification'] = ('DEFERRED' if any(p['code']=='MODEL_VERIFICATION_DEFERRED' for p in problems)
+                                               else ('FAILED' if any(p.get('severity')=='error' for p in problems)
+                                                     else 'OPENED_AND_REFERENCES_CHECKED'))
         result['status'] = 'NEEDS_REVIEW' if any(x['severity'] != 'info' for x in result['issues']) else 'COLLECTED'
     except f.Cancelled:
         result['status'] = 'CANCELLED'
@@ -478,6 +505,13 @@ def write_reports(result):
              'Portable Revit aliases: {0}'.format(len(result.get('aliases', []))),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    for record in result['files']:
+        context=record.get('source_context',{})
+        if context:
+            lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
+            working=context.get('working_document_path_after') or context.get('snapshot_path')
+            if working:lines.append('Retained working document / SaveAs recovery file: '+working+
+                                    ' -- review the active Revit file before continuing. This recovery file is outside the transmitted package.')
     lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
@@ -518,6 +552,14 @@ def zip_package(root, target, cancelled=None):
                         archive.write(stage,arcname)
                     finally: f.remove_tree_retry(stage_dir)
                 else: archive.write(path,arcname)
+        # Read every compressed member before publishing the archive. ZipExtFile
+        # verifies each CRC on EOF, including ZIP64 members. This is cancellable.
+        with zipfile.ZipFile(temp, 'r') as check_archive:
+            for member in check_archive.infolist():
+                with check_archive.open(member) as inp:
+                    while True:
+                        f.check(cancelled)
+                        if not inp.read(1024 * 1024): break
         f.check(cancelled)
         f.publish(temp, target)
     finally:
