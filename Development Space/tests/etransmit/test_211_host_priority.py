@@ -52,7 +52,7 @@ class Names(unittest.TestCase):
             with self.assertRaises(ValueError):p([path],self.root,True)
         self.assertEqual(os.listdir(self.root),[])
 
-class HostSafety(unittest.TestCase):
+class HostFixture(unittest.TestCase):
     def setUp(self):
         self.root=tempfile.mkdtemp(prefix='ET_host_');self.addCleanup(shutil.rmtree,self.root)
         self.events=[];self.payload=compound()
@@ -75,6 +75,8 @@ class HostSafety(unittest.TestCase):
         return self.r.register_live(self.doc)
     def authorize(self,key):
         self.r.authorize_snapshot(key)
+
+class HostSafety(HostFixture):
     def test_host_saved_before_inventory_and_retained_after_dependency_failure(self):
         key=self.register();self.authorize(key)
         def scan(doc,source,info,result):
@@ -277,10 +279,7 @@ class RealUIConsent(unittest.TestCase):
         self.assertTrue(self.dialog.result[2]['skip_cloud_links'])
         self.assertEqual(os.listdir(self.root),[])
 
-class SkippedCloudLinks(unittest.TestCase):
-    setUp=HostSafety.setUp
-    register=HostSafety.register
-    authorize=HostSafety.authorize
+class SkippedCloudLinks(HostFixture):
     def test_skipped_cloud_link_still_collects_materials_without_saving_link(self):
         child=Obj(Title='Architecture',PathName='',IsLinked=True,IsModified=False,IsDetached=False,
                   IsModelInCloud=True,IsWorkshared=True,IsReadOnly=True,IsModifiable=False)
