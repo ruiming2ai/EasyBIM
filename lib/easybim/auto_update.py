@@ -93,6 +93,8 @@ def record_loaded_revision():
         if info is not None:
             _require_clean(info)
             state = {"repo_key": _get_repo_key(info), "head": _head_hash(info)}
+    except _UpdateError as error:
+        _log("Could not record the loaded EasyBIM revision: {}".format(_safe_text(error)))
     except Exception:
         _log("Could not record the loaded EasyBIM revision.")
     return _set_envvar(AUTO_UPDATE_LOADED_ENVVAR, state)
@@ -266,7 +268,17 @@ def _verify_and_update(result, updater):
 
 
 def _require_clean(info):
-    if info.repo.RetrieveStatus().IsDirty:
+    try:
+        # The no-argument overload is a C# extension method, not an instance
+        # method exposed to IronPython. Select the real overload explicitly.
+        options = _get_git().libgit.StatusOptions()
+        dirty = info.repo.RetrieveStatus(options).IsDirty
+    except Exception as error:
+        # Native exception bodies may contain authenticated repository URLs.
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "Could not inspect EasyBIM working-tree status ({}). "
+                           "The installed version could not be verified.".format(type(error).__name__))
+    if dirty:
         raise _UpdateError(STATUS_LOCAL_CHANGES,
                            "EasyBIM contains local file changes or conflicts. Save or resolve them before updating.")
 

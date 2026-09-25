@@ -31,6 +31,10 @@ def _commit(sha):
     return _obj(Id=_obj(Sha=sha))
 
 
+class StatusOptions:
+    pass
+
+
 class RepoInfo:
     """The native wrapper snapshots last_commit_hash; pulls return a NEW wrapper."""
     def __init__(self, disk):
@@ -42,10 +46,20 @@ class RepoInfo:
         tracked = (_obj(Tip=_commit(disk.upstream_head),
                         CanonicalName=disk.upstream, RemoteName="origin")
                    if disk.upstream else None)
+
+        def retrieve_status(options):
+            # The zero-argument C# extension method is not an instance method
+            # available to IronPython. Model the actual required overload.
+            if not isinstance(options, StatusOptions):
+                raise TypeError("StatusOptions required")
+            if getattr(disk, "status_error", None) is not None:
+                raise disk.status_error
+            return _obj(IsDirty=disk.dirty)
+
         self.repo = _obj(
             Info=_obj(IsHeadDetached=disk.detached),
             Head=_obj(FriendlyName=disk.branch, TrackedBranch=tracked),
-            RetrieveStatus=lambda: _obj(IsDirty=disk.dirty))
+            RetrieveStatus=retrieve_status)
 
 
 class Git:
@@ -55,7 +69,8 @@ class Git:
         self.opened = []
         self.read_error = False
         self.divergence = None
-        self.libgit = _obj(Repository=_obj(Discover=mock.Mock(side_effect=lambda root: self.discovery)))
+        self.libgit = _obj(Repository=_obj(Discover=mock.Mock(side_effect=lambda root: self.discovery)),
+                           StatusOptions=StatusOptions)
 
     def get_repo(self, path):
         self.opened.append(path)
@@ -304,6 +319,35 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual([], self.updater.fetched)
         self.assertEqual([], self.updater.pulled)
 
+    def test_status_inspection_uses_explicit_options(self):
+        info = RepoInfo(self.disk)
+        with mock.patch.object(info.repo, "RetrieveStatus", wraps=info.repo.RetrieveStatus) as retrieve:
+            self.module._require_clean(info)
+        retrieve.assert_called_once()
+        self.assertIsInstance(retrieve.call_args.args[0], StatusOptions)
+
+    def test_status_inspection_failure_names_operation_and_type_without_secrets(self):
+        self.disk.status_error = TypeError("https://user:SECRET@example.com/repository")
+        result = self._run()
+        self._assert_failed(result, self.module.STATUS_VERIFICATION_FAILED)
+        self.assertIn("working-tree status", result["message"])
+        self.assertIn("TypeError", result["message"])
+        self.assertNotIn("SECRET", str(self.messages.call_args_list))
+        self.assertNotIn("SECRET", str(self.logger.call_args_list))
+        self.assertEqual([], self.updater.fetched)
+
+    def test_status_inspection_failure_at_startup_logs_operation_and_type(self):
+        self.disk.status_error = TypeError("private exception details")
+        self.logger.reset_mock()
+        self.module.record_loaded_revision()
+        self.assertIsNone(self.store[self.module.AUTO_UPDATE_LOADED_ENVVAR])
+        self.assertIn("working-tree status", str(self.logger.call_args_list))
+        self.assertIn("TypeError", str(self.logger.call_args_list))
+        result = self._run(startup=True)
+        self.assertEqual(self.module.STATUS_VERIFICATION_FAILED, result["status"])
+        self.messages.assert_not_called()
+        self.assertNotIn("private exception details", str(self.logger.call_args_list))
+
     def test_local_edits_arriving_during_fetch_prevent_pull(self):
         self.disk.remote_head = B
         self.updater.after_fetch = lambda: setattr(self.disk, "dirty", True)
@@ -431,6 +475,21 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(self.module.STATUS_UPDATED, result["status"])
         self.assertEqual(["release", "message", "reload"], self.events)
         self.assertTrue(self.module.should_skip_startup(self.module.get_startup_guard_state()))
+
+    def test_fresh_startup_records_revision_then_fetches_and_updates(self):
+        self.store.clear()
+        self.module.record_loaded_revision()
+        self.assertEqual({"repo_key": EXT_ROOT, "head": A},
+                         self.store[self.module.AUTO_UPDATE_LOADED_ENVVAR])
+        self.assertTrue(self.module.queue_startup_auto_update())
+        self.disk.remote_head = B
+        result = self.module.run_pending_startup_auto_update()
+        self.assertEqual(self.module.STATUS_UPDATED, result["status"])
+        self.assertEqual(1, len(self.updater.fetched))
+        self.assertEqual(1, len(self.updater.pulled))
+        self.reload.assert_called_once()
+        self.assertEqual(B, self.store[self.module.AUTO_UPDATE_LOADED_ENVVAR]["head"])
+        self.assertFalse(self.module.has_pending_startup_auto_update())
 
     def test_startup_failures_log_without_dialogs(self):
         self.updater.fetch_ok = False

@@ -33,6 +33,10 @@ a notification before reloading.
    `pyrevit.versionmgr.get_pyrevit_repo()` and the pyRevit home directory.
 3. Reject dirty/conflicted, detached, or untracked-branch checkouts. Do not reset,
    stash, switch branches, or overwrite local work.
+   Inspect status with `repo.RetrieveStatus(git.libgit.StatusOptions())`:
+   the zero-argument form is a C# extension method unavailable as an instance
+   method in IronPython. Inspection failures report the operation and exception
+   type without exposing the native exception body.
 4. Call `updater.get_updates(repo_info)` and require explicit success. This uses
    pyRevit's saved credentials and fetches the tracked remote. Do not call the
    global connectivity/pending-update check or enumerate other extensions.
@@ -108,6 +112,10 @@ local changes and divergence, branch races, direct discovery and core exclusion,
 Windows path normalization, mutex cleanup and reentry, independent loaded-version
 state, repeated clicks, reload restoration, and the startup queue lifecycle.
 The adjacent Idling and startup-reentrancy suites must also pass.
+The status test double requires a `StatusOptions` argument, matching the .NET
+instance overload. Native smoke checks use actual IronPython 2.7.12 and
+LibGit2Sharp 0.31.0 assemblies to check clean/dirty worktrees and the startup
+record/queue/fetch path against a disposable local upstream.
 
 Live acceptance remains a separate check in Revit 2024 and an available newer
 version: one commit behind, already current, two sessions sharing a checkout,
