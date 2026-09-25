@@ -240,8 +240,8 @@ def _run_auto_update(sender):
     script engine that owns this delegate.  Revit would keep the delegate
     subscribed and invoke a dead object on every later tick, so the
     subscription is dropped before the update runs and restored afterwards if
-    this engine is still alive.  ``startup.py`` re-installs on the way back up
-    after a real reload.  The update is one-shot per session (envvar flag plus
+    no replacement was installed. ``startup.py`` re-installs on the way back up
+    after a real reload. The update is one-shot per session (envvar flag plus
     a process mutex), so a tick lost to the detach costs nothing.
     """
     if auto_update is None or not auto_update.has_pending_startup_auto_update():
@@ -250,7 +250,11 @@ def _run_auto_update(sender):
     try:
         auto_update.run_pending_startup_auto_update()
     finally:
-        install(sender)
+        # A successful reload has installed a delegate from the new engine.
+        # Reinstalling here would detach it and resurrect this old runtime.
+        # is_installed() also checks the process-wide envvar mirror.
+        if not is_installed():
+            install(sender)
 
 
 def _run_my_ribbon_apply(sender):

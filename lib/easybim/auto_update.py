@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Update the EasyBIM extension's own repository.
+"""Verify and update this extension through pyRevit's own Git APIs.
 
-pyRevit's own Update pulls every enabled extension and reloads unconditionally.
-This tool is scoped to one repository - the one holding this extension - and
-reloads only when that repository actually moved.  Everything else on the
-machine stays pyRevit >> Update's job.
+Remote freshness and the revision loaded by this Revit process are separate
+facts. Never infer either one from an unchanged local commit after a pull.
 """
-
 from __future__ import print_function
 
 import os
@@ -15,23 +12,38 @@ import time
 
 AUTO_UPDATE_GUARD_ENVVAR = "EASYBIM_AUTO_UPDATE_RAN"
 AUTO_UPDATE_PENDING_ENVVAR = "EASYBIM_AUTO_UPDATE_PENDING"
+AUTO_UPDATE_LOADED_ENVVAR = "EASYBIM_AUTO_UPDATE_LOADED"
+AUTO_UPDATE_RUNNING_ENVVAR = "EASYBIM_AUTO_UPDATE_RUNNING"
 AUTO_UPDATE_MUTEX_NAME = "Global\\EasyBIMAutoUpdate"
 TITLE = "Auto Update"
 STATUS_NO_OP = "no_op"
 STATUS_SKIPPED_LOCKED = "skipped_locked"
 STATUS_UPDATED = "updated"
+STATUS_UP_TO_DATE = "up_to_date"
+STATUS_RELOADED = "reloaded"
+STATUS_SESSION_UNKNOWN = "session_unknown"
 STATUS_REPO_NOT_FOUND = "repo_not_found"
 STATUS_UPDATE_FAILED = "update_failed"
-
-# Once the deferred-update flag has been consumed (or was never set), quiet
-# Idling ticks skip the envvar read entirely.
+STATUS_VERIFICATION_FAILED = "verification_failed"
+STATUS_LOCAL_CHANGES = "local_changes"
+STATUS_RELOAD_FAILED = "reload_failed"
 _PENDING_RESOLVED = [False]
+
+try:
+    _TEXT_TYPE = unicode
+except NameError:
+    _TEXT_TYPE = str
+
+
+class _UpdateError(Exception):
+    def __init__(self, status, message):
+        Exception.__init__(self, message)
+        self.status = status
 
 
 def _get_envvar(name, default=None):
     try:
         from pyrevit import script
-
         value = script.get_envvar(name)
         return default if value is None else value
     except Exception:
@@ -41,7 +53,6 @@ def _get_envvar(name, default=None):
 def _set_envvar(name, value):
     try:
         from pyrevit import script
-
         script.set_envvar(name, value)
         return True
     except Exception:
@@ -53,45 +64,42 @@ def should_skip_startup(guard_state):
 
 
 def get_startup_guard_state():
-    default_state = {"attempted": False, "attempted_at": 0.0}
-
+    raw = _get_envvar(AUTO_UPDATE_GUARD_ENVVAR, {})
+    if not isinstance(raw, dict):
+        raw = {}
     try:
-        from pyrevit import script
-
-        raw_state = script.get_envvar(AUTO_UPDATE_GUARD_ENVVAR)
+        attempted_at = float(raw.get("attempted_at", 0.0))
     except Exception:
-        return default_state
-
-    if not isinstance(raw_state, dict):
-        return default_state
-
-    state = dict(default_state)
-    state["attempted"] = bool(raw_state.get("attempted", False))
-    try:
-        state["attempted_at"] = float(raw_state.get("attempted_at", 0.0))
-    except Exception:
-        state["attempted_at"] = 0.0
-    return state
+        attempted_at = 0.0
+    return {"attempted": bool(raw.get("attempted", False)),
+            "attempted_at": attempted_at}
 
 
 def mark_startup_attempted():
-    state = {"attempted": True, "attempted_at": time.time()}
-    try:
-        from pyrevit import script
+    return _set_envvar(AUTO_UPDATE_GUARD_ENVVAR,
+                       {"attempted": True, "attempted_at": time.time()})
 
-        script.set_envvar(AUTO_UPDATE_GUARD_ENVVAR, state)
-        return True
+
+def record_loaded_revision():
+    """Called on every extension load, before queuing any network work.
+
+    This is deliberately separate from the once-per-session attempt guard:
+    a pyRevit reload must refresh the baseline even when no update is queued.
+    Dirty files cannot be identified by their commit alone.
+    """
+    state = None
+    try:
+        info = _find_own_repo()
+        if info is not None:
+            _require_clean(info)
+            state = {"repo_key": _get_repo_key(info), "head": _head_hash(info)}
     except Exception:
-        return False
+        _log("Could not record the loaded EasyBIM revision.")
+    return _set_envvar(AUTO_UPDATE_LOADED_ENVVAR, state)
 
 
 def queue_startup_auto_update():
-    """Defer the startup auto-update to the first Idling tick.
-
-    Running git fetch/pull while Revit is starting blocks the UI thread at
-    the moment users are least tolerant of it.  The first idle tick runs the
-    same guarded update after Revit has become interactive.
-    """
+    """Defer network work until Revit is interactive."""
     if should_skip_startup(get_startup_guard_state()):
         return False
     if not _set_envvar(AUTO_UPDATE_PENDING_ENVVAR, True):
@@ -109,10 +117,13 @@ def has_pending_startup_auto_update():
     return pending
 
 
-def run_pending_startup_auto_update():
-    """Consume the deferred-update flag and run the guarded startup update."""
+def _consume_pending_startup():
     _set_envvar(AUTO_UPDATE_PENDING_ENVVAR, None)
     _PENDING_RESOLVED[0] = True
+
+
+def run_pending_startup_auto_update():
+    _consume_pending_startup()
     if should_skip_startup(get_startup_guard_state()):
         return None
     mark_startup_attempted()
@@ -120,156 +131,335 @@ def run_pending_startup_auto_update():
 
 
 def run_startup_auto_update():
-    startup_lock = _try_acquire_startup_lock()
-    if startup_lock is False:
-        return _result(
-            trigger="startup",
-            updated_repos=[],
-            status=STATUS_SKIPPED_LOCKED,
-        )
-    if startup_lock is None:
-        return _run_startup_update_after_precheck()
-
-    try:
-        return _run_startup_update_after_precheck()
-    finally:
-        _release_startup_lock(startup_lock)
+    return _run_easybim_update(trigger="startup")
 
 
 def run_manual_auto_update():
     return _run_easybim_update(trigger="manual")
 
 
-def _run_startup_update_after_precheck():
-    try:
-        updater = _get_native_updater()
-    except Exception:
-        # Fail closed: without the native updater there is nothing safe to run.
-        return _result(trigger="startup", updated_repos=[])
-
-    pending_updates = _try_check_for_pending_updates(updater)
-    if pending_updates is not True:
-        # Fail closed: an errored pre-check (auth, transient network, API
-        # change) must not escalate into the full git-pull-everything path.
-        return _result(trigger="startup", updated_repos=[])
-
-    return _run_easybim_update(trigger="startup", updater=updater)
+def _result(trigger, updated_repos=None, status=STATUS_NO_OP):
+    return {"status": status, "trigger": trigger,
+            "updated_repos": list(updated_repos or []),
+            "verified": False, "reload_status": "not_needed",
+            "repo_key": "", "branch": "", "upstream": "",
+            "before_head": "", "after_head": "", "upstream_head": "",
+            "message": ""}
 
 
 def _run_easybim_update(trigger, updater=None):
-    """Pull the repository holding this extension, and nothing else.
-
-    Fails closed in both directions: without our repository, or without a
-    per-repository entry point on the updater, this does nothing at all rather
-    than falling back to pyRevit's update-everything routine.
-    """
-    if updater is None:
-        updater = _get_native_updater()
-
-    if not callable(getattr(updater, "update_repo", None)):
-        # Never widen the scope to compensate: updating everything is exactly
-        # what this tool exists to avoid.
-        return _fail_closed(
-            trigger,
-            STATUS_REPO_NOT_FOUND,
-            "This pyRevit build has no single-repository update entry point, "
-            "so EasyBIM cannot update only itself.\n\n"
-            "Use pyRevit >> Update instead.",
-        )
-
-    repo_info = _find_own_repo(updater)
-    if repo_info is None:
-        return _fail_closed(
-            trigger,
-            STATUS_REPO_NOT_FOUND,
-            "EasyBIM could not find its own repository among pyRevit's "
-            "extensions - it may have been installed without git.\n\n"
-            "Nothing was updated.",
-        )
-
-    repo_key = _get_repo_key(repo_info)
-    sessionmgr = _try_get_session_manager()
-    before_heads = _try_snapshot_repo_heads(updater)
-
-    # The per-repo pull is not expected to ask for a reload the way pyRevit's
-    # update-everything routine does, but capturing the request costs nothing
-    # and keeps us correct - and in charge of the ordering - if it ever does.
-    reload_requested = {"value": False}
-    original_reload = getattr(sessionmgr, "reload_pyrevit", None)
-
-    def _capture_reload_request(*args, **kwargs):
-        reload_requested["value"] = True
-
+    result = _result(trigger)
+    # A named Mutex is recursive on its owning thread. This process-local
+    # guard also prevents modal dialogs from re-entering through another engine.
+    if _get_envvar(AUTO_UPDATE_RUNNING_ENVVAR, False):
+        return _failure(result, STATUS_SKIPPED_LOCKED,
+                        "An EasyBIM update is already running. Try again when it finishes.")
+    if not _set_envvar(AUTO_UPDATE_RUNNING_ENVVAR, True):
+        return _failure(result, STATUS_VERIFICATION_FAILED,
+                        "Could not initialize EasyBIM update session state. Reload pyRevit and try again.")
     try:
-        if original_reload is not None:
-            sessionmgr.reload_pyrevit = _capture_reload_request
+        if trigger == "manual":
+            mark_startup_attempted()
+            _consume_pending_startup()
+        update_lock = _try_acquire_startup_lock()
+        if update_lock is False:
+            return _failure(result, STATUS_SKIPPED_LOCKED,
+                            "Another Revit instance is updating EasyBIM. Try again when it finishes.")
+        if update_lock is None:
+            return _failure(result, STATUS_VERIFICATION_FAILED,
+                            "Could not acquire the EasyBIM update lock. Nothing was updated.")
         try:
-            updater.update_repo(repo_info)
-        except Exception as pull_error:
-            # A failed pull must not reach the user as pyRevit's traceback
-            # dialog, nor vanish into the Idling guard at startup.
-            return _fail_closed(
-                trigger,
-                STATUS_UPDATE_FAILED,
-                "EasyBIM Auto Update could not pull the latest EasyBIM "
-                "changes.\n\n{}".format(_safe_text(pull_error)),
-            )
+            try:
+                _verify_and_update(result, updater or _get_native_updater())
+            except _UpdateError as error:
+                result["status"] = error.status
+                result["message"] = _safe_text(error)
+            except Exception:
+                result["status"] = STATUS_VERIFICATION_FAILED
+                result["message"] = (
+                    "Could not read EasyBIM repository information using this pyRevit installation. "
+                    "The installed version could not be verified.")
+        finally:
+            _release_startup_lock(update_lock)
+        # Do not retain the cross-process lock across dialogs or a reload.
+        if not result["verified"]:
+            if result["updated_repos"]:
+                result["message"] += "\n\nFiles changed during the pull, but the result could not be verified."
+            return _failure(result, result["status"], result["message"])
+        return _finish_verified_update(result)
     finally:
-        if original_reload is not None:
-            sessionmgr.reload_pyrevit = original_reload
-
-    after_heads = _try_snapshot_repo_heads(updater)
-    updated_repos = []
-    if before_heads is not None and after_heads is not None:
-        updated_repos = _get_changed_repo_names(
-            _only_key(before_heads, repo_key),
-            _only_key(after_heads, repo_key),
-        )
-        if updated_repos:
-            _show_message(_format_updated_message(updated_repos), warn=False)
-
-    # The reload is the point of the update, so it follows a real change; an
-    # unchanged repository leaves the session alone.
-    if original_reload is not None and (updated_repos or reload_requested["value"]):
-        original_reload()
-
-    return _result(trigger=trigger, updated_repos=updated_repos)
+        _set_envvar(AUTO_UPDATE_RUNNING_ENVVAR, False)
 
 
-def _fail_closed(trigger, status, message):
-    """Do nothing, and say so only to someone who asked for it.
-
-    A click deserves an answer; startup runs on every session, so a machine
-    that can never self-update must not nag about it every time.
-    """
-    if trigger == "manual":
-        _show_message(message, warn=True)
-    return _result(trigger=trigger, updated_repos=[], status=status)
-
-
-def _try_get_session_manager():
+def _verify_and_update(result, updater):
+    if not all(callable(getattr(updater, name, None))
+               for name in ("get_updates", "update_repo")):
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "This pyRevit build does not provide the required single-repository update APIs.")
+    info = _find_own_repo()
+    if info is None:
+        raise _UpdateError(STATUS_REPO_NOT_FOUND,
+                           "EasyBIM could not find its own Git repository, or it shares pyRevit's core repository. "
+                           "Nothing was updated. A ZIP installation cannot update itself.")
+    git = _get_git()
+    before = _inspect_repo(info)
+    result.update(before)
+    result["before_head"] = before["after_head"]
+    # Unlike check_for_updates(), this fetch is confined to our repository,
+    # uses pyRevit's configured credentials, and has an explicit success flag.
     try:
-        return _get_session_manager()
+        fetched = updater.get_updates(info)
     except Exception:
+        fetched = False
+    if fetched is not True:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "Could not fetch EasyBIM's upstream branch. Check the network and pyRevit repository credentials, "
+                           "then try again. The latest version could not be verified.")
+    info = git.get_repo(info.directory)
+    current = _inspect_repo(info)
+    _require_same_checkout(before, current)
+    if before["after_head"] != current["after_head"]:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "EasyBIM's local commit changed during the check. Try again.")
+    result.update(current)
+    if current["after_head"] != current["upstream_head"]:
+        divergence = git.compare_branch_heads(info)
+        ahead = getattr(divergence, "AheadBy", None)
+        behind = getattr(divergence, "BehindBy", None)
+        if ahead is None or behind is None or ahead < 0 or behind < 0:
+            raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                               "Could not compare EasyBIM with its fetched upstream branch. Nothing was pulled.")
+        if ahead > 0:
+            reason = "has diverged from its upstream" if behind > 0 else "contains local commits"
+            raise _UpdateError(STATUS_LOCAL_CHANGES,
+                               "EasyBIM {}. Resolve the local commits before updating; nothing was pulled.".format(reason))
+        if behind == 0:
+            raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                               "EasyBIM's commit comparison is inconsistent. Nothing was pulled.")
+        try:
+            updated = updater.update_repo(info)
+        except Exception:
+            raise _UpdateError(STATUS_UPDATE_FAILED,
+                               "EasyBIM could not pull the latest changes. Check network access, repository credentials, "
+                               "and Git conflicts before trying again.")
+        # The native updater returns a NEW RepoInfo. Its input is a snapshot
+        # and must never be used to decide whether the pull installed changes.
+        if updated is None or _get_repo_key(updated) != before["repo_key"]:
+            raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                               "The updater did not return valid EasyBIM repository information. Files may have changed.")
+        pulled_head = _head_hash(updated)
+        if pulled_head != before["after_head"]:
+            result["updated_repos"] = [_get_repo_name(updated)]
+            result["after_head"] = pulled_head
+        # Reopen only our repository to verify actual on-disk state, including
+        # conflicts (LibGit2Sharp can return from Pull without throwing).
+        current = _inspect_repo(git.get_repo(updated.directory))
+        _require_same_checkout(before, current)
+        if current["after_head"] != pulled_head:
+            raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                               "EasyBIM's files no longer match the commit returned by the updater. Try again.")
+        result.update(current)
+    if current["after_head"] != current["upstream_head"]:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "The pull did not bring EasyBIM to its fetched upstream commit. Check the repository for conflicts.")
+    result["verified"] = True
+
+
+def _require_clean(info):
+    if info.repo.RetrieveStatus().IsDirty:
+        raise _UpdateError(STATUS_LOCAL_CHANGES,
+                           "EasyBIM contains local file changes or conflicts. Save or resolve them before updating.")
+
+
+def _head_hash(info):
+    head = _safe_text(info.last_commit_hash).strip()
+    if not head:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED, "EasyBIM's commit could not be read.")
+    return head
+
+
+def _inspect_repo(info):
+    _require_clean(info)
+    repo = info.repo
+    if repo.Info.IsHeadDetached:
+        raise _UpdateError(STATUS_LOCAL_CHANGES,
+                           "EasyBIM is on a detached commit. Select its intended tracking branch before updating.")
+    branch = repo.Head
+    upstream = branch.TrackedBranch
+    if upstream is None or upstream.Tip is None:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "EasyBIM's current branch has no usable upstream branch. Configure its upstream before updating.")
+    upstream_head = _safe_text(upstream.Tip.Id.Sha).strip()
+    if not upstream_head:
+        raise _UpdateError(STATUS_VERIFICATION_FAILED, "EasyBIM's upstream commit could not be read.")
+    return {"repo_key": _get_repo_key(info), "branch": _safe_text(branch.FriendlyName),
+            "upstream": _safe_text(upstream.CanonicalName),
+            "after_head": _head_hash(info), "upstream_head": upstream_head}
+
+
+def _require_same_checkout(before, after):
+    if any(before[key] != after[key] for key in ("repo_key", "branch", "upstream")):
+        raise _UpdateError(STATUS_VERIFICATION_FAILED,
+                           "EasyBIM's repository, branch, or upstream changed during the update. Try again.")
+
+
+def _finish_verified_update(result):
+    loaded = _get_envvar(AUTO_UPDATE_LOADED_ENVVAR, None)
+    known = (isinstance(loaded, dict)
+             and loaded.get("repo_key") == result["repo_key"] and bool(loaded.get("head")))
+    installed = bool(result["updated_repos"])
+    # A pull that changed files also proves a reload is required, even if this
+    # is the first update from a session started before tracking was introduced.
+    needs_reload = installed or (known and loaded["head"] != result["after_head"])
+    if not needs_reload:
+        if not known:
+            result["reload_status"] = "unknown"
+            return _failure(result, STATUS_SESSION_UNKNOWN,
+                            "EasyBIM's files match the fetched upstream, but this session's loaded version is unknown. "
+                            "Reload pyRevit or restart Revit once to establish the loaded version.")
+        result["status"] = STATUS_UP_TO_DATE
+        result["message"] = "EasyBIM is already up to date, and this Revit session has that version loaded."
+        _report(result)
+        return result
+    try:
+        reload_pyrevit = _get_session_manager().reload_pyrevit
+        if not callable(reload_pyrevit):
+            raise RuntimeError("reload unavailable")
+    except Exception:
+        result["reload_status"] = "failed"
+        return _failure(result, STATUS_RELOAD_FAILED,
+                        "EasyBIM's files are verified, but pyRevit's reload command is unavailable. Restart Revit to load them.")
+    if not mark_startup_attempted():
+        result["reload_status"] = "failed"
+        return _failure(result, STATUS_RELOAD_FAILED,
+                        "EasyBIM's files are verified, but the reload guard could not be saved. Restart Revit to load them.")
+    _consume_pending_startup()
+    result["reload_status"] = "pending"
+    result["status"] = STATUS_UPDATED if installed else STATUS_RELOADED
+    result["message"] = ("EasyBIM installed changes. pyRevit is reloading." if installed else
+                         "EasyBIM's latest files are already installed, but this Revit session has an older version loaded. "
+                         "pyRevit is reloading.")
+    _report(result)
+    try:
+        reload_pyrevit()
+        refreshed = _get_envvar(AUTO_UPDATE_LOADED_ENVVAR, None)
+        if not isinstance(refreshed, dict) or refreshed != {
+                "repo_key": result["repo_key"], "head": result["after_head"]}:
+            raise RuntimeError("loaded revision was not confirmed during reload")
+    except Exception:
+        _set_envvar(AUTO_UPDATE_LOADED_ENVVAR, loaded)
+        result["reload_status"] = "failed"
+        return _failure(result, STATUS_RELOAD_FAILED,
+                        "EasyBIM's files are verified, but the reload did not confirm that version was loaded. "
+                        "Restart Revit to finish applying the update.")
+    result["reload_status"] = "reloaded"
+    return result
+
+
+def _failure(result, status, message):
+    result["status"] = status
+    result["message"] = message
+    _report(result, warn=True)
+    return result
+
+
+def _report(result, warn=False):
+    message = result["message"]
+    if result["branch"]:
+        message += "\n\nBranch: {}\nLocal: {}\nUpstream: {} ({})".format(
+            result["branch"], result["after_head"][:12],
+            result["upstream"], result["upstream_head"][:12])
+    # Do not echo native exceptions: they can contain authenticated URLs.
+    _log("{}: {}".format(result["status"], message))
+    if result["trigger"] == "manual" or (result["updated_repos"] and not warn):
+        _show_message(message, warn=warn)
+
+
+def _log(message):
+    try:
+        from pyrevit.coreutils.logger import get_logger
+        get_logger(__name__).debug(message)
+    except Exception:
+        pass
+
+
+def _get_native_updater():
+    from pyrevit.versionmgr import updater
+    return updater
+
+
+def _get_git():
+    from pyrevit.coreutils import git
+    return git
+
+
+def _get_version_manager():
+    from pyrevit import versionmgr
+    return versionmgr
+
+
+def _get_pyrevit_home():
+    from pyrevit import HOME_DIR
+    return HOME_DIR
+
+
+def _get_session_manager():
+    from pyrevit.loader import sessionmgr
+    return sessionmgr
+
+
+def _get_extension_root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _normalize_dir(path):
+    text = _safe_text(path).strip()
+    if not text:
+        return ""
+    text = text.replace("/", os.sep).replace("\\", os.sep)
+    return os.path.normcase(os.path.realpath(text)).replace("\\", "/").rstrip("/")
+
+
+def _is_same_or_ancestor(candidate, target):
+    return bool(candidate and target and
+                (candidate == target or target.startswith(candidate + "/")))
+
+
+def _find_own_repo():
+    """Discover only the nearest Git repository containing this extension."""
+    root = _get_extension_root()
+    git = _get_git()
+    repo_path = git.libgit.Repository.Discover(root)
+    if not repo_path:
         return None
+    info = git.get_repo(repo_path)
+    directory = _get_repo_key(info)
+    if not _is_same_or_ancestor(directory, _normalize_dir(root)):
+        return None
+    # The getter lives on versionmgr, not versionmgr.updater. HOME_DIR also
+    # protects core installations for which get_pyrevit_repo() returns None.
+    core = _get_version_manager().get_pyrevit_repo()
+    if directory == _get_repo_key(core) or _is_same_or_ancestor(
+            directory, _normalize_dir(_get_pyrevit_home())):
+        return None
+    return info
 
 
-def _only_key(heads, key):
-    """The one-entry view of a head snapshot that the diff should consider."""
-    if not key or key not in heads:
-        return {}
-    return {key: heads[key]}
+def _get_repo_key(info):
+    return _normalize_dir(getattr(info, "directory", ""))
 
 
-def _result(trigger, updated_repos, status=None):
-    updated_repos = list(updated_repos or [])
-    if status is None:
-        status = STATUS_UPDATED if updated_repos else STATUS_NO_OP
-    return {
-        "status": status,
-        "trigger": trigger,
-        "updated_repos": updated_repos,
-    }
+def _get_repo_name(info):
+    return _safe_text(getattr(info, "name", "")).strip() or _get_repo_key(info)
+
+
+def _safe_text(value):
+    if value is None:
+        return ""
+    try:
+        return _TEXT_TYPE(value)
+    except Exception:
+        return ""
 
 
 def _try_acquire_startup_lock():
@@ -316,175 +506,6 @@ def _dispose_startup_lock(startup_lock):
         pass
 
 
-def _get_native_updater():
-    from pyrevit.versionmgr import updater
-
-    return updater
-
-
-def _get_session_manager():
-    from pyrevit.loader import sessionmgr
-
-    return sessionmgr
-
-
-def _get_extension_root():
-    """The extension folder: this module is <EXT_ROOT>/lib/easybim/<this>.py."""
-    here = os.path.abspath(__file__)
-    return os.path.dirname(os.path.dirname(os.path.dirname(here)))
-
-
-def _normalize_dir(path):
-    """Comparable form of a directory path: absolute, cased, no trailing sep."""
-    text = _safe_text(path).strip()
-    if not text:
-        return ""
-    # Separators first: abspath on a foreign-separator path would resolve it
-    # against the working directory instead of normalising it.
-    text = text.replace("/", os.sep).replace("\\", os.sep)
-    try:
-        text = os.path.abspath(text)
-    except Exception:
-        pass
-    text = text.rstrip(os.sep)
-    try:
-        return os.path.normcase(text)
-    except Exception:
-        return text
-
-
-def _is_same_or_ancestor(candidate, target):
-    """True when `candidate` is `target` or a directory above it."""
-    if not candidate or not target:
-        return False
-    if candidate == target:
-        return True
-    return target.startswith(candidate + os.sep)
-
-
-def _find_own_repo(updater):
-    """The repository holding this extension, or None.
-
-    pyRevit discovers a repository by walking *up* from the extension folder,
-    so in a checkout that holds several ``*.extension`` folders the repository
-    directory is a parent of ours rather than equal to it.  The deepest
-    matching directory wins, which keeps nested checkouts honest.
-    """
-    root = _normalize_dir(_get_extension_root())
-    if not root:
-        return None
-
-    try:
-        repos = _list_extension_repos(updater)
-    except Exception:
-        return None
-
-    core_dirs = _get_core_repo_dirs(updater)
-
-    best_repo = None
-    best_length = -1
-    for repo_info in repos or []:
-        directory = _normalize_dir(getattr(repo_info, "directory", ""))
-        if not directory or directory in core_dirs:
-            continue
-        if not _is_same_or_ancestor(directory, root):
-            continue
-        if len(directory) > best_length:
-            best_repo = repo_info
-            best_length = len(directory)
-    return best_repo
-
-
-def _list_extension_repos(updater):
-    """Candidate repositories, third-party ones for preference.
-
-    ``get_all_extension_repos`` includes pyRevit's own clone.  If someone has
-    dropped this extension inside that clone, the ancestor match below would
-    otherwise select it and we would pull pyRevit itself - precisely what this
-    tool exists to stop doing.
-    """
-    thirdparty = getattr(updater, "get_thirdparty_ext_repos", None)
-    if callable(thirdparty):
-        return thirdparty()
-    return updater.get_all_extension_repos()
-
-
-def _get_core_repo_dirs(updater):
-    """Normalized directories of pyRevit's own clone; empty when unknown."""
-    dirs = set()
-    getter = getattr(updater, "get_pyrevit_repo", None)
-    if not callable(getter):
-        return dirs
-    try:
-        core_repo = getter()
-    except Exception:
-        return dirs
-    directory = _normalize_dir(getattr(core_repo, "directory", ""))
-    if directory:
-        dirs.add(directory)
-    return dirs
-
-
-def _try_snapshot_repo_heads(updater):
-    try:
-        return _snapshot_repo_heads(updater)
-    except Exception:
-        return None
-
-
-def _try_check_for_pending_updates(updater):
-    try:
-        return bool(updater.check_for_updates())
-    except Exception:
-        return None
-
-
-def _snapshot_repo_heads(updater):
-    heads = {}
-    for repo_info in updater.get_all_extension_repos():
-        key = _get_repo_key(repo_info)
-        if not key:
-            continue
-        heads[key] = {
-            "name": _get_repo_name(repo_info),
-            "head": _safe_text(getattr(repo_info, "last_commit_hash", "")),
-        }
-    return heads
-
-
-def _get_changed_repo_names(before_heads, after_heads):
-    changed = []
-    for key, after_info in after_heads.items():
-        before_info = before_heads.get(key)
-        if before_info is None:
-            continue
-        if before_info.get("head") != after_info.get("head"):
-            changed.append(after_info.get("name") or key)
-    return sorted(changed)
-
-
-def _get_repo_key(repo_info):
-    directory = _safe_text(getattr(repo_info, "directory", "")).strip()
-    if directory:
-        return directory
-    return _safe_text(getattr(repo_info, "name", "")).strip()
-
-
-def _get_repo_name(repo_info):
-    name = _safe_text(getattr(repo_info, "name", "")).strip()
-    if name:
-        return name
-    return _get_repo_key(repo_info)
-
-
-def _format_updated_message(updated_repos):
-    lines = ["EasyBIM Auto Update installed changes:", ""]
-    for repo_name in updated_repos:
-        lines.append("- {}".format(repo_name))
-    lines.extend(["", "pyRevit is reloading."])
-    return "\n".join(lines)
-
-
 def _show_message(message, warn=False):
     message = _safe_text(message).strip()
     if not message:
@@ -512,12 +533,3 @@ def _show_message(message, warn=False):
         print("[{}] {}".format(TITLE, message))
     except Exception:
         pass
-
-
-def _safe_text(value):
-    if value is None:
-        return ""
-    try:
-        return str(value)
-    except Exception:
-        return ""

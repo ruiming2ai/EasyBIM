@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Pull the latest EasyBIM changes and reload if the extension moved."""
+"""Verify EasyBIM against its upstream and refresh this session when needed."""
 
 from easybim.auto_update import run_manual_auto_update
 

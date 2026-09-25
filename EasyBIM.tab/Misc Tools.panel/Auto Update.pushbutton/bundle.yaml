@@ -1,8 +1,11 @@
 title: "Auto\nUpdate"
 context: zero-doc
 tooltip: >-
-  Pull the latest EasyBIM changes from its git repository and reload
-  pyRevit if the extension moved.
+  Check EasyBIM's configured upstream branch, install missing changes,
+  and reload pyRevit if this Revit session has an older version loaded.
+
+  Every click reports the result. A successful remote check is required
+  to confirm that EasyBIM is up to date. Local changes are preserved.
 
   Only the EasyBIM repository is updated - other installed extensions
   are left alone. Use pyRevit's own Update button to refresh everything

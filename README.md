@@ -880,15 +880,28 @@ nothing is reported, never guessed at.
 
 ## Auto Update (Misc Tools)
 
-Auto Update pulls the latest version of the EasyBIM extension from its git
-repository and reloads pyRevit if the extension's commit has changed. It updates
-**only EasyBIM** — other pyRevit extensions are untouched, and for those you
-should use pyRevit's own **Update** command.
+Auto Update checks **EasyBIM's configured upstream branch** by fetching its remote,
+compares its commit with the installed files, and pulls missing changes through
+pyRevit's Git APIs and saved repository credentials. An unchanged local commit alone is
+not proof of being current: a successful remote check and matching commits are
+required. Network, authentication, and repository errors are reported separately.
+Local edits, local commits, divergent branches, and detached checkouts are left
+for the user to resolve; Auto Update never resets files or switches branches.
 
-The same check runs automatically once per Revit session, deferred to the first
-idle tick so it never blocks startup. A mutex prevents concurrent updates when
-multiple Revit instances are open at the same time: only the first instance to
-acquire the lock runs the pull, and the others skip it silently.
+Each Revit session records the EasyBIM commit it loaded. Auto Update reloads
+pyRevit only when that session needs the verified files, including when another
+Revit instance already installed them. Every manual click reports its result,
+with the branch and commit identifiers when available. If files are verified but
+the loaded version is unknown, reload pyRevit or restart Revit once to establish
+the baseline. A failed reload reports that the files are verified but applying
+them still requires attention.
+
+The same check runs automatically once per Revit session on the first idle tick.
+Network work is deferred until then; it can still occupy the UI while it runs.
+Startup stays quiet unless this update installs changes, with failures recorded
+in pyRevit's debug log. A mutex protects both manual and automatic updates across
+Revit instances; manual clicks report when another instance is busy. Other
+extension repositories and pyRevit core are left to pyRevit's own **Update**.
 
 ## Excel (Misc Tools)
 

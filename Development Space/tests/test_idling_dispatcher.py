@@ -434,6 +434,53 @@ class IdlingDispatcherTests(unittest.TestCase):
         self.assertEqual(installed_before + 1, len(uiapp.added))
         self.assertTrue(self.idling.is_installed())
 
+    def test_auto_update_keeps_the_new_delegate_installed_by_reload(self):
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+        old_handler = uiapp.added[-1]
+        new_runtime = _load_idling()
+        new_runtime._get_envvar = self.idling._get_envvar
+        new_runtime._set_envvar = self.idling._set_envvar
+
+        class ReloadingAutoUpdate(object):
+            @staticmethod
+            def has_pending_startup_auto_update():
+                return True
+
+            @staticmethod
+            def run_pending_startup_auto_update():
+                # A real pyRevit reload invokes startup in a fresh engine.
+                new_runtime.install(uiapp)
+
+        self.idling.auto_update = ReloadingAutoUpdate
+        self.idling._run_auto_update(uiapp)
+
+        self.assertEqual(2, len(uiapp.added))
+        # uninstall detaches via both its local state and the envvar mirror.
+        self.assertTrue(uiapp.removed)
+        self.assertTrue(all(handler is old_handler for handler in uiapp.removed))
+        self.assertIs(new_runtime._HANDLER,
+                      self.store[self.idling.HANDLER_ENVVAR]["handler"])
+
+    def test_auto_update_failure_restores_the_detached_delegate(self):
+        uiapp = FakeUiapp()
+        self.idling.install(uiapp)
+
+        class FailingAutoUpdate(object):
+            @staticmethod
+            def has_pending_startup_auto_update():
+                return True
+
+            @staticmethod
+            def run_pending_startup_auto_update():
+                raise RuntimeError("update failed")
+
+        self.idling.auto_update = FailingAutoUpdate
+        with self.assertRaises(RuntimeError):
+            self.idling._run_auto_update(uiapp)
+        self.assertEqual(2, len(uiapp.added))
+        self.assertTrue(self.idling.is_installed())
+
     def test_auto_update_is_skipped_when_nothing_is_pending(self):
         uiapp = FakeUiapp()
         self.idling.install(uiapp)

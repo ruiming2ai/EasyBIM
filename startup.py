@@ -111,6 +111,10 @@ except Exception:
 try:
     from easybim import auto_update
 
+    # Refresh this on every load, including reloads where the update guard is
+    # already set. Reading the local commit performs no network work.
+    auto_update.record_loaded_revision()
+
     # Deferred: the first Idling tick runs the guarded update, so git and
     # network work never block the Revit startup thread.
     auto_update.queue_startup_auto_update()
