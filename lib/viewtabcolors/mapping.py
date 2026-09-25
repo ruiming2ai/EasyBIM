@@ -35,19 +35,20 @@ def build_caption_assignments(entries):
     return assignments, conflicts
 
 
-def _filterable_captions(assignments, entries=None):
-    """Return captions that cannot steal another known caption's color.
+def _caption_exclusions(assignments, entries=None):
+    """Return longer, differently colored captions to exclude per token.
 
     pyRevit evaluates title filters against AvalonDock's internal title. That
     title can contain document/type text around the visible Revit caption, so
     a useful rule must find the API-derived caption *inside* that string.
 
-    A contained match introduces one new ambiguity: a short caption might be
-    present inside a longer open caption assigned to another color. Omit that
-    short token rather than allowing rule order to choose the result. Tokens
-    nested only inside same-color captions remain safe.
+    A short caption may be present inside a longer caption of another color.
+    Keep the short token, but guard its rule against those longer titles.
+    Dropping it entirely makes a standalone view lose its color when view
+    activation adds an inferred host sheet whose title contains that name.
+    Disabled and ambiguous captions must also block the shorter rule.
     """
-    result = []
+    result = {}
     items = list(assignments.items())
     competing_tokens = [
         (caption, assignment["color"]) for caption, assignment in items
@@ -58,21 +59,33 @@ def _filterable_captions(assignments, entries=None):
                 competing_tokens.append((caption, entry.get("color")))
     for caption, assignment in items:
         color = assignment["color"]
-        unsafe = False
+        exclusions = set()
         for other_caption, other_color in competing_tokens:
             if caption == other_caption:
                 continue
             if color != other_color and caption in other_caption:
-                unsafe = True
-                break
-        if not unsafe:
-            result.append(caption)
+                exclusions.add(other_caption)
+        result[caption] = sorted(exclusions, key=lambda item: (-len(item), item))
     return result
 
 
 def _caption_fragment(caption, escape_function):
     """Build a literal contained-title match with conservative word guards."""
     return r"(?<!\w){0}(?!\w)".format(escape_function(caption))
+
+
+def _guarded_caption_fragment(caption, exclusions, escape_function):
+    fragment = _caption_fragment(caption, escape_function)
+    if not exclusions:
+        return fragment
+    competitors = "|".join(
+        _caption_fragment(other, escape_function) for other in exclusions
+    )
+    # Test the whole internal title from its start: a sheet number can precede
+    # the view name, so a lookahead at the short token alone is insufficient.
+    # Both .NET Regex and Python support these guards. [\s\S] also covers
+    # multiline document titles without depending on external regex flags.
+    return r"\A(?![\s\S]*(?:{0}))[\s\S]*?{1}".format(competitors, fragment)
 
 
 def build_filter_rules(
@@ -83,13 +96,14 @@ def build_filter_rules(
 ):
     """Group safe, escaped caption tokens into compact pyRevit filters.
 
-    The pattern is deliberately not anchored. Revit/pyRevit versions can pass
-    an internal title such as ``<document> - <view title>`` even when only the
-    view name is visible on screen. Negative word guards prevent a token such
-    as ``Level 1`` from matching inside ``Level 10``.
+    Revit/pyRevit versions can pass an internal title such as
+    ``<document> - <view title>`` even when only the view name is visible.
+    Caption tokens can match anywhere in that title, unless it contains a
+    competing longer caption. Word guards keep ``Level 1`` out of ``Level 10``.
     """
     by_color = {}
-    for caption in _filterable_captions(assignments, entries=entries):
+    exclusions = _caption_exclusions(assignments, entries=entries)
+    for caption in exclusions:
         assignment = assignments[caption]
         by_color.setdefault(assignment["color"], []).append(caption)
 
@@ -101,7 +115,9 @@ def build_filter_rules(
         chunk = []
         chunk_length = 0
         for caption in captions:
-            fragment = _caption_fragment(caption, escape_function)
+            fragment = _guarded_caption_fragment(
+                caption, exclusions[caption], escape_function
+            )
             added_length = len(fragment) + (1 if chunk else 0)
             if chunk and chunk_length + added_length > max_pattern_length:
                 rules.append(_make_rule(color, chunk))
