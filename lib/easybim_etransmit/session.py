@@ -60,39 +60,56 @@ class Registry(object):
         self.scanner=Backend(DB,application,recovery_root,cancelled)
     def get(self,key):return self.entries.get(key)
     def owns(self,key):return key in self.entries
-    def add_live(self,doc,configured_source=None):
+    def register_live(self,doc,configured_source=None):
         for old,key in self._documents:
             if old is doc or old==doc:return key
         original=f.text(configured_source or getattr(doc,'PathName','') or '')
-        name=ntpath.basename(original) if f.absolute(original) and not f.cache_source(original) else f.text(doc.Title)
+        name=f.text(doc.Title)
+        if bool(getattr(doc,'IsLinked',False)) and f.absolute(original) and not f.cache_source(original):
+            name=ntpath.basename(original)
         if not name.lower().endswith('.rvt'):name+='.rvt'
         if any(c in name for c in '<>:"/\\|?*'):
             raise SourceError('INVALID_OPEN_MODEL_NAME','The open document title is not a valid RVT filename.')
         key='open://'+uuid.uuid4().hex+'/'+name
+        central='';central_path=None
+        if getattr(doc,'IsWorkshared',False):
+            try:
+                central_path=doc.GetWorksharingCentralModelPath()
+                central=self.scanner.visible(central_path)
+            except Exception:pass
+            finally:dispose(central_path)
         entry=dict(source=key,mode='LIVE_DOCUMENT',document=doc,name=name,original_path=original,
-                   cloud=cloud_identity(doc),document_version=doc_version(doc),
+                   cloud=cloud_identity(doc),document_version=doc_version(doc),reference_central=central,
                    state_basis='LIVE_INVENTORY_ONLY',children=[],snapshot_path=None,is_linked=bool(getattr(doc,'IsLinked',False)))
         self.entries[key]=entry;self._documents.append((doc,key))
+        return key
+
+    def add_live(self,doc,configured_source=None):
+        key=self.register_live(doc,configured_source)
+        self.inventory(key)
+        return key
+
+    def inventory(self,key):
+        entry=self.entries[key]
+        if 'inventory' in entry:return entry['inventory']
+        doc=entry['document'];original=entry.get('original_path','')
         result=dict(references=[],issues=[],version=f.text(getattr(self.app,'VersionNumber','')),
                     opened_in_revit=True,inspection_status='LIVE_DOCUMENT',source_mode='LIVE_DOCUMENT')
         entry['inventory']=result
-        central=''
-        if getattr(doc,'IsWorkshared',False) and not getattr(doc,'IsModelInCloud',False):
-            try:central=self.scanner.visible(doc.GetWorksharingCentralModelPath())
-            except Exception:pass
+        central=entry.get('reference_central','')
         info=dict(central=central,workshared=bool(getattr(doc,'IsWorkshared',False)))
         try:
             self.scanner.scan_open(doc,original or key,info,result)
-            if self.collect_plugins:
-                self.scanner.scan_plugins(doc,central or original,result)
         except f.Cancelled:raise
-        except ImportError:
-            # An installation missing an owned module must not silently claim
-            # spreadsheet coverage. General reference inventory still survives.
-            result['issues'].append(issue('PLUGIN_SOURCE_COVERAGE',key,'Plugin discovery module unavailable.'))
         except Exception as exc:
             result['issues'].append(issue('LIVE_INVENTORY_FAILED',key,exc,'error'))
             result['open_failed']=True
+        if self.collect_plugins:
+            try:self.scanner.scan_plugins(doc,central or original,result)
+            except f.Cancelled:raise
+            except Exception as exc:
+                # Optional vendor coverage is not a failure to serialize the RVT.
+                result['issues'].append(issue('PLUGIN_SOURCE_COVERAGE',key,exc))
         try:
             for instance in self.scanner.elements(doc,'RevitLinkInstance'):
                 f.check(self.cancelled)
@@ -102,6 +119,7 @@ class Registry(object):
                 matches=[r for r in result['references'] if r.get('element_id')==type_id and r.get('kind')=='RevitLink']
                 configured=matches[0].get('source','') if matches else ''
                 childkey=self.add_live(child,configured)
+                if entry.get('bound_graph'):self.entries[childkey]['bound_graph']=entry['bound_graph']
                 if childkey not in entry['children']:entry['children'].append(childkey)
                 if not matches:
                     row=dict(id=type_id,element_id=type_id,kind='RevitLink',special='external',td=False,loaded=True)
@@ -113,7 +131,7 @@ class Registry(object):
         except f.Cancelled:raise
         except Exception as exc:
             result['issues'].append(issue('LIVE_LINK_TRAVERSAL_FAILED',key,exc,'error'))
-        return key
+        return result
     def add_graph(self,graph,client):
         self.graphs[graph.key]=graph;self.clients[graph.key]=client
         for item in graph.entries:
@@ -139,7 +157,8 @@ class Registry(object):
     def public(self,key):
         entry=self.entries[key]
         fields=('source','mode','name','original_path','cloud','document_version','state_basis',
-                'snapshot_path','working_document_path_after','bound_graph')
+                'snapshot_path','working_document_path_after','bound_graph','snapshot_verification',
+                'snapshot_sha256','snapshot_captured_at','snapshot_warnings','snapshot_requested_path','reference_central')
         result=dict((k,entry[k]) for k in fields if k in entry)
         if entry['mode']=='PUBLISHED_VERSION':
             result.update(project_id=entry['graph'].project,host_version_id=entry['graph'].version,
@@ -149,43 +168,82 @@ class Registry(object):
     def relative(self,key):
         entry=self.entries[key]
         if entry['mode']=='PUBLISHED_VERSION':return entry['graph'].relative(entry['item'])
+        if not entry.get('is_linked',False):
+            return 'Host/'+identifier(key)[:8]+'/'+entry['name']
         original=entry.get('original_path','')
         if f.absolute(original) and not f.cache_source(original):return f.mirror_path(original)
         return 'Sources/Open_Models/'+identifier(key)+'/'+entry['name']
+    def authorize_snapshot(self,key):
+        """Per-command consent from the initial Transmit confirmation, never settings."""
+        entry=self.entries[key]
+        if entry.get('is_linked'):
+            raise SourceError('LINK_DOCUMENT_READ_ONLY','A linked Document must not be saved by this command.')
+        entry['snapshot_authorized']=True
+
     def snapshot(self,key):
         entry=self.entries[key];doc=entry['document']
+        f.check(self.cancelled)
         if bool(getattr(doc,'IsLinked',False)):
             raise SourceError('LINK_DOCUMENT_READ_ONLY','A loaded linked document cannot be saved; acquire its exact original revision instead.')
         if entry.get('snapshot_path'):return entry['snapshot_path']
-        original=entry.get('original_path','')
-        if (not getattr(doc,'IsModified',False) and not getattr(doc,'IsDetached',False)
-                and not getattr(doc,'IsModelInCloud',False) and f.absolute(original) and not f.cache_source(original)):
-            try:
-                if entry.get('document_version') and file_version(self.DB,original)==entry['document_version']:
-                    entry['state_basis']='CURRENT_UNMODIFIED_SAVED_DOCUMENT';return original
-            except Exception:pass  # No revision proof: require an explicit current-state SaveAs.
         if getattr(doc,'IsReadOnly',False) or getattr(doc,'IsModifiable',False):
-            raise SourceError('HOST_SNAPSHOT_UNAVAILABLE','Current document cannot be saved in its current edit/read-only state.')
-        target=os.path.join(self.recovery_root,identifier(key),entry['name'])
-        if not self.confirm_snapshot or not self.confirm_snapshot(doc,target):
-            raise SourceError('HOST_SNAPSHOT_DECLINED','Current-state host snapshot was not authorized; live dependencies are still collected. No older host was substituted.')
+            raise SourceError('HOST_SNAPSHOT_UNAVAILABLE','Exit the current edit mode or transaction before saving the current host. No old file was substituted.')
+        # Always serialize the actual Document. Neither an ADC download nor a
+        # published/saved host is a substitute for the requested open state.
+        target=os.path.join(self.recovery_root,identifier(key)[:8],entry['name'])
+        allowed=entry.get('snapshot_authorized',False)
+        if not allowed and self.confirm_snapshot:allowed=bool(self.confirm_snapshot(doc,target))
+        if not allowed:
+            raise SourceError('HOST_SNAPSHOT_DECLINED','Current-state host snapshot was not authorized; no older host was substituted.')
         f.validate_destination_path(target)
+        original=entry.get('original_path','')
+        if f.absolute(original) and f.canonical(target)==f.canonical(original):
+            raise SourceError('HOST_SOURCE_OVERWRITE_BLOCKED','Snapshot destination must differ from the working source.')
+        if f.file_exists(target):
+            raise SourceError('HOST_SNAPSHOT_EXISTS','A prior snapshot exists; start a new run. Existing snapshots are never overwritten.')
         folder=os.path.dirname(target)
         if not os.path.isdir(folder):os.makedirs(folder)
-        save=self.DB.SaveAsOptions();ws=None
+        entry['snapshot_requested_path']=target
+        entry['snapshot_warnings']=[]
+        save=self.DB.SaveAsOptions();ws=None;save_error=None
         try:
             save.OverwriteExistingFile=False;save.MaximumBackups=1
             if getattr(doc,'IsWorkshared',False):
                 ws=self.DB.WorksharingSaveAsOptions();ws.SaveAsCentral=True;save.SetWorksharingOptions(ws)
+            f.check(self.cancelled)
             doc.SaveAs(target,save)
-            entry['snapshot_path']=target;entry['state_basis']='CURRENT_DOCUMENT_SAVEAS'
+        except f.Cancelled:raise
+        except Exception as exc:
+            save_error=exc
+        finally:
             entry['working_document_path_after']=f.text(getattr(doc,'PathName',''))
-        except Exception:
-            # Never delete the target: Revit may now be working from it even if
-            # an unrelated add-in raised an event exception after SaveAs.
-            entry['working_document_path_after']=f.text(getattr(doc,'PathName',''))
-            raise SourceError('HOST_SNAPSHOT_FAILED','Revit could not complete the current-state SaveAs. Any recovery file was retained; live dependencies continue.')
-        finally:dispose(ws);dispose(save)
+            dispose(ws);dispose(save)
+        # Preserve any bytes even after failure: an external SavedAs event may
+        # throw after Revit wrote a complete file and moved the working path.
+        try:
+            if not f.file_exists(target):raise ValueError('No RVT was written at the requested snapshot path.')
+            info=model_payload.probe(target)
+            if info.get('container')!='CFB':raise ValueError('SaveAs did not produce a native RVT.')
+            if getattr(doc,'IsModified',False):
+                raise ValueError('The document still has unsaved changes after SaveAs; snapshot currency is not proven.')
+            expected=doc_version(doc)
+            actual=file_version(self.DB,target)
+            if not expected or actual!=expected:
+                raise ValueError('Saved RVT revision does not match the current DocumentVersion.')
+            entry['snapshot_verification']='REVISION_CHECKED'
+            entry['snapshot_sha256']=f.digest(target,self.cancelled)
+        except f.Cancelled:raise
+        except Exception as exc:
+            detail=(type(save_error).__name__+': '+f.text(save_error)+'; ') if save_error else ''
+            raise SourceError('HOST_SNAPSHOT_FAILED',detail+f.text(exc)+
+                              ' Any generated recovery file is retained at '+target+'.')
+        if save_error:
+            entry['snapshot_warnings'].append(issue('HOST_SAVE_EVENT_RECOVERED',target,
+                'SaveAs raised '+type(save_error).__name__+': '+f.text(save_error)+
+                '. The native file matches the clean current document revision and was retained.'))
+        entry['snapshot_path']=target;entry['state_basis']='CURRENT_DOCUMENT_SAVEAS'
+        entry['document_version']=expected
+        entry['snapshot_captured_at']=time.strftime('%Y-%m-%dT%H:%M:%S')
         return target
     def temp_root(self):
         if not self._temp:self._temp=tempfile.mkdtemp(prefix='ET_APS_')
@@ -234,9 +292,21 @@ class SessionBackend(Backend):
         if entry and entry['mode']=='PUBLISHED_VERSION' and entry['item'].get('is_host'):
             return [r['source'] for r in entry['graph'].entries if r['source']!=source]
         return []
+    def skip_dependency_copy(self,source,options):
+        entry=self.registry.get(source)
+        if not options.get('skip_cloud_links') or not entry or not entry.get('is_linked'):return None
+        original=entry.get('original_path','')
+        if (getattr(entry['document'],'IsModelInCloud',False) or entry.get('cloud') or
+                f.is_desktop_connector_path(original) or '://' in original):
+            return 'ACC linked RVT copying was skipped by the selected option. Its existing reference is retained; loaded-link materials can still be collected.'
+        return None
+
+    def host_copy_first(self,source):
+        entry=self.registry.get(source)
+        return bool(entry and entry['mode']=='LIVE_DOCUMENT' and not entry.get('is_linked'))
     def inventory_before_copy(self,source,options):
         entry=self.registry.get(source)
-        return copy.deepcopy(entry['inventory']) if entry and entry['mode']=='LIVE_DOCUMENT' else None
+        return copy.deepcopy(self.registry.inventory(source)) if entry and entry['mode']=='LIVE_DOCUMENT' else None
     def resolve_acquired_source(self,source,owner=''):
         if self.registry.owns(source):return source
         entry=self.registry.get(owner)
@@ -277,6 +347,20 @@ class SessionBackend(Backend):
         else:
             physical=self.registry.snapshot(source)
             meta=self.payloads.copy(physical,target,owner,cancelled,pulse)
+            # Immutable native snapshot is independent of all repath/cleanup work.
+            protected=os.path.join(self.root,'HostSnapshot',identifier(source)[:8],entry['name'])
+            meta.update(is_live_host=True,host_snapshot_sha256=entry['snapshot_sha256'],
+                        host_snapshot_status='UNAVAILABLE')
+            try:
+                f.copy_file(target,protected,cancelled,pulse)
+                if f.digest(protected,cancelled)!=entry['snapshot_sha256']:
+                    raise IOError('The protected copy did not match the current-state snapshot.')
+                meta.update(host_snapshot_path=protected,host_snapshot_status='VERIFIED')
+            except f.Cancelled:raise
+            except Exception as exc:
+                # Do not mislabel the already-verified primary copy as missing
+                # when only its redundant backup could not be written.
+                entry['snapshot_warnings'].append(issue('HOST_SNAPSHOT_BACKUP_FAILED',protected,exc,'error'))
         meta.update(source_stability='SESSION_SNAPSHOT',source_context=self.registry.public(source))
         return meta
     def scan(self,source,stage,options):

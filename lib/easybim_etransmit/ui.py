@@ -9,7 +9,7 @@ import re
 import traceback
 from pyrevit import forms, script, DB
 from . import VERSION, files as f
-from . import cleanup, engine, batch, aps, oauth, cloud_picker
+from . import cleanup, engine, batch, aps, oauth, cloud_picker, jobnames
 from .session import Registry, SessionBackend
 
 
@@ -38,7 +38,7 @@ class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
         self.tokens=None;self.client=None;self.client_id='';self.callback_uri='http://127.0.0.1:8767/callback'
-        self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.mappings=[]; self.view_types=[]
+        self.uiapp=uiapp; self.result=None; self.snapshots_authorized=False; self.models=[]; self.extras=[]; self.mappings=[]; self.view_types=[]
         self.categories=[Choice(label,key) for key,label in f.CATEGORIES]
         self.Categories.ItemsSource=self.categories
         self.modes=[Choice(label,key) for key,label in cleanup.MODES]
@@ -202,6 +202,7 @@ class Dialog(forms.WPFWindow):
         if not os.path.isdir(output): return forms.alert('Select an existing output directory.')
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
         opts.update(deep=bool(self.DeepScan.IsChecked),repath=bool(self.Repath.IsChecked),
+                    preserve_live_host=bool(self.PreserveHost.IsChecked),skip_cloud_links=bool(self.SkipCloudLinks.IsChecked),
                     cleanup=bool(self.Cleanup.IsChecked),upgrade=bool(self.Upgrade.IsChecked or self.Cleanup.IsChecked),
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
                     views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=bool(self.Separate.IsChecked),
@@ -217,7 +218,23 @@ class Dialog(forms.WPFWindow):
         if unresolved:
             return forms.alert('These saved-file selections do not resolve to an exact source. Open-model selections do not require a saved path.\n\n'+'\n'.join(unresolved))
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
-        long_paths=engine.preflight_paths([x.Source for x in models if x.Mode=='SAVED_FILE'],root,opts,self.extras)
+        try:
+            # Validate every display name before any SaveAs or package is created.
+            planned=jobnames.plan([x.Name for x in models],root,opts.get('per_model'))
+            long_paths=[]
+            for index,row in enumerate(models):
+                package=planned[index] if opts.get('per_model') else root
+                if row.Mode=='LIVE_DOCUMENT':
+                    name=jobnames.stem(row.Name)+'.rvt'
+                    for parent in (root+'_WorkingSnapshots',os.path.join(package,'Host'),
+                                   os.path.join(package,'HostSnapshot')):
+                        f.validate_destination_path(os.path.join(parent,'12345678',name))
+                # Use the already planned package, so mixed sources and repeated
+                # model names have exactly the same path budget as the real batch.
+                known=[row.Source] if row.Mode=='SAVED_FILE' else []
+                long_paths.extend(engine.preflight_paths(known,package,dict(opts,per_model=False),self.extras))
+        except ValueError as exc:
+            return forms.alert(f.text(exc)+'\n\nNo model was saved. Choose a shorter output folder or correct the model name.')
         if long_paths:
             message=long_paths[0]['message']+'\n\nNo files were copied and no transmittal was created. '
             message+='Choose a shorter output folder now?'
@@ -228,10 +245,20 @@ class Dialog(forms.WPFWindow):
             try: cleanup.view_deletions([],opts['views'],opts['view_types'])
             except ValueError as exc: return forms.alert(f.text(exc))
         notes=[]
-        if any(x.Mode=='LIVE_DOCUMENT' for x in models):notes.append('Open documents supply their current dependency inventory. If host serialization needs SaveAs, a separate confirmation will show the recovery location. No automatic Sync or Publish occurs.')
+        live=[x for x in models if x.Mode=='LIVE_DOCUMENT']
+        if live:
+            notes.append('Save the CURRENT OPEN state (including unsaved edits) of:\n'+
+                         '\n'.join(x.Name for x in live)+'\n\nNew RVT copies will be saved under:\n'+root+'_WorkingSnapshots'+
+                         '\nThe original saved files will not be overwritten. No Sync or Publish is performed. '
+                         'Native Revit SaveAs may switch the working document to the new file; review its path after the run. '
+                         'A protected HostSnapshot is also retained inside each package.')
+            if opts['preserve_live_host']:
+                notes.append('Preserve current host is ON: its geometry, sheets, tags and link references are not repathed, purged or cleaned. '
+                             'Missing linked models do not prevent this host snapshot from being kept.')
         if opts['upgrade']: notes.append('Package copies will be saved in Revit '+f.text(self.uiapp.Application.VersionNumber)+'. They cannot be opened in an older Revit.')
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
-        if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True): return
+        if notes and not forms.alert('\n\n'.join(notes)+'\n\nAuthorize these current-state copies and start?',yes=True,no=True,title='Save current hosts and transmit'): return
+        self.snapshots_authorized=bool(live)
         if self.SaveSettings.IsChecked:
             saved=dict((k,opts[k]) for k in ('deep','repath','per_model','reports','zip','zip_per_model','mappings'))
             saved['output']=output
@@ -256,24 +283,17 @@ def run(uiapp,xaml):
                 pb.title='e-transmit | '+f.text(label);pb.update_progress(current,max(1,total))
             registry=Registry(DB,uiapp.Application,root+'_WorkingSnapshots',cancel,
                               opts['include'].get('spreadsheets',True))
-            def confirm(doc,path):
-                return forms.alert('Include the CURRENT state of '+f.text(doc.Title)+'?\n\n'
-                    'This requires SaveAs to:\n'+path+'\n\n'
-                    'Revit may change the working document to this new file. The recovery file is retained outside the transmittal. '
-                    'No Sync or Publish is performed. Afterward, review the working file before continuing project work.\n\n'
-                    'Yes: authorize SaveAs. No: collect dependencies only and mark the host incomplete; do not substitute an older host.',
-                    yes=True,no=True,title='Confirm current-state snapshot')
-            registry.confirm_snapshot=confirm
             sources=[]
             for row in choices:
                 if cancel():break
                 if row.Mode=='LIVE_DOCUMENT':
-                    key=registry.add_live(row.Document)
-                    if row.CloudSelection:
+                    key=registry.register_live(row.Document)
+                    if dialog.snapshots_authorized:registry.authorize_snapshot(key)
+                    if row.CloudSelection and not opts.get('skip_cloud_links'):
                         selected=row.CloudSelection
                         try:registry.bind_graph(key,selected['graph'],selected['client'])
                         except Exception as exc:
-                            registry.get(key)['inventory']['issues'].append(engine.issue(
+                            registry.inventory(key)['issues'].append(engine.issue(
                                 getattr(exc,'code','CLOUD_GRAPH_BIND_FAILED'),key,exc,'error'))
                     sources.append(key)
                 elif row.Mode=='PUBLISHED_VERSION':
@@ -284,11 +304,11 @@ def run(uiapp,xaml):
             if sources:
                 results=batch.run_batch(sources,root,
                     lambda package,source:SessionBackend(DB,uiapp.Application,package,registry,cancel),
-                    opts,extras,cancel,pulse)
+                    opts,extras,cancel,pulse,source_names=dict((k,registry.get(k)['name']) for k in sources if registry.owns(k)))
             was_cancelled=cancel()
         if not results:return forms.alert('Transmission cancelled before any models were processed.')
         message=engine.completion_message(results,len(choices),cancelled=was_cancelled)
-        forms.alert(message+'\n\nOutput: '+root+'\n\nKeep Sources and _Refs together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
+        forms.alert(message+'\n\nOutput: '+root+'\n\nKeep Host, HostSnapshot, Sources and _Refs together. Read each START_HERE.txt and batch.json. A protected current-state host does not imply all linked files were packaged.',title='EasyBIM e-transmit')
         os.startfile(root)
     finally:
         dialog.release_credentials()

@@ -15,7 +15,7 @@ import uuid
 import zipfile
 from . import files as f
 from .pathnames import relative as relative_path
-from . import VERSION
+from . import VERSION, jobnames
 
 
 def issue(code, source, message, severity='warning'):
@@ -53,8 +53,9 @@ def preflight_paths(models, root, options, extras=None):
     """
     errors = []
     groups = [[m] for m in models] if options.get('per_model') else [models]
+    planned = jobnames.plan(models, root, options.get('per_model'))
     for index, group in enumerate(groups):
-        package = f.package_root(root, index, options.get('per_model'))
+        package = planned[index]
         pm = ntpath if f.is_windows(package) else os.path
         for requested in list(group) + list(extras or []):
             try:
@@ -93,10 +94,14 @@ def completion_message(results, requested, cancelled=False):
         state = 'completed with issues; review required'
     else:
         state = 'completed'
+    snapshots=sum(1 for r in results for file in r['files'] if file.get('host_snapshot_status')=='VERIFIED')
     lines = ['e-transmit ' + state + '.',
              'Host models copied: {0} / {1}'.format(hosts, requested),
+             'Protected current-state snapshots: {0}'.format(snapshots),
              'Files copied: {0} | Issues: {1}'.format(files, len(issues))]
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    issues.sort(key=lambda i:(0 if i['code'].startswith('HOST_') else 1,
+                              0 if i['severity']=='error' else 1))
     for item in issues[:3]:
         lines.append('\n' + item['code'] + ': ' + item['message'])
     if len(issues) > 3: lines.append('\nSee START_HERE.txt for the remaining issues.')
@@ -203,6 +208,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             f.check(cancelled)
             requested, owner, host, edge = queue.popleft()
             source, key, record = None, None, None
+            inventory_added=False;capture_first=False
             operation = 'resolve_source'
             try:
                 resolver=getattr(backend,'resolve_acquired_source',None)
@@ -301,11 +307,17 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                               target=target, category=cat, status='PENDING')
                 records[key] = record
                 result['files'].append(record)
-                before=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
+                capture_first=bool(host and getattr(backend,'host_copy_first',lambda s:False)(source))
+                before=None if capture_first else getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
                 if before is not None:
-                    # Preserve live materials even when the host snapshot is
-                    # refused/unavailable. Do not wait for host bytes to scan.
-                    add_inventory(source,record,before)
+                    add_inventory(source,record,before);inventory_added=True
+                skip_reason=(getattr(backend,'skip_dependency_copy',lambda source,opts:None)(source,opts)
+                             if not host else None)
+                if skip_reason:
+                    record['status']='SKIPPED_BY_USER'
+                    if edge is not None:edge['status']='SKIPPED_BY_USER'
+                    add_issue('CLOUD_LINK_COPY_SKIPPED',source,skip_reason)
+                    continue
                 companions=getattr(backend,'additional_sources',None)
                 if companions:
                     for companion in companions(source):
@@ -321,6 +333,11 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     add_issue('SOURCE_STAGING_CLEANUP_FAILED', source,
                               record['staging_cleanup_warning'])
                 record['status'] = 'COPIED'
+                result['issues'].extend(record.get('source_context',{}).get('snapshot_warnings',[]))
+                if capture_first:
+                    operation='live_inventory'
+                    before=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
+                    if before is not None:add_inventory(source,record,before);inventory_added=True
                 if edge is not None: edge['status'] = 'COPIED'
                 ext = os.path.splitext(source)[1].lower()
                 if ext == '.rvt':
@@ -355,6 +372,13 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             except f.Cancelled:
                 raise
             except Exception as exc:
+                if capture_first and record is not None and not inventory_added:
+                    try:
+                        inv=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
+                        if inv is not None:add_inventory(source,record,inv);inventory_added=True
+                    except f.Cancelled:raise
+                    except Exception as inventory_exc:
+                        add_issue('LIVE_INVENTORY_FAILED',source,inventory_exc,'error')
                 context=getattr(backend,'source_context',None)
                 if record is not None and context:
                     record['source_context']=context(source)
@@ -385,6 +409,13 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             for ref in edges:
                 if ref.get('status') != 'COPIED':
                     continue
+                owner_record=records.get(f.canonical(ref.get('owner','')))
+                if owner_record and owner_record.get('is_live_host') and opts.get('preserve_live_host'):
+                    ref['repath']='NOT_APPLIED_PROTECTED_HOST'
+                    continue
+                if owner_record and owner_record.get('status')!='COPIED':
+                    ref['repath']='NOT_APPLIED_OWNER_NOT_PACKAGED'
+                    continue
                 try:
                     alias=portable_image_alias(root,ref)
                     if not alias:
@@ -409,6 +440,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             for record in reversed(result['files']):
                 f.check(cancelled)
                 if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
+                if record.get('is_live_host') and (opts.get('preserve_live_host') or record.get('host_snapshot_status')!='VERIFIED'):
+                    record['processing_status']='PRESERVED_CURRENT_HOST'
+                    continue
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
@@ -450,6 +484,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         if verifier and opts.get('repath'):
             for record in reversed(result['files']):
                 if record['status']!='COPIED' or not record['source'].lower().endswith('.rvt'): continue
+                if record.get('is_live_host') and opts.get('preserve_live_host'):
+                    record['model_verification']='SNAPSHOT_ONLY_NOT_REOPENED'
+                    continue
                 if record.get('inventory_status') in ('FAILED','UNSTABLE','RUNNING','PARTIAL'):
                     record['model_verification']='SKIPPED_INVENTORY_FAILURE'; continue
                 if record.get('processing_status')=='FAILED':
@@ -473,6 +510,32 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         result['references'] = edges
         try: f.remove_tree_retry(work)
         except Exception as exc: add_issue('STAGING_CLEANUP_FAILED', work, exc)
+        # Protected host bytes must survive every later failure unchanged.
+        for rec in result['files']:
+            if rec.get('host_snapshot_path'):
+                try:
+                    if f.digest(rec['host_snapshot_path'])!=rec['host_snapshot_sha256']:
+                        raise IOError('Protected host snapshot hash changed.')
+                    rec['host_snapshot_status']='VERIFIED'
+                except Exception as exc:
+                    rec['host_snapshot_status']='FAILED'
+                    add_issue('HOST_SNAPSHOT_INTEGRITY_FAILED',rec['source'],exc,'error')
+            if rec.get('is_live_host') and opts.get('preserve_live_host'):
+                rec.setdefault('model_verification','SNAPSHOT_ONLY_NOT_REOPENED')
+                try:
+                    expected=rec['host_snapshot_sha256']
+                    if not f.file_exists(rec['target']) or f.digest(rec['target'])!=expected:
+                        if rec.get('host_snapshot_status')!='VERIFIED':
+                            raise IOError('Host changed and no verified backup is available. The working recovery file remains.')
+                        # Both paths were created and owned by this command; no
+                        # source document or original source file is rewritten.
+                        shutil.copyfile(rec['host_snapshot_path'],rec['target'])
+                        if f.digest(rec['target'])!=expected:raise IOError('Restored delivery copy hash mismatch.')
+                        add_issue('HOST_DELIVERY_COPY_RESTORED',rec['target'],
+                                  'An altered delivery copy was restored from the verified current-state HostSnapshot.')
+                except Exception as exc:
+                    rec['verification_status']='FAILED'
+                    add_issue('HOST_DELIVERY_COPY_INVALID',rec['source'],exc,'error')
         # Hash the final bytes, not just the pre-repath source snapshot.
         for rec in result['files']:
             if rec['status'] == 'COPIED' and f.file_exists(rec['target']):
@@ -501,18 +564,22 @@ def write_reports(result):
     counts = package_counts(result)
     lines = ['EasyBIM e-transmit ' + VERSION, 'Status: ' + result['status'],
              'Host models copied: {0} / {1}'.format(counts['hosts_copied'], counts['hosts_requested']),
+             'Protected current-state host snapshots: {0}'.format(sum(1 for r in result['files'] if r.get('host_snapshot_status')=='VERIFIED')),
              'Files copied: {0}'.format(counts['files_copied']),
              'Portable Revit aliases: {0}'.format(len(result.get('aliases', []))),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for record in result['files']:
+        if record.get('host_snapshot_path'):
+            lines.append('Protected HostSnapshot: '+record['host_snapshot_path']+' | '+record.get('host_snapshot_status',''))
+            lines.append('Snapshot bytes/current revision checked; this is not an offline opening/link verification.')
         context=record.get('source_context',{})
         if context:
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
             working=context.get('working_document_path_after') or context.get('snapshot_path')
             if working:lines.append('Retained working document / SaveAs recovery file: '+working+
                                     ' -- review the active Revit file before continuing. This recovery file is outside the transmitted package.')
-    lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
+    lines += ['', 'Keep the complete package together, including Host, HostSnapshot, Sources and _Refs when present. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
               'Review every warning before delivery. Reports contain original project paths.', '', 'ISSUES:']

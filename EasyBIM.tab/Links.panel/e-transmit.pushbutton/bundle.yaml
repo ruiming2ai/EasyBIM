@@ -1,10 +1,10 @@
 title: e-transmit
 tooltip: >-
-  Transmit current open documents, saved files, or explicitly selected published
-  ACC versions. Preserve filenames and source hierarchy where exposed. Includes
-  batch jobs, separate per-model ZIPs, readable plugin spreadsheet sources,
-  optional read-only Autodesk sign-in, and explicit current-state SaveAs consent.
-  Missing revisions and unsupported repathing are reported, never substituted.
+  Save checked open models in their current state before collecting materials.
+  Preserve an unchanged, checksummed HostSnapshot; name each job and ZIP after
+  its Revit model. No published-host fallback. One upfront SaveAs confirmation
+  explains the working-path change. ACC link downloads can be skipped without
+  deleting their references. Saved-file and optional cloud workflows remain.
 author: Ruiming Liu
 context: zero-doc
 min_revit_version: 2023
