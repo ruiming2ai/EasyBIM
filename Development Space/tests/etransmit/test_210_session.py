@@ -22,7 +22,7 @@ class SessionTests(unittest.TestCase):
                    IsWorkshared=False,IsModelInCloud=False,IsFamilyDocument=False,IsReadOnly=False,
                    IsModifiable=False,GetDocumentVersion=lambda document:Obj(VersionGUID='guid',NumberOfSaves=4))
     def registry(self):
-        m=mod(self);return m.Registry(Obj(),Obj(VersionNumber='2024'),os.path.join(self.root,'working'))
+        m=mod(self);return m.Registry(Obj(),Obj(VersionNumber='2024'),os.path.join(self.root,'working'),saved_state_only=False)
     def test_capture_keeps_document_not_just_path_and_never_opens_or_saves(self):
         r=self.registry();doc=self.doc();doc.SaveAs=lambda *a:self.fail('discovery must not save')
         r.scanner.scan_open=lambda d,s,i,result:result['references'].append(dict(id='1',element_id='1',kind='PDF',source='/drawing.pdf',special='image'))
@@ -61,8 +61,11 @@ class SessionTests(unittest.TestCase):
         r=self.registry();doc=self.doc(modified=True);calls=[]
         def save(path,options):
             calls.append(path)
-            with open(path,'wb') as out:out.write(b'current unsaved geometry')
+            from test_payload_acquisition import compound
+            with open(path,'wb') as out:out.write(compound())
+            doc.PathName=path;doc.IsModified=False
         doc.SaveAs=save;r.DB.SaveAsOptions=lambda:Obj(Dispose=lambda:None)
+        r.DB.BasicFileInfo=Obj(Extract=lambda path:Obj(Format='2024',Dispose=lambda:None))
         r.scanner.elements=lambda *a:[];r.scanner.scan_open=lambda *a:None
         key=r.add_live(doc);r.confirm_snapshot=lambda d,p:True
         path=r.snapshot(key)
@@ -94,7 +97,7 @@ class SnapshotSafety(unittest.TestCase):
                 IsModelInCloud=False,IsWorkshared=False,IsReadOnly=False,IsModifiable=False,
                 GetDocumentVersion=lambda document:Obj(VersionGUID='loaded',NumberOfSaves=1))
         db=Obj(BasicFileInfo=Obj(Extract=lambda p:Obj(GetDocumentVersion=lambda:Obj(VersionGUID='changed',NumberOfSaves=2))))
-        r=session.Registry(db,Obj(),os.path.join(root,'r'),collect_plugins=False)
+        r=session.Registry(db,Obj(),os.path.join(root,'r'),collect_plugins=False,saved_state_only=False)
         r.scanner.scan_open=lambda *a:None;r.scanner.elements=lambda *a:[]
         key=r.add_live(doc);r.confirm_snapshot=lambda *a:False
         with self.assertRaises(session.SourceError):r.snapshot(key)
@@ -111,7 +114,7 @@ class RecoveryReporting(unittest.TestCase):
             raise RuntimeError('post-save hook failed')
         doc.SaveAs=save
         db=Obj(SaveAsOptions=lambda:Obj(Dispose=lambda:None))
-        r=session.Registry(db,Obj(),os.path.join(root,'recovery'),collect_plugins=False)
+        r=session.Registry(db,Obj(),os.path.join(root,'recovery'),collect_plugins=False,saved_state_only=False)
         r.scanner.scan_open=lambda *a:None;r.scanner.elements=lambda *a:[]
         key=r.add_live(doc);r.confirm_snapshot=lambda *a:True
         out=os.path.join(root,'package');opts=f.defaults();opts['repath']=False
@@ -136,7 +139,7 @@ class AcquisitionIntegration(unittest.TestCase):
         def download(url,path,size,pulse=None):
             downloads.append(url)
             with open(path,'wb') as out:out.write(self.payload)
-        registry=session.Registry(Obj(),Obj(),os.path.join(self.root,'recovery'),collect_plugins=False)
+        registry=session.Registry(Obj(),Obj(),os.path.join(self.root,'recovery'),collect_plugins=False,saved_state_only=False)
         self.addCleanup(registry.close);key=registry.add_graph(graph,Obj(download=download))
         class B(session.SessionBackend):
             def basic(self,path):return dict(version='2024',workshared=False,central='')
@@ -151,7 +154,7 @@ class AcquisitionIntegration(unittest.TestCase):
             with open(row['target'],'rb') as inp:self.assertEqual(inp.read(),self.payload)
     def test_binding_other_cloud_host_is_rejected_before_any_download(self):
         from easybim_etransmit import session
-        r=session.Registry(Obj(),Obj(),os.path.join(self.root,'r'),collect_plugins=False)
+        r=session.Registry(Obj(),Obj(),os.path.join(self.root,'r'),collect_plugins=False,saved_state_only=False)
         self.addCleanup(r.close)
         r.entries['live']=dict(cloud=dict(model_guid='actual-host'),children=[])
         graph=self.graph()
@@ -159,7 +162,7 @@ class AcquisitionIntegration(unittest.TestCase):
         with self.assertRaises(session.SourceError):r.bind_graph('live',graph,client)
     def test_all_authoritative_members_are_collected_even_if_metadata_inventory_is_incomplete(self):
         from easybim_etransmit import session
-        graph=self.graph();r=session.Registry(Obj(),Obj(),os.path.join(self.root,'r'),collect_plugins=False);self.addCleanup(r.close)
+        graph=self.graph();r=session.Registry(Obj(),Obj(),os.path.join(self.root,'r'),collect_plugins=False,saved_state_only=False);self.addCleanup(r.close)
         key=r.add_graph(graph,None)
         b=session.SessionBackend(Obj(),Obj(),self.root,r)
         # The response itself supplies file membership, not fictitious Revit element IDs.

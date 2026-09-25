@@ -139,15 +139,22 @@ def discover(DB,doc,cancelled=None,base=''):
     except Exception:return [],[dict(provider='Extensible Storage',status='ERROR',message='Schema inventory failed.')]
     for schema in schemas:
         f.check(cancelled)
-        provider=f.text(schema.SchemaName);vendor=f.text(getattr(schema,'VendorId',''))
-        recognized=any(x in (provider+' '+vendor).lower() for x in VENDORS)
+        provider='Unavailable schema';entry=None
         try:
+            provider=f.text(schema.SchemaName);vendor=f.text(getattr(schema,'VendorId',''))
+            recognized=any(x in (provider+' '+vendor).lower() for x in VENDORS)
+            entry=dict(provider=provider,schema_guid=f.text(schema.GUID),status='SCANNED',elements=0,associations=0)
+            if not bool(getattr(schema,'IsValidObject',True)):
+                entry.update(status='UNAVAILABLE_SCHEMA',message='Schema is no longer valid; no fields or entities were read.')
+                coverage.append(entry);continue
+            # Revit can deny access before ListFields is safe to call. Do not
+            # attempt field enumeration to determine relevance through a denial.
+            if not schema.ReadAccessGranted():
+                entry.update(status='READ_DENIED',message='Schema read access denied by Revit; no bypass attempted.')
+                coverage.append(entry);continue
             fields=list(schema.ListFields())
             if not recognized and not any(_name(x.FieldName) in STRONG_FIELDS for x in fields):continue
-            entry=dict(provider=provider,schema_guid=f.text(schema.GUID),status='SCANNED',elements=0,associations=0)
             coverage.append(entry)
-            if not schema.ReadAccessGranted():
-                entry.update(status='READ_DENIED',message='Schema read access denied by Revit; no bypass attempted.');continue
             filt=collector=None
             try:
                 filt=ns.ExtensibleStorageFilter(schema.GUID)

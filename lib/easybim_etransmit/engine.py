@@ -45,29 +45,37 @@ def folder_files(folder):
             if not os.path.islink(p): yield p
 
 
-def preflight_paths(models, root, options, extras=None):
-    """Check known destinations BEFORE creating a report-only empty package.
-
-    Nested references are still checked individually when discovered. This does
-    not load a model or change the configured Desktop Connector source location.
-    """
-    errors = []
-    groups = [[m] for m in models] if options.get('per_model') else [models]
-    for index, group in enumerate(groups):
-        package = f.package_root(root, index, options.get('per_model'))
-        pm = ntpath if f.is_windows(package) else os.path
-        for requested in list(group) + list(extras or []):
+def preflight_paths(models, root, options, extras=None, model_names=None):
+    """Use the same model-named layout as the real batch, before any save/copy."""
+    from .batch import plan_jobs
+    models=list(models);names=model_names or {};errors=[]
+    separate=options.get('per_model') or options.get('zip_per_model') or any(f.text(m).startswith('open://') for m in models)
+    try:jobs=plan_jobs(models,root,separate,names)
+    except (ValueError,f.PathLengthError) as exc:
+        return [dict(code='DESTINATION_PATH_TOO_LONG',source='',target=root,message=f.text(exc))]
+    for job in jobs:
+        package=job['root'];pm=ntpath if f.is_windows(package) else os.path
+        for requested in job['models']+list(extras or []):
+            target=package
             try:
-                source = f.resolve_source(requested, mappings=options.get('mappings'))
-                if not source: continue  # Existing source-resolution validation reports this.
-                relative = f.mirror_path(source)
-                target = pm.join(package, *relative.split('/'))
+                if f.text(requested).startswith('open://'):
+                    name=names.get(requested,requested).replace('\\','/').rsplit('/',1)[-1]
+                    if not name.lower().endswith('.rvt'):name+='.rvt'
+                    target=pm.join(package,name);f.validate_destination_path(target)
+                    target=pm.join(package,'_HostState','0'*20,name)
+                    f.validate_copy_path(target)  # Raw baseline is never opened or modified.
+                    if not options.get('saved_state_only',True):
+                        target=pm.join(root+'_WorkingSnapshots','0'*20,name)
+                        f.validate_destination_path(target)
+                    continue
+                source=f.resolve_source(requested,mappings=options.get('mappings'))
+                if not source:continue
+                relative=f.mirror_path(source);target=pm.join(package,*relative.split('/'))
                 (f.validate_destination_path if target.lower().endswith('.rvt') else f.validate_copy_path)(target)
             except f.PathLengthError as exc:
-                errors.append(dict(code='DESTINATION_PATH_TOO_LONG', source=requested,
-                                   target=target, message=f.text(exc)))
+                errors.append(dict(code='DESTINATION_PATH_TOO_LONG',source=requested,target=target,message=f.text(exc)))
             except ValueError:
-                continue  # Mapping errors are not mislabelled as path-length failures.
+                continue
     return errors
 
 
@@ -97,6 +105,9 @@ def completion_message(results, requested, cancelled=False):
              'Host models copied: {0} / {1}'.format(hosts, requested),
              'Files copied: {0} | Issues: {1}'.format(files, len(issues))]
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    issues=sorted(issues,key=lambda i:(i['severity']!='error',not i['code'].startswith('HOST_')))
+    retained=sum(1 for r in results for frow in r['files'] if (frow.get('current_state_integrity') or frow.get('saved_state_integrity'))=='VERIFIED')
+    if retained:lines.append('Protected current-state host copies: {0}'.format(retained))
     for item in issues[:3]:
         lines.append('\n' + item['code'] + ': ' + item['message'])
     if len(issues) > 3: lines.append('\nSee START_HERE.txt for the remaining issues.')
@@ -152,6 +163,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
     # Progress is advisory; a redraw failure must not be recorded as a failed
     # file copy. Preserve the cancellation signal, log the first UI failure,
     # and keep the verified file pipeline independent of the progress window.
+    skipped_dependencies=set()
     progress_disabled = [False]
     def notify(label, current, total):
         if pulse is None or progress_disabled[0]:
@@ -205,6 +217,18 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             source, key, record = None, None, None
             operation = 'resolve_source'
             try:
+                skipper=getattr(backend,'skip_dependency',None)
+                if not host and skipper and skipper(requested,owner,opts):
+                    if edge is not None:
+                        edge.update(status='SKIPPED_CLOUD_LINK',category='revit',skip_repath=True)
+                    skipkey=f.canonical(requested)
+                    if skipkey not in skipped_dependencies:
+                        skipped_dependencies.add(skipkey)
+                        add_issue('CLOUD_LINK_SKIPPED',requested,
+                                  'Cloud-linked RVT acquisition is paused by the selected option. Its link element is retained; this does not prevent current-state host saving.')
+                        scan=getattr(backend,'inventory_before_copy',lambda *a:None)(requested,opts)
+                        if scan is not None:add_inventory(requested,{},scan)
+                    continue
                 resolver=getattr(backend,'resolve_acquired_source',None)
                 resolved_request=resolver(requested,owner) if resolver else requested
                 virtual=bool(getattr(backend,'is_virtual_source',lambda x:False)(resolved_request))
@@ -322,6 +346,20 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                               record['staging_cleanup_warning'])
                 record['status'] = 'COPIED'
                 if edge is not None: edge['status'] = 'COPIED'
+                late_inventory=getattr(backend,'inventory_after_copy',None)
+                if late_inventory:
+                    try:
+                        late=late_inventory(source,opts)
+                        if late:
+                            result['issues'].extend(late.get('issues',[]))
+                            if 'plugin_coverage' in late:record['plugin_coverage']=late['plugin_coverage']
+                            for ref in late.get('references',[]):
+                                ref=dict(ref);ref.update(owner=source,status='PENDING')
+                                edges.append(ref);queue.append((ref.get('source',''),source,False,ref))
+                    except f.Cancelled:raise
+                    except Exception as exc:
+                        add_issue('PLUGIN_SOURCE_COVERAGE',source,
+                                  'Optional post-copy discovery failed ('+type(exc).__name__+'). Copied host retained.')
                 ext = os.path.splitext(source)[1].lower()
                 if ext == '.rvt':
                     if before is None:
@@ -372,10 +410,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     records[key]['status'] = 'FAILED'
 
         result['references'] = edges
+        context_reader=getattr(backend,'source_context',None)
+        if context_reader:
+            for record in result['files']:
+                context=context_reader(record['source'])
+                if context:record['source_context']=context
         # Resolve targets only to successfully copied files. Never repath to a missing file.
         for ref in edges:
             rec = records.get(f.canonical(ref.get('local', '')))
-            if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'DUPLICATE_ALIAS', 'OPTIONAL_MISSING'):
+            if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'DUPLICATE_ALIAS', 'OPTIONAL_MISSING', 'SKIPPED_CLOUD_LINK'):
                 ref['target'] = rec['target']; ref['status'] = 'COPIED'
 
         # Revit's image/PDF API still rejects some paths after Windows itself
@@ -385,6 +428,17 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             for ref in edges:
                 if ref.get('status') != 'COPIED':
                     continue
+                owner_record=records.get(f.canonical(ref.get('owner','')))
+                if owner_record and (owner_record.get('current_state_backup') or owner_record.get('saved_state_backup')):
+                    unavailable=any(f.canonical(r.get('owner',''))==f.canonical(ref.get('owner',''))
+                        and (r.get('kind')=='RevitLink' or r.get('category')=='revit')
+                        and not r.get('target') for r in edges)
+                    if unavailable:
+                        # No Revit reload will be attempted for this raw host.
+                        # Its complete source mirror is sufficient; an unused
+                        # operational alias must not add misleading path errors.
+                        ref['repath']='DEFERRED_HOST_LINKS_UNAVAILABLE'
+                        continue
                 try:
                     alias=portable_image_alias(root,ref)
                     if not alias:
@@ -412,6 +466,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
+                if (record.get('current_state_backup') or record.get('saved_state_backup')):
+                    missing=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])
+                             and (r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target')]
+                    if missing:
+                        record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
+                        record['model_verification']='DEFERRED'
+                        add_issue('HOST_PRESERVED_WITHOUT_LINK_REPATH',record['source'],
+                                  'The host snapshot and protected baseline are retained unchanged. Repath/cleanup and link-opening verification were deferred because linked RVT files are not packaged.')
+                        continue
                 target = record['target']
                 # Backend.finish receives the final target explicitly and stages absolute
                 # references before opening. Internal paths need not repeat the source tree.
@@ -454,6 +517,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     record['model_verification']='SKIPPED_INVENTORY_FAILURE'; continue
                 if record.get('processing_status')=='FAILED':
                     record['model_verification']='SKIPPED_PROCESSING_FAILURE'; continue
+                if record.get('processing_status')=='HOST_PRESERVED_LINKS_UNAVAILABLE':
+                    record['model_verification']='DEFERRED';continue
                 f.check(cancelled)
                 notify('Verifying packaged model '+record['source'],0,1)
                 model_edges=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source'])]
@@ -475,6 +540,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         except Exception as exc: add_issue('STAGING_CLEANUP_FAILED', work, exc)
         # Hash the final bytes, not just the pre-repath source snapshot.
         for rec in result['files']:
+            basis='saved_state' if rec.get('saved_state_backup') else 'current_state'
+            if rec.get(basis+'_backup'):
+                try:
+                    if f.digest(rec[basis+'_backup'])!=rec[basis+'_sha256']:
+                        raise IOError('Protected host baseline changed after collection.')
+                    rec[basis+'_integrity']='VERIFIED'
+                except Exception as exc:
+                    rec[basis+'_integrity']='FAILED'
+                    add_issue('HOST_BACKUP_VERIFICATION_FAILED',rec['source'],exc,'error')
             if rec['status'] == 'COPIED' and f.file_exists(rec['target']):
                 try: rec['packaged_sha256'] = f.digest(rec['target'])
                 except Exception as exc:
@@ -509,10 +583,23 @@ def write_reports(result):
         context=record.get('source_context',{})
         if context:
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
-            working=context.get('working_document_path_after') or context.get('snapshot_path')
-            if working:lines.append('Retained working document / SaveAs recovery file: '+working+
-                                    ' -- review the active Revit file before continuing. This recovery file is outside the transmitted package.')
-    lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
+            if (record.get('current_state_backup') or record.get('saved_state_backup')):
+                lines.append(('Protected saved-state host: ' if record.get('saved_state_backup') else 'Protected current-state host: ')+(record.get('saved_state_backup') or record['current_state_backup'])+' | '+(record.get('saved_state_integrity') or record.get('current_state_integrity','NOT_CHECKED')))
+            if context.get('saved_state_only'):
+                lines.append('Unsaved edits are excluded. Open/source models were not saved, synchronized, published, reloaded or relocated.')
+                metadata=context.get('cache_metadata',{})
+                if metadata.get('cache_path'):
+                    lines.append('Read-only cached source: '+metadata['cache_path'])
+                if metadata.get('cache_document_version'):
+                    lines.append('Saved revision: '+f.text(metadata['cache_document_version'])+
+                                 ' | Match: '+f.text(metadata.get('revision_check','')))
+                if context.get('inventory_basis'):
+                    lines.append('Dependency inventory basis: '+context['inventory_basis'])
+            else:
+                working=context.get('working_document_path_after') or context.get('snapshot_path') or context.get('snapshot_attempt_path')
+                if working:lines.append('Retained working document / SaveAs recovery file: '+working+
+                                        ' -- review the active Revit file before continuing. This recovery file is outside the transmitted package.')
+    lines += ['', 'Keep the complete package together, including Sources, _Refs and _HostState when present. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
               'Review every warning before delivery. Reports contain original project paths.', '', 'ISSUES:']

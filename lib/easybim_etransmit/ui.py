@@ -37,6 +37,7 @@ class Choice(object):
 class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
+        self.snapshots_authorized=False
         self.tokens=None;self.client=None;self.client_id='';self.callback_uri='http://127.0.0.1:8767/callback'
         self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.mappings=[]; self.view_types=[]
         self.categories=[Choice(label,key) for key,label in f.CATEGORIES]
@@ -145,10 +146,7 @@ class Dialog(forms.WPFWindow):
         row=self.Models.SelectedItem
         if row is None or row.Mode!='LIVE_DOCUMENT':
             return forms.alert('Select an open-model row first. Published-mode models already include their authoritative download graph.')
-        selected=self.choose_cloud()
-        if selected:
-            row.CloudSelection=selected
-            self.AuthStatus.Text='Associated download graph with '+row.Name+'; loaded link revisions must match.'
+        forms.alert('Open-model rows use saved local/cache state only, without Autodesk downloads. Use Add ACC published model for an explicitly published-version transmittal.')
 
     def remove_model(self,sender,args):
         row=self.Models.SelectedItem
@@ -195,6 +193,7 @@ class Dialog(forms.WPFWindow):
     def cancel_click(self,sender,args): self.Close()
 
     def transmit_click(self,sender,args):
+        self.snapshots_authorized=False;self.result=None
         self.Models.CommitEdit()
         models=[x for x in self.models if x.Checked]
         if not models: return forms.alert('Select at least one source model.')
@@ -206,7 +205,9 @@ class Dialog(forms.WPFWindow):
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
                     views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=bool(self.Separate.IsChecked),
                     reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked),mappings=[(x.Key,x.Source) for x in self.mappings])
-        if opts['zip_per_model']:opts['per_model']=True
+        opts['skip_cloud_links']=bool(self.SkipCloudLinks.IsChecked)
+        opts['saved_state_only']=True
+        if opts['zip_per_model'] or any(x.Mode=='LIVE_DOCUMENT' for x in models):opts['per_model']=True
         unresolved=[]
         for row in models:
             if row.Mode=='LIVE_DOCUMENT':continue
@@ -217,7 +218,11 @@ class Dialog(forms.WPFWindow):
         if unresolved:
             return forms.alert('These saved-file selections do not resolve to an exact source. Open-model selections do not require a saved path.\n\n'+'\n'.join(unresolved))
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
-        long_paths=engine.preflight_paths([x.Source for x in models if x.Mode=='SAVED_FILE'],root,opts,self.extras)
+        planned=[];planned_names={}
+        for index,row in enumerate(models):
+            source=('open://selection-'+str(index)+'/'+row.Name if row.Mode=='LIVE_DOCUMENT' else row.Source)
+            planned.append(source);planned_names[source]=row.Name
+        long_paths=engine.preflight_paths(planned,root,opts,self.extras,planned_names)
         if long_paths:
             message=long_paths[0]['message']+'\n\nNo files were copied and no transmittal was created. '
             message+='Choose a shorter output folder now?'
@@ -228,10 +233,10 @@ class Dialog(forms.WPFWindow):
             try: cleanup.view_deletions([],opts['views'],opts['view_types'])
             except ValueError as exc: return forms.alert(f.text(exc))
         notes=[]
-        if any(x.Mode=='LIVE_DOCUMENT' for x in models):notes.append('Open documents supply their current dependency inventory. If host serialization needs SaveAs, a separate confirmation will show the recovery location. No automatic Sync or Publish occurs.')
+        # The visible UI disclosure states saved/cache state only. No source save consent or SaveAs path is used.
         if opts['upgrade']: notes.append('Package copies will be saved in Revit '+f.text(self.uiapp.Application.VersionNumber)+'. They cannot be opened in an older Revit.')
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
-        if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True): return
+        if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True,title='Process package copies / Transmit'): return
         if self.SaveSettings.IsChecked:
             saved=dict((k,opts[k]) for k in ('deep','repath','per_model','reports','zip','zip_per_model','mappings'))
             saved['output']=output
@@ -254,44 +259,31 @@ def run(uiapp,xaml):
             def cancel():return pb.cancelled
             def pulse(label,current,total):
                 pb.title='e-transmit | '+f.text(label);pb.update_progress(current,max(1,total))
-            registry=Registry(DB,uiapp.Application,root+'_WorkingSnapshots',cancel,
-                              opts['include'].get('spreadsheets',True))
-            def confirm(doc,path):
-                return forms.alert('Include the CURRENT state of '+f.text(doc.Title)+'?\n\n'
-                    'This requires SaveAs to:\n'+path+'\n\n'
-                    'Revit may change the working document to this new file. The recovery file is retained outside the transmittal. '
-                    'No Sync or Publish is performed. Afterward, review the working file before continuing project work.\n\n'
-                    'Yes: authorize SaveAs. No: collect dependencies only and mark the host incomplete; do not substitute an older host.',
-                    yes=True,no=True,title='Confirm current-state snapshot')
-            registry.confirm_snapshot=confirm
-            sources=[]
+            registry=Registry(DB,uiapp.Application,root+'_ReadOnlySnapshots',cancel,
+                              opts['include'].get('spreadsheets',True),saved_state_only=True)
+            sources=[];model_names={};live_keys=[]
             for row in choices:
                 if cancel():break
                 if row.Mode=='LIVE_DOCUMENT':
                     key=registry.add_live(row.Document)
-                    if row.CloudSelection:
-                        selected=row.CloudSelection
-                        try:registry.bind_graph(key,selected['graph'],selected['client'])
-                        except Exception as exc:
-                            registry.get(key)['inventory']['issues'].append(engine.issue(
-                                getattr(exc,'code','CLOUD_GRAPH_BIND_FAILED'),key,exc,'error'))
-                    sources.append(key)
+                    sources.append(key);live_keys.append(key);model_names[key]=registry.get(key)['name']
                 elif row.Mode=='PUBLISHED_VERSION':
                     selected=row.CloudSelection
-                    sources.append(registry.add_graph(selected['graph'],selected['client']))
-                else:sources.append(row.Source)
+                    key=registry.add_graph(selected['graph'],selected['client']);sources.append(key);model_names[key]=registry.get(key)['name']
+                else:
+                    sources.append(row.Source);model_names[row.Source]=getattr(row,'Name',row.Source)
             for client in registry.clients.values():client.cancelled=cancel
             if sources:
                 results=batch.run_batch(sources,root,
                     lambda package,source:SessionBackend(DB,uiapp.Application,package,registry,cancel),
-                    opts,extras,cancel,pulse)
+                    opts,extras,cancel,pulse,model_names=model_names)
             was_cancelled=cancel()
         if not results:return forms.alert('Transmission cancelled before any models were processed.')
         message=engine.completion_message(results,len(choices),cancelled=was_cancelled)
-        forms.alert(message+'\n\nOutput: '+root+'\n\nKeep Sources and _Refs together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
+        forms.alert(message+'\n\nOutput: '+root+'\n\nKeep the full model-named job folders, including Sources, _Refs and _HostState together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
         os.startfile(root)
     finally:
         dialog.release_credentials()
         if registry is not None:
             try:registry.close()
-            except Exception:script.get_logger().warning('Temporary downloaded snapshots could not all be removed. Working SaveAs recovery files are intentionally retained.')
+            except Exception:script.get_logger().warning('Temporary read-only source snapshots could not all be removed; the open working models were not saved or closed.')

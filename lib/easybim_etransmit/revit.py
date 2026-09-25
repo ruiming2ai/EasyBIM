@@ -7,7 +7,7 @@ import shutil
 from . import files as f
 from .pathnames import relative as relative_path
 from .engine import issue
-from . import model_payload
+from . import model_payload, cache_sources
 
 
 def eid(value):
@@ -73,7 +73,22 @@ class Backend(object):
             return info
 
     def reference_row(self, ref, ident, owner, td=False):
-        raw = self.visible(ref.GetPath())
+        model_path = ref.GetPath()
+        identity = {}
+        try:
+            # Preserve identity before converting a cloud ModelPath to a display
+            # string. This is essential when inventorying an older saved snapshot.
+            try:
+                model_guid = cache_sources.guid(model_path.GetModelGUID())
+                project_guid = cache_sources.guid(model_path.GetProjectGUID())
+                if model_guid and project_guid:
+                    identity = dict(model_guid=model_guid, project_guid=project_guid,
+                                    region=f.text(getattr(model_path, 'Region', '')))
+            except Exception:
+                pass  # Local FilePaths do not expose cloud identity.
+            raw = self.visible(model_path)
+        finally:
+            dispose(model_path)
         kind = f.text(ref.ExternalFileReferenceType)
         path_type = f.text(getattr(ref, 'PathType', ''))
         try: saved_absolute = self.visible(ref.GetAbsolutePath())
@@ -87,11 +102,14 @@ class Backend(object):
             source = raw
         else:
             source = f.resolve_source(raw, owner) or saved_absolute or raw
-        return dict(id=eid(ident), element_id=eid(ident), source=source,
-                    saved_path=raw, saved_absolute_path=saved_absolute, path_type=path_type,
-                    kind=kind, loaded=load_intent(f.text(ref.GetLinkedFileStatus())),
-                    optional_library=(kind=='AssemblyCodeTable' and path_type=='Content'),
-                    td=td, special='native')
+        row = dict(id=eid(ident), element_id=eid(ident), source=source,
+                   saved_path=raw, saved_absolute_path=saved_absolute, path_type=path_type,
+                   kind=kind, loaded=load_intent(f.text(ref.GetLinkedFileStatus())),
+                   optional_library=(kind=='AssemblyCodeTable' and path_type=='Content'),
+                   td=td, special='native')
+        if identity:
+            row['cloud_identity'] = identity
+        return row
 
     def rows(self, path, owner=''):
         td=self.DB.TransmissionData.ReadTransmissionData(self.mp(path))
