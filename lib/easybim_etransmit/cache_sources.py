@@ -239,11 +239,54 @@ def _copy_snapshot(source, target, cancelled=None, pulse=None):
         raise
 
 
+def candidate_role(path, roots, identity):
+    """Recognize only the explicit account/project cache layout, not substrings."""
+    matches = []
+    for root in roots:
+        if not f.within(path, root):
+            continue
+        parts = os.path.relpath(path, root).split(os.sep)
+        if (len(parts) in (3, 4) and guid(parts[1]) == guid(identity.get('project_guid'))
+                and guid(os.path.splitext(parts[-1])[0]) == guid(identity.get('model_guid'))):
+            role = 'DIRECT' if len(parts) == 3 else ('LINKED_MODELS' if parts[2].lower() == 'linkedmodels' else '')
+            if role:
+                matches.append(dict(role=role, scope=f.canonical(os.path.join(root, parts[0], parts[1]))))
+    return matches[0] if len(matches) == 1 else dict(role='UNKNOWN', scope='')
+
+
+def select_candidate(choices, evidence):
+    """Resolve only a same-edition direct/LinkedModels pair within one authority."""
+    ordered = sorted(choices, key=lambda item: (item[1]['cache_role'] != 'DIRECT',
+                                               f.canonical(item[1]['cache_path']), item[1]['cache_path']))
+    reason = 'IDENTICAL_BYTES' if len(choices) > 1 else 'UNIQUE_CANDIDATE'
+    if len(set(item[1]['sha256'] for item in choices)) != 1:
+        scopes = set(item[1]['cache_scope'] for item in choices)
+        roles = set(item[1]['cache_role'] for item in choices)
+        editions = set((item[1]['cache_document_version']['guid'],
+                        item[1]['cache_document_version']['saves'], item[1]['cache_format']) for item in choices)
+        paired = (len(scopes) == 1 and '' not in scopes and
+                  roles == set(('DIRECT', 'LINKED_MODELS')) and len(editions) == 1)
+        for role in roles:
+            if len(set(item[1]['sha256'] for item in choices if item[1]['cache_role'] == role)) != 1:
+                paired = False
+        if not paired:
+            raise CacheError('CACHE_CANDIDATES_AMBIGUOUS',
+                             'Conflicting cache copies cannot be resolved by a same-edition direct/LinkedModels pair. No newest-timestamp selection was made.', evidence)
+        reason = 'DIRECT_SAME_EDITION_PAIR'
+    chosen = ordered[0]
+    evidence.update(selection_reason=reason, selected_path=chosen[1]['cache_path'])
+    for attempt in evidence['attempts']:
+        if attempt.get('status') != 'REJECTED':
+            attempt['selection'] = 'SELECTED' if attempt['path'] == chosen[1]['cache_path'] else 'ALTERNATE_NOT_SELECTED'
+    return chosen
+
+
 class Store(object):
     def __init__(self, DB, application, staging_root, roots=None, cancelled=None):
         self.DB, self.app, self.staging_root = DB, application, staging_root
         self.roots = list(roots) if roots is not None else discover_roots(application)
         self.cancelled = cancelled
+        self._snapshots = {}
 
     def read_info(self, path):
         # All callers supply an isolated copy, NEVER the CollaborationCache RVT.
@@ -285,7 +328,8 @@ class Store(object):
             for index, path in enumerate(paths):
                 f.check(self.cancelled)
                 target = os.path.join(work, str(index) + '.rvt')
-                attempt = dict(path=path, status='READING')
+                role = candidate_role(path, self.roots, identity)
+                attempt = dict(path=path, status='READING', cache_role=role['role'], cache_scope=role['scope'])
                 evidence['attempts'].append(attempt)
                 try:
                     meta = _copy_snapshot(path, target, self.cancelled, pulse)
@@ -308,7 +352,7 @@ class Store(object):
                                       if saved_link else 'SAVED_CACHE_ONLY_UNSAVED_EXCLUDED')
                     attempt.update(status='MATCH' if equal else 'SAVED_ONLY', actual_document_version=actual,
                                    sha256=meta['sha256'])
-                    meta.update(cache_path=path, cache_document_version=actual, loaded_document_version=expected,
+                    meta.update(cache_path=path, cache_role=role['role'], cache_scope=role['scope'], cache_document_version=actual, loaded_document_version=expected,
                                 cache_model_identity=dict(identity), cache_format=fmt,
                                 revision_check=revision_check,
                                 unsaved_edits_excluded=bool(entry.get('is_modified')),
@@ -324,15 +368,23 @@ class Store(object):
                 raise CacheError(code, 'No cache candidate passed native-file, stability and revision checks. See cache_evidence in manifest.json.', evidence)
             exact = [item for item in accepted if item[2]]
             choices = exact or accepted
-            if len(set(item[1]['sha256'] for item in choices)) != 1:
-                raise CacheError('CACHE_CANDIDATES_AMBIGUOUS', 'Multiple cache candidates differ. No newest-timestamp selection was made.', evidence)
-            chosen, metadata, _ = choices[0]
-            metadata['identical_candidates'] = len(choices)
+            chosen, metadata, _ = select_candidate(choices, evidence)
+            metadata['identical_candidates'] = sum(1 for item in choices if item[1]['sha256'] == metadata['sha256'])
             metadata['cache_evidence'] = evidence
+            metadata['cache_selection_reason'] = evidence['selection_reason']
+            reuse_key = (f.canonical(metadata['cache_path']), metadata['sha256'],
+                         metadata['cache_document_version']['guid'], metadata['cache_document_version']['saves'])
+            previous = self._snapshots.get(reuse_key)
+            if previous:
+                if not os.path.isfile(previous) or f.digest(previous, self.cancelled) != metadata['sha256']:
+                    raise CacheError('CACHE_SNAPSHOT_CHANGED', 'Previously selected isolated snapshot changed or disappeared.', evidence)
+                metadata['snapshot_reused'] = True
+                return dict(path=previous, metadata=metadata)
             final = os.path.join(work, 'snapshot.rvt')
             os.rename(chosen, final)
             for other, _, _ in accepted:
                 if other != chosen and os.path.isfile(other): os.remove(other)
+            self._snapshots[reuse_key] = final
             success = True
             return dict(path=final, metadata=metadata)
         finally:

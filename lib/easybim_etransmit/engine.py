@@ -84,6 +84,30 @@ def package_counts(result):
                 revit_links_verified=sum(1 for r in links.values() if r.get('verification')=='PATH_AND_LOAD_CHECKED'))
 
 
+def link_discovery_status(result):
+    hosts = [r for r in result.get('files', []) if r.get('is_primary_host')]
+    missing = [r for r in hosts if not r.get('inventory_status') and r.get('status') != 'COPIED']
+    if missing and len(missing) == len(hosts) and not result.get('references'):
+        return 'NOT_PERFORMED: host acquisition prevented dependency inspection'
+    if missing:
+        return 'INCOMPLETE: host acquisition prevented some dependency inspection'
+    return 'See per-model inventory status and inspection issues'
+
+
+def cache_diagnostic_lines(evidence):
+    if not evidence:
+        return []
+    lines = ['Loaded revision: '+f.text(evidence.get('expected_document_version')),
+             'Cache selection: '+f.text(evidence.get('selection_reason', 'UNRESOLVED')),
+             'Cache roots: '+f.text(evidence.get('roots', []))]
+    for attempt in evidence.get('attempts', []):
+        lines.append('Candidate: {0} | Role: {1} | {2} | {3} | Revision: {4} | SHA256: {5} | {6} {7}'.format(
+            attempt.get('path', ''), attempt.get('cache_role', 'UNKNOWN'), attempt.get('status', ''),
+            attempt.get('selection', ''), attempt.get('actual_document_version'), attempt.get('sha256', ''),
+            attempt.get('code', ''), attempt.get('message', '')))
+    return lines
+
+
 def completion_message(results, requested, cancelled=False):
     """Never describe a zero-host transmission as merely finished with issues."""
     hosts = sum(package_counts(r)['hosts_copied'] for r in results)
@@ -106,6 +130,9 @@ def completion_message(results, requested, cancelled=False):
     lines.append('Revit links requested / copied / verified: {0} / {1} / {2}'.format(
         *(sum(c[k] for c in counts) for k in ('revit_links_requested','revit_links_copied','revit_links_verified'))))
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    for result in results:
+        if link_discovery_status(result).startswith(('NOT_PERFORMED', 'INCOMPLETE')):
+            lines.append('Revit link discovery: '+link_discovery_status(result))
     issues=sorted(issues,key=lambda i:(i['severity']!='error',not i['code'].startswith('HOST_')))
     retained=sum(1 for r in results for frow in r['files'] if (frow.get('current_state_integrity') or frow.get('saved_state_integrity'))=='VERIFIED')
     if retained:lines.append('Host acquisition checksums verified: {0}'.format(retained))
@@ -705,6 +732,7 @@ def write_reports(result):
 
 def _write_reports_at(result, root):
     result['counts']=package_counts(result)
+    result['link_discovery_status']=link_discovery_status(result)
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
         out.write(f.text(json.dumps(result, ensure_ascii=False, indent=2)))
     hosts = []
@@ -718,6 +746,7 @@ def _write_reports_at(result, root):
              'Files copied: {0}'.format(counts['files_copied']),
              'Revit links requested / copied / verified: {0} / {1} / {2}'.format(
                  counts['revit_links_requested'],counts['revit_links_copied'],counts['revit_links_verified']),
+             'Revit link discovery: '+result['link_discovery_status'],
              'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
@@ -730,6 +759,7 @@ def _write_reports_at(result, root):
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
             if record.get('is_primary_host'):
                 lines.append('Host acquisition checksum: '+record.get('sha256','NOT_ACQUIRED'))
+                lines.extend(cache_diagnostic_lines(context.get('cache_evidence', {})))
             if context.get('saved_state_only'):
                 lines.append('Unsaved edits are excluded. Open/source models were not saved, synchronized, published, reloaded or relocated.')
                 metadata=context.get('cache_metadata',{})
@@ -754,13 +784,7 @@ def _write_reports_at(result, root):
             ref.get('element_id','?'),ref.get('link_name') or context.get('name') or ref.get('source',''),
             ref.get('status',''),ref.get('original_loaded',ref.get('loaded')),ref.get('package_loaded',ref.get('loaded'))))
         lines.append('  ACC identity: '+f.text(ref.get('cloud_identity') or context.get('cloud') or ref.get('resource_information',{})))
-        if evidence:
-            lines.append('  Loaded revision: '+f.text(evidence.get('expected_document_version')))
-            lines.append('  Cache roots: '+f.text(evidence.get('roots',[])))
-            for attempt in evidence.get('attempts',[]):
-                lines.append('  Candidate: {0} | {1} | Revision: {2} | {3} {4}'.format(
-                    attempt.get('path',''),attempt.get('status',''),attempt.get('actual_document_version'),
-                    attempt.get('code',''),attempt.get('message','')))
+        lines.extend('  '+line for line in cache_diagnostic_lines(evidence))
     lines += ['', 'Keep the complete package together, including its Links folder. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
@@ -780,8 +804,15 @@ def _write_reports_at(result, root):
                     ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])
         diagnostics = [i for i in result['issues'] if i.get('traceback')]
-        if diagnostics:
+        cache_details = []
+        for record in result['files']:
+            evidence = record.get('source_context', {}).get('cache_evidence', {})
+            if evidence:
+                cache_details.append('Source: '+record['source'])
+                cache_details.extend(cache_diagnostic_lines(evidence))
+        if diagnostics or cache_details:
             with io.open(os.path.join(root, 'DIAGNOSTICS.txt'), 'w', encoding='utf-8') as out:
+                out.write('Revit link discovery: '+result['link_discovery_status']+'\n'+'\n'.join(cache_details)+'\n')
                 for item in diagnostics:
                     out.write('{0} | {1} | {2}\n{3}\n'.format(
                         item['code'], item.get('operation', ''), item['source'], item['traceback']))

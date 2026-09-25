@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.4.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.5.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -79,3 +79,16 @@ an unperformed check into a pass.
   Check original host preservation and the reported external recovery location.
 - Select both ZIP options. The batch ZIP must contain package folders/reports,
   without embedding the generated individual package ZIPs.
+
+2.1.5 cache-selection checks:
+
+- Repeat the Morrison run with its direct and LinkedModels cache candidates.
+  Confirm DIRECT_SAME_EDITION_PAIR, selected direct path, both revisions and
+  both different checksums in REPORT.txt / DIAGNOSTICS.txt / manifest.json.
+- Confirm host and Links files exist; repeat Anthropology's unloaded ACC link.
+- Check all three layouts, requested load states, placement, linked annotations,
+  PDFs/images and reopening after moving each package.
+- Confirm the working document remains unsaved/unmodified by the exporter and
+  cache bytes remain unchanged. Conflicting editions/accounts must still fail.
+- On failed host acquisition, confirm link discovery reads NOT_PERFORMED, not an
+  implication that there are no links. Final-location verification stays separate.

@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.4
+# EasyBIM e-transmit 2.1.5
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,7 +9,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.4.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.5.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
