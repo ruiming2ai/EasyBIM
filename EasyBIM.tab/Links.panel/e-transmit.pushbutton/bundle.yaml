@@ -1,10 +1,10 @@
 title: e-transmit
 tooltip: >-
-  Package saved Revit models and their original linked files. Preserve filenames
-  and source folder hierarchy, including configured Shared/Consumed locations.
-  All dependency categories are included by default. Supports closed models,
-  copy-only repathing, optional upgrade/cleanup, reports and ZIP output.
-  Cloud-only resources and unsupported repathing are reported, never substituted.
+  Transmit current open documents, saved files, or explicitly selected published
+  ACC versions. Preserve filenames and source hierarchy where exposed. Includes
+  batch jobs, separate per-model ZIPs, readable plugin spreadsheet sources,
+  optional read-only Autodesk sign-in, and explicit current-state SaveAs consent.
+  Missing revisions and unsupported repathing are reported, never substituted.
 author: Ruiming Liu
 context: zero-doc
 min_revit_version: 2023

@@ -15,7 +15,7 @@
                  TextWrapping="Wrap" Margin="0,7,0,0"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom">
-      <TextBlock Text="Revit must be running, but you do not need to open the source models. Internal copies may be opened; source files are never saved or synchronized."
+      <TextBlock Text="Revit must be running, but you do not need to open the source models. Internal copies may be opened; current-state SaveAs requires confirmation; no automatic Sync or Publish."
                  TextWrapping="Wrap" Foreground="#536273" Margin="0,7,0,7"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Content="Transmit model(s)" Click="transmit_click" MinWidth="165" IsDefault="True"/>
@@ -30,7 +30,8 @@
               <DataGrid.Columns>
                 <DataGridCheckBoxColumn Header="Use" Binding="{Binding Checked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="45"/>
                 <DataGridTextColumn Header="Model" Binding="{Binding Name}" Width="190" IsReadOnly="True"/>
-                <DataGridTextColumn Header="Saved source / configured location" Binding="{Binding Source}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Source mode" Binding="{Binding Mode}" Width="145" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Original path / selected version" Binding="{Binding Source}" Width="*" IsReadOnly="True"/>
               </DataGrid.Columns>
             </DataGrid>
             <WrapPanel>
@@ -38,8 +39,10 @@
               <Button Content="Browse folder..." Click="browse_model_folder"/>
               <Button Content="Use saved copy for selected row..." Click="replace_source"/>
               <Button Content="Remove selected" Click="remove_model"/>
+              <Button Content="Add ACC published model..." Click="add_cloud_model"/>
+              <Button Content="Associate ACC download for open row..." Click="associate_cloud_graph"/>
             </WrapPanel>
-            <TextBlock Text="The active project is checked by default. Only saved file contents are transmitted. For a cloud-only host, select its intended downloaded/Connector source; no live model is substituted." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="The active project is checked by default. Open rows use the current document and loaded-link inventory. Browse selects saved files. Published ACC mode explicitly uses a chosen published host version, never unsaved state." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="2  Destination and collection">
@@ -48,9 +51,10 @@
             <WrapPanel>
               <CheckBox x:Name="Separate" Content="Output folder for each source model" IsChecked="True"/>
               <CheckBox x:Name="Reports" Content="Detailed transmittal/error reports" IsChecked="True"/>
-              <CheckBox x:Name="Zip" Content="Also create ZIP"/>
+              <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
+              <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
-            <CheckBox x:Name="DeepScan" Content="Inspect temporary model copies for additional dependencies (recommended)" IsChecked="True"/>
+            <CheckBox x:Name="DeepScan" Content="Deep inspection of closed/saved models (open documents are read directly)" IsChecked="True"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
           </StackPanel>
         </GroupBox>
@@ -60,14 +64,16 @@
               <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
               <ItemsControl.ItemTemplate><DataTemplate><CheckBox Width="245" Content="{Binding Name}" IsChecked="{Binding Checked, Mode=TwoWay}"/></DataTemplate></ItemsControl.ItemTemplate>
             </ItemsControl>
-            <TextBlock Text="Imports are not extracted. CAD Xrefs, RCP scans outside the Support folder, and NWF dependencies need verification; add any extra files/folders below." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="Imports are not extracted. Plugin spreadsheet collection does not reconnect private plugin links; restricted schemas are reported. CAD Xrefs, RCP scans outside the Support folder, and NWF dependencies need verification; add any extra files/folders below." TextWrapping="Wrap" Foreground="#536273"/>
             <WrapPanel><Button Content="Add files..." Click="add_files"/><Button Content="Add folder..." Click="add_folder"/><Button Content="Remove extra" Click="remove_extra"/></WrapPanel>
             <ListBox x:Name="Extras" Height="70"/>
           </StackPanel>
         </GroupBox>
-        <GroupBox Header="4  ACC / network source mappings">
+        <GroupBox Header="4  Optional Autodesk sign-in / exact source mappings">
           <StackPanel>
-            <TextBlock Text="Accessible Desktop Connector paths are copied on demand. Prefix mappings must point to the SAME configured source hierarchy, including Shared/Consumed. Never map a consumed source to WIP. Cloud version IDs are recorded but not downloaded through an ACC API." TextWrapping="Wrap" Foreground="#536273"/>
+            <Button Content="APS setup / Sign in..." Click="sign_in_cloud" HorizontalAlignment="Left"/>
+            <TextBlock x:Name="AuthStatus" Text="Not signed in. Credentials stay in memory for this command only." TextWrapping="Wrap"/>
+            <TextBlock Text="Accessible Desktop Connector paths are copied on demand. Prefix mappings must point to the SAME configured source hierarchy, including Shared/Consumed. Never map a consumed source to WIP. For exact cloud downloads, sign in and select a published model/version. Read-only access requires an APS native app provisioned by your ACC administrator." TextWrapping="Wrap" Foreground="#536273"/>
             <ListBox x:Name="Mappings" Height="65" DisplayMemberPath="Name"/>
             <WrapPanel><Button Content="Add exact prefix mapping..." Click="add_mapping"/><Button Content="Remove mapping" Click="remove_mapping"/></WrapPanel>
           </StackPanel>

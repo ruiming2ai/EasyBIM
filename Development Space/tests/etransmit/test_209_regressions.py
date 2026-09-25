@@ -15,7 +15,7 @@ class HostOnlyAdcResolution(unittest.TestCase):
         self.root=tempfile.mkdtemp(prefix='ET_209_')
         self.addCleanup(shutil.rmtree,self.root)
 
-    def test_native_adc_staging_link_resolves_only_to_exact_owner_sibling(self):
+    def test_native_adc_staging_link_requires_provenance_even_if_sibling_exists(self):
         owner=u'C:\\Users\\tester\\DC\\ACCDocs\\Firm\\Project\\Project Files\\MEP\\Host.rvt'
         stage=r'C:\Temp\EasyBIM_ET_x\stage.rvt'
         temporary=r'C:\Temp\EasyBIM_ET_x\Arch.rvt'
@@ -25,7 +25,7 @@ class HostOnlyAdcResolution(unittest.TestCase):
         old=getattr(f,'connector_file_exists',None)
         f.connector_file_exists=lambda path: f.canonical(path)==f.canonical(expected)
         try:
-            self.assertEqual(store.resolve(temporary,owner),expected)
+            self.assertEqual(store.resolve(temporary,owner),temporary)
         finally:
             if old is None: delattr(f,'connector_file_exists')
             else: f.connector_file_exists=old

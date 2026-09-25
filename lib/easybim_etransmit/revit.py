@@ -168,6 +168,8 @@ class Backend(object):
             doc=self.open_copy(stage)
             result['opened_in_revit']=True
             self.scan_open(doc,source,info,result)
+            if options.get("include",{}).get("spreadsheets",True):
+                self.scan_plugins(doc,base,result)
         except f.Cancelled: raise
         except Exception as exc:
             result['open_failed']=True
@@ -177,6 +179,15 @@ class Backend(object):
             if doc is not None:
                 if not doc.Close(False): raise RuntimeError('Temporary inspection document could not be closed.')
         return result
+
+    def scan_plugins(self, doc, base, result):
+        from . import plugin_sources
+        rows,coverage=plugin_sources.discover(self.DB,doc,self.cancelled,base)
+        result['references'].extend(rows);result['plugin_coverage']=coverage
+        for item in coverage:
+            if item['status'] in ('READ_DENIED','UNSUPPORTED','ERROR'):
+                result['issues'].append(issue('PLUGIN_SOURCE_COVERAGE',base,
+                    item['provider']+': '+item['status']+' - '+item.get('message','')))
 
     def library_paths(self):
         """Configured Revit content/library roots, without inventing defaults."""
@@ -220,6 +231,7 @@ class Backend(object):
         base=info['central'] if info['workshared'] and f.absolute(info['central']) else source
         imported=set(eid(i.GetTypeId()) for i in self.elements(doc,'ImportInstance') if not i.IsLinked)
         seen=set(by_id)
+        embedded_images=set()
         def add(row):
             if row['id'] in by_id:
                 old=by_id[row['id']]
@@ -242,6 +254,7 @@ class Backend(object):
             try:
                 key=eid(image.Id); seen.add(key)
                 if f.text(image.Source)!='Link':
+                    embedded_images.add(key)
                     refs[:]=[r for r in refs if r['id']!=key]
                     by_id.pop(key,None)
                     continue  # Embedded/imported content is explicitly out of scope.
@@ -302,7 +315,7 @@ class Backend(object):
             f.check(self.cancelled)
             try:
                 key=eid(ident)
-                if key in imported: continue
+                if key in imported or key in embedded_images: continue
                 element=doc.GetElement(ident)
                 if element is None or bool(getattr(element,'IsNestedLink',False)): continue
                 resources=element.GetExternalResourceReferences()
@@ -329,6 +342,8 @@ class Backend(object):
                         try: loaded=bool(self.DB.RevitLinkType.IsLoaded(doc,ident))
                         except Exception: pass
                     elif kind=='Image':
+                        if hasattr(element, 'Source') and f.text(element.Source) != 'Link':
+                            continue  # Do not externalize an embedded image/PDF.
                         # Some saved image/PDF links are exposed only through
                         # ExternalResourceUtils, not the ImageType collector.
                         # They are still ImageType elements and can be repathed.
@@ -345,6 +360,8 @@ class Backend(object):
                              in_session_path=display,
                              optional_library=(kind=='AssemblyCodeTable'),
                              note='External-resource identity recorded; exact source resolution preserves the configured resource.')
+                    if f.category(resolved_source)=='spreadsheets':
+                        row.update(category='spreadsheets',special='plugin_spreadsheet',provider=kind,source_evidence='EXTERNAL_RESOURCE_PATH')
                     if special=='image':
                         row.update(page=page,resolution=resolution)
                     add(row)
@@ -487,6 +504,11 @@ class Backend(object):
             if options.get('repath'): self.apply_metadata(target,target,rows)
         if options.get('repath'):
             for row in rows:
+                if row.get('target') and row.get('special')=='plugin_spreadsheet':
+                    row['repath']='PLUGIN_RECONNECT_REQUIRED'
+                    issues.append(issue('PLUGIN_RECONNECT_REQUIRED',row.get('source',''),
+                                        'Workbook copied without executing Excel. The owning plugin must reconnect its private association.'))
+                    continue
                 if row.get('target') and not row.get('repath'):
                     row['repath']='MANUAL_REPAIR_REQUIRED'
                     issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),

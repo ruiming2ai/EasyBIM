@@ -234,13 +234,8 @@ class Store(object):
                 # Composite downloads have exact member provenance.
                 if context and f.canonical(logical) in context:
                     return logical
-                # Newer host-only Autodesk Docs downloads can expose a loaded
-                # sibling RVT only as the disposable inspection path. Rebuild
-                # the exact owner-relative location and accept it only if that
-                # exact Desktop Connector item exists. This is not a basename
-                # search and never switches Shared/Consumed/WIP folders.
-                if f.is_desktop_connector_path(owner) and f.connector_file_exists(logical):
-                    return logical
+                # Host-only cloud siblings are NOT inferred. Resolve through
+                # live identities or an explicit version-specific APS graph.
         return source
 
     def bind_stage(self, stage, owner):
