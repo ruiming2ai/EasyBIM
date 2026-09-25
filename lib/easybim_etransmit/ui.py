@@ -9,7 +9,7 @@ import re
 import traceback
 from pyrevit import forms, script, DB
 from . import VERSION, files as f
-from . import cleanup, engine, batch, aps, oauth, cloud_picker
+from . import cleanup, engine, batch, aps, oauth, cloud_picker, layout
 from .session import Registry, SessionBackend
 
 
@@ -42,6 +42,8 @@ class Dialog(forms.WPFWindow):
         self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.mappings=[]; self.view_types=[]
         self.categories=[Choice(label,key) for key,label in f.CATEGORIES]
         self.Categories.ItemsSource=self.categories
+        self.structures=[Choice(label,key) for key,label in layout.MODES]
+        self.FileStructure.ItemsSource=self.structures; self.FileStructure.SelectedIndex=0
         self.modes=[Choice(label,key) for key,label in cleanup.MODES]
         self.ViewMode.ItemsSource=self.modes; self.ViewMode.SelectedIndex=0
         self.VersionLabel.Text='Version '+VERSION+' | Revit '+f.text(uiapp.Application.VersionNumber)
@@ -50,9 +52,10 @@ class Dialog(forms.WPFWindow):
             with io.open(self.settings,encoding='utf-8') as inp: saved=json.load(inp)
             self.Output.Text=saved.get('output','')
             self.mappings=[Choice(a+'  ->  '+b,source=b,key=a) for a,b in saved.get('mappings',[])]
-            self.DeepScan.IsChecked=saved.get('deep',True); self.Separate.IsChecked=saved.get('per_model',True)
+            self.DeepScan.IsChecked=saved.get('deep',True)
             self.Repath.IsChecked=saved.get('repath',True); self.Reports.IsChecked=saved.get('reports',True)
             self.LoadUnloadedFiles.IsChecked=saved.get('load_unloaded_files',True)
+            self.FileStructure.SelectedIndex=[x.Key for x in self.structures].index(layout.mode(saved.get('file_structure')))
             self.Zip.IsChecked=saved.get('zip',False)
             self.ZipPerModel.IsChecked=saved.get('zip_per_model',False)
             self.client_id=saved.get('aps_client_id','');self.callback_uri=saved.get('aps_callback_uri',self.callback_uri)
@@ -201,11 +204,12 @@ class Dialog(forms.WPFWindow):
         output=f.text(self.Output.Text).strip()
         if not os.path.isdir(output): return forms.alert('Select an existing output directory.')
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
+        opts['file_structure']=layout.mode(self.FileStructure.SelectedItem.Key if self.FileStructure.SelectedItem else None)
         opts.update(deep=bool(self.DeepScan.IsChecked),repath=bool(self.Repath.IsChecked),
                     load_unloaded_files=bool(self.LoadUnloadedFiles.IsChecked),
                     cleanup=bool(self.Cleanup.IsChecked),upgrade=bool(self.Upgrade.IsChecked or self.Cleanup.IsChecked),
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
-                    views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=bool(self.Separate.IsChecked),
+                    views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=True,
                     reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked),mappings=[(x.Key,x.Source) for x in self.mappings])
         opts['skip_cloud_links']=bool(self.SkipCloudLinks.IsChecked)
         opts['saved_state_only']=True
@@ -240,7 +244,7 @@ class Dialog(forms.WPFWindow):
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
         if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True,title='Process package copies / Transmit'): return
         if self.SaveSettings.IsChecked:
-            saved=dict((k,opts[k]) for k in ('deep','repath','load_unloaded_files','per_model','reports','zip','zip_per_model','mappings'))
+            saved=dict((k,opts[k]) for k in ('deep','repath','load_unloaded_files','file_structure','per_model','reports','zip','zip_per_model','mappings'))
             saved['output']=output
             saved['aps_client_id']=self.client_id;saved['aps_callback_uri']=self.callback_uri
             folder=os.path.dirname(self.settings)
@@ -282,7 +286,7 @@ def run(uiapp,xaml):
             was_cancelled=cancel()
         if not results:return forms.alert('Transmission cancelled before any models were processed.')
         message=engine.completion_message(results,len(choices),cancelled=was_cancelled)
-        forms.alert(message+'\n\nOutput: '+root+'\n\nKeep the full model-named job folders, including Sources and _Refs together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
+        forms.alert(message+'\n\nOutput: '+root+'\n\nKeep the full model-named job folders, including their Links folders together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
         os.startfile(root)
     finally:
         dialog.release_credentials()

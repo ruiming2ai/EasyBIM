@@ -115,7 +115,7 @@ class PipelineRegression(unittest.TestCase):
         intercepted=[]
         def unavailable(path,*args):
             normalized=str(path).replace('\\','/')
-            if normalized.endswith('/host.rvt') and '/Sources/' in normalized:
+            if normalized == str(Path(self.out)/'host.rvt').replace('\\','/'):
                 intercepted.append(path)
                 raise IOError('verification read denied')
             return digest(path,*args)

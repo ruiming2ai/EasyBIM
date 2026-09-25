@@ -6,6 +6,7 @@ import json
 import os
 import ntpath
 import re
+import tempfile
 from . import VERSION, files as f, engine
 
 
@@ -48,8 +49,8 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
     models=list(models); opts=dict(options or f.defaults())
     # A live host is intentionally placed at its model-named job root. Keep
     # live jobs separate even if a stale settings file requests combined mode.
-    if opts.get('zip_per_model') or any(f.text(m).startswith('open://') for m in models):opts['per_model']=True
-    if not os.path.isdir(root): os.makedirs(root)
+    opts['per_model']=True  # Every delivered host package is independent.
+    f.ensure_directory(root)
     jobs=plan_jobs(models,root,opts.get('per_model'),model_names);results=[]
     try:
         for job in jobs:
@@ -61,7 +62,7 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
             except f.Cancelled:
                 job['status']='CANCELLED'; break
             except Exception as exc:
-                if not os.path.isdir(package): os.makedirs(package)
+                f.ensure_directory(package)
                 result=dict(version=VERSION,root=package,status='FAILED',
                             requested_models=list(group),models=[],files=[],references=[],aliases=[],
                             options=opts,issues=[engine.issue('BATCH_MODEL_FAILED',group[0],exc,'error')])
@@ -85,7 +86,7 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
         if opts.get('zip') and results and not (cancelled and cancelled()):
             # Whole-batch archive remains optional; it is outside the source tree.
             write_index(root,jobs)
-            try:engine.zip_package(root,root+'.zip',cancelled)
+            try:engine.zip_package(root,root+'.zip',cancelled,[j['zip_path'] for j in jobs if j.get('zip_path')])
             except f.Cancelled:raise
             except Exception as exc:
                 for result,job in zip(results,jobs):
@@ -103,7 +104,17 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
 
 
 def write_index(root,jobs):
-    with io.open(os.path.join(root,'batch.json'),'w',encoding='utf-8') as out:
+    if os.name == 'nt' and f.path_units(root) > 200:
+        scratch=tempfile.mkdtemp(prefix='ET_Index_')
+        try:
+            _write_index_at(root,jobs,scratch)
+            for path in engine.folder_files(scratch):f.publish_report(path,os.path.join(root,os.path.basename(path)))
+        finally:f.remove_tree_retry(scratch)
+    else:_write_index_at(root,jobs,root)
+
+
+def _write_index_at(root,jobs,output):
+    with io.open(os.path.join(output,'batch.json'),'w',encoding='utf-8') as out:
         out.write(f.text(json.dumps(dict(version=VERSION,jobs=jobs),ensure_ascii=False,indent=2)))
     lines=['EasyBIM e-transmit '+VERSION,'Batch jobs: '+str(len(jobs)),
            'Revit operations run sequentially. Each model-named folder is a separate transmittal.',
@@ -114,4 +125,4 @@ def write_index(root,jobs):
             job['index'],job['status'],job['zip_status'],job.get('name','')+' | '+'; '.join(job['models'])))
     # In combined mode the package's own START_HERE must not be overwritten.
     name='BATCH_SUMMARY.txt' if any(j['root']==root for j in jobs) else 'START_HERE.txt'
-    with io.open(os.path.join(root,name),'w',encoding='utf-8') as out:out.write('\n'.join(lines))
+    with io.open(os.path.join(output,name),'w',encoding='utf-8') as out:out.write('\n'.join(lines))

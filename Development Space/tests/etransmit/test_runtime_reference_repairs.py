@@ -102,11 +102,11 @@ class EngineRepairs(unittest.TestCase):
         with open(host,'wb') as out:out.write(b'host')
         calls=[]
         def verify(*args):
-            self.assertEqual(calls,['finish']); calls.append('verify'); return []
+            self.assertTrue(calls and calls[0]=='finish'); calls.append('verify'); return []
         b=Obj(scan=lambda *a:dict(references=[],issues=[]),
               finish=lambda *a:calls.append('finish') or [],verify_package=verify)
         result=e.transmit([host],os.path.join(root,'out'),b)
-        self.assertEqual(calls,['finish','verify'])
+        self.assertEqual(calls,['finish','verify','verify'])
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
     def test_parent_is_processed_after_collected_link(self):

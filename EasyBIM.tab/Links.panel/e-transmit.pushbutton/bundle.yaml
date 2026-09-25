@@ -4,7 +4,8 @@ tooltip: >-
   links. Unsaved edits are excluded. No Save, SaveAs, Sync, Publish or relocation
   of working documents. Original caches are read only; copied models alone may
   be detached/repathed. Load Unloaded Files is enabled by default for copied Revit links.
-  Model-named job folders and individual ZIPs. Review the reports before delivery.
+  One Links folder per host package: categories, original folders, or all files together.
+  Same-name files use separate subfolders. Model-named job folders and individual ZIPs. Review the reports before delivery.
 author: Ruiming Liu
 context: zero-doc
 min_revit_version: 2023

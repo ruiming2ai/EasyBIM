@@ -146,7 +146,7 @@ class DesktopConnectorRegressionTests(unittest.TestCase):
             if not os.path.isdir(folder):
                 os.makedirs(folder)
             Path(target).write_bytes(b'local shell snapshot bytes')
-            return {'sha256': 'x', 'size': 26, 'source_mtime': 0,
+            return {'sha256': f.digest(target), 'size': 26, 'source_mtime': 0,
                     'copy_method': 'WINDOWS_SHELL_COM',
                     'source_stability': 'SHELL_SNAPSHOT'}
 

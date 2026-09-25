@@ -10,13 +10,15 @@ class Obj(object):
     def __init__(self,**kw): self.__dict__.update(kw)
 
 class Safety(unittest.TestCase):
-    def test_alias_namespace_includes_document_and_source(self):
-        target='/out/'+('very-long-folder/'*20)+'drawing.pdf'
-        a=dict(owner='/models/A.rvt',source='/A/drawing.pdf',element_id='42',special='image',target=target)
-        b=dict(a,owner='/models/B.rvt',source='/B/drawing.pdf')
-        self.assertNotEqual(e.portable_image_alias('/out',a),e.portable_image_alias('/out',b))
-        self.assertEqual(os.path.basename(e.portable_image_alias('/out',a)),'drawing.pdf')
-        self.assertEqual(e.portable_image_alias('/out',a),e.portable_image_alias('/out',dict(a)))
+    def test_collision_namespace_uses_source_identity(self):
+        from easybim_etransmit import layout
+        rows=[dict(source='/A/drawing.pdf',category='pdf'),dict(source='/B/drawing.pdf',category='pdf')]
+        layout.plan(rows,'categories')
+        self.assertNotEqual(rows[0]['relative'],rows[1]['relative'])
+        self.assertEqual(os.path.basename(rows[0]['relative']),'drawing.pdf')
+        again=[dict(row) for row in reversed(rows)]
+        layout.plan(again,'categories')
+        self.assertEqual(rows[0]['relative'],again[1]['relative'])
 
     def test_imported_image_not_reintroduced_by_external_resources(self):
         ident=Obj(Value=42)

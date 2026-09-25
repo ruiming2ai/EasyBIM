@@ -116,7 +116,7 @@ class HostSafety(unittest.TestCase):
         self.r.collect_plugins=True;seen=[]
         def plugins(doc,base,result):
             self.assertTrue(self.calls,'plugin scan ran before host snapshot')
-            self.assertTrue(os.path.exists(os.path.join(out,'Host.rvt')))
+            self.assertTrue(any(name=='Host.rvt' for directory,dirs,names in os.walk(b.staging_root) for name in names))
             seen.append(True)
             raise RuntimeError('optional vendor schema failure')
         self.r.scanner.scan_plugins=plugins
@@ -157,17 +157,11 @@ class HostSafety(unittest.TestCase):
         self.r.get(key)['inventory']['references'].extend([
             dict(id='1',element_id='1',source='Autodesk Docs://Project/Missing.rvt',kind='RevitLink',td=False),
             dict(id='2',element_id='2',source=pdf,kind='Image',special='image',td=False)])
-        old=engine.portable_image_alias;attempts=[]
-        def unnecessary(root,row):
-            attempts.append(True)
-            raise RuntimeError('must not create an operational alias for an unprocessed host')
-        engine.portable_image_alias=unnecessary
-        try:
-            out=os.path.join(self.root,'deferred-alias');opts=f.defaults();opts['skip_cloud_links']=True
-            result=engine.transmit([key],out,s.SessionBackend(self.db,self.app,out,self.r),opts)
-        finally:engine.portable_image_alias=old
-        self.assertEqual(attempts,[])
-        self.assertFalse(any(i['code']=='PORTABLE_ALIAS_FAILED' for i in result['issues']))
+        out=os.path.join(self.root,'deferred-alias');opts=f.defaults();opts['skip_cloud_links']=True
+        result=engine.transmit([key],out,s.SessionBackend(self.db,self.app,out,self.r),opts)
+        self.assertEqual(result['aliases'],[])
+        self.assertFalse(os.path.exists(os.path.join(out,'_Refs')))
+        self.assertTrue(os.path.exists(os.path.join(out,'Links','PDF','Drawing.pdf')))
         self.assertEqual(engine.package_counts(result)['hosts_copied'],1)
     def test_authorization_rejects_linked_document(self):
         self.doc.IsLinked=True;key=self.live()

@@ -120,7 +120,7 @@ class ContextTests(unittest.TestCase):
             ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
             ui.SessionBackend = lambda *a: self.backend
             ui.run(Obj(Application=Obj()), 'unused.xaml')
-            with io.open(os.path.join(self.output, 'manifest.json'), encoding='utf-8') as inp:
+            with io.open(os.path.join(self.output, os.path.splitext(os.path.basename(self.host))[0], 'manifest.json'), encoding='utf-8') as inp:
                 result = json.load(inp)
             self.assertEqual(e.package_counts(result)['files_copied'], 3, repr(result['issues']))
             self.assertEqual(result['status'], 'COLLECTED', repr(result['issues']))

@@ -2,7 +2,6 @@
 """Recursive package engine. The injected backend is the only Revit boundary."""
 from __future__ import unicode_literals
 import collections
-import hashlib
 import io
 import json
 import os
@@ -11,11 +10,10 @@ import shutil
 import tempfile
 import sys
 import traceback
-import uuid
 import zipfile
 from . import files as f
 from .pathnames import relative as relative_path
-from . import VERSION
+from . import VERSION, layout
 
 
 def issue(code, source, message, severity='warning'):
@@ -46,34 +44,28 @@ def folder_files(folder):
 
 
 def preflight_paths(models, root, options, extras=None, model_names=None):
-    """Use the same model-named layout as the real batch, before any save/copy."""
+    """Check filesystem delivery limits, not Revit's temporary processing limits."""
     from .batch import plan_jobs
-    models=list(models);names=model_names or {};errors=[]
-    separate=options.get('per_model') or options.get('zip_per_model') or any(f.text(m).startswith('open://') for m in models)
-    try:jobs=plan_jobs(models,root,separate,names)
+    models=list(models); names=model_names or {}; errors=[]
+    try: jobs=plan_jobs(models,root,True,names)
     except (ValueError,f.PathLengthError) as exc:
         return [dict(code='DESTINATION_PATH_TOO_LONG',source='',target=root,message=f.text(exc))]
     for job in jobs:
-        package=job['root'];pm=ntpath if f.is_windows(package) else os.path
+        candidates=[]
         for requested in job['models']+list(extras or []):
-            target=package
-            try:
-                if f.text(requested).startswith('open://'):
-                    name=names.get(requested,requested).replace('\\','/').rsplit('/',1)[-1]
-                    if not name.lower().endswith('.rvt'):name+='.rvt'
-                    target=pm.join(package,name);f.validate_destination_path(target)
-                    if not options.get('saved_state_only',True):
-                        target=pm.join(root+'_WorkingSnapshots','0'*20,name)
-                        f.validate_destination_path(target)
-                    continue
-                source=f.resolve_source(requested,mappings=options.get('mappings'))
-                if not source:continue
-                relative=f.mirror_path(source);target=pm.join(package,*relative.split('/'))
-                (f.validate_destination_path if target.lower().endswith('.rvt') else f.validate_copy_path)(target)
+            source=f.resolve_source(requested,mappings=options.get('mappings')) if '://' not in requested else requested
+            if not source: continue
+            name=layout.basename(names.get(requested,source))
+            if requested in job['models'] and not name.lower().endswith('.rvt'): name+='.rvt'
+            candidates.append(dict(source=source, original_relative=(f.mirror_path(source) if f.absolute(source) else name),
+                                   category=f.category(source), is_primary_host=requested in job['models']))
+        layout.plan(candidates,options.get('file_structure'))
+        for row in candidates:
+            pm=ntpath if f.is_windows(job['root']) else os.path
+            target=pm.join(job['root'],*row['relative'].split('/'))
+            try: f.validate_copy_path(target)
             except f.PathLengthError as exc:
-                errors.append(dict(code='DESTINATION_PATH_TOO_LONG',source=requested,target=target,message=f.text(exc)))
-            except ValueError:
-                continue
+                errors.append(dict(code='DESTINATION_PATH_TOO_LONG',source=row['source'],target=target,message=f.text(exc)))
     return errors
 
 
@@ -123,43 +115,25 @@ def completion_message(results, requested, cancelled=False):
     return '\n'.join(lines)
 
 
-def portable_image_alias(root, row):
-    """Return a short package-local alias only when Revit cannot safely address the mirror.
-
-    The full source hierarchy remains untouched at mirror_target. The alias keeps
-    the original basename and exists solely as the portable path stored by Revit.
-    """
-    if row.get('special') != 'image' or not row.get('target'):
-        return None
-    if f.path_units(row['target']) <= 240:
-        return None
-    target=row['target']
-    pm=ntpath if f.is_windows(target) else os.path
-    name=pm.basename(target)
-    identity = '\n'.join([f.canonical(row.get('owner','')),
-                           f.canonical(row.get('source') or target),
-                           f.text(row.get('element_id') or row.get('id') or 'ref')])
-    # Document-scoped element IDs alone collide in combined packages.
-    ident = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
-    alias=os.path.join(root,'_Refs',ident,name)
-    if f.path_units(alias) > 240:
-        raise f.PathLengthError('Portable Revit reference path is still too long: '+alias)
-    return alias
-
 
 def transmit(models, root, backend, options=None, extras=None, cancelled=None, pulse=None):
     models = list(models)
-    opts = options or f.defaults()
-    if os.path.exists(root) and os.listdir(root):
+    opts = dict(options or f.defaults())
+    opts['file_structure'] = layout.mode(opts.get('file_structure'))
+    if f.directory_has_entries(root):
         raise ValueError('Choose a new, empty package folder; existing files are never overwritten.')
-    if not os.path.isdir(root): os.makedirs(root)
+    f.ensure_directory(root)
     result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[], aliases=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
     retained_recovery=[]
     # Revit inspection/processing scratch must not live in OneDrive or another
     # synchronized output tree.  Keep it in the local OS temp area and register
     # that one directory explicitly with the Revit backend write guard.
-    work = tempfile.mkdtemp(prefix='EasyBIM_ET_')
+    work = tempfile.mkdtemp(prefix='ET_')
+    prepared = os.path.join(work, 'p')
+    bundles = []
+    identities = {}
+    organized = [False]
     if hasattr(backend, 'set_staging_root'):
         backend.set_staging_root(work)
     queue, records, edges = collections.deque(), {}, []
@@ -223,6 +197,124 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 ref['package_loaded']=(True if opts.get('repath') and opts.get('load_unloaded_files',True)
                                        and ref.get('loaded') is False else ref.get('loaded'))
             edges.append(ref);queue.append((ref.get('source',''),source,False,ref))
+
+    def organize(recover=False):
+        if organized[0]: return
+        contextual = {}
+        for ref in edges:
+            rec=records.get(f.canonical(ref.get('local','')))
+            if rec and ref.get('category') in ('analysis','keynotes','decals'):
+                contextual.setdefault(rec['source'],set()).add(ref['category'])
+        for rec in result['files']:
+            if rec['source'] in contextual:rec['category']=sorted(contextual[rec['source']])[0]
+        layout.plan(result['files'], opts['file_structure'], bundles)
+        for record in result['files']:
+            if record['status'] == 'COPIED' and not recover:
+                try:
+                    target = f.destination(prepared, record['relative'])
+                    if f.canonical(record['target']) != f.canonical(target):
+                        f.copy_file(record['target'], target, cancelled, notify)
+                    record['target'] = target
+                except f.Cancelled: raise
+                except Exception as exc:
+                    record['processing_status'] = 'LAYOUT_FAILED'
+                    add_issue('PACKAGE_LAYOUT_FAILED', record['source'], exc, 'error')
+        for model in result['models']:
+            rec = records.get(f.canonical(model['source']))
+            if rec: model['source'] = rec['source']
+        for ref in edges:
+            owner = records.get(f.canonical(ref.get('owner', '')))
+            if owner: ref['owner'] = owner['source']
+        organized[0] = True
+
+    def deliver():
+        # Cancellation preserves already acquired files. A new cancellation during
+        # delivery stops additional copies and retains the prepared recovery tree.
+        was_cancelled = result['status'] == 'CANCELLED'
+        delivery_cancel = None if was_cancelled else cancelled
+        try: organize(recover=True)
+        except Exception as exc:
+            result['recovery_directory'] = work
+            add_issue('PACKAGE_LAYOUT_FAILED', '', exc, 'error')
+            for record in result['files']:
+                record['target']=None
+                if record['status']=='COPIED':record['status']='NOT_DELIVERED'
+            for ref in edges:
+                ref.pop('target',None);ref.pop('verification',None)
+            return
+        stage_paths = {}
+        for record in result['files']:
+            old = record['target']
+            target = os.path.join(root, *record['relative'].split('/'))
+            stage_paths[old] = target
+            record['preparation_verification'] = record.pop('model_verification', 'NOT_ATTEMPTED')
+            record['model_verification'] = 'NOT_ATTEMPTED'
+            record['target'] = target
+            if record['status'] != 'COPIED': continue
+            record['acquisition_status'] = 'COPIED'
+            try:
+                if not was_cancelled: notify('Delivering '+record['source'],0,1)
+                expected = f.digest(old,delivery_cancel)
+                metadata = f.copy_file(old, f.destination(root, record['relative']), delivery_cancel, None if was_cancelled else notify)
+                if metadata['sha256'] != expected: raise IOError('Delivered file differs from the prepared copy.')
+                record['packaged_sha256'] = expected
+                record['delivery_status'] = 'CHECKSUM_VERIFIED'
+            except f.Cancelled:
+                result['status'] = 'CANCELLED'
+                result['recovery_directory'] = work
+                record['status'] = 'NOT_DELIVERED'; record['delivery_status'] = 'CANCELLED'
+            except Exception as exc:
+                result['recovery_directory'] = work
+                record['status'] = 'DELIVERY_FAILED'; record['delivery_status'] = 'FAILED'
+                add_issue('PACKAGE_DELIVERY_FAILED', record['source'], exc, 'error')
+        for ref in edges:
+            ref['preparation_verification'] = ref.pop('verification', 'NOT_ATTEMPTED')
+            rec = records.get(f.canonical(ref.get('local', '')))
+            ref.pop('target', None)
+            if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'OPTIONAL_MISSING', 'SKIPPED_CLOUD_LINK'):
+                ref['target'] = rec['target']
+            elif rec and ref['status'] in ('COPIED', 'DUPLICATE_ALIAS'):
+                ref['status'] = 'NOT_DELIVERED'
+        # Preparation messages must not advertise removed package paths.
+        for diagnostic in result['issues']:
+            for field in ('source', 'message', 'traceback'):
+                if isinstance(diagnostic.get(field), f.string_types):
+                    for old, new in sorted(stage_paths.items(), key=lambda item: -len(item[0])):
+                        diagnostic[field] = diagnostic[field].replace(old, new)
+        verifier = getattr(backend, 'verify_package', None)
+        for record in reversed(result['files']):
+            if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
+            if not opts.get('repath') or not verifier:
+                record['model_verification'] = 'NOT_ATTEMPTED'; continue
+            if result['status'] == 'CANCELLED' or (cancelled and cancelled()):
+                record['model_verification'] = 'DEFERRED'; continue
+            if record.get('processing_status') in ('FAILED', 'ROLLBACK_FAILED', 'LAYOUT_FAILED'):
+                record['model_verification'] = 'SKIPPED_PROCESSING_FAILURE'; continue
+            if record.get('inventory_status') in ('FAILED', 'UNSTABLE', 'RUNNING', 'PARTIAL'):
+                record['model_verification'] = 'SKIPPED_INVENTORY_FAILURE'; continue
+            if record.get('processing_status') == 'HOST_PRESERVED_LINKS_UNAVAILABLE':
+                record['model_verification'] = 'DEFERRED'; continue
+            rows = [r for r in edges if f.canonical(r['owner']) == f.canonical(record['source'])]
+            if any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
+                record['model_verification']='DEFERRED'
+                add_issue('MODEL_VERIFICATION_DEFERRED', record['source'], 'A linked model was not delivered; final opening is deferred to prevent source/cloud fallback.', 'error')
+                continue
+            try:
+                notify('Checking delivered model '+record['source'],0,1)
+                f.validate_destination_path(record['target'])
+                problems = verifier(record['target'], rows, opts) or []
+                result['issues'].extend(problems)
+                record['model_verification'] = ('DEFERRED' if any(p['code'] == 'MODEL_VERIFICATION_DEFERRED' for p in problems)
+                    else 'FAILED' if any(p.get('severity') == 'error' for p in problems) else 'OPENED_AND_REFERENCES_CHECKED')
+                if record['model_verification'] != 'OPENED_AND_REFERENCES_CHECKED':
+                    add_issue('FINAL_LOCATION_VERIFICATION_FAILED', record['source'],
+                        'Files are retained. Review the Revit errors; if the destination path is too long, move the complete package to a shorter location.', 'error')
+            except f.Cancelled:
+                result['status'] = 'CANCELLED'; record['model_verification'] = 'DEFERRED'
+            except Exception as exc:
+                record['model_verification'] = 'FAILED'
+                add_issue('FINAL_LOCATION_VERIFICATION_FAILED', record['source'],
+                    'Files are retained. Move the complete package to a shorter location if Revit rejects this path: ' + f.text(exc), 'error')
 
     try:
         while queue:
@@ -325,6 +417,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     if not (edge is None or cat == 'analysis'):
                         raise ValueError('Expected a file, not a directory.')
                     if edge is not None: edge['status'] = 'DIRECTORY'
+                    bundles.append(dict(root=source, category=cat if cat == 'analysis' else 'other'))
                     for child in folder_files(source):
                         queue.append((child, '', False, None))
                     continue
@@ -344,9 +437,10 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                               'the model and other dependencies continue to be collected.')
                     continue
                 relative = backend.source_relative(source) if virtual else f.mirror_path(source)
-                target = os.path.join(root, *relative.split('/'))
+                target = os.path.join(work, 'a', layout.suffix(key), layout.basename(relative))
                 record = dict(source=source, requested=requested, relative=relative,
-                              target=target, category=cat, status='PENDING',is_primary_host=host)
+                              target=target, category=cat, status='PENDING',is_primary_host=host,
+                              original_relative=relative)
                 records[key] = record
                 result['files'].append(record)
                 before=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
@@ -359,7 +453,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     for companion in companions(source):
                         queue.append((companion,source,False,None))
                 operation = 'validate_destination'
-                f.destination(root, relative)  # Validate before copying; failed paths remain in the report.
+                f.validate_copy_path(target)  # Acquire once at a short path before allocating delivery names.
                 notify('Copying ' + source, 0, 1)
                 operation = 'copy_file'
                 acquire=getattr(backend,'acquire_file',None)
@@ -369,6 +463,22 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     add_issue('SOURCE_STAGING_CLEANUP_FAILED', source,
                               record['staging_cleanup_warning'])
                 record['status'] = 'COPIED'
+                identity_reader = getattr(backend, 'acquired_identity', None)
+                identity = identity_reader(source, metadata) if identity_reader else f.canonical(source)
+                record['layout_identity'] = identity
+                previous = identities.get(identity)
+                if previous is not None and previous.get('sha256') == record.get('sha256'):
+                    previous.setdefault('source_aliases', []).append(source)
+                    previous['is_primary_host'] = previous.get('is_primary_host') or host
+                    records[key] = previous
+                    result['files'].remove(record)
+                    if edge is not None: edge['status'] = 'COPIED'
+                    continue
+                if previous is not None:
+                    record['status'] = 'FAILED'
+                    record['layout_identity'] = identity + '/conflict/' + key
+                    raise ValueError('Conflicting acquired bytes for the same source identity; no version was substituted.')
+                identities[identity] = record
                 if edge is not None: edge['status'] = 'COPIED'
                 late_inventory=getattr(backend,'inventory_after_copy',None)
                 if late_inventory:
@@ -401,6 +511,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 elif ext == '.rcp':
                     support = os.path.splitext(source)[0] + ' Support'
                     if os.path.isdir(support):
+                        bundles.append(dict(root=os.path.dirname(source), entry=source, support=support, category='pointcloud'))
                         for child in folder_files(support): queue.append((child, '', False, None))
                     add_issue('RCP_EXTERNAL_SCANS_UNVERIFIED', source,
                               'RCP and its adjacent "<name> Support" folder are collected. '
@@ -438,6 +549,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if key in records and records[key]['status'] == 'PENDING':
                     records[key]['status'] = 'FAILED'
 
+        organize()
         result['references'] = edges
         context_reader=getattr(backend,'source_context',None)
         if context_reader:
@@ -447,51 +559,15 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         # Resolve targets only to successfully copied files. Never repath to a missing file.
         for ref in edges:
             rec = records.get(f.canonical(ref.get('local', '')))
-            if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'DUPLICATE_ALIAS', 'OPTIONAL_MISSING', 'SKIPPED_CLOUD_LINK'):
-                ref['target'] = rec['target']; ref['status'] = 'COPIED'
+            if rec and rec['status'] == 'COPIED' and ref['status'] not in ('EXCLUDED', 'OPTIONAL_MISSING', 'SKIPPED_CLOUD_LINK'):
+                ref['target'] = rec['target']
+                if ref['status'] != 'DUPLICATE_ALIAS': ref['status'] = 'COPIED'
 
-        # Revit's image/PDF API still rejects some paths after Windows itself
-        # successfully copied them past MAX_PATH. Preserve the complete mirror,
-        # then create a second short package-local alias only for Revit storage.
-        if opts.get('repath'):
-            for ref in edges:
-                if ref.get('status') != 'COPIED':
-                    continue
-                owner_record=records.get(f.canonical(ref.get('owner','')))
-                if owner_record and owner_record.get('is_primary_host'):
-                    unavailable=any(f.canonical(r.get('owner',''))==f.canonical(ref.get('owner',''))
-                        and (r.get('kind')=='RevitLink' or r.get('category')=='revit')
-                        and not r.get('target') for r in edges)
-                    if unavailable:
-                        # No Revit reload will be attempted for this raw host.
-                        # Its complete source mirror is sufficient; an unused
-                        # operational alias must not add misleading path errors.
-                        ref['repath']='DEFERRED_HOST_LINKS_UNAVAILABLE'
-                        continue
-                try:
-                    alias=portable_image_alias(root,ref)
-                    if not alias:
-                        continue
-                    mirror=ref['target']
-                    parent=os.path.dirname(alias)
-                    if not os.path.isdir(parent):
-                        os.makedirs(parent)
-                    f.copy_file(mirror,alias,cancelled,notify)
-                    ref['mirror_target']=mirror
-                    ref['target']=alias
-                    ref['portable_alias']=True
-                    result['aliases'].append(dict(source=ref.get('source',''),
-                                                  mirror_target=mirror,target=alias,
-                                                  element_id=ref.get('element_id',''),
-                                                  reason='REVIT_PATH_LIMIT'))
-                except f.Cancelled:
-                    raise
-                except Exception as exc:
-                    add_issue('PORTABLE_ALIAS_FAILED',ref.get('source',''),exc,'error')
         if opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
             for record in reversed(result['files']):
                 f.check(cancelled)
                 if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
+                if record.get('processing_status') == 'LAYOUT_FAILED': continue
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
@@ -518,6 +594,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     notify('Repath / cleanup ' + record['source'], 0, 1)
                     processing_options=dict(opts)
                     processing_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
+                    f.validate_destination_path(target)
                     processing_issues=backend.finish(stage, target, model_edges, processing_options) or []
                     result['issues'].extend(processing_issues)
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
@@ -565,9 +642,11 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 if record.get('processing_status')=='HOST_PRESERVED_LINKS_UNAVAILABLE':
                     record['model_verification']='DEFERRED';continue
                 f.check(cancelled)
-                notify('Verifying packaged model '+record['source'],0,1)
+                notify('Checking prepared model '+record['source'],0,1)
                 model_edges=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source'])]
-                problems=verifier(record['target'],model_edges,opts) or []
+                try: problems=verifier(record['target'],model_edges,opts) or []
+                except f.Cancelled: raise
+                except Exception as exc: problems=[issue('MODEL_OPEN_VERIFICATION_FAILED', record['source'], exc, 'error')]
                 result['issues'].extend(problems)
                 record['model_verification'] = ('DEFERRED' if any(p['code']=='MODEL_VERIFICATION_DEFERRED' for p in problems)
                                                else ('FAILED' if any(p.get('severity')=='error' for p in problems)
@@ -581,9 +660,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         add_issue('PACKAGE_FAILED', '', exc, 'error')
     finally:
         result['references'] = edges
-        try:
-            if not retained_recovery:f.remove_tree_retry(work)
-        except Exception as exc: add_issue('STAGING_CLEANUP_FAILED', work, exc)
+        deliver()
         # Hash the final bytes, not just the pre-repath source snapshot.
         for rec in result['files']:
             if rec['status'] == 'COPIED' and f.file_exists(rec['target']):
@@ -600,12 +677,33 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         counts = package_counts(result)
         if result['status'] != 'CANCELLED' and counts['hosts_copied'] < counts['hosts_requested']:
             result['status'] = 'FAILED'
-        write_reports(result)
+        try:
+            write_reports(result)
+        except Exception as exc:
+            result['recovery_directory'] = work
+            raise IOError('Reports could not be delivered. Prepared files retained at '+work+': '+f.text(exc))
+        finally:
+            if not retained_recovery and not result.get('recovery_directory'):
+                try: f.remove_tree_retry(work)
+                except Exception as exc:
+                    add_issue('STAGING_CLEANUP_FAILED', work, exc)
+                    write_reports(result)
     return result
 
 
 def write_reports(result):
-    root = result['root']
+    # Reports also use verified long-path delivery under IronPython/Windows.
+    if os.name == 'nt' and f.path_units(result['root']) > 200:
+        scratch = tempfile.mkdtemp(prefix='ET_Report_')
+        try:
+            _write_reports_at(result, scratch)
+            for path in folder_files(scratch):
+                f.publish_report(path, os.path.join(result['root'], os.path.basename(path)))
+        finally: f.remove_tree_retry(scratch)
+    else: _write_reports_at(result, result['root'])
+
+
+def _write_reports_at(result, root):
     result['counts']=package_counts(result)
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
         out.write(f.text(json.dumps(result, ensure_ascii=False, indent=2)))
@@ -620,9 +718,10 @@ def write_reports(result):
              'Files copied: {0}'.format(counts['files_copied']),
              'Revit links requested / copied / verified: {0} / {1} / {2}'.format(
                  counts['revit_links_requested'],counts['revit_links_copied'],counts['revit_links_verified']),
-             'Portable Revit aliases: {0}'.format(len(result.get('aliases', []))),
+             'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    if result.get('recovery_directory'): lines.append('Undelivered/recovery files retained at: '+result['recovery_directory'])
     for record in result['files']:
         if record.get('recovery_path'):
             lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
@@ -662,7 +761,7 @@ def write_reports(result):
                 lines.append('  Candidate: {0} | {1} | Revision: {2} | {3} {4}'.format(
                     attempt.get('path',''),attempt.get('status',''),attempt.get('actual_document_version'),
                     attempt.get('code',''),attempt.get('message','')))
-    lines += ['', 'Keep the complete package together, including Sources and _Refs when present. Filenames have not been changed.',
+    lines += ['', 'Keep the complete package together, including its Links folder. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
               'Review every warning before delivery. Reports contain original project paths.', '', 'ISSUES:']
@@ -676,9 +775,9 @@ def write_reports(result):
     if result['options'].get('reports', True):
         with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
-                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','model_verification','acquisition_container','verification_status','size','sha256','packaged_sha256'])
+                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','collision_separated','acquisition_container','verification_status','size','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
-                    ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','verification','cloud_identity','note'])
+                    ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])
         diagnostics = [i for i in result['issues'] if i.get('traceback')]
         if diagnostics:
@@ -688,12 +787,15 @@ def write_reports(result):
                         item['code'], item.get('operation', ''), item['source'], item['traceback']))
 
 
-def zip_package(root, target, cancelled=None):
-    if os.path.exists(target): raise IOError('ZIP already exists: ' + target)
-    temp = target + '.partial-' + uuid.uuid4().hex
+def zip_package(root, target, cancelled=None, exclude_paths=None):
+    if f.file_exists(target): raise IOError('ZIP already exists: ' + target)
+    scratch = tempfile.mkdtemp(prefix='ET_Zip_')
+    temp = os.path.join(scratch, 'package.zip')
+    excluded = set(f.canonical(p) for p in (exclude_paths or []))
     try:
         with zipfile.ZipFile(temp, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
             for path in folder_files(root):
+                if f.canonical(path) in excluded: continue
                 f.check(cancelled)
                 arcname = relative_path(path, root)
                 if os.name == 'nt' and f.path_units(path)>240:
@@ -713,6 +815,7 @@ def zip_package(root, target, cancelled=None):
                         f.check(cancelled)
                         if not inp.read(1024 * 1024): break
         f.check(cancelled)
-        f.publish(temp, target)
+        if f.file_exists(target): raise IOError('ZIP already exists: ' + target)
+        f.copy_file(temp, target, cancelled)
     finally:
-        if os.path.exists(temp): os.remove(temp)
+        f.remove_tree_retry(scratch)

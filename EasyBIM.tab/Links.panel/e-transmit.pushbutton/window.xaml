@@ -49,7 +49,7 @@
           <StackPanel>
             <DockPanel><Button DockPanel.Dock="Right" Content="Browse..." Click="browse_output"/><TextBox x:Name="Output"/></DockPanel>
             <WrapPanel>
-              <CheckBox x:Name="Separate" Content="Model-named job folders (required for open hosts)" IsChecked="True"/>
+              <TextBlock Text="Each host gets an independent model-named package with its own Links folder." TextWrapping="Wrap"/>
               <CheckBox x:Name="Reports" Content="Detailed transmittal/error reports" IsChecked="True"/>
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
@@ -60,6 +60,12 @@
             <CheckBox x:Name="LoadUnloadedFiles" Content="Load Unloaded Files" IsChecked="True"
                       IsEnabled="{Binding IsChecked, ElementName=Repath}"
                       ToolTip="Load successfully copied Revit links in exported models, including links previously unloaded. Uncheck to preserve their saved load states. Working models are unchanged."/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="File Structure Organization">
+          <StackPanel>
+            <ComboBox x:Name="FileStructure" DisplayMemberPath="Name" Margin="0,5"/>
+            <TextBlock Text="One copy per source in Links. Same-name files use separate subfolders; filenames stay unchanged. Required support folders stay together in every mode." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="3  Related files — all included by default">

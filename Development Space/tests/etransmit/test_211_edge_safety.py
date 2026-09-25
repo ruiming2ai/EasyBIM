@@ -62,7 +62,8 @@ class PlannerChecks(unittest.TestCase):
         key='open://entry/Host.rvt';name='A'*140+'.rvt'
         root='C:\\'+('long-output-'*4)
         errors=engine.preflight_paths([key],root,{'per_model':True},{},model_names={key:name})
-        self.assertTrue(errors,'model-named duplicate length was not included in preflight')
+        self.assertEqual(errors, [], 'Delivery length alone must not reject filesystem collection')
+
     def test_zero_selected_models_has_no_phantom_job(self):
         self.assertEqual(batch.plan_jobs([],os.path.abspath('unused'),False),[])
 

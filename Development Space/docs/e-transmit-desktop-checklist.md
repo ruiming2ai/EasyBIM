@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.3.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.4.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -13,6 +13,12 @@ package copies to the original central.
 - Verify **Load Unloaded Files** defaults ON, persists when saving preferences,
   and is disabled when Repath is off. With it OFF, preserve saved load states;
   with it ON, successfully acquired unloaded RVT links load in package copies.
+- Check the separate **File Structure Organization** dropdown: categories by default,
+  original hierarchy and flat Links. Save/reopen each preference. Older settings
+  must default to categories. Test same-name/case-only files without renaming.
+- Confirm one host per model-named package, one Links folder, and no generated
+  Sources, _Refs or _HostState. Repeated source references share a delivered file.
+  Check RCP Support folders and overlapping added folders in every mode.
 - Repeat Morrison and Anthropology's September 25 cache exports in Revit 2024.
   Morrison's architectural link must accept one unambiguous saved edition even
   when its GUID differs from the loaded revision at the same save count (70).
@@ -62,3 +68,14 @@ package copies to the original central.
 Record Revit build, pyRevit build/engine, Desktop Connector version, source types,
 selected options, report issues and any screenshots. This checklist does not turn
 an unperformed check into a pass.
+
+2.1.4 delivery-specific checks:
+
+- Repeat both real-model exports in all three layouts, then move and reopen each
+  package. Check nested Revit links, images/PDF pages, positions and annotations.
+- Use a long destination. Confirm filesystem delivery and checksums can complete,
+  but final Revit errors are reported rather than inherited temporary success.
+- Cancel during preparation and delivery; simulate delivery/rollback failure.
+  Check original host preservation and the reported external recovery location.
+- Select both ZIP options. The batch ZIP must contain package folders/reports,
+  without embedding the generated individual package ZIPs.

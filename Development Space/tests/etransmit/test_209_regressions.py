@@ -57,7 +57,7 @@ class PortableImageAliases(unittest.TestCase):
                 shutil.rmtree(self.root)
         self.addCleanup(cleanup)
 
-    def test_long_image_keeps_mirrored_copy_but_revit_uses_short_alias(self):
+    def test_long_image_uses_one_category_copy(self):
         host=os.path.join(self.root,'Host.rvt')
         with open(host,'wb') as out: out.write(b'host')
         deep=self.root
@@ -87,26 +87,26 @@ class PortableImageAliases(unittest.TestCase):
                         raise AssertionError('portable alias is still too long')
                     if os.path.basename(ref['target'])!=os.path.basename(image):
                         raise AssertionError('original filename changed')
-                    if not os.path.isfile(ref['mirror_target']):
-                        raise AssertionError('original hierarchy mirror was not preserved')
+                    if 'mirror_target' in ref:
+                        raise AssertionError('duplicate mirror must not be created')
                 shutil.copyfile(stage,target)
                 return []
         result=e.transmit([host],os.path.join(self.root,'out'),B())
         self.assertEqual(len(seen),1,repr(result['issues']))
         ref=seen[0]
-        self.assertNotEqual(f.canonical(ref['target']),f.canonical(ref['mirror_target']))
-        self.assertEqual(f.digest(ref['target']),f.digest(ref['mirror_target']))
-        self.assertTrue(ref.get('portable_alias'))
-        with open(os.path.join(result['root'],'START_HERE.txt'),'rb') as report_file:
-            report=report_file.read().decode('utf-8')
-        self.assertIn('_Refs',report)
-        self.assertIn('Sources',report)
+        delivered=result['references'][0]['target']
+        self.assertEqual(f.digest(delivered),f.digest(image))
+        self.assertEqual(result['aliases'],[])
+        self.assertEqual(len([p for p in e.folder_files(result['root']) if p.lower().endswith('.pdf')]),1)
+        self.assertFalse(os.path.exists(os.path.join(result['root'],'Sources')))
+        self.assertFalse(os.path.exists(os.path.join(result['root'],'_Refs')))
 
     def test_short_image_does_not_get_duplicate_alias(self):
-        helper=getattr(e,'portable_image_alias',None)
-        self.assertTrue(callable(helper),'portable image alias helper is missing')
-        row=dict(target=os.path.join(self.root,'short.pdf'),element_id='1',special='image')
-        self.assertIsNone(helper(self.root,row))
+        from easybim_etransmit import layout
+        rows=[dict(source='/source/short.pdf',category='pdf')]
+        layout.plan(rows,'categories')
+        self.assertEqual(rows[0]['relative'],'Links/PDF/short.pdf')
+
 
 
 class ExternalImageAndNoise(unittest.TestCase):

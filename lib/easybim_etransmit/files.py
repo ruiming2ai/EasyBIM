@@ -35,7 +35,7 @@ class Cancelled(Exception):
 
 def defaults():
     return dict(include=dict((k, True) for k, label in CATEGORIES), deep=True,
-                repath=True, load_unloaded_files=True, upgrade=False, cleanup=False, discard_worksets=False,
+                repath=True, load_unloaded_files=True, file_structure='categories', upgrade=False, cleanup=False, discard_worksets=False,
                 purge=False, views='all', view_types=[], per_model=True,
                 reports=True, zip=False, mappings=[])
 
@@ -619,16 +619,20 @@ def shell_copy_to_local(source, cancelled=None):
 
 def remove_tree_retry(path, attempts=10, delay=0.2):
     """Remove local scratch with short retries for antivirus/provider handles."""
-    if not path or not os.path.exists(path): return
+    exists, remove = os.path.exists, shutil.rmtree
+    if os.name == 'nt':
+        from . import longpaths
+        exists, remove = longpaths.exists, longpaths.remove_tree
+    if not path or not exists(path): return
     last = None
     for attempt in range(attempts):
         try:
-            shutil.rmtree(path)
+            remove(path)
             return
         except OSError as exc:
             last = exc
             time.sleep(delay * (attempt + 1))
-    if os.path.exists(path):
+    if exists(path):
         raise last
 
 
@@ -705,6 +709,35 @@ def temporary_path(folder, suffix='.rvt'):
             validate_destination_path(value)
             return value
     raise IOError('Unable to allocate an unused temporary filename.')
+
+
+def publish_report(source, target):
+    """Refresh only our named reports in a newly allocated package/batch."""
+    names = ('manifest.json', 'START_HERE.txt', 'REPORT.txt', 'files.csv',
+             'references.csv', 'issues.csv', 'DIAGNOSTICS.txt', 'batch.json', 'BATCH_SUMMARY.txt')
+    if os.path.basename(target) not in names or os.path.basename(source) != os.path.basename(target):
+        raise ValueError('Not a generated transmittal report: '+target)
+    if file_exists(target):
+        if os.name == 'nt':
+            from . import longpaths
+            longpaths.no_reparse(target);longpaths.unlink(target)
+        else: os.remove(target)
+    return copy_file(source, target)
+
+
+def directory_has_entries(path):
+    if os.name == 'nt' and path_units(path) > 240:
+        from . import longpaths
+        if not longpaths.exists(path): return False
+        return bool(list(longpaths.children(path)))
+    return os.path.exists(path) and bool(os.listdir(path))
+
+
+def ensure_directory(path):
+    if os.name == 'nt' and path_units(path) > 240:
+        from . import longpaths
+        longpaths.makedirs(path)
+    elif not os.path.isdir(path): os.makedirs(path)
 
 
 def destination(root, relative):

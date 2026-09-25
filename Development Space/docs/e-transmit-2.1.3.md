@@ -1,5 +1,7 @@
 # e-transmit 2.1.3 — saved ACC links and one delivered host
 
+Historical release notes. See [2.1.4](e-transmit-2.1.4.md) for current package organization.
+
 ## Report-driven changes
 
 The September 25 Morrison run found its architectural model under the configured

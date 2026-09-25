@@ -451,6 +451,22 @@ class SessionBackend(Backend):
                 if member:return member['source']
                 raise SourceError('CLOUD_LINK_OMITTED','The referenced RVT is absent from the selected published host download inventory. Check link permissions and published-version identity; no same-named replacement was chosen.')
         return Backend.resolve_acquired_source(self,source,owner)
+    def acquired_identity(self,source,metadata):
+        """Merge only the same proven saved edition, never equal unrelated bytes."""
+        from . import layout
+        entry=self.registry.get(source)
+        if not entry:return f.canonical(source)
+        if entry['mode']=='PUBLISHED_VERSION':
+            item=entry['item']
+            return 'published:'+f.text(entry['graph'].project)+'/'+item['itemId']+'/'+f.text(item.get('versionId',''))
+        cloud=cache_sources.reference_identity(dict(cloud_identity=entry.get('cloud') or {}))
+        if cloud and entry.get('saved_document_version'):
+            import json
+            return 'cache:'+json.dumps(cloud,sort_keys=True)+'/'+json.dumps(entry['saved_document_version'],sort_keys=True)
+        original=entry.get('original_path','')
+        if self.registry.saved_state_only and f.absolute(original) and not f.cache_source(original):
+            return f.canonical(original)
+        return source
     def acquire_file(self,source,target,owner='',cancelled=None,pulse=None):
         entry=self.registry.get(source)
         if not entry:return Backend.acquire_file(self,source,target,owner,cancelled,pulse)

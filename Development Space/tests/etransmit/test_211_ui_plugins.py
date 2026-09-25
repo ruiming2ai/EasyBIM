@@ -28,6 +28,7 @@ class UI(unittest.TestCase):
         d.Output=Obj(Text=self.root);d.categories=[];d.extras=[];d.mappings=[];d.view_types=[]
         for name in ['DeepScan','Repath','LoadUnloadedFiles','Reports','Separate','SkipCloudLinks']:setattr(d,name,Obj(IsChecked=True))
         for name in ['Cleanup','Upgrade','DiscardWorksets','Purge','Zip','ZipPerModel','SaveSettings']:setattr(d,name,Obj(IsChecked=False))
+        d.FileStructure=Obj(SelectedItem=Obj(Key='categories'))
         d.ViewMode=Obj(SelectedItem=Obj(Key='all'));d.uiapp=Obj(Application=Obj(VersionNumber='2024'));d.Close=lambda:None
         return d
     def test_accept_before_batch_grants_current_state_authorization(self):

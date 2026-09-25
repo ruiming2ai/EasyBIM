@@ -1,49 +1,50 @@
-EasyBIM e-transmit 2.1.3 verification
+EasyBIM e-transmit 2.1.4 verification
 Date: 2026-09-25
 
 Executed checks (filesystem and API-shaped tests, not Autodesk Revit):
 
 1. Linux / CPython 3.10.6
-   python3 -m unittest discover -s "Development Space/tests/etransmit"
-   Ran 318 tests. OK, 2 platform skips. No failures or errors.
+   python3 -B -m unittest discover -s "Development Space/tests/etransmit"
+   Ran 352 tests. OK, 4 platform skips. No failures or errors.
 
 2. Windows / bundled CPython 3.12.14
    python.exe -B -m unittest discover -s "Development Space/tests/etransmit"
-   Ran 318 tests. OK, 2 skips. No failures or errors.
+   Ran 352 tests. OK, 2 skips. No failures or errors.
    Executed against a copied source/test snapshot on the Windows filesystem.
-   The existing symlink test skips only WinError 1314 when the account lacks
-   symlink creation privileges; it still runs on Linux and capable Windows accounts.
+   The skips cover the portable symlink fixture and Windows symlink privilege.
+   Long-path package, report, batch index, ZIP and cleanup tests ran on Windows.
 
 3. Windows / official IronPython 2.7.12, net45 runtime
-   Same selection as the repository CI: test_21*.py plus runtime_copy,
+   Same selection as repository CI: test_21*.py plus runtime_copy,
    runtime_progress, source_automation, payload_acquisition, runtime_longpaths,
    runtime_reference_repairs and 209_regressions.
-   Ran 212 tests. OK, 1 platform skip. No failures or errors.
-   All new test_213*.py cases are included automatically by the CI pattern.
+   Ran 246 tests. OK, 1 platform skip. No failures or errors.
+   All new test_214*.py cases are included automatically by the CI pattern.
 
 4. Native helper, Windows .NET SDK 10.0.401
    dotnet build "Development Space/native/EasyBIM.FileIO/EasyBIM.FileIO.csproj"
      -c Release -o ETNative
    Build succeeded, zero warnings and errors. Built and shipped DLLs are identical.
    SHA-256: bf358101dbd99ff9c2a42bdcef108b320ad9b0fbb4460d86394b730bfeee9968
-   Native helper source and shipped binary were not changed for 2.1.3.
+   Native helper source and shipped binary were not changed for 2.1.4.
 
-5. git diff --check restricted to the e-transmit implementation, tests,
-   documentation, button bundle and README: passed.
+5. git diff --check: passed.
 
-34 added regression cases cover the Morrison equal-save-count/different-GUID
-cache, Anthropology unloaded identity-only link, exact revision preference,
-ambiguous/missing caches, invalid/newer metadata, identity matching, nested links,
-saved-versus-loaded dependency inventories, checkbox persistence and load states,
-cloud-to-local API conversion, empty keynote classification, detached cache
-normalization, cancellation/failure rollback, retained recovery originals after
-rollback failures, and packages/ZIPs without _HostState. Existing integrity and
-source-document guard tests also pass.
+34 added regression cases cover the three layouts and category names, default and
+saved/invalid preferences, stable case-insensitive collisions without renaming,
+repeated and identity-verified source aliases, rejection of conflicting identity
+bytes, nested links/cycles and moved-package relative paths, RCP Support folders,
+overlapping explicit directories, analysis folders, no duplicate source trees in
+ZIPs, temporary versus final verification, cancellation during layout/processing/
+delivery, partial delivery and retained recovery, independent host packages,
+long-path reports/ZIPs and cleanup, and omission of generated per-model ZIPs from
+the whole-batch ZIP. Earlier source/cache integrity and rollback regressions pass.
 
-Not executed: real Revit 2024 exports of Morrison/Anthropology, WPF rendering,
-Desktop Connector hydration, actual RVT detach/open/repath, moved-package opening,
+Model surrogates and API-shaped fixtures cannot prove actual RVT portability.
+Not executed: Revit 2024 exports of Morrison/Anthropology in all layouts, WPF
+rendering, Desktop Connector hydration, actual RVT detach/open/repath, relocation,
 linked tags/dimensions and model placement. No Revit installation or company ACC
-cache is present on this development machine. These results are not a portability
-certification; complete e-transmit-desktop-checklist.md on the Revit workstation.
+cache is present on this development machine. Complete
+ e-transmit-desktop-checklist.md on the Revit workstation.
 
 Review: local code review and regression tests. No independent agent review.

@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.3
+# EasyBIM e-transmit 2.1.4
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,7 +9,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.3.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.4.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
@@ -26,21 +26,22 @@ checked between operations and during chunked copies. An individual Revit open,
 save, or provider hydration call cannot be interrupted by the Python progress UI.
 Revit remains occupied while the command executes; this is not a separate worker.
 
-## Folder and filename preservation
+## File Structure Organization
 
-Files keep their original basenames and relative directory hierarchy. Different
-source roots are represented explicitly rather than merged by filename:
+Each host gets an independent model-named folder with its original-named RVT,
+reports, and one `Links` folder. Choose **By category** (default), **Retain original
+folder structure**, or **All files together**. Save Settings remembers the choice.
 
 ```
 ET_<time>/
   Host/
     Host.rvt
-    Sources/
-      Open_Models/<identity>/Architecture.rvt
-      Drive_D/Project/Architecture/References/Details.pdf
-      Drive_D/Project/Electrical/References/Details.pdf
-      Network/server/share/Project/References/Site.dwg
-      ACC/Account/Project/Project Files/Consumed/Architecture/Model.rvt
+    Links/
+      Revit/Architecture.rvt
+      CAD/Site.dwg
+      IFC/Coordination.ifc
+      PDF/Architecture-<identity>/Details.pdf
+      PDF/Electrical-<identity>/Details.pdf
     START_HERE.txt
     manifest.json
     REPORT.txt
@@ -49,14 +50,21 @@ ET_<time>/
     issues.csv
 ```
 
-The standard `...\DC\ACCDocs\...` prefix is represented as `Sources/ACC/...`.
-Custom/legacy Desktop Connector roots are preserved under their normal drive
-hierarchy. A conflicting destination is an error, not permission to rename or
-overwrite a file. Long output paths are reported; names are not truncated.
+Same-name sources receive distinct parent subfolders without changing filenames.
+Repeated references to the same verified source share one target in that package.
+Point-cloud Support folders, added dependency folders and analysis report trees
+retain their internal paths even in flat mode. Decal images use the Images category.
+
+Original mode represents drives/network shares/ACC roots beneath `Links` using the
+existing source hierarchy. Files are prepared in local temporary storage before
+checksum-verified delivery. There are no generated duplicate source mirrors or
+short-path alias folders. Revit still has path restrictions: the exporter keeps
+copied files and reports failed/deferred verification if the final path cannot be
+opened. Move the complete package to a shorter path and repeat the opening check.
 
 ## Included files and coverage
 
-All twelve file-category checkboxes start checked on every launch. Categories
+All file-category checkboxes start checked on every launch. Categories
 control collection, not guaranteed discovery or format-specific repathing.
 
 | Source | Current behavior |

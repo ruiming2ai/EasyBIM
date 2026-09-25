@@ -45,10 +45,7 @@ class PathRegression(unittest.TestCase):
         source = (r'C:\Users\tester\DC\ACCDocs\Consulting Engineers Corporation\University Project\Project Files'
                   r'\Mechanical Electrical Plumbing\Shared\Architecture\Long Building Name Architectural Model.rvt')
         errors = preflight([source], root, f.defaults())
-        self.assertTrue(errors)
-        self.assertEqual(errors[0]['code'], 'DESTINATION_PATH_TOO_LONG')
-        self.assertIn('characters', errors[0]['message'])
-        self.assertIn('Long Building Name Architectural Model.rvt', errors[0]['target'])
+        self.assertEqual(errors, [], 'Long delivery paths are checked after temporary preparation')
         self.assertEqual(preflight([source], r'C:\ET\ET_20260923_163032', f.defaults()), [])
 
     def test_preflight_keeps_consumed_and_filename_exact(self):
@@ -145,8 +142,9 @@ class PathRegression(unittest.TestCase):
         with patch.object(f, 'destination', side_effect=f.PathLengthError('Destination length exceeds budget')):
             r = e.transmit([str(source)], str(out), Backend())
         self.assertEqual(r['status'], 'FAILED')
-        self.assertEqual(r['files'][0]['status'], 'FAILED')
-        self.assertEqual(r['issues'][0]['code'], 'DESTINATION_PATH_TOO_LONG')
+        self.assertEqual(r['files'][0]['status'], 'DELIVERY_FAILED')
+        self.assertTrue(any(i['code']=='PACKAGE_DELIVERY_FAILED' for i in r['issues']))
+        self.addCleanup(f.remove_tree_retry, r['recovery_directory'])
         self.assertEqual(e.package_counts(r)['hosts_copied'], 0)
         self.assertFalse((out / 'Sources').exists())
 
@@ -182,6 +180,7 @@ class PathRegression(unittest.TestCase):
         dialog.Output = types.SimpleNamespace(Text=str(self.base))
         dialog.DeepScan = flag(True); dialog.Repath = flag(True); dialog.SkipCloudLinks = flag(True)
         dialog.LoadUnloadedFiles = flag(True)
+        dialog.FileStructure = types.SimpleNamespace(SelectedItem=types.SimpleNamespace(Key='categories'))
         dialog.Cleanup = flag(False); dialog.Upgrade = flag(False)
         dialog.DiscardWorksets = flag(False); dialog.Purge = flag(False)
         dialog.Separate = flag(True); dialog.Reports = flag(True); dialog.Zip = flag(False); dialog.ZipPerModel = flag(False)
