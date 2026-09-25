@@ -1,0 +1,78 @@
+name: Deliver verified e-transmit 2.1.2 sources
+on:
+  push:
+    branches: [feat/etransmit-verified-cache-212]
+    paths:
+      - '.github/et212-delivery/**'
+      - '.github/workflows/etransmit-deliver-212.yml'
+permissions:
+  contents: write
+jobs:
+  deliver:
+    if: github.repository == 'ruiming2ai/EasyBIM' && github.ref == 'refs/heads/feat/etransmit-verified-cache-212'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feat/etransmit-verified-cache-212
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify pinned source payload and apply exact owned-file patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          delivery = root / '.github/et212-delivery'
+          raw = lzma.decompress(base64.b64decode(''.join((delivery / ('part%d.b64' % i)).read_text().strip() for i in range(1, 6)), validate=True))
+          assert hashlib.sha256(raw).hexdigest() == '53600545b8445517e629818fd9aa07f95226f333eaec2d28ae1f25436701d7cd', 'Source delivery checksum mismatch'
+          payload = json.loads(raw)
+          assert payload['base'] == '20b9da5dfbf33e530719d90428d27d57c509d223'
+          subprocess.check_call(['git', 'merge-base', '--is-ancestor', payload['base'], 'HEAD'])
+          allowed = ('lib/easybim_etransmit/', 'EasyBIM.tab/Links.panel/e-transmit.pushbutton/', 'Development Space/tests/etransmit/', 'Development Space/docs/e-transmit-2.1.2')
+          paths = []
+          for entry in payload['entries']:
+              path = entry['path']
+              assert not pathlib.PurePosixPath(path).is_absolute() and '..' not in pathlib.PurePosixPath(path).parts
+              assert path.startswith(allowed) or path == '.github/workflows/etransmit-tests.yml', path
+              assert path not in paths, path
+              paths.append(path)
+              full = root / path
+              if entry['before'] is None:
+                  assert not full.exists(), 'Unexpected new-file collision: ' + path
+              else:
+                  assert hashlib.sha256(full.read_bytes()).hexdigest() == entry['before'], 'Base-file drift: ' + path
+          patch = pathlib.Path(os.environ['RUNNER_TEMP']) / 'etransmit-212.patch'
+          patch.write_text(payload['patch'], encoding='utf-8')
+          subprocess.check_call(['git', 'apply', '--check', str(patch)])
+          subprocess.check_call(['git', 'apply', str(patch)])
+          for entry in payload['entries']:
+              assert hashlib.sha256((root / entry['path']).read_bytes()).hexdigest() == entry['sha256'], 'Applied file mismatch: ' + entry['path']
+          (pathlib.Path(os.environ['RUNNER_TEMP']) / 'etransmit-212-manifest.json').write_text(json.dumps(payload['entries']), encoding='utf-8')
+          print('Verified and applied %d owned source/test files.' % len(paths))
+          PY
+      - name: Run full portable regression suite
+        run: python -m unittest discover -s "Development Space/tests/etransmit" -v
+      - name: Remove temporary delivery files and publish feature commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, shutil, subprocess
+          root = pathlib.Path.cwd()
+          entries = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'etransmit-212-manifest.json').read_text())
+          paths = [e['path'] for e in entries]
+          shutil.rmtree(root / '.github/et212-delivery')
+          (root / '.github/workflows/etransmit-deliver-212.yml').unlink()
+          subprocess.check_call(['git', 'add', '--'] + paths + ['.github/et212-delivery', '.github/workflows/etransmit-deliver-212.yml'])
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '-z', '20b9da5dfbf33e530719d90428d27d57c509d223']).decode('utf-8').split('\0')
+          assert set(filter(None, changed)) == set(paths), 'Unrelated staged changes detected'
+          subprocess.check_call(['git', 'config', 'user.name', 'github-actions[bot]'])
+          subprocess.check_call(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'])
+          subprocess.check_call(['git', 'commit', '-m', 'feat(etransmit): verified read-only cache copies and model-named jobs in 2.1.2'])
+          subprocess.check_call(['git', 'push', 'origin', 'HEAD:refs/heads/feat/etransmit-verified-cache-212'])
+          PY
