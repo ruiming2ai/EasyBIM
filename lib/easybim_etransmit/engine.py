@@ -523,7 +523,12 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                                   'Optional post-copy discovery failed ('+type(exc).__name__+'). Copied host retained.')
                 ext = os.path.splitext(source)[1].lower()
                 if ext == '.rvt':
-                    if before is None:
+                    if edge is not None and edge.get('kind') == 'RevitLink' and not host:
+                        # The requested dependency is the saved linked RVT itself.
+                        # Copy it once; do not reopen it to discover nested content.
+                        record['inventory_status']='NOT_INSPECTED_LINK_FILE'
+                        record['inspection_status']='DIRECT_COPY_ONLY'
+                    elif before is None:
                         operation = 'stage_model'
                         stage = f.temporary_path(work)
                         f.copy_file(target, stage, cancelled)
@@ -532,7 +537,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                         operation = 'inspect_model'
                         scan = backend.scan(source, stage, opts)
                         add_inventory(source,record,scan)
-                    if f.source_snapshot_changed(source, record):
+                    if (record.get('inventory_status') != 'NOT_INSPECTED_LINK_FILE' and
+                            f.source_snapshot_changed(source, record)):
                         record['inventory_status']='UNSTABLE'
                         raise IOError('Model changed during inspection; dependency inventory is not a stable snapshot.')
                 elif ext == '.rcp':
