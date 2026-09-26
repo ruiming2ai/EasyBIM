@@ -146,6 +146,7 @@ class Registry(object):
                         # document identity that would trigger snapshot/revision logic.
                         row['source']=saved_source
                         row['source_evidence']='LIVE_LINK_SAVED_FILE_PATH'
+                        row['loaded_document_key']=childkey
                     else:
                         # Cloud/server-managed links still use their proven document
                         # identity so cache acquisition can locate the correct model.
