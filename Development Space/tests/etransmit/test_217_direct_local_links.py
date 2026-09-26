@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 import copy, os, unittest
 
 import test_212_session as fixtures
-from test_212_cache import Obj, V, W
+from test_212_cache import Obj, P, V, W
 from test_payload_acquisition import compound
 from easybim_etransmit import cache_sources as c, session as s, files as f, engine
 
@@ -87,6 +87,26 @@ class DirectLocalRevitLinks(fixtures.SavedCacheSession):
         self.assertEqual(len(links),1)
         self.assertEqual(links[0]['source'],link)
         self.assertEqual(inventory['inspection_status'],'SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT')
+
+    def test_local_host_saved_cloud_link_still_binds_cache_identity(self):
+        host,link=self.local_files()
+        self.r.scanner.scan_open=lambda *args:None
+        self.r.scanner.elements=lambda *args:[]
+        key=self.r.add_live(self.doc)
+        backend=s.SessionBackend(self.db,self.app,self.root,self.r)
+        backend.rows=lambda path,owner='':[
+            dict(id='99:0',element_id='99',kind='RevitLink',
+                 source='',link_name='Cloud Architecture.rvt',
+                 resource_information=dict(
+                     LinkedModelProjectId=P,
+                     LinkedModelModelId=W,
+                     LinkedModelRegion='US'),
+                 loaded=False,td=False)]
+        inventory=backend.inventory_before_copy(key,f.defaults())
+        row=next(r for r in inventory['references'] if r.get('kind')=='RevitLink')
+        self.assertTrue(row['source'].startswith('cache://'))
+        self.assertTrue(self.r.owns(row['source']))
+        self.assertEqual(self.r.get(row['source'])['mode'],'CACHED_CLOUD_REFERENCE')
 
     def test_local_saved_file_revision_difference_does_not_block_copy(self):
         host,link=self.local_files()
