@@ -67,6 +67,27 @@ class DirectLocalRevitLinks(fixtures.SavedCacheSession):
         copied=next(row for row in result['files'] if row.get('source')==link)
         self.assertEqual(f.digest(copied['target']),f.digest(link))
 
+    def test_local_host_prefers_saved_revit_link_metadata_over_live_unsaved_link_row(self):
+        host,link=self.local_files()
+        unsaved=os.path.join(self.root,'UnsavedOnly.rvt')
+        with open(unsaved,'wb') as out:out.write(compound(suffix='unsaved'))
+        def scan_open(doc,source,info,result):
+            result['references'].append(dict(
+                id='42',element_id='42',kind='RevitLink',
+                source=unsaved,loaded=True,td=True))
+        self.r.scanner.scan_open=scan_open
+        self.r.scanner.elements=lambda *args:[]
+        key=self.r.add_live(self.doc)
+        backend=s.SessionBackend(self.db,self.app,self.root,self.r)
+        backend.rows=lambda path,owner='':[
+            dict(id='42',element_id='42',kind='RevitLink',
+                 source=link,loaded=True,td=True)]
+        inventory=backend.inventory_before_copy(key,f.defaults())
+        links=[r for r in inventory['references'] if r.get('kind')=='RevitLink']
+        self.assertEqual(len(links),1)
+        self.assertEqual(links[0]['source'],link)
+        self.assertEqual(inventory['inspection_status'],'SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT')
+
     def test_local_saved_file_revision_difference_does_not_block_copy(self):
         host,link=self.local_files()
         key=self.r.add_live(self.doc)
