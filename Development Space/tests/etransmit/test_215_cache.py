@@ -108,7 +108,7 @@ class CachePackageTests(unittest.TestCase):
             self.assertIn('Role: DIRECT',text)
             self.assertIn('CACHE_VERSION_MISMATCH',text)
 
-    def test_paired_snapshot_host_alias_and_nested_links_in_all_layouts(self):
+    def test_paired_snapshot_host_repeated_link_is_copied_once_without_nested_scan(self):
         case=PairedCacheTests('test_linked_only_is_usable');case.setUp()
         try:
             case.pair();store=case.store(modified=True)
@@ -128,9 +128,12 @@ class CachePackageTests(unittest.TestCase):
                 result,_=self.run_export(backend=back,mode=mode,out=self.out+mode)
                 self.assertEqual(result['status'],'COLLECTED',repr(result['issues']))
                 self.assertEqual(len(result['files']),2)
+                self.assertEqual(len(result['references']),2)
                 self.assertTrue(os.path.isdir(os.path.join(self.out+mode,'Links')))
                 self.assertEqual(result['references'][0]['target'],result['references'][1]['target'])
-                self.assertEqual(result['references'][2]['target'],result['files'][0]['target'])
+                self.assertFalse(any(r.get('source')==alias for r in result['files']))
+                child_record=next(r for r in result['files'] if r.get('source')==child)
+                self.assertEqual(child_record['inventory_status'],'NOT_INSPECTED_LINK_FILE')
                 for record in result['files']:
                     self.assertEqual(f.digest(record['target']),record['packaged_sha256'])
         finally:case.doCleanups()

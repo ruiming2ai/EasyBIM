@@ -1,44 +1,45 @@
-EasyBIM e-transmit 2.1.6 verification
+EasyBIM e-transmit 2.1.7 verification
 Date: 2026-09-25
 
-Executed checks (filesystem and API-shaped tests, not Autodesk Revit):
+Executed checks (GitHub Actions filesystem/API-shaped tests, not Autodesk Revit):
 
-1. Linux / CPython 3.10.6
-   python3 -B -m unittest discover -s "Development Space/tests/etransmit"
-   Ran 369 tests. OK, 4 platform skips. No failures or errors.
+1. Linux / CPython 3.11
+   python -m unittest discover -s "Development Space/tests/etransmit" -v
+   Ran 374 tests. OK, 4 platform skips. No failures or errors.
 
-2. Windows / bundled CPython 3.12.14
-   python.exe -B -m unittest discover -s "Development Space/tests/etransmit"
-   Ran 369 tests. OK, 2 skips. No failures or errors.
-   Executed against a source/test snapshot on the Windows filesystem.
-   Long-path package, report, batch index, ZIP and cleanup tests ran on Windows.
+2. Windows / CPython 3.11
+   python -m unittest discover -s "Development Space/tests/etransmit" -v
+   Ran 374 tests. OK, 1 platform skip. No failures or errors.
 
 3. Windows / official IronPython 2.7.12, net45 runtime
-   Same selection as repository CI: test_21*.py plus runtime_copy,
-   runtime_progress, source_automation, payload_acquisition, runtime_longpaths,
-   runtime_reference_repairs and 209_regressions.
-   Ran 263 tests. OK, 1 platform skip. No failures or errors.
+   Repository CI selection: runtime_copy, runtime_progress, source_automation,
+   payload_acquisition, runtime_longpaths, runtime_reference_repairs,
+   209_regressions, and all test_21*.py files.
+   267 tests ran across the selected per-file invocations. No FAILED result.
+   The shipped EasyBIM.FileIO helper was rebuilt first and matched the bundled DLL.
 
-4. git diff --check: passed.
-   Native helper source and shipped DLL are unchanged; no new native build.
+4. TDD evidence
+   The initial 2.1.6 regression run failed on all three intended local-link
+   behaviors: local paths were converted to open:// identities, local hosts were
+   sent through temporary inspection, and local saved-file revision mismatch
+   blocked acquisition. Those regressions pass after the production changes.
+   Additional regressions were run red then green for saved TransmissionData
+   overriding an unsaved live Revit-link row and for preserving ACC cache identity
+   when an ACC link is referenced by a local host.
 
-Four added cases reproduce Greek Theater's exact loaded/saved revision GUIDs
-and save count 87 on an unmodified host, exact-match precedence, genuinely
-ambiguous saved editions, and the real Registry -> SessionBackend -> engine
-path collecting an unloaded ACC link into Links/Revit. The latter verifies
-saved-snapshot dependency inspection instead of the different live inventory,
-visible revision warnings, unchanged working document/cache bytes, and no false
-claim of Revit link verification. Updated the earlier unmodified-host rejection
-test to require explicit saved-edition reporting, including different save counts.
+Behavior covered:
+- local loaded Revit links retain/copy their saved filesystem source;
+- saved host Revit-link metadata is preferred over unsaved live Revit-link rows;
+- local saved RVTs are not rejected for loaded-vs-saved DocumentVersion mismatch;
+- collected linked RVTs are not reopened for nested dependency discovery;
+- ACC/cloud link identities from local hosts remain bindable to cache acquisition;
+- existing package layout, copy integrity, repath-shaped, rollback, cache,
+  long-path and reporting regressions remain in the full portable suites.
 
-All previous paired-cache, layout, stability/cancellation, source-integrity,
-load-state, rollback, delivery, ZIP and no-duplicate regressions remain included.
+Not executed: actual Revit 2024/2025 desktop exports, real local/network RVT
+repathing and reopening, ACC cache hydration on the user's workstation, linked
+tags/dimensions, placement, PDF/image resolution, or relocation acceptance.
+Passing portable/API-shaped tests does not prove real RVT portability. Complete
+e-transmit-desktop-checklist.md on the Revit workstation.
 
-Not executed: Revit 2024 exports of Greek Theater, Morrison and Anthropology,
-actual RVT detach/open/repath, relocation, linked tags/dimensions, placement,
-PDF/image resolution, WPF rendering and Desktop Connector hydration. No Revit
-installation or company ACC caches are available on this development machine.
-Complete e-transmit-desktop-checklist.md on the Revit workstation. Fixture results
-and successful filesystem copying do not prove actual RVT portability.
-
-Review: local code review and regression tests. No independent agent review.
+Git diff --check was not executed in this connector-only workflow.

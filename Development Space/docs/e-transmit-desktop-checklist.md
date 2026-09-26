@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.6.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.7.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -101,3 +101,22 @@ an unperformed check into a pass.
   counts; dependencies must come from the saved snapshot, not live inventory.
 - Repeat Morrison and Anthropology, including relocation, and inspect real
   link paths, requested load states, placement, PDFs/images and annotations.
+
+
+2.1.7 direct Revit-link collection checks:
+
+- Open a local host with one or more local/network Revit links. Confirm each saved
+  RVT is copied directly into Links/Revit without an intermediate linked-model
+  inspection step.
+- Confirm a loaded local link keeps its saved filesystem source rather than an
+  open:// temporary document identity. A differing saved-file DocumentVersion
+  must not block collection.
+- Make an unsaved Revit-link add/remove/path change in the open host. Confirm
+  saved TransmissionData remains authoritative for Revit-link collection.
+- Put another Revit link inside a collected linked RVT. Confirm it is not
+  recursively collected; only links directly discovered from the selected host
+  are in scope.
+- Repeat with an ACC link. Confirm its identified local cache edition can still be
+  acquired and copied, while the linked RVT itself is not recursively inspected.
+- With Repath enabled, verify the packaged host points to the collected link files.
+  Repath/verification failure must not delete a successfully copied dependency.

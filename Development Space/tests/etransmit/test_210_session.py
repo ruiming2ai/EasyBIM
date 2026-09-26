@@ -41,8 +41,10 @@ class SessionTests(unittest.TestCase):
         r.scanner.scan_open=scan;r.scanner.elements=lambda d,n:[instance,instance] if d is host and n=='RevitLinkInstance' else []
         key=r.add_live(host)
         self.assertEqual(len(count),2)
-        childkey=r.get(key)['inventory']['references'][0]['source']
-        self.assertIs(r.get(childkey)['document'],link)
+        row=r.get(key)['inventory']['references'][0]
+        self.assertEqual(row['source'],'/Arch.rvt')
+        self.assertEqual(row['source_evidence'],'LIVE_LINK_SAVED_FILE_PATH')
+        self.assertIs(r.get(row['loaded_document_key'])['document'],link)
     def test_refused_snapshot_still_collects_live_materials(self):
         m=mod(self);r=self.registry();doc=self.doc(modified=True)
         pdf=os.path.join(self.root,'Drawing.pdf')

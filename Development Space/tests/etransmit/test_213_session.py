@@ -47,20 +47,23 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.assertEqual(engine.package_counts(result)['revit_links_copied'],1,repr(result['issues']))
         link=result['files'][1]
         self.assertEqual(link['source_context']['mode'],'CACHED_CLOUD_REFERENCE')
-        self.assertEqual(link['source_context']['inventory_basis'],'SAVED_SNAPSHOT_INSPECTION')
+        self.assertEqual(link['source_context']['inventory_basis'],'DIRECT_LINK_COPY')
         self.assertEqual(f.digest(link['target']),digest)
         self.assertEqual((f.digest(original),os.stat(original).st_mtime),(digest,stamp))
         self.assertEqual(self.doc.PathName,'Autodesk Docs://Project/Host.rvt')
         self.assertTrue(self.doc.IsModified)
-        self.assertTrue(any(i['code']=='SAVED_CACHE_NO_LOADED_REVISION' for i in result['issues']))
+        self.assertFalse(any(i.get('severity')=='error' for i in result['issues']))
 
-    def test_nested_cloud_references_and_cycles_have_one_copy_per_identity(self):
+    def test_collected_cloud_link_is_not_reopened_for_nested_dependencies(self):
         self.put_link();self.put_link(N,'Structure.rvt')
         result=self.run_export({'Host.rvt':[cloud_row()],
             'Architecture.rvt':[cloud_row(N,'Structure.rvt','2')],
             'Structure.rvt':[cloud_row(W,'Architecture.rvt','3')]})
-        self.assertEqual(len(result['files']),3,repr(result['issues']))
-        self.assertEqual(engine.package_counts(result)['revit_links_copied'],3)
+        self.assertEqual(len(result['files']),2,repr(result['issues']))
+        self.assertEqual(engine.package_counts(result)['revit_links_copied'],1)
+        link=result['files'][1]
+        self.assertEqual(link['inventory_status'],'NOT_INSPECTED_LINK_FILE')
+        self.assertEqual(link['inspection_status'],'DIRECT_COPY_ONLY')
 
     def test_missing_cache_is_reported_with_element_and_identity(self):
         result=self.run_export({'Host.rvt':[cloud_row()]},repath=True)

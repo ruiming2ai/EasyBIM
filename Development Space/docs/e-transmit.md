@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.6
+# EasyBIM e-transmit 2.1.7
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,7 +9,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.6.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.7.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
@@ -25,6 +25,26 @@ Source files may trigger normal Desktop Connector download-on-read. Cancel is
 checked between operations and during chunked copies. An individual Revit open,
 save, or provider hydration call cannot be interrupted by the Python progress UI.
 Revit remains occupied while the command executes; this is not a separate worker.
+
+## Revit link collection in 2.1.7
+
+For an open local host, e-transmit reads Revit-link paths from the saved host
+metadata (TransmissionData) when available and copies those identified saved RVT
+files directly. This means unsaved link additions/removals are not the dependency
+source of truth. The already-open document remains useful for non-RVT resources.
+If saved Revit-link metadata cannot be read, the tool reports that condition and
+falls back to the already exposed live reference list without opening a temporary
+host merely to discover link paths.
+
+Local linked RVTs are not reopened merely to compare document revisions or
+discover nested dependencies. A loaded local link keeps its saved filesystem
+path instead of being converted into an internal temporary-document identity.
+
+ACC/cloud links still use identified cache acquisition where required. Collection
+of a linked RVT stops at that file; nested dependencies inside linked RVTs are
+not recursively collected. Repath and final model verification remain separate
+package operations and may report issues without undoing successfully collected
+link files.
 
 ## File Structure Organization
 
