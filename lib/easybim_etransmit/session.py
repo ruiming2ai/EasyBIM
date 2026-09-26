@@ -438,12 +438,27 @@ class SessionBackend(Backend):
     def inventory_before_copy(self,source,options):
         entry=self.registry.get(source)
         if entry and entry['mode']=='LIVE_DOCUMENT' and not entry.get('cloud'):
-            # Local open hosts already expose their link paths. Use that inventory
-            # directly so collection does not reopen a temporary RVT merely to find
-            # files whose locations Revit has already given us.
+            # Local open hosts already expose non-RVT resources. For Revit links,
+            # prefer the saved host's TransmissionData so unsaved link changes do
+            # not change the collected dependency set. This is metadata-only and
+            # does not open a temporary Revit document.
             result=copy.deepcopy(entry['inventory'])
-            result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
             result['source_mode']='LIVE_DOCUMENT'
+            physical=f.text(entry.get('original_path') or '')
+            try:
+                if f.absolute(physical) and not f.cache_source(physical) and not f.is_desktop_connector_path(physical):
+                    saved=self.rows(physical,entry.get('plugin_base') or physical)
+                    saved_revit=[row for row in saved if row.get('kind')=='RevitLink']
+                    live_non_revit=[row for row in result.get('references',[]) if row.get('kind')!='RevitLink']
+                    result['references']=saved_revit+live_non_revit
+                    result['inspection_status']='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
+                    entry['inventory_basis']='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
+                    return result
+            except Exception as exc:
+                result.setdefault('issues',[]).append(issue(
+                    'SAVED_REFERENCE_SCAN_FAILED',physical,
+                    'Saved Revit-link metadata could not be read; using the already exposed live reference list: '+f.text(exc)))
+            result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
             entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
             return result
         if self.registry.saved_state_only:
