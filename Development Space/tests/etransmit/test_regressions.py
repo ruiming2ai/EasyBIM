@@ -110,8 +110,8 @@ class PipelineRegression(unittest.TestCase):
         self.backend.scan=fail
         result=e.transmit([self.model],self.out,self.backend)
         self.assertEqual(result['files'][0]['inventory_status'],'FAILED')
-    def test_final_hash_error_still_writes_report(self):
-        digest=f.digest
+    def test_final_integrity_error_still_writes_report(self):
+        digest=f.verified_hash
         intercepted=[]
         def unavailable(path,*args):
             normalized=str(path).replace('\\','/')
@@ -119,7 +119,7 @@ class PipelineRegression(unittest.TestCase):
                 intercepted.append(path)
                 raise IOError('verification read denied')
             return digest(path,*args)
-        with patch.object(f,'digest',unavailable): result=e.transmit([self.model],self.out,self.backend)
+        with patch.object(f,'verified_hash',unavailable): result=e.transmit([self.model],self.out,self.backend)
         self.assertTrue(intercepted, 'The verification failure must be exercised on every platform')
         self.assertEqual(result['status'],'NEEDS_REVIEW')
         self.assertTrue(any(i['code']=='FINAL_VERIFICATION_FAILED' for i in result['issues']))

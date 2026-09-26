@@ -7,7 +7,7 @@ import shutil
 from . import files as f
 from .pathnames import relative as relative_path
 from .engine import issue
-from . import model_payload, cache_sources
+from . import model_payload, cache_sources, performance
 
 
 def eid(value):
@@ -51,6 +51,20 @@ class Backend(object):
     def set_staging_root(self, path):
         self.staging_root = path
         self.payloads = model_payload.Store(os.path.join(path, 'acquired'))
+
+    def defer_file_copy(self, source, owner=''):
+        return (not f.is_desktop_connector_path(source) and not f.cache_source(source)
+                and f.file_exists(source) and not (self.payloads and
+                self.payloads.contexts.get(f.canonical(owner))))
+
+    def can_deliver_direct(self, record, rows, options):
+        # Metadata-only hosts do not need physical siblings at their working path.
+        if options.get('cleanup') or options.get('upgrade'): return False
+        if record.get('copy_method') == 'COLLABORATION_CACHE_READ_ONLY': return False
+        if not options.get('repath'): return True
+        return not any(r.get('special') == 'image' or
+                       (r.get('kind') == 'RevitLink' and
+                        (not r.get('td') or cache_sources.reference_identity(r))) for r in rows)
 
     def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
         self.guard(target)
@@ -126,6 +140,7 @@ class Backend(object):
             row['cloud_identity'] = identity
         return row
 
+    @performance.timed('discovery', 'saved_reference_read', file_index=1)
     def rows(self, path, owner=''):
         td=self.DB.TransmissionData.ReadTransmissionData(self.mp(path))
         rows=[]
@@ -146,6 +161,7 @@ class Backend(object):
         try: return list(collector)
         finally: dispose(collector)
 
+    @performance.timed(None, 'revit_open', file_index=1)
     def open_copy(self, path, discard=False):
         self.guard(path)
         info=self.basic(path)
@@ -178,6 +194,7 @@ class Backend(object):
             self.DB.TransmissionData.WriteTransmissionData(self.mp(stage),td)
         finally: dispose(td)
 
+    @performance.timed('discovery', 'model_inspection', file_index=1)
     def scan(self, source, stage, options):
         self.guard(stage)
         info=self.basic(stage)
@@ -210,7 +227,7 @@ class Backend(object):
                                          'Saved metadata was retained, but deeper dependency inspection failed: '+f.text(exc),'error'))
         finally:
             if doc is not None:
-                if not doc.Close(False): raise RuntimeError('Temporary inspection document could not be closed.')
+                if not performance.call('discovery','revit_close',stage,doc.Close,False): raise RuntimeError('Temporary inspection document could not be closed.')
         return result
 
     def scan_plugins(self, doc, base, result):
@@ -258,6 +275,7 @@ class Backend(object):
                 if resolved: return resolved
         return f.text(display or '')
 
+    @performance.timed('discovery', 'live_reference_read', file_index=1)
     def scan_open(self, doc, source, info, result):
         refs, issues=result['references'],result['issues']
         by_id=dict((r['id'],r) for r in refs)
@@ -471,17 +489,22 @@ class Backend(object):
             return True
         finally: dispose(td)
 
+    @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
         self.guard(stage); self.guard(target)
         issues=[]
         info=self.basic(stage)
         for row in rows:
             if row.get('target'): self.guard(row['target'])
-        transmitted=self.apply_metadata(stage,target,rows) if options.get('repath') else False
+        reference_target=options.get('reference_target') or target
+        self.guard(reference_target)
+        transmitted=self.apply_metadata(stage,reference_target,rows) if options.get('repath') else False
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
         external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
                   and (not r.get('td') or cache_sources.reference_identity(r))]
         needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external))
+        if needs_document and reference_target != target:
+            raise ValueError('Direct layout is only valid for metadata-only host processing.')
         if needs_document and info['version']!=f.text(self.app.VersionNumber) and not options.get('upgrade'):
             issues.append(issue('UPGRADE_CONSENT_REQUIRED',target,
                                 'Saved format '+info['version']+' retained. Additional API repathing needs a save in Revit '
@@ -529,7 +552,7 @@ class Backend(object):
                     if doc.IsWorkshared:
                         ws=self.DB.WorksharingSaveAsOptions(); ws.SaveAsCentral=True
                         save.SetWorksharingOptions(ws)
-                    doc.SaveAs(target,save)
+                    performance.call('repath','revit_save_as',target,doc.SaveAs,target,save)
                 finally: dispose(ws); dispose(save)
                 if options.get('repath') and special:
                     # SaveAs has established the correct final base. Revit may
@@ -559,10 +582,10 @@ class Backend(object):
                             issues.append(issue('IMAGE_REPATH_FAILED',row.get('source',''),exc,'error'))
                         finally:
                             dispose(tx); dispose(opts)
-                    doc.Save()
+                    performance.call('repath','revit_save',target,doc.Save)
             finally:
                 if doc is not None:
-                    if not doc.Close(False): raise RuntimeError('Temporary output model could not be closed.')
+                    if not performance.call('repath','revit_close',target,doc.Close,False): raise RuntimeError('Temporary output model could not be closed.')
             if options.get('repath'): self.apply_metadata(target,target,rows)
         if options.get('repath'):
             for row in rows:
@@ -578,6 +601,7 @@ class Backend(object):
                                         'Repair in the packaged model and verify after moving the package.'))
         return issues
 
+    @performance.timed('verification', 'host_verify', file_index=1)
     def verify_package(self, target, rows, options):
         """Open the output read-only in intent, close without saving; verify paths/loads.
 
@@ -625,6 +649,6 @@ class Backend(object):
         except Exception as exc:
             issues.append(issue('MODEL_OPEN_VERIFICATION_FAILED',target,exc,'error'))
         finally:
-            if doc is not None and not doc.Close(False):
+            if doc is not None and not performance.call('verification','revit_close',target,doc.Close,False):
                 issues.append(issue('MODEL_CLOSE_FAILED',target,'Verification document could not be closed.','error'))
         return issues

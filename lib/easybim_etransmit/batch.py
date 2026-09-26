@@ -7,6 +7,7 @@ import os
 import ntpath
 import re
 import tempfile
+from . import performance
 from . import VERSION, files as f, engine
 
 
@@ -41,6 +42,16 @@ def plan_jobs(models,root,separate=True,model_names=None):
 
 def run_batch(models, root, backend_factory, options=None, extras=None,
               cancelled=None, pulse=None, model_names=None):
+    with performance.Collector() as measurement:
+        results,jobs=_run_batch(models,root,backend_factory,options,extras,cancelled,pulse,model_names)
+    # Batch timers include ZIP and orchestration. Package timers remain in each folder.
+    data=measurement.snapshot()
+    data['scope']='Batch processing and ZIP; initial live discovery is reported per package. Final telemetry serialization excluded.'
+    write_index(root, jobs, data)
+    return results
+
+def _run_batch(models, root, backend_factory, options=None, extras=None,
+               cancelled=None, pulse=None, model_names=None):
     """Transmit every selected source, without one failed model losing the batch.
 
     backend_factory(package_root, first_source) runs on the caller/Revit thread.
@@ -100,26 +111,30 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
         for job in jobs:
             if job['status']=='NOT_STARTED': job['status']='NOT_STARTED_CANCELLED'
         write_index(root,jobs)
-    return results
+    return results,jobs
 
 
-def write_index(root,jobs):
+def write_index(root,jobs,performance_data=None):
     if os.name == 'nt' and f.path_units(root) > 200:
         scratch=tempfile.mkdtemp(prefix='ET_Index_')
         try:
-            _write_index_at(root,jobs,scratch)
+            _write_index_at(root,jobs,scratch,performance_data)
             for path in engine.folder_files(scratch):f.publish_report(path,os.path.join(root,os.path.basename(path)))
         finally:f.remove_tree_retry(scratch)
-    else:_write_index_at(root,jobs,root)
+    else:_write_index_at(root,jobs,root,performance_data)
 
 
-def _write_index_at(root,jobs,output):
+def _write_index_at(root,jobs,output,performance_data=None):
     with io.open(os.path.join(output,'batch.json'),'w',encoding='utf-8') as out:
-        out.write(f.text(json.dumps(dict(version=VERSION,jobs=jobs),ensure_ascii=False,indent=2)))
+        out.write(f.text(json.dumps(dict(version=VERSION,jobs=jobs,performance=performance_data),ensure_ascii=False,indent=2)))
     lines=['EasyBIM e-transmit '+VERSION,'Batch jobs: '+str(len(jobs)),
            'Revit operations run sequentially. Each model-named folder is a separate transmittal.',
            'A ZIP marked VERIFIED passed archive CRC checks, not a new Revit opening test.',
            'Read each package START_HERE.txt before sending any model.','']
+    if performance_data:
+        lines.extend(line.replace('timings.csv','batch_timings.csv') for line in performance.report_lines(performance_data))
+        f.write_csv(os.path.join(output,'batch_timings.csv'),performance_data['operations'],
+            ['phase','operation','file','target','start_seconds','seconds','self_seconds','status','bytes','mib_per_second'])
     for job in jobs:
         lines.append('{0:02d}: {1} | ZIP: {2} | {3}'.format(
             job['index'],job['status'],job['zip_status'],job.get('name','')+' | '+'; '.join(job['models'])))

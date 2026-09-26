@@ -82,7 +82,7 @@ def plan(records, selected, bundles=None):
         unit['members'].append((rec, member))
     # Reserve report names and treat file-vs-directory collisions like same names.
     reserved = ['manifest.json', 'START_HERE.txt', 'REPORT.txt', 'files.csv',
-                'references.csv', 'issues.csv', 'DIAGNOSTICS.txt', 'Links']
+                'references.csv', 'issues.csv', 'DIAGNOSTICS.txt', 'timings.csv', 'Links']
     for attempt in range(3):
         occupied = []; conflicts = set()
         for ident, unit in sorted(units.items()):

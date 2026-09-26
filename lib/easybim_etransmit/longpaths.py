@@ -11,6 +11,7 @@ import ntpath
 import ctypes as c
 import hashlib
 import uuid
+from . import performance
 try: text = unicode
 except NameError: text = str
 
@@ -187,12 +188,14 @@ class Stream(object):
 
 def digest(path, cancelled=None):
     from .files import check
-    value = hashlib.sha256()
+    value = hashlib.sha256(); size = 0
     with Stream(path) as inp:
         while True:
             check(cancelled); chunk = inp.read()
             if not chunk: break
-            value.update(chunk)
+            value.update(chunk); size += len(chunk)
+    collector = performance.current()
+    if collector and collector.stack: collector.stack[-1].meta['bytes'] = size
     return value.hexdigest()  # Finalize exactly once for IronPython.
 
 
@@ -226,7 +229,7 @@ def copy_file(source, target, cancelled=None, pulse=None, label=None):
         expected = sha.hexdigest()
         if total != before[0] or f.signature(source) != before:
             raise IOError('Source changed during collection: ' + source)
-        if digest(temp, cancelled) != expected: raise IOError('Copy checksum mismatch: ' + source)
+        if f.digest(temp, cancelled) != expected: raise IOError('Copy checksum mismatch: ' + source)
         f.check(cancelled)
         if sys.platform == 'cli': invoke('Move', extended(temp), extended(target))
         else:

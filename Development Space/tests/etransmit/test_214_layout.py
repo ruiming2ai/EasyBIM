@@ -93,14 +93,17 @@ class LayoutTests(unittest.TestCase):
         result,_=self.run_export(backend=back)
         self.assertTrue(any('Conflicting acquired bytes' in i['message'] for i in result['issues']))
         self.assertEqual(len([r for r in result['files'] if r['status']=='COPIED']),2)
-    def test_nested_links_and_cycle_move_with_package(self):
+    def test_host_and_unchanged_direct_link_move_with_package(self):
         child=self.file('Arch.rvt');pdf=self.file('Sheet.pdf')
         back=Backend({self.host:[dict(source=child,id='1',kind='RevitLink')],child:[dict(source=pdf,id='2'),dict(source=self.host,id='3',kind='RevitLink')]})
         result,_=self.run_export(backend=back)
         self.assertEqual(result['status'],'COLLECTED',repr(result['issues']))
         moved=os.path.join(self.root,'moved');shutil.move(self.out,moved)
         for row in result['files']:
-            if row['source'].endswith('.rvt'):back.verify_package(os.path.join(moved,*row['relative'].split('/')),[],{})
+            if row.get('is_primary_host'):
+                back.verify_package(os.path.join(moved,*row['relative'].split('/')),[],{})
+            elif row['source'].endswith('.rvt'):
+                self.assertEqual(f.digest(os.path.join(moved,*row['relative'].split('/'))),f.digest(row['source']))
     def test_rcp_support_preserved_in_every_mode(self):
         rcp=self.file('Cloud/Survey.rcp');scan=self.file('Cloud/Survey Support/sub/scan.rcs')
         for mode in ('categories','flat','original'):
@@ -146,7 +149,7 @@ class LayoutTests(unittest.TestCase):
             return real(target,rows,opts)
         back.verify_package=verify
         result,_=self.run_export(backend=back)
-        self.assertEqual(result['files'][0]['preparation_verification'],'OPENED_AND_REFERENCES_CHECKED')
+        self.assertEqual(result['files'][0]['preparation_verification'],'NOT_ATTEMPTED')
         self.assertEqual(result['files'][0]['model_verification'],'FAILED')
         self.assertNotIn('verification',result['references'][0])
         self.assertEqual(result['counts']['revit_links_verified'],0)
@@ -162,25 +165,25 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(b.calls,[])
         self.assertEqual(result['files'][0]['model_verification'],'NOT_ATTEMPTED')
     def test_final_delivery_failure_retains_recovery(self):
-        original=f.copy_file
+        original=f.relocate_verified
         def fail(source,target,*args,**kwargs):
             if f.within(target,self.out) and target.endswith('.rvt'):raise IOError('disk full')
             return original(source,target,*args,**kwargs)
-        f.copy_file=fail
+        f.relocate_verified=fail
         try:result,b=self.run_export()
-        finally:f.copy_file=original
+        finally:f.relocate_verified=original
         self.assertEqual(result['status'],'FAILED')
         self.assertEqual(result['files'][0]['status'],'DELIVERY_FAILED')
         self.assertTrue(os.path.isdir(result['recovery_directory']))
         self.assertTrue(os.path.exists(os.path.join(self.out,'manifest.json')))
     def test_partial_delivery_does_not_open_host_with_missing_link(self):
-        link=self.file('Link.rvt');original=f.copy_file
+        link=self.file('Link.rvt');original=f.relocate_verified
         def fail(source,target,*args,**kwargs):
             if f.within(target,self.out) and target.endswith('Link.rvt'):raise IOError('link delivery failed')
             return original(source,target,*args,**kwargs)
-        f.copy_file=fail
+        f.relocate_verified=fail
         try:result,b=self.run_export([dict(source=link,kind='RevitLink',id='1')])
-        finally:f.copy_file=original
+        finally:f.relocate_verified=original
         self.assertEqual(result['files'][0]['model_verification'],'DEFERRED')
         self.assertFalse(any(call[0]=='verify' and f.within(call[1],self.out) for call in b.calls))
     def test_cancelled_processing_rolls_back_and_delivers_original(self):
@@ -211,28 +214,28 @@ class LayoutTests(unittest.TestCase):
         layout.plan(rows,'flat',[dict(root='/b/Set',category='other')])
         self.assertFalse(rows[1]['relative'].startswith(rows[0]['relative']+'/'))
     def test_cancel_during_layout_preserves_acquired_files_without_duplicate_trees(self):
-        pdf=self.file('Sheet.pdf');back=Backend({self.host:[dict(source=pdf)]});original=f.copy_file;state=[False]
+        pdf=self.file('Sheet.pdf');back=Backend({self.host:[dict(source=pdf)]});original=f.relocate_verified;state=[False]
         def cancel(source,target,*args,**kwargs):
             if f.within(target,os.path.join(back.stage,'p')) and not state[0]:
                 state[0]=True;raise f.Cancelled()
             return original(source,target,*args,**kwargs)
-        f.copy_file=cancel
+        f.relocate_verified=cancel
         try:result,_=self.run_export(backend=back)
-        finally:f.copy_file=original
+        finally:f.relocate_verified=original
         self.assertEqual(result['status'],'CANCELLED')
         self.assertEqual(result['counts']['files_copied'],2)
         self.assertEqual(f.digest(self.host),f.digest(os.path.join(self.out,'Host.rvt')))
         self.assertTrue(os.path.isfile(os.path.join(self.out,'Links','PDF','Sheet.pdf')))
         self.assertFalse(os.path.exists(back.stage))
     def test_cancel_during_delivery_keeps_completed_host_and_recovery(self):
-        link=self.file('Link.rvt');state=[False];original=f.copy_file
+        link=self.file('Link.rvt');state=[False];original=f.relocate_verified
         def cancel_after_host(source,target,*args,**kwargs):
             result=original(source,target,*args,**kwargs)
             if target==os.path.join(self.out,'Host.rvt'):state[0]=True
             return result
-        f.copy_file=cancel_after_host
+        f.relocate_verified=cancel_after_host
         try:result,b=self.run_export([dict(source=link,kind='RevitLink')],cancelled=lambda:state[0])
-        finally:f.copy_file=original
+        finally:f.relocate_verified=original
         self.assertEqual(result['status'],'CANCELLED')
         self.assertEqual(result['files'][0]['delivery_status'],'CHECKSUM_VERIFIED')
         self.assertEqual(result['files'][1]['status'],'NOT_DELIVERED')

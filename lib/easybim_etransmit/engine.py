@@ -13,7 +13,7 @@ import traceback
 import zipfile
 from . import files as f
 from .pathnames import relative as relative_path
-from . import VERSION, layout
+from . import VERSION, layout, performance
 
 
 def issue(code, source, message, severity='warning'):
@@ -144,6 +144,26 @@ def completion_message(results, requested, cancelled=False):
 
 
 def transmit(models, root, backend, options=None, extras=None, cancelled=None, pulse=None):
+    models=list(models)
+    with performance.Collector() as timing:
+        result = _transmit(models, root, backend, options, extras, cancelled, pulse)
+    result['performance'] = timing.snapshot()
+    result['performance']['finalized'] = True
+    registry=getattr(backend,'registry',None)
+    initial=[]
+    for source in models:
+        entry=registry.get(source) if registry else None
+        if entry and entry.get('discovery_performance'):
+            initial.append(dict(source=source, timing=entry['discovery_performance']))
+    result['performance']['initial_discovery']=initial
+    result['performance']['measured_total_seconds']=round(result['performance']['elapsed_seconds']+
+        sum(x['timing']['elapsed_seconds'] for x in initial),6)
+    # This final small serialization is intentionally outside its own measurement.
+    write_reports(result)
+    return result
+
+
+def _transmit(models, root, backend, options=None, extras=None, cancelled=None, pulse=None):
     models = list(models)
     opts = dict(options or f.defaults())
     opts['file_structure'] = layout.mode(opts.get('file_structure'))
@@ -161,6 +181,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
     bundles = []
     identities = {}
     organized = [False]
+    direct_delivery = [False]
     if hasattr(backend, 'set_staging_root'):
         backend.set_staging_root(work)
     queue, records, edges = collections.deque(), {}, []
@@ -234,18 +255,40 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 contextual.setdefault(rec['source'],set()).add(ref['category'])
         for rec in result['files']:
             if rec['source'] in contextual:rec['category']=sorted(contextual[rec['source']])[0]
-        layout.plan(result['files'], opts['file_structure'], bundles)
+        performance.call('layout', 'plan_destinations', '', layout.plan,
+                         result['files'], opts['file_structure'], bundles)
+        chooser = getattr(backend, 'can_deliver_direct', None)
+        hosts = [r for r in result['files'] if r.get('is_primary_host')]
+        direct_delivery[0] = bool(chooser and hosts and all(
+            r['status']=='COPIED' and chooser(r, [e for e in edges if
+                f.canonical(e['owner'])==f.canonical(r['source'])], opts) for r in hosts))
+        result['delivery_strategy'] = ('DIRECT_DEPENDENCIES' if direct_delivery[0] else 'SHORT_PATH_PREPARATION')
         for record in result['files']:
-            if record['status'] == 'COPIED' and not recover:
+            if record['status'] == 'PLANNED' and recover:
+                record['status'] = 'NOT_DELIVERED'
+                continue
+            if record['status'] in ('COPIED','PLANNED') and not recover:
                 try:
-                    target = f.destination(prepared, record['relative'])
-                    if f.canonical(record['target']) != f.canonical(target):
-                        f.copy_file(record['target'], target, cancelled, notify)
+                    final_dependency = direct_delivery[0] and not record.get('is_primary_host')
+                    target = f.destination(root if final_dependency else prepared, record['relative'])
+                    if record['status']=='PLANNED':
+                        notify('Copying dependency '+record['source'],0,1)
+                        metadata = performance.call('dependency_copy', 'acquire_dependency', record['source'],
+                            backend.acquire_file, record['source'], target,
+                            record.pop('_copy_owner',''), cancelled, notify)
+                        record.update(metadata); record['status']='COPIED'
+                        if final_dependency: record['delivery_method']='DIRECT_VERIFIED_COPY'
+                    elif f.canonical(record['target']) != f.canonical(target):
+                        moved = performance.call('layout','relocate_prepared',record['source'],
+                            f.relocate_verified,record['target'],target,record,work,cancelled,notify)
+                        record['verified_signature']=moved['verified_signature']
                     record['target'] = target
                 except f.Cancelled: raise
                 except Exception as exc:
                     record['processing_status'] = 'LAYOUT_FAILED'
-                    add_issue('PACKAGE_LAYOUT_FAILED', record['source'], exc, 'error')
+                    failed_copy = record['status']=='PLANNED'
+                    if failed_copy: record['status']='FAILED'
+                    add_issue('DEPENDENCY_COPY_FAILED' if failed_copy else 'PACKAGE_LAYOUT_FAILED', record['source'], exc, 'error')
         for model in result['models']:
             rec = records.get(f.canonical(model['source']))
             if rec: model['source'] = rec['source']
@@ -281,9 +324,13 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             record['acquisition_status'] = 'COPIED'
             try:
                 if not was_cancelled: notify('Delivering '+record['source'],0,1)
-                expected = f.digest(old,delivery_cancel)
-                metadata = f.copy_file(old, f.destination(root, record['relative']), delivery_cancel, None if was_cancelled else notify)
-                if metadata['sha256'] != expected: raise IOError('Delivered file differs from the prepared copy.')
+                expected = f.verified_hash(old,record,delivery_cancel)
+                if f.canonical(old) != f.canonical(target):
+                    moved = performance.call('delivery','deliver_file',record['source'],
+                        f.relocate_verified, old, f.destination(root,record['relative']), record, work,
+                        delivery_cancel, None if was_cancelled else notify)
+                    record['verified_signature']=moved['verified_signature']
+                    record['delivery_method']=moved['delivery_method']
                 record['packaged_sha256'] = expected
                 record['delivery_status'] = 'CHECKSUM_VERIFIED'
             except f.Cancelled:
@@ -311,6 +358,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         verifier = getattr(backend, 'verify_package', None)
         for record in reversed(result['files']):
             if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
+            if record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE' and not record.get('is_primary_host'):
+                record['model_verification']='FILE_INTEGRITY_ONLY'; continue
             if not opts.get('repath') or not verifier:
                 record['model_verification'] = 'NOT_ATTEMPTED'; continue
             if result['status'] == 'CANCELLED' or (cancelled and cancelled()):
@@ -329,7 +378,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
             try:
                 notify('Checking delivered model '+record['source'],0,1)
                 f.validate_destination_path(record['target'])
-                problems = verifier(record['target'], rows, opts) or []
+                problems = performance.call('verification','verify_final_host',record['source'],
+                    verifier,record['target'], rows, opts) or []
                 result['issues'].extend(problems)
                 record['model_verification'] = ('DEFERRED' if any(p['code'] == 'MODEL_VERIFICATION_DEFERRED' for p in problems)
                     else 'FAILED' if any(p.get('severity') == 'error' for p in problems) else 'OPENED_AND_REFERENCES_CHECKED')
@@ -470,7 +520,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                               original_relative=relative)
                 records[key] = record
                 result['files'].append(record)
-                before=getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
+                link_dependency = (not host and (edge or {}).get('kind')=='RevitLink')
+                before=None if link_dependency else getattr(backend,'inventory_before_copy',lambda source,opts:None)(source,opts)
                 if before is not None:
                     # Preserve live materials even when the host snapshot is
                     # refused/unavailable. Do not wait for host bytes to scan.
@@ -484,12 +535,19 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 notify('Copying ' + source, 0, 1)
                 operation = 'copy_file'
                 acquire=getattr(backend,'acquire_file',None)
-                metadata=acquire(source,target,owner,cancelled,notify) if acquire else f.copy_file(source,target,cancelled,notify)
+                defer = (not host and not virtual and
+                         (cat != 'revit' or (edge or {}).get('kind')=='RevitLink') and
+                         bool(getattr(backend,'defer_file_copy',lambda *a:False)(source,owner)))
+                if defer:
+                    metadata=dict(_copy_owner=owner, layout_identity=f.canonical(source))
+                else:
+                    metadata=performance.call('acquisition','acquire_source',source,
+                        acquire,source,target,owner,cancelled,notify) if acquire else f.copy_file(source,target,cancelled,notify)
                 record.update(metadata)
                 if record.get('staging_cleanup_warning'):
                     add_issue('SOURCE_STAGING_CLEANUP_FAILED', source,
                               record['staging_cleanup_warning'])
-                record['status'] = 'COPIED'
+                record['status'] = 'PLANNED' if defer else 'COPIED'
                 identity_reader = getattr(backend, 'acquired_identity', None)
                 identity = identity_reader(source, metadata) if identity_reader else f.canonical(source)
                 record['layout_identity'] = identity
@@ -508,7 +566,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 identities[identity] = record
                 if edge is not None: edge['status'] = 'COPIED'
                 late_inventory=getattr(backend,'inventory_after_copy',None)
-                if late_inventory:
+                if late_inventory and not link_dependency:
                     try:
                         late=late_inventory(source,opts)
                         if late:
@@ -596,11 +654,17 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 ref['target'] = rec['target']
                 if ref['status'] != 'DUPLICATE_ALIAS': ref['status'] = 'COPIED'
 
+        for record in result['files']:
+            if (record['status']=='COPIED' and record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE'
+                    and not record.get('is_primary_host')):
+                record['processing_status']='UNCHANGED_DEPENDENCY'
+                record['model_verification']='FILE_INTEGRITY_ONLY'
+
         if opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
             for record in reversed(result['files']):
                 f.check(cancelled)
                 if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
-                if record.get('processing_status') == 'LAYOUT_FAILED': continue
+                if record.get('processing_status') in ('LAYOUT_FAILED','UNCHANGED_DEPENDENCY'): continue
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
@@ -626,15 +690,20 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                 try:
                     notify('Repath / cleanup ' + record['source'], 0, 1)
                     processing_options=dict(opts)
+                    if direct_delivery[0]:
+                        processing_options['reference_target']=f.destination(root,record['relative'])
                     processing_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
                     f.validate_destination_path(target)
-                    processing_issues=backend.finish(stage, target, model_edges, processing_options) or []
+                    processing_issues=performance.call('repath','process_host',record['source'],
+                        backend.finish,stage, target, model_edges, processing_options) or []
                     result['issues'].extend(processing_issues)
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
+                    record['verified_signature'] = f.signature(target)
                 except f.Cancelled:
                     try:
                         shutil.copyfile(backup,target)
+                        record.pop('packaged_sha256',None)
                         record['processing_status']='ROLLED_BACK'
                     except Exception as exc:
                         record['processing_status']='ROLLBACK_FAILED'
@@ -647,6 +716,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                     record['processing_status']='FAILED'
                     try:
                         shutil.copyfile(backup,target)
+                        record.pop('packaged_sha256',None)
                         for ref in model_edges:ref['repath']='ROLLED_BACK'
                     except Exception as rollback_exc:
                         record['processing_status']='ROLLBACK_FAILED'
@@ -664,26 +734,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
                             path=os.path.join(os.path.dirname(stage),name)
                             if os.path.isdir(path): shutil.rmtree(path)
                             else: os.remove(path)
-        verifier=getattr(backend,'verify_package',None)
-        if verifier and opts.get('repath'):
-            for record in reversed(result['files']):
-                if record['status']!='COPIED' or not record['source'].lower().endswith('.rvt'): continue
-                if record.get('inventory_status') in ('FAILED','UNSTABLE','RUNNING','PARTIAL'):
-                    record['model_verification']='SKIPPED_INVENTORY_FAILURE'; continue
-                if record.get('processing_status') in ('FAILED','ROLLBACK_FAILED'):
-                    record['model_verification']='SKIPPED_PROCESSING_FAILURE'; continue
-                if record.get('processing_status')=='HOST_PRESERVED_LINKS_UNAVAILABLE':
-                    record['model_verification']='DEFERRED';continue
-                f.check(cancelled)
-                notify('Checking prepared model '+record['source'],0,1)
-                model_edges=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source'])]
-                try: problems=verifier(record['target'],model_edges,opts) or []
-                except f.Cancelled: raise
-                except Exception as exc: problems=[issue('MODEL_OPEN_VERIFICATION_FAILED', record['source'], exc, 'error')]
-                result['issues'].extend(problems)
-                record['model_verification'] = ('DEFERRED' if any(p['code']=='MODEL_VERIFICATION_DEFERRED' for p in problems)
-                                               else ('FAILED' if any(p.get('severity')=='error' for p in problems)
-                                                     else 'OPENED_AND_REFERENCES_CHECKED'))
+        # No preparatory open: final host verification is the one authoritative check.
         result['status'] = 'NEEDS_REVIEW' if any(x['severity'] != 'info' for x in result['issues']) else 'COLLECTED'
     except f.Cancelled:
         result['status'] = 'CANCELLED'
@@ -698,7 +749,8 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         for rec in result['files']:
             if rec['status'] == 'COPIED' and f.file_exists(rec['target']):
                 try:
-                    rec['packaged_sha256'] = f.digest(rec['target'])
+                    rec['packaged_sha256'] = f.verified_hash(rec['target'],rec)
+                    rec['packaged_size'] = rec['verified_signature'][0]
                     if rec.get('is_primary_host') and rec.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW'):
                         if rec['packaged_sha256']!=rec['sha256']:
                             raise IOError('Unprocessed/restored host differs from the acquired copy.')
@@ -724,6 +776,7 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
     return result
 
 
+@performance.timed('reports','write_reports')
 def write_reports(result):
     # Reports also use verified long-path delivery under IronPython/Windows.
     if os.name == 'nt' and f.path_units(result['root']) > 200:
@@ -737,6 +790,8 @@ def write_reports(result):
 
 
 def _write_reports_at(result, root):
+    if performance.current() and not result.get('performance',{}).get('finalized'):
+        result['performance']=performance.current().snapshot()
     result['counts']=package_counts(result)
     result['link_discovery_status']=link_discovery_status(result)
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
@@ -783,7 +838,7 @@ def _write_reports_at(result, root):
     lines += ['', 'REVIT LINKS:']
     for ref in result.get('references',[]):
         if ref.get('kind')!='RevitLink':continue
-        record=by_source.get(f.canonical(ref.get('local') or ref.get('source','')),{})
+        record=by_source.get(f.canonical(ref.get('local') or ref.get('source','')), {})
         context=record.get('source_context',{})
         evidence=context.get('cache_evidence',{})
         lines.append('Element {0} | {1} | {2} | Original loaded: {3} | Package loaded: {4}'.format(
@@ -800,12 +855,19 @@ def _write_reports_at(result, root):
         if i.get('element_id'):label+=' #'+f.text(i['element_id'])+' '+i.get('kind','')
         lines.append('[{0}] {1}: {2} -- {3}'.format(i['severity'], i['code'], label, i['message']))
     if not result['issues']: lines.append('No detected collection errors. Desktop opening test remains required.')
+    lines.extend(performance.report_lines(result.get('performance')))
+    if result.get('performance'):
+        timing_rows=[dict(row,scope='package') for row in result['performance']['operations']]
+        for capture in result['performance'].get('initial_discovery',[]):
+            timing_rows.extend(dict(row,scope='initial_discovery') for row in capture['timing']['operations'])
+        f.write_csv(os.path.join(root,'timings.csv'),timing_rows,
+            ['scope','phase','operation','file','target','start_seconds','seconds','self_seconds','status','bytes','mib_per_second','copy_method','error_type'])
     with io.open(os.path.join(root, 'START_HERE.txt'), 'w', encoding='utf-8') as out:
         out.write('\n'.join(lines))
     if result['options'].get('reports', True):
         with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
-                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','collision_separated','acquisition_container','verification_status','size','sha256','packaged_sha256'])
+                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
                     ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])
@@ -824,6 +886,7 @@ def _write_reports_at(result, root):
                         item['code'], item.get('operation', ''), item['source'], item['traceback']))
 
 
+@performance.timed('zip','zip_archive')
 def zip_package(root, target, cancelled=None, exclude_paths=None):
     if f.file_exists(target): raise IOError('ZIP already exists: ' + target)
     scratch = tempfile.mkdtemp(prefix='ET_Zip_')

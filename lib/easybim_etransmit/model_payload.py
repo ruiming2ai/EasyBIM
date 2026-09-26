@@ -13,7 +13,7 @@ import stat
 import struct
 import uuid
 import zipfile
-from . import files as f
+from . import files as f, performance
 
 CFB = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
 END, FREE = 0xfffffffe, 0xffffffff
@@ -119,6 +119,7 @@ def _read_basic(path):
                 validation='CONTAINER_METADATA_ONLY')
 
 
+@performance.timed('metadata', 'native_probe')
 def probe(path):
     try:
         with open(path, 'rb') as inp: prefix = inp.read(8)
@@ -255,6 +256,24 @@ class Store(object):
             return meta
         if not source.lower().endswith('.rvt'):
             return f.copy_file(source, target, cancelled, pulse)
+        if (not f.is_desktop_connector_path(source) and not f.cache_source(source)
+                and not (os.name == 'nt' and f.path_units(source) > 240)):
+            before = f.signature(source)
+            info = probe(source)
+            if info['container'] == 'CFB':
+                meta = f.copy_file(source, target, cancelled, pulse)
+                if (before != f.signature(source) or
+                        before != (meta['size'], meta['source_mtime'])):
+                    # This target belongs to this invocation, never the source.
+                    if f.file_exists(target):
+                        if os.name == 'nt' and f.path_units(target)>240:
+                            from . import longpaths
+                            longpaths.unlink(target)
+                        else: os.remove(target)
+                    raise IOError('Source changed between native validation and copying: ' + source)
+                meta.update(model_info=info, acquisition_container='CFB',
+                            acquisition_sha256=meta['sha256'], acquisition_size=meta['size'])
+                return meta
         token = uuid.uuid4().hex[:12]
         acquired = os.path.join(self.root, token + '.rvt')
         meta = f.copy_file(source, acquired, cancelled, pulse)

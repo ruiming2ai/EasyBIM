@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import uuid
+from . import performance
 
 try:
     text = unicode
@@ -233,7 +234,7 @@ def _shell_folder_names(folder):
         items = namespace.Items()
         for item in items:
             try:
-                if bool(item.IsFolder):
+                if item.IsFolder:
                     names.append(text(item.Name))
             except Exception:
                 pass
@@ -276,6 +277,7 @@ def connector_file_exists(path):
     return _shell_file_exists(path)
 
 
+@performance.timed('discovery', 'connector_lookup')
 def resolve_connector_uri(source, roots=None):
     """Resolve one Autodesk display URI to one exact Connector hierarchy."""
     parts = _connector_uri_parts(source)
@@ -302,6 +304,7 @@ def resolve_connector_uri(source, roots=None):
     return next(iter(unique.values())) if unique else None
 
 
+@performance.timed('discovery', 'library_lookup')
 def resolve_library_resource(source, roots):
     """Find the exact referenced library filename inside Revit library roots."""
     value = text(source or '').strip()
@@ -344,6 +347,7 @@ def resolve_library_resource(source, roots):
     return matches[0] if matches else None
 
 
+@performance.timed('discovery', 'resolve_path')
 def resolve_source(source, owner='', mappings=None):
     """Map exact identities only; never a filename-only or newest-model guess."""
     source = text(source or '').strip()
@@ -617,6 +621,7 @@ def shell_copy_to_local(source, cancelled=None):
 
 
 
+@performance.timed('cleanup', 'remove_scratch')
 def remove_tree_retry(path, attempts=10, delay=0.2):
     """Remove local scratch with short retries for antivirus/provider handles."""
     exists, remove = os.path.exists, shutil.rmtree
@@ -714,7 +719,7 @@ def temporary_path(folder, suffix='.rvt'):
 def publish_report(source, target):
     """Refresh only our named reports in a newly allocated package/batch."""
     names = ('manifest.json', 'START_HERE.txt', 'REPORT.txt', 'files.csv',
-             'references.csv', 'issues.csv', 'DIAGNOSTICS.txt', 'batch.json', 'BATCH_SUMMARY.txt')
+             'references.csv', 'issues.csv', 'DIAGNOSTICS.txt', 'batch.json', 'BATCH_SUMMARY.txt', 'timings.csv', 'batch_timings.csv')
     if os.path.basename(target) not in names or os.path.basename(source) != os.path.basename(target):
         raise ValueError('Not a generated transmittal report: '+target)
     if file_exists(target):
@@ -762,17 +767,20 @@ def signature(path):
     return (s.st_size, s.st_mtime)
 
 
+@performance.timed(None, 'hash')
 def digest(path, cancelled=None):
     if os.name == 'nt' and path_units(path) > 240:
         from . import longpaths
         return longpaths.digest(path, cancelled)
-    h = hashlib.sha256()
+    h = hashlib.sha256(); size = 0
     with open(path, 'rb') as f:
         while True:
             check(cancelled)
             b = f.read(1024 * 1024)
             if not b: break
-            h.update(b)
+            h.update(b); size += len(b)
+    collector = performance.current()
+    if collector and collector.stack: collector.stack[-1].meta['bytes'] = size
     return h.hexdigest()
 
 
@@ -831,6 +839,7 @@ def _copy_file_direct(source, target, cancelled=None, pulse=None, display_source
         if temp and os.path.exists(temp): os.remove(temp)
 
 
+@performance.timed(None, 'copy', target_index=1)
 def copy_file(source, target, cancelled=None, pulse=None):
     """Verified copy, using Windows Shell for Desktop Connector namespaces."""
     shell_folder = None
@@ -856,6 +865,8 @@ def copy_file(source, target, cancelled=None, pulse=None):
             except Exception as exc: cleanup_warning = text(exc)
     if metadata is not None and cleanup_warning:
         metadata['staging_cleanup_warning'] = cleanup_warning
+    if metadata is not None:
+        metadata['verified_signature'] = signature(target)
     return metadata
 
 
@@ -878,3 +889,52 @@ def write_csv(path, rows, columns):
         f.write(','.join(csv_cell(x) for x in columns) + '\r\n')
         for row in rows:
             f.write(','.join(csv_cell(row.get(x, '')) for x in columns) + '\r\n')
+
+
+@performance.timed(None, 'integrity_check')
+def verified_hash(path, metadata, cancelled=None):
+    """Reuse a verified checksum only for unchanged, task-owned output bytes."""
+    expected = metadata.get('packaged_sha256') or metadata.get('sha256')
+    stamp = signature(path)
+    if expected and tuple(metadata.get('verified_signature') or ()) == stamp:
+        return expected
+    actual = digest(path, cancelled)
+    if expected and actual != expected:
+        raise IOError('Previously verified output changed: ' + path)
+    metadata['verified_signature'] = stamp
+    return actual
+
+
+@performance.timed(None, 'relocate', target_index=1)
+def relocate_verified(source, target, metadata, owned_root, cancelled=None, pulse=None):
+    """Move only our scratch files; copy+verify across volumes. Never move originals."""
+    check(cancelled)
+    if not within(source, owned_root):
+        raise ValueError('Only task-owned scratch files may be moved.')
+    validate_copy_path(target)
+    if file_exists(target): raise IOError('Refusing to overwrite: ' + target)
+    expected = verified_hash(source, metadata, cancelled)
+    ensure_directory(os.path.dirname(target))
+    try:
+        if os.name == 'nt' and (path_units(source)>240 or path_units(target)>240):
+            from . import longpaths
+            longpaths.no_reparse(source); longpaths.no_reparse(target)
+            if sys.platform == 'cli':
+                longpaths.invoke('Move', longpaths.extended(source), longpaths.extended(target))
+            else:
+                k = longpaths.api()
+                if not k.MoveFileW(longpaths.extended(source),longpaths.extended(target)):
+                    raise longpaths.error(target)
+        else:
+            publish(source, target)
+        method = 'MOVE_VERIFIED_BYTES'
+    except (IOError, OSError):
+        # On a failed rename, do not overwrite any racing destination writer.
+        if file_exists(target) or not file_exists(source): raise
+        copied = copy_file(source, target, cancelled, pulse)
+        if copied['sha256'] != expected:
+            raise IOError('Delivered bytes differ from verified scratch file: ' + target)
+        method = 'VERIFIED_COPY_FALLBACK'
+        # Keep the owned source until routine scratch cleanup on copy fallback.
+    return dict(sha256=expected, size=signature(target)[0],
+                verified_signature=signature(target), delivery_method=method)

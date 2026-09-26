@@ -1,45 +1,30 @@
-EasyBIM e-transmit 2.1.7 verification
-Date: 2026-09-25
+EasyBIM e-transmit 2.1.8 verification
+Date: 2026-09-26
+Baseline: main 8ea07d21a54b51900a1279d8e883d5be11d11c01.
 
-Executed checks (GitHub Actions filesystem/API-shaped tests, not Autodesk Revit):
+Executed locally, Linux / CPython 3.13:
+python -B -m unittest discover -s "Development Space/tests/etransmit"
+400 tests; OK; 4 platform skips.
+Each test_218*.py script also executed independently and passed.
+git diff --check: passed.
 
-1. Linux / CPython 3.11
-   python -m unittest discover -s "Development Space/tests/etransmit" -v
-   Ran 374 tests. OK, 4 platform skips. No failures or errors.
+Initial regression runs failed on duplicate linked-RVT processing/opening,
+double native acquisition, absence of timing data, and indirect dependency
+copying. Subsequent regressions caught unmeasured initial registry discovery,
+unnecessary child scanning, and an outer batch profiler replacing the package
+profile. They pass after the production corrections.
 
-2. Windows / CPython 3.11
-   python -m unittest discover -s "Development Space/tests/etransmit" -v
-   Ran 374 tests. OK, 1 platform skip. No failures or errors.
+Six-RVT simulated comparison (real file IO; substituted Revit API boundaries):
+2.1.7: 37 verified copies; 6 processing calls; 12 verification calls; 5 links copied.
+2.1.8:  9 verified copies; 1 processing call; 1 verification call; 5 links copied.
+Not a Revit wall-clock benchmark. Source/link integrity preserved in the fixture.
 
-3. Windows / official IronPython 2.7.12, net45 runtime
-   Repository CI selection: runtime_copy, runtime_progress, source_automation,
-   payload_acquisition, runtime_longpaths, runtime_reference_repairs,
-   209_regressions, and all test_21*.py files.
-   267 tests ran across the selected per-file invocations. No FAILED result.
-   The shipped EasyBIM.FileIO helper was rebuilt first and matched the bundled DLL.
+No native C# source or bundled DLL changes. No new dependencies or installer.
+GitHub Actions performs the existing Windows, Linux and IronPython checks on
+this revision; consult that commit's actual workflow result, not an older run.
 
-4. TDD evidence
-   The initial 2.1.6 regression run failed on all three intended local-link
-   behaviors: local paths were converted to open:// identities, local hosts were
-   sent through temporary inspection, and local saved-file revision mismatch
-   blocked acquisition. Those regressions pass after the production changes.
-   Additional regressions were run red then green for saved TransmissionData
-   overriding an unsaved live Revit-link row and for preserving ACC cache identity
-   when an ACC link is referenced by a local host.
-
-Behavior covered:
-- local loaded Revit links retain/copy their saved filesystem source;
-- saved host Revit-link metadata is preferred over unsaved live Revit-link rows;
-- local saved RVTs are not rejected for loaded-vs-saved DocumentVersion mismatch;
-- collected linked RVTs are not reopened for nested dependency discovery;
-- ACC/cloud link identities from local hosts remain bindable to cache acquisition;
-- existing package layout, copy integrity, repath-shaped, rollback, cache,
-  long-path and reporting regressions remain in the full portable suites.
-
-Not executed: actual Revit 2024/2025 desktop exports, real local/network RVT
-repathing and reopening, ACC cache hydration on the user's workstation, linked
-tags/dimensions, placement, PDF/image resolution, or relocation acceptance.
-Passing portable/API-shaped tests does not prove real RVT portability. Complete
-e-transmit-desktop-checklist.md on the Revit workstation.
-
-Git diff --check was not executed in this connector-only workflow.
+Not executed locally: Windows/IronPython runtime, actual Revit 2024/2025,
+real ACC cache acquisition, Desktop Connector hydration, linked annotations,
+real placement, final image/cloud repathing, and relocation acceptance.
+Portable/API-shaped tests do not establish actual Revit portability or speed.
+See e-transmit-2.1.8.md for scope, timers and workstation acceptance.

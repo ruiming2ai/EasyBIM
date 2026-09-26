@@ -9,6 +9,7 @@ from __future__ import unicode_literals
 import hashlib
 import io
 import os
+from . import performance
 import re
 import tempfile
 import uuid
@@ -302,6 +303,7 @@ class Store(object):
                     try: item.Dispose()
                     except Exception: pass
 
+    @performance.timed('cache', 'cache_acquire', file_index=1)
     def capture(self, entry, pulse=None):
         """Return one native stable snapshot with cloud and revision evidence."""
         f.check(self.cancelled)

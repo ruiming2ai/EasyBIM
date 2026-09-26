@@ -13,7 +13,7 @@ import ntpath
 import tempfile
 import uuid
 import time
-from . import files as f, model_payload, cache_sources
+from . import files as f, model_payload, cache_sources, performance
 from .revit import Backend, eid, dispose
 from .engine import issue
 from .cloud_sources import identifier, validate_name
@@ -89,7 +89,14 @@ class Registry(object):
             original_path=f.text(row.get('source') or row.get('in_session_path') or ''),
             state_basis='SAVED_CLOUD_REFERENCE',children=[],snapshot_path=None)
         return key
-    def add_live(self,doc,configured_source=None):
+    def add_live(self,doc,configured_source=None,inspect=True):
+        if performance.current(): return self._add_live(doc,configured_source,inspect)
+        with performance.Collector() as discovery:
+            key=self._add_live(doc,configured_source,inspect)
+        self.entries[key]['discovery_performance']=discovery.snapshot()
+        return key
+
+    def _add_live(self,doc,configured_source=None,inspect=True):
         for old,key in self._documents:
             if old is doc or old==doc:return key
         original=f.text(configured_source or getattr(doc,'PathName','') or '')
@@ -112,6 +119,9 @@ class Registry(object):
             except Exception:pass
         info=dict(central=central,workshared=bool(getattr(doc,'IsWorkshared',False)))
         entry['plugin_base']=central or original;entry['plugins_scanned']=False
+        if not inspect:
+            result['inspection_status']='LINK_IDENTITY_ONLY'
+            return key
         try:
             self.scanner.scan_open(doc,original or key,info,result)
         except f.Cancelled:raise
@@ -130,7 +140,7 @@ class Registry(object):
                 type_id=eid(instance.GetTypeId())
                 matches=[r for r in result['references'] if r.get('element_id')==type_id and r.get('kind')=='RevitLink']
                 configured=matches[0].get('source','') if matches else ''
-                childkey=self.add_live(child,configured)
+                childkey=self.add_live(child,configured,inspect=not self.saved_state_only)
                 if childkey not in entry['children']:entry['children'].append(childkey)
                 if not matches:
                     row=dict(id=type_id,element_id=type_id,kind='RevitLink',special='external',td=False,loaded=True)
@@ -212,6 +222,7 @@ class Registry(object):
             if not entry or entry.get('mode')!='LIVE_DOCUMENT' or entry.get('is_linked'):
                 raise SourceError('INVALID_SNAPSHOT_AUTHORIZATION','Only selected open primary documents can be authorized for host SaveAs.')
         self._authorized_snapshots.update(keys)
+    @performance.timed('acquisition', 'saved_snapshot', file_index=1)
     def snapshot(self,key,pulse=None):
         if self.saved_state_only:
             return self._snapshot_saved_state(key,pulse)
@@ -435,6 +446,7 @@ class SessionBackend(Backend):
         value=f.text(source or '')
         return value.lower().endswith('.rvt') and (f.is_desktop_connector_path(value) or
             value.lower().startswith(('autodesk docs://','bim 360://','acc://','cld://','cld:')))
+    @performance.timed('discovery', 'host_reference_inventory', file_index=1)
     def inventory_before_copy(self,source,options):
         entry=self.registry.get(source)
         if entry and entry['mode']=='LIVE_DOCUMENT' and not entry.get('cloud'):
