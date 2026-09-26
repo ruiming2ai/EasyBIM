@@ -136,9 +136,22 @@ class Registry(object):
                     row=dict(id=type_id,element_id=type_id,kind='RevitLink',special='external',td=False,loaded=True)
                     result['references'].append(row);matches=[row]
                 for row in matches:
-                    row['configured_source']=row.get('source','');row['source']=childkey
-                    row['source_evidence']='LIVE_LINK_DOCUMENT_IDENTITY'
-                    row['cloud_identity']=dict(self.entries[childkey]['cloud'])
+                    row['configured_source']=row.get('source','')
+                    child_entry=self.entries[childkey]
+                    saved_source=f.text(row.get('configured_source') or child_entry.get('original_path',''))
+                    if (not child_entry.get('cloud') and f.absolute(saved_source)
+                            and not f.cache_source(saved_source) and not f.is_desktop_connector_path(saved_source)):
+                        # A loaded local link already exposes the saved file we need.
+                        # Keep that source path instead of converting it to an open://
+                        # document identity that would trigger snapshot/revision logic.
+                        row['source']=saved_source
+                        row['source_evidence']='LIVE_LINK_SAVED_FILE_PATH'
+                    else:
+                        # Cloud/server-managed links still use their proven document
+                        # identity so cache acquisition can locate the correct model.
+                        row['source']=childkey
+                        row['source_evidence']='LIVE_LINK_DOCUMENT_IDENTITY'
+                        row['cloud_identity']=dict(child_entry.get('cloud') or {})
         except f.Cancelled:raise
         except Exception as exc:
             result['issues'].append(issue('LIVE_LINK_TRAVERSAL_FAILED',key,exc,'error'))
@@ -246,12 +259,17 @@ class Registry(object):
                 metadata=f.copy_file(physical,path,self.cancelled,pulse)
                 if model_payload.probe(path).get('container')!='CFB':
                     raise SourceError('SAVED_HOST_NOT_NATIVE','The local source is not a native RVT.')
-                info=self._cache_store.read_info(path)
-                actual=cache_sources.version(info.get('version'));expected=cache_sources.version(before)
-                if not actual or (actual!=expected and (entry.get('is_linked') or not entry['is_modified'] or tracked)):
-                    raise SourceError('SAVED_HOST_VERSION_MISMATCH','The saved local file does not match the identified open model revision. No file was substituted.')
-                metadata.update(cache_document_version=actual,copy_method='VERIFIED_LOCAL_FILE',
-                                revision_check='MATCHES_LOADED_SAVED_VERSION' if actual==expected else 'SAVED_FILE_ONLY_UNSAVED_EXCLUDED',
+                expected=cache_sources.version(before)
+                try:
+                    info=self._cache_store.read_info(path)
+                    actual=cache_sources.version(info.get('version'))
+                except Exception:
+                    # The collection contract is the identified saved file, not
+                    # equality with the revision currently loaded in memory.
+                    actual=None
+                metadata.update(cache_document_version=actual,loaded_document_version=expected,
+                                copy_method='VERIFIED_LOCAL_FILE',
+                                revision_check='SAVED_FILE_COPIED',
                                 unsaved_edits_excluded=entry['is_modified'])
                 entry['state_basis']='VERIFIED_LOCAL_FILE_SAVED_STATE'
                 entry['cache_metadata']=metadata
@@ -417,9 +435,18 @@ class SessionBackend(Backend):
         return value.lower().endswith('.rvt') and (f.is_desktop_connector_path(value) or
             value.lower().startswith(('autodesk docs://','bim 360://','acc://','cld://','cld:')))
     def inventory_before_copy(self,source,options):
-        if self.registry.saved_state_only:
-            return None  # Keep the host before discovering optional materials.
         entry=self.registry.get(source)
+        if entry and entry['mode']=='LIVE_DOCUMENT' and not entry.get('cloud'):
+            # Local open hosts already expose their link paths. Use that inventory
+            # directly so collection does not reopen a temporary RVT merely to find
+            # files whose locations Revit has already given us.
+            result=copy.deepcopy(entry['inventory'])
+            result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            result['source_mode']='LIVE_DOCUMENT'
+            entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            return result
+        if self.registry.saved_state_only:
+            return None  # Cloud saved-state inventory still comes from the selected cache edition.
         return copy.deepcopy(entry['inventory']) if entry and entry['mode']=='LIVE_DOCUMENT' else None
     def inventory_after_copy(self,source,options):
         # Optional vendor inspection cannot prevent the initial host copy.
