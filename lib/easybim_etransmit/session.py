@@ -451,6 +451,8 @@ class SessionBackend(Backend):
                     saved_revit=[row for row in saved if row.get('kind')=='RevitLink']
                     live_non_revit=[row for row in result.get('references',[]) if row.get('kind')!='RevitLink']
                     result['references']=saved_revit+live_non_revit
+                    if options.get('include',{}).get('revit',True):
+                        self._bind_saved_links(entry,result)
                     result['inspection_status']='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
                     entry['inventory_basis']='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
                     return result
