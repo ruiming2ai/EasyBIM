@@ -8,7 +8,9 @@ to prove revision equality or discover nested dependencies.
 
 ## Behavior
 
-- Open local hosts use their live Revit reference inventory for file locations.
+- Open local hosts use saved TransmissionData for Revit-link locations when
+  available. Live inventory remains available for non-RVT resources and is only
+  a fallback for Revit links if saved metadata cannot be read.
 - Loaded local Revit links retain their saved local/network path instead of being
   rewritten to an internal open:// document key for acquisition.
 - Local saved RVTs are copied even when their saved DocumentVersion differs from
@@ -25,10 +27,12 @@ to prove revision equality or discover nested dependencies.
 
 ## Regression coverage
 
-New regressions cover local loaded-link path preservation, direct local host
-inventory without temporary RVT inspection, local saved-file revision mismatch,
-and the no-nested-inspection rule. Existing tests that required recursive linked
-model discovery were updated to the new explicit scope.
+New regressions cover local loaded-link path preservation, saved host link
+metadata overriding unsaved live link rows, direct local host collection without
+temporary RVT inspection, local saved-file revision mismatch, preservation of ACC
+cache identity from a local host, and the no-nested-inspection rule. Existing
+tests that required recursive linked-model discovery were updated to the new
+explicit scope.
 
 Real Revit acceptance is still required for local/network and ACC models,
 including final repathing, relocation, link load state and annotations.

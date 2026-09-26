@@ -111,6 +111,8 @@ an unperformed check into a pass.
 - Confirm a loaded local link keeps its saved filesystem source rather than an
   open:// temporary document identity. A differing saved-file DocumentVersion
   must not block collection.
+- Make an unsaved Revit-link add/remove/path change in the open host. Confirm
+  saved TransmissionData remains authoritative for Revit-link collection.
 - Put another Revit link inside a collected linked RVT. Confirm it is not
   recursively collected; only links directly discovered from the selected host
   are in scope.

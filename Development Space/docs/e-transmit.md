@@ -28,11 +28,17 @@ Revit remains occupied while the command executes; this is not a separate worker
 
 ## Revit link collection in 2.1.7
 
-For an open local host, e-transmit reads the Revit link paths already exposed by
-the live document and copies the identified saved RVT files directly. Local
-linked RVTs are not reopened merely to compare document revisions or discover
-nested dependencies. A loaded local link keeps its saved filesystem path instead
-of being converted into an internal temporary-document identity.
+For an open local host, e-transmit reads Revit-link paths from the saved host
+metadata (TransmissionData) when available and copies those identified saved RVT
+files directly. This means unsaved link additions/removals are not the dependency
+source of truth. The already-open document remains useful for non-RVT resources.
+If saved Revit-link metadata cannot be read, the tool reports that condition and
+falls back to the already exposed live reference list without opening a temporary
+host merely to discover link paths.
+
+Local linked RVTs are not reopened merely to compare document revisions or
+discover nested dependencies. A loaded local link keeps its saved filesystem
+path instead of being converted into an internal temporary-document identity.
 
 ACC/cloud links still use identified cache acquisition where required. Collection
 of a linked RVT stops at that file; nested dependencies inside linked RVTs are
