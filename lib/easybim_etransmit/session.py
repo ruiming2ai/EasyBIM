@@ -510,7 +510,9 @@ class SessionBackend(Backend):
             expected=entry['snapshot_sha256']
             if meta.get('sha256')!=expected:
                 raise SourceError('CACHE_SNAPSHOT_COPY_MISMATCH','The package copy did not match the validated saved-state snapshot.')
-            if not entry.get('is_linked'):
+            if entry.get('is_linked'):
+                entry['inventory_basis']='DIRECT_LINK_COPY'
+            else:
                 meta.update(saved_state_sha256=expected,saved_state_integrity='VERIFIED')
             meta.update(copy_method=entry['cache_metadata']['copy_method'],source_stability='SESSION_SNAPSHOT',
                         source_context=self.registry.public(source))
