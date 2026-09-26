@@ -52,7 +52,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.assertEqual((f.digest(original),os.stat(original).st_mtime),(digest,stamp))
         self.assertEqual(self.doc.PathName,'Autodesk Docs://Project/Host.rvt')
         self.assertTrue(self.doc.IsModified)
-        self.assertTrue(any(i['code']=='SAVED_CACHE_NO_LOADED_REVISION' for i in result['issues']))
+        self.assertFalse(any(i.get('severity')=='error' for i in result['issues']))
 
     def test_collected_cloud_link_is_not_reopened_for_nested_dependencies(self):
         self.put_link();self.put_link(N,'Structure.rvt')
