@@ -66,6 +66,12 @@ class Backend(object):
                        (r.get('kind') == 'RevitLink' and
                         (not r.get('td') or cache_sources.reference_identity(r))) for r in rows)
 
+    def requires_final_host_open(self, record, rows, options):
+        """True cloud/external Revit links need one final document API conversion."""
+        if not record.get('is_primary_host') or not options.get('repath'): return False
+        return any(r.get('target') and r.get('kind')=='RevitLink' and
+                   (not r.get('td') or cache_sources.reference_identity(r)) for r in rows)
+
     def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
         self.guard(target)
         return self.payloads.copy(source, target, owner, cancelled, pulse)
@@ -489,6 +495,37 @@ class Backend(object):
             return True
         finally: dispose(td)
 
+    def _verify_document(self, doc, target, rows, options):
+        issues=[]
+        from System import Int64,Int32
+        for row in rows:
+            if not row.get('target') or row.get('skip_repath'): continue
+            kind=row.get('kind')
+            if kind!='RevitLink' and row.get('special')!='image': continue
+            row.pop('verification',None)
+            f.check(self.cancelled)
+            try:
+                number=int(row['element_id'])
+                ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                element=doc.GetElement(ident)
+                if element is None:
+                    if options.get('cleanup'): continue
+                    raise RuntimeError('Original reference element is missing from the packaged model.')
+                if kind=='RevitLink':
+                    reference=element.GetExternalFileReference()
+                    actual=self.visible(reference.GetAbsolutePath())
+                    expected_load=package_load_state(row)
+                    if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
+                        raise RuntimeError('Packaged Revit link load state does not match the requested state.')
+                else:
+                    actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
+                if f.canonical(actual)!=f.canonical(row['target']):
+                    raise RuntimeError('Packaged reference still points elsewhere: '+actual)
+                row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
+            except Exception as exc:
+                issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
+        return issues
+
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
         self.guard(stage); self.guard(target)
@@ -554,6 +591,27 @@ class Backend(object):
                         save.SetWorksharingOptions(ws)
                     performance.call('repath','revit_save_as',target,doc.SaveAs,target,save)
                 finally: dispose(ws); dispose(save)
+                needs_resave=False
+                if options.get('repath') and external:
+                    # SaveAs establishes the final package base. Reload cloud/external
+                    # links once more as RELATIVE local resources so this same open
+                    # document can be the final verification pass.
+                    for row in external:
+                        f.check(self.cancelled)
+                        number=int(row['element_id'])
+                        ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                        link=doc.GetElement(ident);resource=result=model_path=None
+                        try:
+                            model_path=self.mp(row['target'])
+                            resource=self.DB.ExternalResourceReference.CreateLocalResource(doc,
+                                self.DB.ExternalResourceTypes.BuiltInExternalResourceTypes.RevitLink,
+                                model_path,self.DB.PathType.Relative)
+                            result=link.LoadFrom(resource,None)
+                            if f.text(result.LoadResult) not in ('LinkLoaded','LinkAlreadyLoaded'):
+                                raise RuntimeError('Relative packaged Revit link reload failed: '+f.text(result.LoadResult))
+                            if package_load_state(row) is False: link.Unload(None)
+                            row['repath']='API_LOCAL_LINK_RELATIVE';needs_resave=True
+                        finally:dispose(result);dispose(resource);dispose(model_path)
                 if options.get('repath') and special:
                     # SaveAs has established the correct final base. Revit may
                     # accept a short relative path when the absolute dependency
@@ -574,7 +632,7 @@ class Backend(object):
                             if row.get('loaded') is False: image.Unload()
                             if tx.Commit()!=self.DB.TransactionStatus.Committed:
                                 raise RuntimeError('Relative image reload not committed.')
-                            row['repath']='API_IMAGE_RELATIVE'
+                            row['repath']='API_IMAGE_RELATIVE';needs_resave=True
                         except f.Cancelled: raise
                         except Exception as exc:
                             if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
@@ -582,7 +640,13 @@ class Backend(object):
                             issues.append(issue('IMAGE_REPATH_FAILED',row.get('source',''),exc,'error'))
                         finally:
                             dispose(tx); dispose(opts)
+                if needs_resave:
                     performance.call('repath','revit_save',target,doc.Save)
+                verified_in_process=False
+                if options.get('verify_in_process'):
+                    verify_issues=self._verify_document(doc,target,rows,options)
+                    issues.extend(verify_issues)
+                    verified_in_process=not any(x.get('severity')=='error' for x in verify_issues)
             finally:
                 if doc is not None:
                     if not performance.call('repath','revit_close',target,doc.Close,False): raise RuntimeError('Temporary output model could not be closed.')
@@ -599,6 +663,8 @@ class Backend(object):
                     issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),
                                         'Source copied, but this reference cannot be repathed safely by the exposed API. '
                                         'Repair in the packaged model and verify after moving the package.'))
+        if options.get('verify_in_process'):
+            return dict(issues=issues,verified_in_process=bool(locals().get('verified_in_process',False)))
         return issues
 
     @performance.timed('verification', 'host_verify', file_index=1)
@@ -618,33 +684,7 @@ class Backend(object):
         issues=[]
         try:
             doc=self.open_copy(target)
-            from System import Int64,Int32
-            for row in rows:
-                if not row.get('target') or row.get('skip_repath'): continue
-                kind=row.get('kind')
-                if kind!='RevitLink' and row.get('special')!='image': continue
-                row.pop('verification',None)
-                f.check(self.cancelled)
-                try:
-                    number=int(row['element_id'])
-                    ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
-                    element=doc.GetElement(ident)
-                    if element is None:
-                        if options.get('cleanup'): continue
-                        raise RuntimeError('Original reference element is missing from the packaged model.')
-                    if kind=='RevitLink':
-                        reference=element.GetExternalFileReference()
-                        actual=self.visible(reference.GetAbsolutePath())
-                        expected_load=package_load_state(row)
-                        if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
-                            raise RuntimeError('Packaged Revit link load state does not match the requested state.')
-                    else:
-                        actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
-                    if f.canonical(actual)!=f.canonical(row['target']):
-                        raise RuntimeError('Packaged reference still points elsewhere: '+actual)
-                    row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
-                except Exception as exc:
-                    issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
+            issues.extend(self._verify_document(doc,target,rows,options))
         except f.Cancelled: raise
         except Exception as exc:
             issues.append(issue('MODEL_OPEN_VERIFICATION_FAILED',target,exc,'error'))

@@ -62,6 +62,7 @@ class PackageRevitOperations(unittest.TestCase):
             self.saves.append(path)
             with open(path,'wb') as out:out.write(b'processed copy')
         self.doc=Obj(IsWorkshared=False,GetElement=lambda i:self.link,SaveAs=save,
+                     Save=lambda:self.saves.append(self.target),
                      Close=lambda save:self.closed.append(save) or True)
         def resource(doc,kind,path,path_type):
             value=Obj(doc=doc,kind=kind,path=path,path_type=path_type)
@@ -85,19 +86,19 @@ class PackageRevitOperations(unittest.TestCase):
         self.assertIs(resource.doc,self.doc)
         self.assertEqual(resource.path,self.link_path)
         self.assertEqual(resource.path_type,'Absolute')
-        self.assertEqual(self.saves,[self.target]);self.assertEqual(self.unloads,[])
+        self.assertEqual(self.saves,[self.target,self.target]);self.assertEqual(self.unloads,[])
         self.assertEqual(self.closed,[False])
 
     def test_unchecked_load_option_unloads_only_packaged_link(self):
         self.row['package_loaded']=False
         self.b.finish(self.stage,self.target,[self.row],dict(repath=True))
-        self.assertEqual(self.unloads,[True])
+        self.assertEqual(self.unloads,[True,True])
 
     def test_cloud_link_with_native_td_representation_still_converts_resource(self):
         self.row['td']=True
         self.b.finish(self.stage,self.target,[self.row],dict(repath=True))
         self.assertEqual(self.loads,self.resources)
-        self.assertEqual(len(self.resources),1)
+        self.assertEqual(len(self.resources),2);self.assertEqual(self.resources[1].path_type,'Relative')
 
     def test_failed_cloud_conversion_does_not_save_partial_model(self):
         self.link.LoadFrom=lambda *a:Obj(LoadResult='LinkNotFound')

@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.7
+# EasyBIM e-transmit 2.1.9
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,7 +9,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.7.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.9.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
@@ -45,6 +45,16 @@ of a linked RVT stops at that file; nested dependencies inside linked RVTs are
 not recursively collected. Repath and final model verification remain separate
 package operations and may report issues without undoing successfully collected
 link files.
+
+## Live ACC and final verification in 2.1.9
+
+Live ACC cloud-workshared hosts must be opened first through native **Revit Home → Autodesk Docs**. EasyBIM no longer offers the published APS/version picker as a normal e-transmit source, because a published model can lag the live workshared state. The command uses the ACC document currently loaded by Revit; if collaborators have synchronized newer work, use Revit's Reload Latest before transmitting when that state is required.
+
+Ordinary local/network/file-based Revit links keep the existing `Links/Revit` hierarchy and are repathed with relative TransmissionData paths without opening the copied host. Same-name files keep their original filename and are separated by collision subfolders.
+
+True ACC External Resource Revit links cannot be converted by TransmissionData alone. Those hosts are finalized only after every package dependency is in its final location: EasyBIM opens the copied host once, converts the cloud link to a packaged local relative resource, saves it, verifies the immediate path/load state in that same open document, and closes it. There is no second verification reopen.
+
+The existing pyRevit progress strip remains inside Revit but is positioned below the title area. Blue indicates collecting/repathing, purple final ACC link conversion or final package verification, green ready, amber ready with review issues, red incomplete, and gray cancelled. `PACKAGE BUILT — VERIFYING FINAL PACKAGE` means package files are already in place and the tool is performing the final opening check.
 
 ## File Structure Organization
 
@@ -119,8 +129,10 @@ is inspected for its own dependencies rather than borrowing the loaded inventory
 
 Separately browsed local/Desktop Connector files retain their exact source paths.
 Exact prefix mappings must preserve the configured source, including Shared/Consumed.
-The explicit **Add ACC published model** mode uses authenticated, version-specific
-downloads. It is not a fallback for unavailable cache sources. PacCache is not used.
+The e-transmit source UI does not provide an ACC published-version browser. For live
+cloud-workshared state, open the model natively in Revit Home → Autodesk Docs first.
+Existing cache identity/acquisition code is used only to collect the saved host/link
+bytes associated with that open Revit document; PacCache is not used.
 
 ## Repath, upgrade and cleanup
 
@@ -154,7 +166,7 @@ remove all sheets but retain all views, or retain only selected view types.
 Templates, unsupported special views and required primary views are protected.
 A view/purge deletion that cascades into a retained view rolls back. Purge is
 available only where the public `Document.GetUnusedElements` API exists.
-Cleanup is applied to collected RVTs, including linked RVTs, not just the hosts.
+Directly collected linked RVTs remain unchanged. Cleanup/upgrade applies only to package models explicitly processed by the host workflow.
 
 Model processing is copy-only. If it fails, the baseline collected output file is
 restored and the failure is reported. Workshared outputs may be marked transmitted
