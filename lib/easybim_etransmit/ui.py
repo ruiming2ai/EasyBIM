@@ -36,27 +36,142 @@ def progress_phase(label):
     return 'COLLECTING',PHASE_COLORS['collecting'],value
 
 
-class TransferProgressBar(forms.ProgressBar):
-    """Keep one pyRevit prompt bar, positioned below Revit's title area."""
-    def update_window(self):
-        if getattr(self, '_etransmit_positioned', False):
-            return
-        forms.ProgressBar.update_window(self)
-        self.Top=getattr(self,'Top',0)+float(getattr(self,'user_height',32) or 32)
-        self._etransmit_positioned = True
+def _top_dock_state():
+    """Return a Revit dock state that reserves space below the ribbon/chrome."""
+    import Autodesk.Revit.UI as RUI
+    state=RUI.DockablePaneState()
+    state.DockPosition=RUI.DockPosition.Top
+    return state
 
-    def set_phase(self,label):
-        phase,color,detail=progress_phase(label)
-        if phase in ('READY','READY — REVIEW ISSUES','INCOMPLETE','CANCELLED'):
-            self.title=phase
-        else:
-            self.title=phase+' | '+detail
+
+def _phase_detail(label,phase):
+    value=f.text(label or '')
+    if '|' in value:
+        return value.split('|',1)[1].strip()
+    upper=value.upper()
+    for prefix in ('PACKAGE BUILT — ','PACKAGE BUILT - '):
+        if upper.startswith(prefix):
+            value=value[len(prefix):].strip();break
+    if phase in ('READY','READY — REVIEW ISSUES','INCOMPLETE','CANCELLED'):
+        return ''
+    if upper.startswith(phase):
+        value=value[len(phase):].lstrip(' :-—|')
+    return value
+
+
+def _set_brush(control,color):
+    try:
+        from System.Windows.Media import BrushConverter
+        control.Foreground=BrushConverter().ConvertFromString(color)
+    except Exception:
+        pass
+
+
+def _pump_dispatcher(control):
+    """Refresh the docked WPF pane and allow its Cancel click to be processed."""
+    try:
+        from System import Action
+        from System.Windows.Threading import DispatcherPriority
+        control.Dispatcher.Invoke(DispatcherPriority.Background,Action(lambda:None))
+    except Exception:
+        pass
+
+
+class TransferProgressPanel(forms.WPFPanel):
+    """Thin Revit dockable progress strip; Revit reserves layout space for it."""
+    panel_id='8e4dc5df-aedf-45e7-8ef4-68d4a4c4e210'
+    panel_title='EasyBIM e-transmit'
+    panel_source=os.path.join(os.path.dirname(__file__),'progress.xaml')
+    initial_state=None
+
+    def __init__(self):
+        forms.WPFPanel.__init__(self)
+        self.reset()
+
+    def reset(self):
+        self.cancelled=False
         try:
-            from System.Windows.Media import BrushConverter
-            self.pbar.Foreground=BrushConverter().ConvertFromString(color)
+            self.CancelButton.IsEnabled=True;self.CancelButton.Content='Cancel'
+            self.PhaseText.Text='COLLECTING';self.DetailText.Text='Preparing e-transmit'
+            self.Progress.IsIndeterminate=True;self.Progress.Minimum=0.0;self.Progress.Maximum=1.0;self.Progress.Value=0.0
+            self.PercentText.Text=''
+            _set_brush(self.Progress,PHASE_COLORS['collecting'])
         except Exception:
             pass
+        _pump_dispatcher(self)
+
+    def cancel_click(self,sender,args):
+        self.cancelled=True
+        try:
+            self.CancelButton.IsEnabled=False;self.CancelButton.Content='Cancelling…'
+        except Exception:
+            pass
+
+    def set_phase(self,label):
+        phase,color,_=progress_phase(label)
+        detail=_phase_detail(label,phase)
+        try:
+            self.PhaseText.Text=phase;self.DetailText.Text=detail
+            _set_brush(self.Progress,color)
+        except Exception:
+            pass
+        _pump_dispatcher(self)
         return phase
+
+    def update_progress(self,current,total):
+        try:
+            total=max(1.0,float(total));current=max(0.0,min(float(current),total))
+            self.Progress.IsIndeterminate=False;self.Progress.Minimum=0.0;self.Progress.Maximum=total;self.Progress.Value=current
+            self.PercentText.Text='{0}%'.format(int(round((current/total)*100.0)))
+        except Exception:
+            pass
+        _pump_dispatcher(self)
+
+
+_PROGRESS_INSTANCE_ATTR='_easybim_etransmit_progress_panel'
+
+
+def _ensure_progress_panel():
+    panel=getattr(forms,_PROGRESS_INSTANCE_ATTR,None)
+    registered=False
+    try: registered=bool(forms.is_registered_dockable_panel(TransferProgressPanel))
+    except Exception: registered=False
+    if panel is not None and registered:
+        return panel
+    if registered and panel is None:
+        # A full pyRevit engine reload can retain Revit's pane registration while
+        # discarding Python module globals. Refuse to overlay another window; the
+        # transmission remains usable even if progress cannot be rebound.
+        return None
+    try:
+        TransferProgressPanel.initial_state=_top_dock_state()
+        panel=forms.register_dockable_panel(TransferProgressPanel,default_visible=False)
+        setattr(forms,_PROGRESS_INSTANCE_ATTR,panel)
+        return panel
+    except Exception:
+        return None
+
+
+class DockableTransferProgress(object):
+    """Context wrapper matching the small API the e-transmit engine needs."""
+    def __init__(self): self.panel=None
+    def __enter__(self):
+        self.panel=_ensure_progress_panel()
+        if self.panel is not None:
+            self.panel.reset()
+            try: forms.open_dockable_panel(TransferProgressPanel)
+            except Exception: self.panel=None
+        return self
+    def __exit__(self,*args):
+        if self.panel is not None:
+            try: forms.close_dockable_panel(TransferProgressPanel)
+            except Exception: pass
+    @property
+    def cancelled(self): return bool(self.panel is not None and self.panel.cancelled)
+    def set_phase(self,label):
+        return self.panel.set_phase(label) if self.panel is not None else progress_phase(label)[0]
+    def update_progress(self,current,total):
+        if self.panel is not None:self.panel.update_progress(current,total)
 
 
 class Choice(object):
@@ -249,7 +364,7 @@ def run(uiapp,xaml):
         dialog.ShowDialog()
         if not dialog.result:return
         choices,root,opts,extras=dialog.result
-        with TransferProgressBar(title='e-transmit',cancellable=True,indeterminate=True) as pb:
+        with DockableTransferProgress() as pb:
             def cancel():return pb.cancelled
             def pulse(label,current,total):
                 pb.set_phase(label);pb.update_progress(current,max(1,total))

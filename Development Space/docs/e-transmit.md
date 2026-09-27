@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.9
+# EasyBIM e-transmit 2.1.10
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,7 +9,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.9.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.10.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
@@ -54,7 +54,15 @@ Ordinary local/network/file-based Revit links keep the existing `Links/Revit` hi
 
 True ACC External Resource Revit links cannot be converted by TransmissionData alone. Those hosts are finalized only after every package dependency is in its final location: EasyBIM opens the copied host once, converts the cloud link to a packaged local relative resource, saves it, verifies the immediate path/load state in that same open document, and closes it. There is no second verification reopen.
 
-The existing pyRevit progress strip remains inside Revit but is positioned below the title area. Blue indicates collecting/repathing, purple final ACC link conversion or final package verification, green ready, amber ready with review issues, red incomplete, and gray cancelled. `PACKAGE BUILT — VERIFYING FINAL PACKAGE` means package files are already in place and the tool is performing the final opening check.
+Phase colors remain blue for collecting/repathing, purple for final ACC link conversion or final package verification, green for ready, amber for ready-with-review, red for incomplete, and gray for cancelled. `PACKAGE BUILT — VERIFYING FINAL PACKAGE` means package files are already in place and the tool is performing the final opening check. The progress surface itself is described in the 2.1.10 section below.
+
+## Dockable progress in 2.1.10
+
+e-transmit now uses a thin Revit dockable pane instead of pyRevit's floating prompt-bar progress overlay. The pane defaults to Revit's **Top** dock position, so Revit reserves layout space for it rather than drawing over the Revit title, ribbon, document tabs, or model canvas.
+
+The strip keeps phase, current file/detail text, progress percentage, and Cancel as separate controls. It is shown only while e-transmit is running and hidden afterward. Phase colors remain blue for collecting/repathing, purple for ACC finalization/final verification, green for ready, amber for review, red for incomplete, and gray for cancelled.
+
+The e-transmit command still occupies Revit during Revit-API operations. The dockable pane fixes visual obstruction; it does not make document-editing operations concurrent with an executing Revit command.
 
 ## File Structure Organization
 

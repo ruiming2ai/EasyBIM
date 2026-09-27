@@ -84,29 +84,20 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result['status'], 'CANCELLED')
         self.assertFalse(any(x['code'] == 'PROGRESS_UI_FAILED' for x in result['issues']))
 
-    def test_ui_run_keeps_progress_alive_when_background_open_loses_host_context(self):
+    def test_ui_run_keeps_dockable_progress_alive_when_background_open_loses_host_context(self):
         state = self.state
-        class Bar(object):
-            instances = []
-            def __init__(self, **kwargs):
-                self.cancelled = False
-                self.title = kwargs.get('title')
-                self.update_window()
-                Bar.instances.append(self)
-            def update_window(self):
-                state.positions += 1
-                return state.uiapp.MainWindowHandle
-            def update_progress(self, *args):
-                state.calls += 1
-                self.update_window()
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                pass
-        alerts = []
+        class Panel(object):
+            def __init__(self):
+                self.cancelled=False;self.calls=0;self.phases=[];self.resets=0
+            def reset(self): self.cancelled=False;self.resets+=1
+            def set_phase(self,label): self.phases.append(label);return label
+            def update_progress(self,*args): self.calls+=1
+        panel=Panel();opens=[];closes=[];alerts=[]
         fake = types.ModuleType('pyrevit')
-        fake.forms = Obj(WPFWindow=object, ProgressBar=Bar,
-                         alert=lambda msg, **kw: alerts.append(msg))
+        fake.forms = Obj(WPFWindow=object, WPFPanel=object, ProgressBar=object,
+                         alert=lambda msg, **kw: alerts.append(msg),
+                         open_dockable_panel=lambda *a:opens.append(True),
+                         close_dockable_panel=lambda *a:closes.append(True))
         fake.script = Obj()
         fake.DB = Obj()
         old_pyrevit = sys.modules.get('pyrevit')
@@ -116,6 +107,7 @@ class ContextTests(unittest.TestCase):
         os.startfile = lambda path: None
         try:
             ui = importlib.import_module('easybim_etransmit.ui')
+            ui._ensure_progress_panel=lambda:panel
             options = f.defaults(); options['per_model'] = False
             ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
             ui.SessionBackend = lambda *a: self.backend
@@ -124,9 +116,10 @@ class ContextTests(unittest.TestCase):
                 result = json.load(inp)
             self.assertEqual(e.package_counts(result)['files_copied'], 3, repr(result['issues']))
             self.assertEqual(result['status'], 'COLLECTED', repr(result['issues']))
-            self.assertGreater(state.calls, 3)
-            self.assertEqual(state.positions, 1, 'Do not re-read mutable host context after background opening')
-            self.assertEqual(len(Bar.instances), 1)
+            self.assertGreater(panel.calls, 3)
+            self.assertEqual(panel.resets,1)
+            self.assertEqual(len(opens),1)
+            self.assertEqual(len(closes),1)
         finally:
             sys.modules.pop('easybim_etransmit.ui', None)
             if old_ui is not None: sys.modules['easybim_etransmit.ui'] = old_ui

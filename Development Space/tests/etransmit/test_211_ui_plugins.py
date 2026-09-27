@@ -12,7 +12,7 @@ class UI(unittest.TestCase):
         self.old_pyrevit=sys.modules.get('pyrevit');self.old_ui=sys.modules.pop('easybim_etransmit.ui',None)
         self.answer=True;self.alerts=[]
         def alert(msg,**kw):self.alerts.append(msg);return self.answer
-        fake=types.ModuleType('pyrevit');fake.forms=Obj(WPFWindow=object,ProgressBar=object,alert=alert)
+        fake=types.ModuleType('pyrevit');fake.forms=Obj(WPFWindow=object,WPFPanel=object,ProgressBar=object,alert=alert)
         fake.DB=Obj();fake.script=Obj();sys.modules['pyrevit']=fake
         self.ui=importlib.import_module('easybim_etransmit.ui')
         self.addCleanup(self.cleanup)
