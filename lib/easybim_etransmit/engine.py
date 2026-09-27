@@ -25,6 +25,13 @@ def issue(code, source, message, severity='warning'):
     return row
 
 
+def normalize_processing_result(value):
+    """Keep legacy backend list results while allowing one-pass final verification metadata."""
+    if isinstance(value, dict):
+        return list(value.get('issues') or []), bool(value.get('verified_in_process'))
+    return list(value or []), False
+
+
 class StagingSourceError(ValueError):
     pass
 
@@ -355,11 +362,59 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if isinstance(diagnostic.get(field), f.string_types):
                     for old, new in sorted(stage_paths.items(), key=lambda item: -len(item[0])):
                         diagnostic[field] = diagnostic[field].replace(old, new)
+        # True external/cloud resources cannot be converted by TransmissionData alone.
+        # Defer that unavoidable document open until all package files are in final
+        # locations, then convert, save and verify in the same open document.
+        for record in reversed(result['files']):
+            if not record.get('finalize_after_delivery') or record.get('status')!='COPIED': continue
+            rows=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source']) and not r.get('skip_repath')]
+            if any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
+                record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
+                record['model_verification']='DEFERRED'
+                add_issue('MODEL_VERIFICATION_DEFERRED',record['source'],
+                          'A linked model was not delivered; finalization was deferred to prevent source/cloud fallback.','error')
+                continue
+            stage=f.temporary_path(work); backup=f.temporary_path(work)
+            try:
+                notify('FINALIZING ACC LINKS | '+record['source'],0,1)
+                f.copy_file(record['target'],backup,delivery_cancel)
+                f.copy_file(record['target'],stage,delivery_cancel)
+                final_options=dict(opts);final_options['verify_in_process']=True
+                final_options['reference_target']=record['target']
+                final_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
+                raw=performance.call('verification','finalize_and_verify_host',record['source'],
+                                     backend.finish,stage,record['target'],rows,final_options)
+                problems,verified=normalize_processing_result(raw)
+                result['issues'].extend(problems)
+                record['verified_in_process']=verified
+                record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
+                record['model_verification']=('FAILED' if any(p.get('severity')=='error' for p in problems)
+                                               else 'OPENED_AND_REFERENCES_CHECKED' if verified else 'DEFERRED')
+                record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
+                record['verified_signature']=f.signature(record['target'])
+            except f.Cancelled:
+                result['status']='CANCELLED';record['processing_status']='ROLLED_BACK';record['model_verification']='DEFERRED'
+                try: shutil.copyfile(backup,record['target'])
+                except Exception as exc:add_issue('HOST_ROLLBACK_FAILED',record['source'],exc,'error')
+            except Exception as exc:
+                record['processing_status']='FAILED';record['model_verification']='FAILED'
+                try: shutil.copyfile(backup,record['target'])
+                except Exception as rollback_exc:add_issue('HOST_ROLLBACK_FAILED',record['source'],rollback_exc,'error')
+                add_issue('MODEL_PROCESSING_FAILED',record['source'],
+                          'Final ACC/package processing failed; copied files were retained or restored: '+f.text(exc),'error')
+            finally:
+                for path in (stage,backup):
+                    try:
+                        if os.path.isfile(path):os.remove(path)
+                    except Exception:pass
+
         verifier = getattr(backend, 'verify_package', None)
         for record in reversed(result['files']):
             if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
             if record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE' and not record.get('is_primary_host'):
                 record['model_verification']='FILE_INTEGRITY_ONLY'; continue
+            if record.get('verified_in_process'):
+                record['model_verification']='OPENED_AND_REFERENCES_CHECKED'; continue
             if not opts.get('repath') or not verifier:
                 record['model_verification'] = 'NOT_ATTEMPTED'; continue
             if result['status'] == 'CANCELLED' or (cancelled and cancelled()):
@@ -376,7 +431,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 add_issue('MODEL_VERIFICATION_DEFERRED', record['source'], 'A linked model was not delivered; final opening is deferred to prevent source/cloud fallback.', 'error')
                 continue
             try:
-                notify('Checking delivered model '+record['source'],0,1)
+                notify('PACKAGE BUILT — VERIFYING FINAL PACKAGE | '+record['source'],0,1)
                 f.validate_destination_path(record['target'])
                 problems = performance.call('verification','verify_final_host',record['source'],
                     verifier,record['target'], rows, opts) or []
@@ -678,15 +733,20 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                                   'The collected host is retained unchanged. Repath/cleanup and link-opening verification were deferred because linked RVT files are not packaged.')
                         continue
                 target = record['target']
+                model_edges = [r for r in edges
+                               if f.canonical(r['owner']) == f.canonical(record['source'])
+                               and not r.get('skip_repath')]
+                finalizer=getattr(backend,'requires_final_host_open',None)
+                if record.get('is_primary_host') and finalizer and finalizer(record,model_edges,opts):
+                    record['processing_status']='FINALIZATION_DEFERRED'
+                    record['finalize_after_delivery']=True
+                    continue
                 # Backend.finish receives the final target explicitly and stages absolute
                 # references before opening. Internal paths need not repeat the source tree.
                 stage = f.temporary_path(work)
                 backup = f.temporary_path(work)
                 f.copy_file(target, backup, cancelled)
                 f.copy_file(target, stage, cancelled)
-                model_edges = [r for r in edges
-                               if f.canonical(r['owner']) == f.canonical(record['source'])
-                               and not r.get('skip_repath')]
                 try:
                     notify('Repath / cleanup ' + record['source'], 0, 1)
                     processing_options=dict(opts)
@@ -694,9 +754,11 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         processing_options['reference_target']=f.destination(root,record['relative'])
                     processing_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
                     f.validate_destination_path(target)
-                    processing_issues=performance.call('repath','process_host',record['source'],
-                        backend.finish,stage, target, model_edges, processing_options) or []
+                    raw_processing=performance.call('repath','process_host',record['source'],
+                        backend.finish,stage, target, model_edges, processing_options)
+                    processing_issues,verified_in_process=normalize_processing_result(raw_processing)
                     result['issues'].extend(processing_issues)
+                    record['verified_in_process']=verified_in_process
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
                     record['verified_signature'] = f.signature(target)

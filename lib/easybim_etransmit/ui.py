@@ -9,23 +9,54 @@ import re
 import traceback
 from pyrevit import forms, script, DB
 from . import VERSION, files as f
-from . import cleanup, engine, batch, aps, oauth, cloud_picker, layout
+from . import cleanup, engine, batch, layout
 from .session import Registry, SessionBackend
 
 
-class TransferProgressBar(forms.ProgressBar):
-    """Keep the initial geometry while document hooks change pyRevit context.
+PHASE_COLORS=dict(collecting='#2F80ED',repathing='#2F80ED',verifying='#8E44AD',
+                  ready='#27AE60',review='#F2C94C',incomplete='#EB5757',cancelled='#828282')
 
-    ProgressBar redraws normally (including Cancel), but its update_window
-    normally looks up HOST_APP.uiapp.MainWindowHandle on every redraw. A
-    background document event can leave that mutable global without a UI app.
-    Do not monkeypatch pyRevit or disable any document hooks to work around it.
-    """
+def progress_phase(label):
+    value=f.text(label or '')
+    upper=value.upper()
+    if upper.startswith('READY — REVIEW ISSUES') or upper.startswith('READY - REVIEW ISSUES'):
+        return 'READY — REVIEW ISSUES',PHASE_COLORS['review'],value
+    if upper.startswith('READY'):
+        return 'READY',PHASE_COLORS['ready'],value
+    if upper.startswith('INCOMPLETE') or upper.startswith('FAILED'):
+        return 'INCOMPLETE',PHASE_COLORS['incomplete'],value
+    if upper.startswith('CANCELLED') or upper.startswith('CANCELED'):
+        return 'CANCELLED',PHASE_COLORS['cancelled'],value
+    if 'FINALIZING ACC LINKS' in upper:
+        return 'FINALIZING ACC LINKS',PHASE_COLORS['verifying'],value
+    if 'VERIFYING FINAL PACKAGE' in upper:
+        return 'VERIFYING FINAL PACKAGE',PHASE_COLORS['verifying'],value
+    if 'REPATH' in upper or 'CLEANUP' in upper:
+        return 'REPATHING',PHASE_COLORS['repathing'],value
+    return 'COLLECTING',PHASE_COLORS['collecting'],value
+
+
+class TransferProgressBar(forms.ProgressBar):
+    """Keep one pyRevit prompt bar, positioned below Revit's title area."""
     def update_window(self):
         if getattr(self, '_etransmit_positioned', False):
             return
         forms.ProgressBar.update_window(self)
+        self.Top=getattr(self,'Top',0)+float(getattr(self,'user_height',32) or 32)
         self._etransmit_positioned = True
+
+    def set_phase(self,label):
+        phase,color,detail=progress_phase(label)
+        if phase in ('READY','READY — REVIEW ISSUES','INCOMPLETE','CANCELLED'):
+            self.title=phase
+        else:
+            self.title=phase+' | '+detail
+        try:
+            from System.Windows.Media import BrushConverter
+            self.pbar.Foreground=BrushConverter().ConvertFromString(color)
+        except Exception:
+            pass
+        return phase
 
 
 class Choice(object):
@@ -34,11 +65,20 @@ class Choice(object):
         self.Document=document;self.Mode=mode;self.CloudSelection=cloud
 
 
+def validate_source_modes(models):
+    """Reject legacy published-ACC rows; live ACC sources must be opened natively in Revit."""
+    allowed=set(('LIVE_DOCUMENT','SAVED_FILE'))
+    invalid=[getattr(row,'Mode','') for row in models if getattr(row,'Mode','') not in allowed]
+    if invalid:
+        raise ValueError('Unsupported source mode: '+', '.join(sorted(set(invalid)))+
+                         '. Open live ACC models from Revit Home > Autodesk Docs before e-transmit.')
+    return True
+
+
 class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
         self.snapshots_authorized=False
-        self.tokens=None;self.client=None;self.client_id='';self.callback_uri='http://127.0.0.1:8767/callback'
         self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.mappings=[]; self.view_types=[]
         self.categories=[Choice(label,key) for key,label in f.CATEGORIES]
         self.Categories.ItemsSource=self.categories
@@ -58,7 +98,6 @@ class Dialog(forms.WPFWindow):
             self.FileStructure.SelectedIndex=[x.Key for x in self.structures].index(layout.mode(saved.get('file_structure')))
             self.Zip.IsChecked=saved.get('zip',False)
             self.ZipPerModel.IsChecked=saved.get('zip_per_model',False)
-            self.client_id=saved.get('aps_client_id','');self.callback_uri=saved.get('aps_callback_uri',self.callback_uri)
         except (IOError,ValueError): pass
         active=uiapp.ActiveUIDocument.Document if uiapp.ActiveUIDocument else None
         for doc in uiapp.Application.Documents:
@@ -100,57 +139,6 @@ class Dialog(forms.WPFWindow):
         if path:
             row.Source=path;row.Name=os.path.basename(path);row.Mode='SAVED_FILE';row.Document=None
             row.CloudSelection=None;row.Checked=True; self.refresh()
-
-    def release_credentials(self):
-        if self.tokens is not None:self.tokens.close()
-        self.tokens=None;self.client=None
-
-    def sign_in_cloud(self,sender=None,args=None):
-        client_id=forms.ask_for_string(default=self.client_id,
-            prompt='APS native-app CLIENT ID (not a secret). The app must be provisioned for this ACC account with Data Management and Forma/ACC APIs.',
-            title='Optional Autodesk read-only sign-in')
-        if not client_id:return False
-        callback=forms.ask_for_string(default=self.callback_uri,
-            prompt='The exact loopback callback registered for the native app.',title='APS callback')
-        if not callback:return False
-        try:
-            self.release_credentials()
-            with TransferProgressBar(title='Autodesk sign-in',cancellable=True,indeterminate=True) as pb:
-                self.tokens=oauth.sign_in(client_id,callback,lambda:pb.cancelled,
-                    lambda label,cur,total:pb.update_progress(cur,total))
-            self.client_id=client_id;self.callback_uri=callback
-            self.client=aps.Client(self.tokens)
-            self.AuthStatus.Text='Signed in for this command only | read scope: data:read'
-            return True
-        except f.Cancelled:return False
-        except Exception as exc:
-            forms.alert(f.text(exc),title='Autodesk sign-in');return False
-
-    def choose_cloud(self):
-        if self.client is None and not self.sign_in_cloud():return None
-        def choose(items,title):
-            if not items:
-                forms.alert('No accessible matching items were returned. Check project/download permissions.',title=title)
-                return None
-            return forms.SelectFromList.show(items,name_attr='Name',title=title,multiselect=False)
-        try:return cloud_picker.choose(self.client,choose)
-        except Exception as exc:
-            forms.alert(f.text(exc),title='Published ACC version');return None
-
-    def add_cloud_model(self,sender,args):
-        selected=self.choose_cloud()
-        if not selected:return
-        graph=selected['graph']
-        if not forms.alert('Transmit this PUBLISHED version, not unsaved/live model state?\n\n'+selected['display']+
-                '\n\nAutodesk returned '+str(len(graph.entries)-1)+' linked file(s). Missing permissions can omit links; the model inventory will be checked separately.',yes=True,no=True):return
-        self.models.append(Choice(graph.host['modelName'],source=selected['display'],mode='PUBLISHED_VERSION',cloud=selected))
-        self.refresh()
-
-    def associate_cloud_graph(self,sender,args):
-        row=self.Models.SelectedItem
-        if row is None or row.Mode!='LIVE_DOCUMENT':
-            return forms.alert('Select an open-model row first. Published-mode models already include their authoritative download graph.')
-        forms.alert('Open-model rows use saved local/cache state only, without Autodesk downloads. Use Add ACC published model for an explicitly published-version transmittal.')
 
     def remove_model(self,sender,args):
         row=self.Models.SelectedItem
@@ -201,6 +189,8 @@ class Dialog(forms.WPFWindow):
         self.Models.CommitEdit()
         models=[x for x in self.models if x.Checked]
         if not models: return forms.alert('Select at least one source model.')
+        try: validate_source_modes(models)
+        except ValueError as exc: return forms.alert(f.text(exc),title='e-transmit source')
         output=f.text(self.Output.Text).strip()
         if not os.path.isdir(output): return forms.alert('Select an existing output directory.')
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
@@ -217,7 +207,6 @@ class Dialog(forms.WPFWindow):
         unresolved=[]
         for row in models:
             if row.Mode=='LIVE_DOCUMENT':continue
-            if row.Mode=='PUBLISHED_VERSION':continue
             try: path=f.resolve_source(row.Source,mappings=opts['mappings'])
             except ValueError: path=None
             if not path: unresolved.append(row.Name+' : '+row.Source)
@@ -246,7 +235,6 @@ class Dialog(forms.WPFWindow):
         if self.SaveSettings.IsChecked:
             saved=dict((k,opts[k]) for k in ('deep','repath','load_unloaded_files','file_structure','per_model','reports','zip','zip_per_model','mappings'))
             saved['output']=output
-            saved['aps_client_id']=self.client_id;saved['aps_callback_uri']=self.callback_uri
             folder=os.path.dirname(self.settings)
             try:
                 if not os.path.isdir(folder): os.makedirs(folder)
@@ -264,7 +252,7 @@ def run(uiapp,xaml):
         with TransferProgressBar(title='e-transmit',cancellable=True,indeterminate=True) as pb:
             def cancel():return pb.cancelled
             def pulse(label,current,total):
-                pb.title='e-transmit | '+f.text(label);pb.update_progress(current,max(1,total))
+                pb.set_phase(label);pb.update_progress(current,max(1,total))
             registry=Registry(DB,uiapp.Application,root+'_ReadOnlySnapshots',cancel,
                               opts['include'].get('spreadsheets',True),saved_state_only=True)
             sources=[];model_names={};live_keys=[]
@@ -273,23 +261,27 @@ def run(uiapp,xaml):
                 if row.Mode=='LIVE_DOCUMENT':
                     key=registry.add_live(row.Document)
                     sources.append(key);live_keys.append(key);model_names[key]=registry.get(key)['name']
-                elif row.Mode=='PUBLISHED_VERSION':
-                    selected=row.CloudSelection
-                    key=registry.add_graph(selected['graph'],selected['client']);sources.append(key);model_names[key]=registry.get(key)['name']
                 else:
                     sources.append(row.Source);model_names[row.Source]=getattr(row,'Name',row.Source)
-            for client in registry.clients.values():client.cancelled=cancel
             if sources:
                 results=batch.run_batch(sources,root,
                     lambda package,source:SessionBackend(DB,uiapp.Application,package,registry,cancel),
                     opts,extras,cancel,pulse,model_names=model_names)
             was_cancelled=cancel()
+            if was_cancelled:
+                pb.set_phase('CANCELLED')
+            elif any(r.get('status')=='FAILED' or any(i.get('severity')=='error' for i in r.get('issues',[])) for r in results):
+                pb.set_phase('INCOMPLETE')
+            elif any(r.get('status')=='NEEDS_REVIEW' or any(i.get('severity')!='info' for i in r.get('issues',[])) for r in results):
+                pb.set_phase('READY — REVIEW ISSUES')
+            else:
+                pb.set_phase('READY')
+            pb.update_progress(1,1)
         if not results:return forms.alert('Transmission cancelled before any models were processed.')
         message=engine.completion_message(results,len(choices),cancelled=was_cancelled)
         forms.alert(message+'\n\nOutput: '+root+'\n\nKeep the full model-named job folders, including their Links folders together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
         os.startfile(root)
     finally:
-        dialog.release_credentials()
         if registry is not None:
             try:registry.close()
             except Exception:script.get_logger().warning('Temporary read-only source snapshots could not all be removed; the open working models were not saved or closed.')
