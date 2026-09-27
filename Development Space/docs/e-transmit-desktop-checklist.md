@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.7.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.9.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -120,3 +120,14 @@ an unperformed check into a pass.
   acquired and copied, while the linked RVT itself is not recursively inspected.
 - With Repath enabled, verify the packaged host points to the collected link files.
   Repath/verification failure must not delete a successfully copied dependency.
+
+
+2.1.9 live-ACC / finalization / progress checks:
+
+- For a live ACC cloud-workshared host, open it first from Revit Home → Autodesk Docs. Confirm the e-transmit dialog has no APS sign-in, published-model picker, or published-version source mode.
+- If another user has synchronized after the host was opened, use Revit Reload Latest when that newer state is required. Confirm e-transmit itself never Syncs, Publishes, or saves the working source.
+- For a local/network host with ordinary RVT links, confirm repath uses relative Links/Revit paths without a preparatory host document open. Same-name links must retain their filenames in separate collision subfolders.
+- For a true ACC External Resource Revit link, confirm the copied host is opened exactly once after dependencies reach final package paths. That one open must convert to a local relative link, save, verify target/load state, and close; no second verification reopen.
+- Relocate the complete package and open only the copied host. Confirm converted ACC links resolve to packaged relative RVTs and preserve requested load state, placement, linked tags and dimensions.
+- Confirm the pyRevit progress strip sits below the Revit title so the document filename remains readable. Check blue Collecting/Repathing, purple Finalizing ACC Links / Verifying Final Package, green Ready, amber Ready—Review Issues, red Incomplete and gray Cancelled.
+- During ordinary final verification, confirm the status reads PACKAGE BUILT — VERIFYING FINAL PACKAGE. Review timings.csv for finalize_and_verify_host / verify_final_host so remaining Revit-open cost is measurable.

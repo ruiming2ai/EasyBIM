@@ -34,7 +34,8 @@ class UIContract(unittest.TestCase):
         self.assertIn('ZipPerModel',names)
         ui=self.read('lib/easybim_etransmit/ui.py')
         for callback in ['sign_in_cloud','add_cloud_model','associate_cloud_graph']:
-            self.assertIn('Click="'+callback+'"',text);self.assertIn('def '+callback+'(',ui)
+            self.assertNotIn('Click="'+callback+'"',text);self.assertNotIn('def '+callback+'(',ui)
+        self.assertIn('Revit Home',text);self.assertIn('Autodesk Docs',text)
         self.assertIn('Binding="{Binding Mode}"',text)
     def test_live_document_not_reduced_to_source_path(self):
         ui=self.read('lib/easybim_etransmit/ui.py')
@@ -45,6 +46,6 @@ class UIContract(unittest.TestCase):
         self.assertNotIn('Only the saved versions will be packaged',ui)
     def test_settings_do_not_store_auth_secrets(self):
         ui=self.read('lib/easybim_etransmit/ui.py')
-        self.assertIn('self.tokens.close()',ui)
+        self.assertNotIn('self.tokens',ui);self.assertNotIn('self.client_id',ui)
         self.assertNotIn("saved['token']",ui);self.assertNotIn("saved['refresh_token']",ui)
 if __name__=='__main__':unittest.main(verbosity=2)
