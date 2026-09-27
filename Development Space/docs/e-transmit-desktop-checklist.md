@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.9.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.10.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -131,3 +131,12 @@ an unperformed check into a pass.
 - Relocate the complete package and open only the copied host. Confirm converted ACC links resolve to packaged relative RVTs and preserve requested load state, placement, linked tags and dimensions.
 - Confirm the pyRevit progress strip sits below the Revit title so the document filename remains readable. Check blue Collecting/Repathing, purple Finalizing ACC Links / Verifying Final Package, green Ready, amber Ready—Review Issues, red Incomplete and gray Cancelled.
 - During ordinary final verification, confirm the status reads PACKAGE BUILT — VERIFYING FINAL PACKAGE. Review timings.csv for finalize_and_verify_host / verify_final_host so remaining Revit-open cost is measurable.
+
+
+2.1.10 dockable-progress checks:
+
+- Start an e-transmit and confirm no floating pyRevit prompt bar overlays the Revit title, ribbon, document tabs, or model canvas.
+- Confirm the temporary **EasyBIM e-transmit** pane is docked at the top of Revit's dockable-pane region and Revit reserves layout space for it.
+- Confirm phase, long filename/detail text, progress bar, percentage and Cancel remain individually readable at normal and high-DPI scaling.
+- Check the approved blue/purple/green/amber/red/gray phase colors and confirm the pane hides when the command finishes.
+- Click Cancel during a chunked copy and confirm cancellation is honored. Revit open/save/provider calls may still return before cancellation can be observed.
