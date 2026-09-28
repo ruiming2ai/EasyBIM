@@ -67,6 +67,36 @@ class SourceAutomationTests(unittest.TestCase):
         self.assertEqual(path,'')
         self.assertEqual(evidence,'')
 
+    def test_same_named_detached_documents_keep_distinct_current_session_sources(self):
+        tracker = tracker_module(self)
+        source1 = self.make('A/Host.rvt', b'a')
+        source2 = self.make('B/Host.rvt', b'b')
+        app = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.current.txt'))
+        doc1 = Obj(Title='Host_detached', PathName='', IsDetached=True,
+                   IsModelInCloud=False, IsWorkshared=True, GetHashCode=lambda:101)
+        doc2 = Obj(Title='Host_detached', PathName='', IsDetached=True,
+                   IsModelInCloud=False, IsWorkshared=True, GetHashCode=lambda:202)
+        tracker.record_opening(source1, state_path=self.state, now=100.0)
+        tracker.record_opened(doc1, application=app, state_path=self.state, now=101.0)
+        tracker.record_opening(source2, state_path=self.state, now=102.0)
+        tracker.record_opened(doc2, application=app, state_path=self.state, now=103.0)
+        self.assertEqual(tracker.source_for_document(doc1, application=app, state_path=self.state), source1)
+        self.assertEqual(tracker.source_for_document(doc2, application=app, state_path=self.state), source2)
+
+    def test_journal_fallback_refuses_ambiguous_same_named_sources(self):
+        tracker = tracker_module(self)
+        source1 = os.path.join(self.root, 'A', 'Host.rvt')
+        source2 = os.path.join(self.root, 'B', 'Host.rvt')
+        journal = os.path.join(self.root, 'journal.ambiguous.txt')
+        with io.open(journal, 'w', encoding='utf-8') as out:
+            for source in (source1, source2):
+                out.write(u'Jrn.Data "File Name"  _\n')
+                out.write(u'         , "IDOK", "' + source.replace('\\', '\\\\') + u'"\n')
+        doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
+                  IsModelInCloud=False, IsWorkshared=True, GetHashCode=lambda:303)
+        app = Obj(RecordingJournalFilename=journal)
+        self.assertEqual(tracker.source_for_document(doc, application=app, state_path=self.state), '')
+
     def test_journal_fallback_recovers_local_file_for_already_open_detached_model(self):
         tracker = tracker_module(self)
         source = os.path.join(self.root, 'Downloads', 'Host.rvt')
