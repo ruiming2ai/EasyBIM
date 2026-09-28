@@ -186,10 +186,12 @@ class PathRegression(unittest.TestCase):
         dialog.Separate = flag(True); dialog.Reports = flag(True); dialog.Zip = flag(False); dialog.ZipPerModel = flag(False)
         dialog.ViewMode = types.SimpleNamespace(SelectedItem=types.SimpleNamespace(Key='all'))
         dialog.view_types=[]; dialog.mappings=[]; dialog.extras=[]; dialog.result=None
+        dialog.uiapp=types.SimpleNamespace(Application=types.SimpleNamespace(VersionNumber='2024'))
         chosen=[]; closed=[]
         dialog.browse_output=lambda *args: chosen.append(True)
         dialog.Close=lambda: closed.append(True)
-        with patch.object(e, 'preflight_paths', return_value=[{'message':'Destination is too long.'}]), \
+        with patch.object(ui.preflight, 'primary_host_sources', return_value=[]), \
+             patch.object(e, 'preflight_paths', return_value=[{'message':'Destination is too long.'}]), \
              patch.object(e, 'transmit') as transmit:
             dialog.transmit_click(None, None)
         self.assertEqual(chosen, [True]); self.assertEqual(closed, [])
