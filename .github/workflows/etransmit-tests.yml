@@ -55,6 +55,9 @@ jobs:
           retention-days: 7
           path: |
             lib/easybim_etransmit/
+            lib/easybim/etransmit_progress_panel.py
+            lib/easybim/ui/etransmit_progress_panel.xaml
+            startup.py
             EasyBIM.tab/Links.panel/
             Development Space/tests/etransmit/
             !**/__pycache__/**
