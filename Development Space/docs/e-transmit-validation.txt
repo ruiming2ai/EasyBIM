@@ -45,3 +45,17 @@ This does not replace real Revit/pyRevit acceptance. Required workstation checks
 - Cleanup or Upgrade may process only package copies.
 - Selected unloaded links restore original source state.
 - Raw workshared/cache copies may require Detach from Central to open independently.
+
+
+e-transmit 2.1.12 transmitted-primary-host validation
+------------------------------------------------------
+Local portable/API-shaped verification:
+- 446 tests passed; 4 platform skips.
+- New closed-file tests prove primary workshared host transmission marking preserves
+  TransmissionData-backed file paths/path types/load states and requires transmitted
+  verification before reporting success.
+- Engine tests prove collect-only delivery invokes the final-host transmitter, accepts
+  the expected verified metadata-only checksum change, and falls back to manual Detach
+  guidance when marking is unavailable.
+- No Revit runtime test is represented by this portable suite. Real workstation
+  acceptance must confirm Revit 2024's transmitted-model opening UI/behavior.

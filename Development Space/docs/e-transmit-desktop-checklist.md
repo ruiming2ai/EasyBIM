@@ -4,7 +4,7 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.11.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.12.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
@@ -168,3 +168,25 @@ an unperformed check into a pass.
 - With Repath enabled, verify supported packaged paths actually point into Links.
   Keep the known ACC same-session LoadFrom restriction visible as a failure rather
   than reporting a verified package when conversion cannot complete.
+
+
+2.1.12 transmitted-host checks:
+
+- With Repath, Cleanup and Upgrade all OFF, export an ACC/workshared host and confirm
+  timings contain no host `revit_open` or `revit_save`; a small `mark_host_transmitted`
+  metadata operation is expected after final delivery.
+- Confirm `manifest.json`, START_HERE/REPORT and `files.csv` show
+  `transmission_status = TRANSMITTED` for the primary workshared host.
+- Open that host normally from the package. Revit should handle it as a transmitted
+  workshared model / detached from its central context without requiring the user to
+  pre-check Detach from Central. Never synchronize the package to the original central.
+- With Repath OFF, inspect Manage Links after opening and confirm original reference
+  locations/load intent were not changed merely by transmission marking.
+- Repeat with an unloaded file-based reference and verify its saved unloaded intent is
+  preserved. Repeat with an ACC ExternalResource link and confirm its cloud identity is
+  not rewritten by the transmitted-only step.
+- Test a workshared RVT whose TransmissionData cannot be read/written. The package must
+  remain usable, report `TRANSMIT_UNAVAILABLE`, and instruct the recipient to use
+  Detach from Central → Preserve Worksets.
+- Confirm directly collected linked RVTs are byte-preserved by this feature; only the
+  primary host gets the new transmitted marking.

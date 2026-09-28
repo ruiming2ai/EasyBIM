@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.11
+# EasyBIM e-transmit 2.1.12
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,7 +9,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.11.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.12.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
@@ -91,9 +91,33 @@ saving**, **Save and continue**, or **Cancel**. Save and continue uses only the 
 document's normal in-place Save and stops if a clean saved state is not produced.
 
 Raw collect-only workshared or ACC-cache RVTs retain their original central/cloud
-association. When opening such a package independently, use **Detach from Central →
-Preserve Worksets** and never synchronize it back to the source. Detaching is an
-opening/worksharing operation; it does not repath external references.
+association internally. Starting in 2.1.12, EasyBIM marks the **final primary packaged
+host** as a Revit transmitted file whenever closed-file TransmissionData is available.
+Revit opens a transmitted workshared file detached from its central model, so this
+keeps the fast no-host-open collection path while preventing the package host from
+opening as an ordinary participant in the original central. If transmission marking
+is unavailable, the report falls back to **Detach from Central → Preserve Worksets**
+guidance. This opening/worksharing behavior does not repath external references.
+
+## Transmitted primary hosts in 2.1.12
+
+After final package delivery and any explicitly requested processing, EasyBIM uses
+closed-file `TransmissionData` to mark each **primary workshared host** transmitted.
+No Revit document open/save is required for this step. Before setting the flag, the
+tool explicitly preserves every TransmissionData-backed file reference's current
+path, path type and saved load intent, because Revit applies desired reference data
+when a transmitted file opens.
+
+True external-server/ACC resource references are not contained in TransmissionData
+and are not rewritten by this operation. Directly collected linked RVTs are also not
+modified by this feature. Repath behavior remains separate: Repath OFF keeps original
+reference locations; Repath ON continues to update only supported package references.
+
+The final package verifies the transmitted flag using Revit's closed-file API. Reports
+and `files.csv` include `transmission_status`. `TRANSMITTED` means the recipient can
+open the packaged host normally and Revit will treat the workshared file as detached
+from its central model. `TRANSMIT_UNAVAILABLE` means use **Detach from Central →
+Preserve Worksets** manually. Never synchronize a package copy to the source central.
 
 ## File Structure Organization
 
