@@ -161,13 +161,15 @@ class Dialog(forms.WPFWindow):
         except ValueError as exc: return forms.alert(f.text(exc),title='e-transmit source')
         output=f.text(self.Output.Text).strip()
         if not os.path.isdir(output): return forms.alert('Select an existing output directory.')
-        trace.write(self.uiapp,'ET_STEP_02_HOST_PREFLIGHT_START')
+        uiapp=getattr(self,'uiapp',None)
+        application=getattr(uiapp,'Application',None)
+        trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_START')
         try:
-            preflight.primary_host_sources(models,self.uiapp.Application)
+            preflight.primary_host_sources(models,application)
         except preflight.PreflightError as exc:
-            trace.write(self.uiapp,'ET_STEP_02_HOST_PREFLIGHT_BLOCKED',detail=f.text(exc))
+            trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_BLOCKED',detail=f.text(exc))
             return forms.alert(f.text(exc),title='e-transmit host source unavailable')
-        trace.write(self.uiapp,'ET_STEP_03_HOST_PREFLIGHT_READY')
+        trace.write(uiapp,'ET_STEP_03_HOST_PREFLIGHT_READY')
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
         opts['file_structure']=layout.mode(self.FileStructure.SelectedItem.Key if self.FileStructure.SelectedItem else None)
         opts.update(repath=bool(self.Repath.IsChecked),
