@@ -46,11 +46,26 @@ class SourceAutomationTests(unittest.TestCase):
     def test_detached_open_reuses_exact_document_opening_path(self):
         tracker = tracker_module(self)
         source = self.make('Downloads/Host.rvt', b'rvt')
+        app = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.current.txt'))
         tracker.record_opening(source, state_path=self.state, now=100.0)
         doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
                   IsModelInCloud=False, IsWorkshared=True)
-        tracker.record_opened(doc, state_path=self.state, now=101.0)
-        self.assertEqual(tracker.source_for_document(doc, state_path=self.state), source)
+        tracker.record_opened(doc, application=app, state_path=self.state, now=101.0)
+        self.assertEqual(tracker.source_for_document(doc, application=app, state_path=self.state), source)
+
+    def test_same_named_record_from_old_revit_session_is_not_reused(self):
+        tracker = tracker_module(self)
+        source = self.make('Downloads/Host.rvt', b'rvt')
+        app1 = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.0001.txt'))
+        app2 = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.0002.txt'))
+        tracker.record_opening(source, state_path=self.state, now=100.0)
+        doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
+                  IsModelInCloud=False, IsWorkshared=True)
+        tracker.record_opened(doc, application=app1, state_path=self.state, now=101.0)
+        path,evidence = tracker.source_for_document_with_evidence(
+            doc, application=app2, state_path=self.state)
+        self.assertEqual(path,'')
+        self.assertEqual(evidence,'')
 
     def test_journal_fallback_recovers_local_file_for_already_open_detached_model(self):
         tracker = tracker_module(self)
