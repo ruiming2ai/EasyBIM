@@ -111,6 +111,8 @@ class ContextTests(unittest.TestCase):
             ui = importlib.import_module('easybim_etransmit.ui')
             ui.progress_ui._REGISTERED=True
             ui.progress_ui._PANEL_INSTANCE=panel
+            ui.progress_ui.open_panel=lambda:(opens.append(True),panel.reset(),panel)[-1]
+            ui.progress_ui.close_panel=lambda:closes.append(True)
             options = f.defaults(); options['per_model'] = False
             ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
             ui.SessionBackend = lambda *a: self.backend
