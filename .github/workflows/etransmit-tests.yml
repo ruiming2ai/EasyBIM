@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'lib/easybim_etransmit/**'
+      - 'lib/easybim/etransmit_progress_panel.py'
+      - 'lib/easybim/ui/etransmit_progress_panel.xaml'
+      - 'startup.py'
       - 'EasyBIM.tab/Links.panel/**'
       - 'Development Space/tests/etransmit/**'
       - 'Development Space/native/EasyBIM.FileIO/**'
@@ -12,6 +15,9 @@ on:
   pull_request:
     paths:
       - 'lib/easybim_etransmit/**'
+      - 'lib/easybim/etransmit_progress_panel.py'
+      - 'lib/easybim/ui/etransmit_progress_panel.xaml'
+      - 'startup.py'
       - 'EasyBIM.tab/Links.panel/**'
       - 'Development Space/tests/etransmit/**'
       - 'Development Space/native/EasyBIM.FileIO/**'
@@ -101,9 +107,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $env:IPY_EXE 'Development Space/tests/etransmit/test_209_regressions.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($test in (Get-ChildItem 'Development Space/tests/etransmit' -Filter 'test_21*.py' | Sort-Object Name)) {
-            & $env:IPY_EXE $test.FullName
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($pattern in @('test_21*.py','test_22*.py')) {
+            foreach ($test in (Get-ChildItem 'Development Space/tests/etransmit' -Filter $pattern | Sort-Object Name)) {
+              & $env:IPY_EXE $test.FullName
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
           }
       - name: Archive native helper tested under IronPython
         if: always()
