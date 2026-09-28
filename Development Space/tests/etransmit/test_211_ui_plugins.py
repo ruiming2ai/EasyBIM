@@ -17,9 +17,12 @@ class UI(unittest.TestCase):
         self.ui=importlib.import_module('easybim_etransmit.ui')
         # Generic dialog tests are not host-source tests. Dedicated 2.1.13
         # regressions exercise the real primary-host preflight.
+        self.old_primary_host_sources=self.ui.preflight.primary_host_sources
         self.ui.preflight.primary_host_sources=lambda rows,application=None: []
         self.addCleanup(self.cleanup)
     def cleanup(self):
+        try:self.ui.preflight.primary_host_sources=self.old_primary_host_sources
+        except Exception:pass
         sys.modules.pop('easybim_etransmit.ui',None)
         if self.old_ui is not None:sys.modules['easybim_etransmit.ui']=self.old_ui
         if self.old_pyrevit is None:sys.modules.pop('pyrevit',None)
