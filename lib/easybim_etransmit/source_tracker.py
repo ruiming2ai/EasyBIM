@@ -91,19 +91,30 @@ def _best_pending(state, title):
     return None, ''
 
 
+def _journal_name(application):
+    return text(getattr(application, 'RecordingJournalFilename', '') or '').strip() if application is not None else ''
+
+
 def record_opened(doc, application=None, state_path=None, now=None):
     state_path = state_path or _state_path()
     state = _load(state_path)
     path = text(getattr(doc, 'PathName', '') or '').strip()
+    evidence = 'DOCUMENT_PATH' if path else ''
     index = None
     if not path:
         index, path = _best_pending(state, getattr(doc, 'Title', ''))
+        if path:
+            evidence = 'OPEN_EVENT'
     if not path and application is not None:
         path = journal_source_for_document(doc, application)
+        if path:
+            evidence = 'JOURNAL'
     if path:
         state['documents'][document_key(doc)] = {
             'path': path,
-            'time': float(now if now is not None else time.time())
+            'time': float(now if now is not None else time.time()),
+            'journal': _journal_name(application),
+            'evidence': evidence
         }
         if index is not None:
             del state['pending'][index]
@@ -161,16 +172,30 @@ def journal_source_for_document(doc, application=None):
     return ''
 
 
-def source_for_document(doc, application=None, state_path=None):
-    """Return the exact opened source when Revit exposes or recorded it."""
+def source_for_document_with_evidence(doc, application=None, state_path=None):
+    """Return (path, evidence) only for a source tied to this live session.
+
+    Persistent title-only records from an older Revit session are deliberately
+    ignored. A same-named model from another session must never become an
+    implicit substitute for the document currently open.
+    """
     direct = text(getattr(doc, 'PathName', '') or '').strip()
     if direct:
-        return direct
+        return direct, 'DOCUMENT_PATH'
+
     state = _load(state_path or _state_path())
     stored = state.get('documents', {}).get(document_key(doc), {})
-    if stored.get('path'):
-        return text(stored['path'])
+    current_journal = _journal_name(application)
+    if (stored.get('path') and stored.get('journal') and current_journal
+            and text(stored.get('journal')) == current_journal):
+        return text(stored['path']), text(stored.get('evidence') or 'OPEN_EVENT')
+
     journal = journal_source_for_document(doc, application)
     if journal:
-        return journal
-    return ''
+        return journal, 'JOURNAL'
+    return '', ''
+
+
+def source_for_document(doc, application=None, state_path=None):
+    """Backward-compatible path-only wrapper."""
+    return source_for_document_with_evidence(doc, application, state_path)[0]
