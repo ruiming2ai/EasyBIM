@@ -33,10 +33,11 @@ def _load(path):
         if isinstance(value, dict):
             value.setdefault('pending', [])
             value.setdefault('documents', {})
+            value.setdefault('runtime_documents', {})
             return value
     except (IOError, OSError, ValueError):
         pass
-    return {'pending': [], 'documents': {}}
+    return {'pending': [], 'documents': {}, 'runtime_documents': {}}
 
 
 def _save(path, state):
@@ -69,6 +70,16 @@ def normalize_title(value):
 
 def document_key(doc):
     return normalize_title(getattr(doc, 'Title', ''))
+
+
+def runtime_document_key(doc):
+    """Session-stable key that distinguishes same-named open documents."""
+    title = document_key(doc)
+    try:
+        runtime_id = text(doc.GetHashCode())
+    except Exception:
+        runtime_id = ''
+    return title + '|' + runtime_id if runtime_id else title
 
 
 def record_opening(path, state_path=None, now=None):
@@ -110,12 +121,15 @@ def record_opened(doc, application=None, state_path=None, now=None):
         if path:
             evidence = 'JOURNAL'
     if path:
-        state['documents'][document_key(doc)] = {
+        record = {
             'path': path,
             'time': float(now if now is not None else time.time()),
             'journal': _journal_name(application),
-            'evidence': evidence
+            'evidence': evidence,
+            'runtime_key': runtime_document_key(doc)
         }
+        state['documents'][document_key(doc)] = record
+        state['runtime_documents'][runtime_document_key(doc)] = record
         if index is not None:
             del state['pending'][index]
         _save(state_path, state)
@@ -165,11 +179,15 @@ def _journal_candidates(journal_path):
 def journal_source_for_document(doc, application=None):
     journal = text(getattr(application, 'RecordingJournalFilename', '') or '') if application else ''
     title = normalize_title(getattr(doc, 'Title', ''))
-    candidates = _journal_candidates(journal)
-    for candidate in reversed(candidates):
-        if normalize_title(candidate) == title:
-            return candidate
-    return ''
+    matches = [candidate for candidate in _journal_candidates(journal)
+               if normalize_title(candidate) == title]
+    if not matches:
+        return ''
+    # Never guess between same-named files opened from different folders.
+    identities = set(text(value).strip().replace('/', '\\').lower() for value in matches)
+    if len(identities) != 1:
+        return ''
+    return matches[-1]
 
 
 def source_for_document_with_evidence(doc, application=None, state_path=None):
@@ -184,11 +202,20 @@ def source_for_document_with_evidence(doc, application=None, state_path=None):
         return direct, 'DOCUMENT_PATH'
 
     state = _load(state_path or _state_path())
-    stored = state.get('documents', {}).get(document_key(doc), {})
     current_journal = _journal_name(application)
+    runtime_key = runtime_document_key(doc)
+    stored = state.get('runtime_documents', {}).get(runtime_key, {})
     if (stored.get('path') and stored.get('journal') and current_journal
             and text(stored.get('journal')) == current_journal):
         return text(stored['path']), text(stored.get('evidence') or 'OPEN_EVENT')
+
+    # Compatibility for records written before runtime keys existed. Only use a
+    # title record when this document has no stronger runtime identity.
+    if runtime_key == document_key(doc):
+        stored = state.get('documents', {}).get(document_key(doc), {})
+        if (stored.get('path') and stored.get('journal') and current_journal
+                and text(stored.get('journal')) == current_journal):
+            return text(stored['path']), text(stored.get('evidence') or 'OPEN_EVENT')
 
     journal = journal_source_for_document(doc, application)
     if journal:
