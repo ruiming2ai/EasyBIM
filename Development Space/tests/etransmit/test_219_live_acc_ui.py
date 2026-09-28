@@ -10,8 +10,10 @@ class LiveACCSourcePolicy(unittest.TestCase):
     def test_published_acc_picker_and_signin_controls_are_absent(self):
         xaml=self.text(XAML)
         for value in ('Add ACC published model...','Associate ACC download for open row...','APS setup / Sign in...','AuthStatus'):self.assertNotIn(value,xaml)
-    def test_native_revit_acc_guidance_is_visible_and_mappings_remain(self):
-        xaml=self.text(XAML);self.assertIn('Revit Home',xaml);self.assertIn('Autodesk Docs',xaml);self.assertIn('Mappings',xaml);self.assertIn('Add exact prefix mapping...',xaml)
+    def test_native_revit_acc_guidance_is_visible_and_obsolete_source_controls_are_absent(self):
+        xaml=self.text(XAML);self.assertIn('Revit Home',xaml);self.assertIn('Autodesk Docs',xaml)
+        for value in ('Use saved copy for selected row...','Skip unresolved cloud downloads','Exact source mappings','Add exact prefix mapping...','Remove mapping'):
+            self.assertNotIn(value,xaml)
     def test_ui_has_source_mode_guard_and_no_published_mode_execution_branch(self):
         ui=self.text(UI);self.assertIn('def validate_source_modes(',ui);self.assertIn("'LIVE_DOCUMENT'",ui);self.assertIn("'SAVED_FILE'",ui)
         self.assertNotIn("elif row.Mode=='PUBLISHED_VERSION'",ui);self.assertNotIn('def add_cloud_model(',ui);self.assertNotIn('def sign_in_cloud(',ui)
