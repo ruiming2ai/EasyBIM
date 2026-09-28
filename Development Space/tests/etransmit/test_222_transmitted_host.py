@@ -4,6 +4,7 @@ import io
 import os
 import sys
 import tempfile
+import shutil
 import unittest
 
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
@@ -38,8 +39,7 @@ class TD(object):
 
 class TransmittedBoundary(unittest.TestCase):
     def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.root=self.tmp.name;self.target=os.path.join(self.root,'Host.rvt')
+        self.root=tempfile.mkdtemp(prefix='ET_222_');self.addCleanup(shutil.rmtree,self.root);self.target=os.path.join(self.root,'Host.rvt')
         with io.open(self.target,'wb') as out: out.write(b'host-bytes')
         self.td=TD();self.read=[];self.writes=[];self.transmitted=set()
         def read(path): self.read.append(path);return self.td
@@ -82,8 +82,7 @@ class TransmittedBoundary(unittest.TestCase):
 
 class EngineTransmittedDelivery(unittest.TestCase):
     def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.root=self.tmp.name;self.src=os.path.join(self.root,'Host.rvt');self.out=os.path.join(self.root,'out')
+        self.root=tempfile.mkdtemp(prefix='ET_222_');self.addCleanup(shutil.rmtree,self.root);self.src=os.path.join(self.root,'Host.rvt');self.out=os.path.join(self.root,'out')
         with io.open(self.src,'wb') as out:out.write(b'host')
         self.calls=[]
         parent=self
