@@ -89,12 +89,15 @@ class UIContracts(unittest.TestCase):
     def test_obsolete_source_controls_and_options_are_absent(self):
         xaml=os.path.join(ROOT,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml')
         ui=os.path.join(ROOT,'lib','easybim_etransmit','ui.py')
+        session=os.path.join(ROOT,'lib','easybim_etransmit','session.py')
         with io.open(xaml,encoding='utf-8') as inp:x=inp.read()
         with io.open(ui,encoding='utf-8') as inp:u=inp.read()
+        with io.open(session,encoding='utf-8') as inp:s=inp.read()
         for value in ('Use saved copy for selected row...','Skip unresolved cloud downloads',
                       'Exact source mappings','Add exact prefix mapping...','Remove mapping'):
             self.assertNotIn(value,x)
         self.assertNotIn("opts['skip_cloud_links']",u)
+        self.assertNotIn('skip_cloud_links',s)
         self.assertNotIn('self.mappings',u)
         self.assertIn("opts['mappings']=[]",u)
 
