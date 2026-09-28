@@ -15,8 +15,14 @@ class UI(unittest.TestCase):
         fake=types.ModuleType('pyrevit');fake.forms=Obj(WPFWindow=object,WPFPanel=object,ProgressBar=object,alert=alert)
         fake.DB=Obj();fake.script=Obj();sys.modules['pyrevit']=fake
         self.ui=importlib.import_module('easybim_etransmit.ui')
+        # Generic dialog tests are not host-source tests. Dedicated 2.1.13
+        # regressions exercise the real primary-host preflight.
+        self.old_primary_host_sources=self.ui.preflight.primary_host_sources
+        self.ui.preflight.primary_host_sources=lambda rows,application=None: []
         self.addCleanup(self.cleanup)
     def cleanup(self):
+        try:self.ui.preflight.primary_host_sources=self.old_primary_host_sources
+        except Exception:pass
         sys.modules.pop('easybim_etransmit.ui',None)
         if self.old_ui is not None:sys.modules['easybim_etransmit.ui']=self.old_ui
         if self.old_pyrevit is None:sys.modules.pop('pyrevit',None)
@@ -36,7 +42,6 @@ class UI(unittest.TestCase):
         self.assertIsNotNone(d.result)
         self.assertFalse(d.snapshots_authorized,'cache-only mode must not authorize source saves')
         self.assertTrue(d.result[2]['saved_state_only'])
-        self.assertTrue(d.result[2]['skip_cloud_links'])
         self.assertEqual(self.alerts,[])
     def test_decline_aborts_before_creating_outputs(self):
         self.answer=False;d=self.form();d.transmit_click(None,None)
@@ -48,7 +53,9 @@ class UI(unittest.TestCase):
         self.assertIn('saved_state_only=True',code)
         self.assertNotIn("saved['snapshots_authorized']",code)
         with open(os.path.join(ROOT,'EasyBIM.tab/Links.panel/e-transmit.pushbutton/window.xaml')) as inp:xaml=inp.read()
-        self.assertIn('x:Name="SkipCloudLinks"',xaml)
+        self.assertNotIn('x:Name="SkipCloudLinks"',xaml)
+        self.assertNotIn('Use saved copy for selected row...',xaml)
+        self.assertNotIn('Exact source mappings',xaml)
 class Schemas(unittest.TestCase):
     def test_read_access_checked_before_protected_fields(self):
         def protected():self.fail('ListFields called before read access was granted')

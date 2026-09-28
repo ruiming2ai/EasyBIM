@@ -37,7 +37,6 @@
             <WrapPanel>
               <Button Content="Browse models..." Click="browse_models"/>
               <Button Content="Browse folder..." Click="browse_model_folder"/>
-              <Button Content="Use saved copy for selected row..." Click="replace_source"/>
               <Button Content="Remove selected" Click="remove_model"/>
             </WrapPanel>
             <TextBlock Text="The active project is checked by default. For live ACC cloud-workshared models, open the model first in native Revit Home → Autodesk Docs, then select the open row here. Open rows use saved local/cache state; unsaved edits are excluded. Browse selects saved local RVTs." TextWrapping="Wrap" Foreground="#536273"/>
@@ -52,7 +51,6 @@
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
-            <CheckBox x:Name="SkipCloudLinks" Content="Skip unresolved cloud downloads (verified local caches are still collected)" IsChecked="True"/>
             <TextBlock Text="Repath off: no host reopening unless Cleanup or Upgrade is selected. Unloaded links are offered in a separate selection window." TextWrapping="Wrap" Foreground="#536273"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
           </StackPanel>
@@ -74,14 +72,7 @@
             <ListBox x:Name="Extras" Height="70"/>
           </StackPanel>
         </GroupBox>
-        <GroupBox Header="4  Exact source mappings">
-          <StackPanel>
-            <TextBlock Text="Prefix mappings are optional fallbacks for exact file-based sources. They must point to the SAME configured hierarchy, including Shared/Consumed. Never map a consumed source to WIP. Live ACC models are opened through native Revit, not selected from an EasyBIM published-model browser." TextWrapping="Wrap" Foreground="#536273"/>
-            <ListBox x:Name="Mappings" Height="65" DisplayMemberPath="Name"/>
-            <WrapPanel><Button Content="Add exact prefix mapping..." Click="add_mapping"/><Button Content="Remove mapping" Click="remove_mapping"/></WrapPanel>
-          </StackPanel>
-        </GroupBox>
-        <GroupBox Header="5  Upgrade and cleanup — package copies only">
+        <GroupBox Header="4  Upgrade and cleanup — package copies only">
           <StackPanel>
             <CheckBox x:Name="Upgrade" Content="Upgrade package models to this running Revit version"/>
             <CheckBox x:Name="Cleanup" Content="Enable cleanup (older package models will also be upgraded)" Click="cleanup_toggle"/>
@@ -92,7 +83,7 @@
               <Button Content="Select view types to retain..." Click="select_view_types" HorizontalAlignment="Left"/>
               <TextBlock x:Name="ViewTypesLabel" Text="No additional view types selected" TextWrapping="Wrap"/>
             </StackPanel>
-            <CheckBox x:Name="SaveSettings" Content="Remember destination, mappings and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
+            <CheckBox x:Name="SaveSettings" Content="Remember destination and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
           </StackPanel>
         </GroupBox>
       </StackPanel>

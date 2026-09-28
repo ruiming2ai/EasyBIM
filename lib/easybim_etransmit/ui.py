@@ -13,165 +13,16 @@ from . import cleanup, engine, batch, layout, preflight, performance
 from .session import Registry, SessionBackend
 
 
-PHASE_COLORS=dict(collecting='#2F80ED',repathing='#2F80ED',verifying='#8E44AD',
-                  ready='#27AE60',review='#F2C94C',incomplete='#EB5757',cancelled='#828282')
+from easybim import etransmit_progress_panel as progress_ui
+from . import trace
+
 
 def progress_phase(label):
-    value=f.text(label or '')
-    upper=value.upper()
-    if upper.startswith('READY — REVIEW ISSUES') or upper.startswith('READY - REVIEW ISSUES'):
-        return 'READY — REVIEW ISSUES',PHASE_COLORS['review'],value
-    if upper.startswith('READY'):
-        return 'READY',PHASE_COLORS['ready'],value
-    if upper.startswith('INCOMPLETE') or upper.startswith('FAILED'):
-        return 'INCOMPLETE',PHASE_COLORS['incomplete'],value
-    if upper.startswith('CANCELLED') or upper.startswith('CANCELED'):
-        return 'CANCELLED',PHASE_COLORS['cancelled'],value
-    if 'FINALIZING ACC LINKS' in upper:
-        return 'FINALIZING ACC LINKS',PHASE_COLORS['verifying'],value
-    if 'VERIFYING FINAL PACKAGE' in upper:
-        return 'VERIFYING FINAL PACKAGE',PHASE_COLORS['verifying'],value
-    if 'REPATH' in upper or 'CLEANUP' in upper:
-        return 'REPATHING',PHASE_COLORS['repathing'],value
-    return 'COLLECTING',PHASE_COLORS['collecting'],value
+    """Backward-compatible facade used by existing tests/callers."""
+    return progress_ui.progress_phase(label)
 
 
-def _top_dock_state():
-    """Return a Revit dock state that reserves space below the ribbon/chrome."""
-    import Autodesk.Revit.UI as RUI
-    state=RUI.DockablePaneState()
-    state.DockPosition=RUI.DockPosition.Top
-    return state
-
-
-def _phase_detail(label,phase):
-    value=f.text(label or '')
-    if '|' in value:
-        return value.split('|',1)[1].strip()
-    upper=value.upper()
-    for prefix in ('PACKAGE BUILT — ','PACKAGE BUILT - '):
-        if upper.startswith(prefix):
-            value=value[len(prefix):].strip();break
-    if phase in ('READY','READY — REVIEW ISSUES','INCOMPLETE','CANCELLED'):
-        return ''
-    if upper.startswith(phase):
-        value=value[len(phase):].lstrip(' :-—|')
-    return value
-
-
-def _set_brush(control,color):
-    try:
-        from System.Windows.Media import BrushConverter
-        control.Foreground=BrushConverter().ConvertFromString(color)
-    except Exception:
-        pass
-
-
-def _pump_dispatcher(control):
-    """Refresh the docked WPF pane and allow its Cancel click to be processed."""
-    try:
-        from System import Action
-        from System.Windows.Threading import DispatcherPriority
-        control.Dispatcher.Invoke(DispatcherPriority.Background,Action(lambda:None))
-    except Exception:
-        pass
-
-
-class TransferProgressPanel(forms.WPFPanel):
-    """Thin Revit dockable progress strip; Revit reserves layout space for it."""
-    panel_id='8e4dc5df-aedf-45e7-8ef4-68d4a4c4e210'
-    panel_title='EasyBIM e-transmit'
-    panel_source=os.path.join(os.path.dirname(__file__),'progress.xaml')
-    initial_state=None
-
-    def __init__(self):
-        forms.WPFPanel.__init__(self)
-        self.reset()
-
-    def reset(self):
-        self.cancelled=False
-        try:
-            self.CancelButton.IsEnabled=True;self.CancelButton.Content='Cancel'
-            self.PhaseText.Text='COLLECTING';self.DetailText.Text='Preparing e-transmit'
-            self.Progress.IsIndeterminate=True;self.Progress.Minimum=0.0;self.Progress.Maximum=1.0;self.Progress.Value=0.0
-            self.PercentText.Text=''
-            _set_brush(self.Progress,PHASE_COLORS['collecting'])
-        except Exception:
-            pass
-        _pump_dispatcher(self)
-
-    def cancel_click(self,sender,args):
-        self.cancelled=True
-        try:
-            self.CancelButton.IsEnabled=False;self.CancelButton.Content='Cancelling…'
-        except Exception:
-            pass
-
-    def set_phase(self,label):
-        phase,color,_=progress_phase(label)
-        detail=_phase_detail(label,phase)
-        try:
-            self.PhaseText.Text=phase;self.DetailText.Text=detail
-            _set_brush(self.Progress,color)
-        except Exception:
-            pass
-        _pump_dispatcher(self)
-        return phase
-
-    def update_progress(self,current,total):
-        try:
-            total=max(1.0,float(total));current=max(0.0,min(float(current),total))
-            self.Progress.IsIndeterminate=False;self.Progress.Minimum=0.0;self.Progress.Maximum=total;self.Progress.Value=current
-            self.PercentText.Text='{0}%'.format(int(round((current/total)*100.0)))
-        except Exception:
-            pass
-        _pump_dispatcher(self)
-
-
-_PROGRESS_INSTANCE_ATTR='_easybim_etransmit_progress_panel'
-
-
-def _ensure_progress_panel():
-    panel=getattr(forms,_PROGRESS_INSTANCE_ATTR,None)
-    registered=False
-    try: registered=bool(forms.is_registered_dockable_panel(TransferProgressPanel))
-    except Exception: registered=False
-    if panel is not None and registered:
-        return panel
-    if registered and panel is None:
-        # A full pyRevit engine reload can retain Revit's pane registration while
-        # discarding Python module globals. Refuse to overlay another window; the
-        # transmission remains usable even if progress cannot be rebound.
-        return None
-    try:
-        TransferProgressPanel.initial_state=_top_dock_state()
-        panel=forms.register_dockable_panel(TransferProgressPanel,default_visible=False)
-        setattr(forms,_PROGRESS_INSTANCE_ATTR,panel)
-        return panel
-    except Exception:
-        return None
-
-
-class DockableTransferProgress(object):
-    """Context wrapper matching the small API the e-transmit engine needs."""
-    def __init__(self): self.panel=None
-    def __enter__(self):
-        self.panel=_ensure_progress_panel()
-        if self.panel is not None:
-            self.panel.reset()
-            try: forms.open_dockable_panel(TransferProgressPanel)
-            except Exception: self.panel=None
-        return self
-    def __exit__(self,*args):
-        if self.panel is not None:
-            try: forms.close_dockable_panel(TransferProgressPanel)
-            except Exception: pass
-    @property
-    def cancelled(self): return bool(self.panel is not None and self.panel.cancelled)
-    def set_phase(self,label):
-        return self.panel.set_phase(label) if self.panel is not None else progress_phase(label)[0]
-    def update_progress(self,current,total):
-        if self.panel is not None:self.panel.update_progress(current,total)
+DockableTransferProgress = progress_ui.ProgressController
 
 
 class Choice(object):
@@ -220,7 +71,7 @@ class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
         self.snapshots_authorized=False
-        self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.mappings=[]; self.view_types=[]
+        self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.view_types=[]
         self.categories=[Choice(label,key) for key,label in f.CATEGORIES]
         self.Categories.ItemsSource=self.categories
         self.structures=[Choice(label,key) for key,label in layout.MODES]
@@ -232,7 +83,6 @@ class Dialog(forms.WPFWindow):
         try:
             with io.open(self.settings,encoding='utf-8') as inp: saved=json.load(inp)
             self.Output.Text=saved.get('output','')
-            self.mappings=[Choice(a+'  ->  '+b,source=b,key=a) for a,b in saved.get('mappings',[])]
             self.Repath.IsChecked=saved.get('repath',True); self.Reports.IsChecked=saved.get('reports',True)
             self.FileStructure.SelectedIndex=[x.Key for x in self.structures].index(layout.mode(saved.get('file_structure')))
             self.Zip.IsChecked=saved.get('zip',False)
@@ -251,7 +101,6 @@ class Dialog(forms.WPFWindow):
     def refresh(self):
         self.Models.ItemsSource=None; self.Models.ItemsSource=self.models
         self.Extras.ItemsSource=None; self.Extras.ItemsSource=self.extras
-        self.Mappings.ItemsSource=None; self.Mappings.ItemsSource=self.mappings
 
     def append_models(self, paths):
         seen=set(f.canonical(m.Source) for m in self.models if m.Mode=='SAVED_FILE')
@@ -270,14 +119,6 @@ class Dialog(forms.WPFWindow):
             paths=[p for p in engine.folder_files(folder) if p.lower().endswith('.rvt') and
                    not re.search(r'\.\d{4}\.rvt$',p,re.I)]
             self.append_models(paths)
-
-    def replace_source(self,sender,args):
-        row=self.Models.SelectedItem
-        if row is None: return forms.alert('Select a model row first.')
-        path=forms.pick_file(file_ext='rvt',title='Select the intended saved copy; do not substitute WIP for Shared/Consumed')
-        if path:
-            row.Source=path;row.Name=os.path.basename(path);row.Mode='SAVED_FILE';row.Document=None
-            row.CloudSelection=None;row.Checked=True; self.refresh()
 
     def remove_model(self,sender,args):
         row=self.Models.SelectedItem
@@ -302,18 +143,6 @@ class Dialog(forms.WPFWindow):
         row=self.Extras.SelectedItem
         if row in self.extras: self.extras.remove(row); self.refresh()
 
-    def add_mapping(self,sender,args):
-        prefix=forms.ask_for_string(prompt='Exact configured source prefix. Include the correct Shared/Consumed hierarchy. '
-                                   'No filename searching is performed.',title='Source prefix')
-        if not prefix: return
-        folder=forms.pick_folder(title='Choose the SAME source hierarchy in Desktop Connector or a local download')
-        if folder:
-            self.mappings.append(Choice(prefix+'  ->  '+folder,key=prefix,source=folder)); self.refresh()
-
-    def remove_mapping(self,sender,args):
-        row=self.Mappings.SelectedItem
-        if row in self.mappings: self.mappings.remove(row); self.refresh()
-
     def cleanup_toggle(self,sender,args): self.CleanupOptions.IsEnabled=bool(self.Cleanup.IsChecked)
 
     def select_view_types(self,sender,args):
@@ -332,28 +161,29 @@ class Dialog(forms.WPFWindow):
         except ValueError as exc: return forms.alert(f.text(exc),title='e-transmit source')
         output=f.text(self.Output.Text).strip()
         if not os.path.isdir(output): return forms.alert('Select an existing output directory.')
+        uiapp=getattr(self,'uiapp',None)
+        application=getattr(uiapp,'Application',None)
+        trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_START')
+        try:
+            preflight.primary_host_sources(models,application)
+        except preflight.PreflightError as exc:
+            trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_BLOCKED',detail=f.text(exc))
+            return forms.alert(f.text(exc),title='e-transmit host source unavailable')
+        trace.write(uiapp,'ET_STEP_03_HOST_PREFLIGHT_READY')
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
         opts['file_structure']=layout.mode(self.FileStructure.SelectedItem.Key if self.FileStructure.SelectedItem else None)
         opts.update(repath=bool(self.Repath.IsChecked),
                     cleanup=bool(self.Cleanup.IsChecked),upgrade=bool(self.Upgrade.IsChecked or self.Cleanup.IsChecked),
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
                     views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=True,
-                    reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked),mappings=[(x.Key,x.Source) for x in self.mappings])
-        opts['skip_cloud_links']=bool(self.SkipCloudLinks.IsChecked)
+                    reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked))
+        opts['mappings']=[]
         opts['saved_state_only']=True
         if opts['zip_per_model'] or any(x.Mode=='LIVE_DOCUMENT' for x in models):opts['per_model']=True
-        unresolved=[]
-        for row in models:
-            if row.Mode=='LIVE_DOCUMENT':continue
-            try: path=f.resolve_source(row.Source,mappings=opts['mappings'])
-            except ValueError: path=None
-            if not path: unresolved.append(row.Name+' : '+row.Source)
-        if unresolved:
-            return forms.alert('These saved-file selections do not resolve to an exact source. Open-model selections do not require a saved path.\n\n'+'\n'.join(unresolved))
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
         planned=[];planned_names={}
         for index,row in enumerate(models):
-            source=('open://selection-'+str(index)+'/'+row.Name if row.Mode=='LIVE_DOCUMENT' else row.Source)
+            source=('open://selection-'+str(index)+'/'+row.Name if row.Mode=='LIVE_DOCUMENT' else getattr(row,'ResolvedSource',None) or row.Source)
             planned.append(source);planned_names[source]=row.Name
         long_paths=engine.preflight_paths(planned,root,opts,self.extras,planned_names)
         if long_paths:
@@ -371,7 +201,7 @@ class Dialog(forms.WPFWindow):
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
         if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True,title='Process package copies / Transmit'): return
         if self.SaveSettings.IsChecked:
-            saved=dict((k,opts[k]) for k in ('repath','file_structure','per_model','reports','zip','zip_per_model','mappings'))
+            saved=dict((k,opts[k]) for k in ('repath','file_structure','per_model','reports','zip','zip_per_model'))
             saved['output']=output
             folder=os.path.dirname(self.settings)
             try:
@@ -382,34 +212,47 @@ class Dialog(forms.WPFWindow):
 
 
 def run(uiapp,xaml):
-    dialog=Dialog(uiapp,xaml);registry=None;results=[];was_cancelled=False
+    trace.write(uiapp,'ET_STEP_01_COMMAND_START')
+    dialog=Dialog(uiapp,xaml);registry=None;results=[];was_cancelled=False;root=None
     try:
         dialog.ShowDialog()
         if not dialog.result:return
         choices,root,opts,extras=dialog.result
+        trace.write(uiapp,'ET_STEP_04_DIALOG_ACCEPTED',root)
+        trace.write(uiapp,'ET_STEP_05_SAVE_PROMPT_START',root)
         save_decision=source_save_choice(choices)
+        trace.write(uiapp,'ET_STEP_06_SAVE_PROMPT_DONE',root,save_decision)
         with performance.Collector() as save_timing:
             save_events=preflight.save_selected(choices,save_decision)
+        trace.write(uiapp,'ET_STEP_07_SAVE_PREFLIGHT_DONE',root)
+        trace.write(uiapp,'ET_STEP_08_PROGRESS_LOOKUP_START',root)
         with DockableTransferProgress() as pb:
+            trace.write(uiapp,'ET_STEP_09_PROGRESS_VISIBLE' if pb.available else 'ET_STEP_09_PROGRESS_UNAVAILABLE',root)
             def cancel():return pb.cancelled
             def pulse(label,current,total):
                 pb.set_phase(label);pb.update_progress(current,max(1,total))
+            trace.write(uiapp,'ET_STEP_10_REGISTRY_START',root)
             registry=Registry(DB,uiapp.Application,root+'_ReadOnlySnapshots',cancel,
                               opts['include'].get('spreadsheets',True),saved_state_only=True)
+            trace.write(uiapp,'ET_STEP_11_REGISTRY_READY',root)
             sources=[];model_names={};live_keys=[]
             for row in choices:
                 if cancel():break
                 if row.Mode=='LIVE_DOCUMENT':
-                    key=registry.add_live(row.Document)
+                    trace.write(uiapp,'ET_STEP_12_LIVE_DOCUMENT_REGISTER_START',root,row.Name)
+                    key=registry.add_live(row.Document,configured_source=getattr(row,'ResolvedSource','') or None)
                     sources.append(key);live_keys.append(key);model_names[key]=registry.get(key)['name']
+                    trace.write(uiapp,'ET_STEP_13_LIVE_DOCUMENT_REGISTER_DONE',root,row.Name)
                 else:
-                    sources.append(row.Source);model_names[row.Source]=getattr(row,'Name',row.Source)
+                    source=getattr(row,'ResolvedSource',None) or row.Source
+                    sources.append(source);model_names[source]=getattr(row,'Name',source)
             if live_keys:
                 registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(save_timing.snapshot())
                 for key in live_keys:
                     entry=registry.get(key)
                     entry.setdefault('preflight_events',[]).extend(event for event in save_events
                         if event.get('model')==f.text(entry['document'].Title) and event.get('source')==f.text(entry['document'].PathName or ''))
+                trace.write(uiapp,'ET_STEP_14_UNLOADED_LINK_PREFLIGHT_START',root)
                 unloaded=preflight.unloaded_links(registry,live_keys) if opts['include'].get('revit',True) else []
                 if unloaded:
                     chooser=UnloadedLinksDialog(unloaded);chooser.ShowDialog()
@@ -418,10 +261,13 @@ def run(uiapp,xaml):
                         with preflight.TemporaryReloads(registry,chooser.result,pulse) as reloads:
                             reloads.acquire()
                     registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(reload_timing.snapshot())
+                trace.write(uiapp,'ET_STEP_15_UNLOADED_LINK_PREFLIGHT_DONE',root)
             if sources:
+                trace.write(uiapp,'ET_STEP_16_BATCH_START',root)
                 results=batch.run_batch(sources,root,
                     lambda package,source:SessionBackend(DB,uiapp.Application,package,registry,cancel),
                     opts,extras,cancel,pulse,model_names=model_names)
+                trace.write(uiapp,'ET_STEP_17_BATCH_DONE',root)
             was_cancelled=cancel()
             if was_cancelled:
                 pb.set_phase('CANCELLED')
@@ -432,13 +278,16 @@ def run(uiapp,xaml):
             else:
                 pb.set_phase('READY')
             pb.update_progress(1,1)
+        trace.write(uiapp,'ET_STEP_18_COMMAND_COMPLETE',root)
         if not results:return forms.alert('Transmission cancelled before any models were processed.')
         message=engine.completion_message(results,len(choices),cancelled=was_cancelled)
         forms.alert(message+'\n\nOutput: '+root+'\n\nKeep the full model-named job folders, including their Links folders together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
         os.startfile(root)
     except f.Cancelled:
+        trace.write(uiapp,'ET_CANCELLED',root)
         forms.alert('Transmission cancelled. Any explicitly requested source saves already completed are retained.',title='EasyBIM e-transmit')
     except preflight.PreflightError as exc:
+        trace.write(uiapp,'ET_PREFLIGHT_STOPPED',root,f.text(exc))
         forms.alert(f.text(exc),title='e-transmit preflight stopped')
     finally:
         if registry is not None:

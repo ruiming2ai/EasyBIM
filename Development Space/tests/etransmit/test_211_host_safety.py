@@ -95,7 +95,7 @@ class HostSafety(unittest.TestCase):
         self.assertEqual(f.digest(host['target']),host['current_state_sha256'])
         self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
         self.assertEqual(host['current_state_integrity'],'VERIFIED')
-    def test_cloud_link_skip_does_not_skip_selected_cloud_host(self):
+    def test_unavailable_cloud_link_is_reported_not_silently_skipped(self):
         self.doc.IsModelInCloud=True
         self.doc.GetCloudModelPath=lambda:Obj(GetModelGUID=lambda:'host',GetProjectGUID=lambda:'project',Dispose=lambda:None)
         key=self.live();self.authorize(key)
@@ -110,8 +110,8 @@ class HostSafety(unittest.TestCase):
         b.finish=lambda *a:self.fail('missing cloud link should not trigger host modifications')
         result=engine.transmit([key],out,b,opts)
         self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
-        self.assertEqual(result['references'][0]['status'],'SKIPPED_CLOUD_LINK')
-        self.assertFalse(any(i['severity']=='error' for i in result['issues']),repr(result['issues']))
+        self.assertEqual(result['references'][0]['status'],'UNRESOLVED')
+        self.assertTrue(any(i['severity']=='error' for i in result['issues']),repr(result['issues']))
     def test_optional_plugin_inspection_happens_after_protected_host_copy(self):
         self.r.collect_plugins=True;seen=[]
         def plugins(doc,base,result):

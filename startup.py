@@ -60,6 +60,16 @@ except Exception:
 
 
 try:
+    from easybim import etransmit_progress_panel
+
+    # e-transmit is hot-reloaded per command, so its Revit-owned dockable pane
+    # lives in this persistent EasyBIM module and is registered only at startup.
+    etransmit_progress_panel.register()
+except Exception:
+    pass
+
+
+try:
     from easybim import temp_phase_close
     temp_phase_close.install_completion_handlers()
 except Exception as ex:

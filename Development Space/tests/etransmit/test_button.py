@@ -12,8 +12,10 @@ class ButtonTests(unittest.TestCase):
         self.assertTrue((BUTTON/'window.xaml').exists(),'WPF dialog missing')
         doc=ET.parse(BUTTON/'window.xaml')
         names={el.attrib.get('{http://schemas.microsoft.com/winfx/2006/xaml}Name') for el in doc.iter()}
-        for name in ['Models','Categories','Output','Repath','Cleanup','Upgrade','ViewMode','SaveSettings','Mappings']:
+        for name in ['Models','Categories','Output','Repath','Cleanup','Upgrade','ViewMode','SaveSettings']:
             self.assertIn(name,names)
+        self.assertNotIn('Mappings',names)
+        self.assertNotIn('SkipCloudLinks',names)
     def test_button_uses_own_module_only(self):
         self.assertTrue((BUTTON/'script.py').exists(),'button script missing')
         s=(BUTTON/'script.py').read_text()

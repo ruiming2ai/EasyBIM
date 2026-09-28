@@ -1,12 +1,109 @@
 # -*- coding: utf-8 -*-
 """Explicit source save/reload choices. Never SaveAs, Sync, Publish or close a source."""
 from __future__ import unicode_literals
+import os
 from . import files as f, performance
 from .engine import issue
 
 
 class PreflightError(RuntimeError):
     pass
+
+
+def _native_rvt(path):
+    from . import model_payload
+    try:
+        return model_payload.probe(path).get('container') == 'CFB'
+    except Exception:
+        return False
+
+
+def _cloud_identity(doc):
+    path = None
+    try:
+        path = doc.GetCloudModelPath()
+        model = f.text(path.GetModelGUID()).lower().strip('{}')
+        project = f.text(path.GetProjectGUID()).lower().strip('{}')
+        region = f.text(getattr(path, 'Region', '') or '')
+    except Exception:
+        return {}
+    if not model or not project:
+        return {}
+    return dict(model_guid=model, project_guid=project, region=region)
+
+
+def _validate_local_primary(path, model_name, evidence):
+    path = f.text(path or '').strip()
+    if (not f.absolute(path) or f.cache_source(path)
+            or f.is_desktop_connector_path(path)):
+        raise PreflightError(
+            'This detached model does not expose an exact saved RVT source.\n\n'
+            'e-transmit cannot safely determine which RVT should be transmitted. '
+            'Save the detached model first, then run e-transmit again.\n\n'
+            'EasyBIM will not Save As, search by filename, or substitute another model.'
+        )
+    if not path.lower().endswith('.rvt') or not os.path.isfile(path):
+        raise PreflightError(
+            'The exact saved RVT source for {0} is unavailable:\n{1}\n\n'
+            'Restore or save the exact source, then run e-transmit again. '
+            'No similarly named file will be substituted.'.format(model_name, path)
+        )
+    if not _native_rvt(path):
+        raise PreflightError(
+            'The identified saved source for {0} is not a readable native RVT:\n{1}\n\n'
+            'No substitute source was used.'.format(model_name, path)
+        )
+    return dict(path=path, evidence=evidence, mode='LOCAL_SAVED_RVT')
+
+
+def primary_host_sources(choices, application=None):
+    """Prove every primary host source before any dependency collection starts.
+
+    Stores ResolvedSource on each UI row so the later Registry receives the
+    already-proven opening source for pathless detached documents.
+    """
+    from . import source_tracker
+    results = []
+    for row in choices:
+        mode = f.text(getattr(row, 'Mode', '') or '')
+        name = f.text(getattr(row, 'Name', '') or '')
+        if mode == 'SAVED_FILE':
+            try:
+                path = f.resolve_source(getattr(row, 'Source', ''), mappings=[])
+            except ValueError:
+                path = None
+            ready = _validate_local_primary(path, name, 'SAVED_FILE_SELECTION')
+            row.ResolvedSource = ready['path']
+            results.append(ready)
+            continue
+        if mode != 'LIVE_DOCUMENT':
+            raise PreflightError('Unsupported source mode for '+name+': '+mode)
+
+        doc = getattr(row, 'Document', None)
+        if doc is None:
+            raise PreflightError('Open-document source is no longer available for '+name+'.')
+        if bool(getattr(doc, 'IsModelInCloud', False)):
+            identity = _cloud_identity(doc)
+            if not identity:
+                raise PreflightError(
+                    'The live ACC model identity could not be verified for '+name+'. '
+                    'Reopen the model from Revit Home → Autodesk Docs, then retry.'
+                )
+            row.ResolvedSource = ''
+            results.append(dict(path='', evidence='LIVE_ACC_IDENTITY',
+                                mode='ACC_LIVE', cloud=identity))
+            continue
+
+        direct = f.text(getattr(doc, 'PathName', '') or '').strip()
+        if direct:
+            path, evidence = direct, 'DOCUMENT_PATH'
+        else:
+            path, evidence = source_tracker.source_for_document_with_evidence(
+                doc, application=application)
+        ready = _validate_local_primary(path, name, evidence or 'UNVERIFIED')
+        row.ResolvedSource = ready['path']
+        results.append(ready)
+    return results
 
 
 def save_selected(choices, decision):

@@ -41,12 +41,12 @@ class ExtraHostChecks(fixtures.HostSafety):
             dict(code='HOST_SNAPSHOT_FAILED',severity='error',source='h',message='required')])
         text=engine.completion_message([result],1)
         self.assertLess(text.index('HOST_SNAPSHOT_FAILED'),text.index('PLUGIN_SOURCE_COVERAGE'))
-    def test_adc_link_is_skipped_even_if_link_document_not_cloud_workshared(self):
+    def test_adc_link_is_not_silently_skipped_even_if_legacy_option_is_injected(self):
         child=Obj(Title='Arch',PathName=r'C:\DC\ACCDocs\Firm\Project\Shared\Arch.rvt',
                   IsLinked=True,IsModelInCloud=False,IsWorkshared=False)
         key=self.r.add_live(child)
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
-        self.assertTrue(b.skip_dependency(key,'host',{'skip_cloud_links':True}))
+        self.assertFalse(b.skip_dependency(key,'host',{'skip_cloud_links':True}))
     def test_upfront_cloud_skip_does_not_bind_an_associated_download_graph(self):
         with open(os.path.join(ROOT,'lib/easybim_etransmit/ui.py')) as inp:code=inp.read()
         self.assertNotIn('registry.bind_graph(',code)

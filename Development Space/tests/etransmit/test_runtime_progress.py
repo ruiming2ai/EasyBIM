@@ -96,18 +96,23 @@ class ContextTests(unittest.TestCase):
         fake = types.ModuleType('pyrevit')
         fake.forms = Obj(WPFWindow=object, WPFPanel=object, ProgressBar=object,
                          alert=lambda msg, **kw: alerts.append(msg),
+                         is_registered_dockable_panel=lambda *a:True,
                          open_dockable_panel=lambda *a:opens.append(True),
                          close_dockable_panel=lambda *a:closes.append(True))
-        fake.script = Obj()
+        fake.script = Obj(get_logger=lambda:Obj(warning=lambda *a:None,info=lambda *a:None))
         fake.DB = Obj()
         old_pyrevit = sys.modules.get('pyrevit')
         old_ui = sys.modules.pop('easybim_etransmit.ui', None)
+        old_progress = sys.modules.pop('easybim.etransmit_progress_panel', None)
         old_start = getattr(os, 'startfile', None)
         sys.modules['pyrevit'] = fake
         os.startfile = lambda path: None
         try:
             ui = importlib.import_module('easybim_etransmit.ui')
-            ui._ensure_progress_panel=lambda:panel
+            ui.progress_ui._REGISTERED=True
+            ui.progress_ui._PANEL_INSTANCE=panel
+            ui.progress_ui.open_panel=lambda:(opens.append(True),panel.reset(),panel)[-1]
+            ui.progress_ui.close_panel=lambda:closes.append(True)
             options = f.defaults(); options['per_model'] = False
             ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
             ui.SessionBackend = lambda *a: self.backend
@@ -122,6 +127,8 @@ class ContextTests(unittest.TestCase):
             self.assertEqual(len(closes),1)
         finally:
             sys.modules.pop('easybim_etransmit.ui', None)
+            sys.modules.pop('easybim.etransmit_progress_panel', None)
+            if old_progress is not None: sys.modules['easybim.etransmit_progress_panel'] = old_progress
             if old_ui is not None: sys.modules['easybim_etransmit.ui'] = old_ui
             if old_pyrevit is None: sys.modules.pop('pyrevit', None)
             else: sys.modules['pyrevit'] = old_pyrevit
