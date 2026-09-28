@@ -48,11 +48,11 @@ class UnmodifiedHostExport(unittest.TestCase):
     put_link=method(link_fixtures.SavedCloudLinks.put_link)
     saved_scans=method(link_fixtures.SavedCloudLinks.saved_scans)
 
-    def test_actual_registry_path_collects_saved_dependencies_for_unmodified_host(self):
+    def test_actual_registry_path_uses_live_identity_without_reopening_unmodified_host(self):
         self.version.VersionGUID=LOADED;self.version.NumberOfSaves=87
         link=self.put_link();before=f.digest(self.original);link_before=f.digest(link)
         key=self.r.add_live(self.doc)
-        self.r.get(key)['inventory']['references']=[dict(source='Wrong-live-only.pdf',id='wrong',kind='Image')]
+        self.r.get(key)['inventory']['references']=[link_fixtures.cloud_row()]
         self.r._cache_store=c.Store(self.db,self.app,os.path.join(self.r.temp_root(),'cache'),roots=[self.cache])
         self.r._cache_store.read_info=lambda path:dict(version=dict(guid=SAVED,saves=87),format='2024')
         self.saved_scans({'Host.rvt':[link_fixtures.cloud_row()]})
@@ -63,10 +63,11 @@ class UnmodifiedHostExport(unittest.TestCase):
         self.assertEqual(result['counts']['revit_links_copied'],1)
         self.assertTrue(os.path.isfile(os.path.join(out,'Links','Revit','Architecture.rvt')))
         self.assertEqual(len(result['files']),2)
-        self.assertEqual(result['files'][0]['source_context']['inventory_basis'],'SAVED_SNAPSHOT_INSPECTION')
-        warning=next(i for i in result['issues'] if i['code']=='SAVED_CACHE_DIFFERS_FROM_LOADED')
-        self.assertEqual(warning['severity'],'warning')
-        self.assertIn(LOADED,warning['message']);self.assertIn(SAVED,warning['message'])
+        self.assertEqual(result['files'][0]['source_context']['inventory_basis'],'LIVE_DOCUMENT_REFERENCE_INVENTORY')
+        metadata=result['files'][0]['source_context']['cache_metadata']
+        self.assertEqual(metadata['revision_check'],'SAVED_CACHE_DIFFERS_FROM_LOADED')
+        self.assertEqual(metadata['loaded_document_version']['guid'],LOADED)
+        self.assertEqual(metadata['cache_document_version']['guid'],SAVED)
         self.assertFalse(self.doc.IsModified)
         self.assertEqual(self.doc.PathName,'Autodesk Docs://Project/Host.rvt')
         self.assertEqual(f.digest(self.original),before);self.assertEqual(f.digest(link),link_before)
@@ -74,6 +75,6 @@ class UnmodifiedHostExport(unittest.TestCase):
         self.assertNotIn('NOT_PERFORMED',result['link_discovery_status'])
         with io.open(os.path.join(out,'REPORT.txt'),encoding='utf-8') as inp:report=inp.read()
         self.assertIn('SAVED_CACHE_DIFFERS_FROM_LOADED',report)
-        self.assertIn(LOADED,report);self.assertIn(SAVED,report)
+        self.assertIn(SAVED,report)
 
 if __name__=='__main__':unittest.main()

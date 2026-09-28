@@ -34,9 +34,14 @@ class Cancelled(Exception):
     pass
 
 
+def host_processing_allowed(options):
+    """Only selected copy-processing options may authorize a host open."""
+    return any(bool(options.get(k)) for k in ('repath','cleanup','upgrade'))
+
+
 def defaults():
     return dict(include=dict((k, True) for k, label in CATEGORIES), deep=True,
-                repath=True, load_unloaded_files=True, file_structure='categories', upgrade=False, cleanup=False, discard_worksets=False,
+                repath=True, load_unloaded_files=False, file_structure='categories', upgrade=False, cleanup=False, discard_worksets=False,
                 purge=False, views='all', view_types=[], per_model=True,
                 reports=True, zip=False, mappings=[])
 

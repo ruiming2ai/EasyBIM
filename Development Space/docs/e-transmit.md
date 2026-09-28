@@ -1,4 +1,4 @@
-# EasyBIM e-transmit 2.1.10
+# EasyBIM e-transmit 2.1.11
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -9,15 +9,17 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.10.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.11.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
 button works with no project open. Open project documents appear in the source
 list, with the active project checked by default. Browse Models and Browse Folder
 also accept closed RVTs. Family documents and linked documents are not offered as
-open host choices. The source is always the **saved file**, not unsaved geometry
-in an open model; the command never saves, synchronizes or publishes an original.
+open host choices. The exported source is always the **saved file/cache**, not unsaved geometry in an
+open model. If a selected open model is modified, e-transmit explicitly asks whether
+to continue without saving, perform a normal in-place Save, or cancel. It never
+substitutes Save As, Synchronize with Central, or Publish.
 
 Select a short output location, such as `C:\Transmit`, then Transmit model(s).
 Every run creates a new folder, and existing packages are never overwritten.
@@ -64,6 +66,35 @@ The strip keeps phase, current file/detail text, progress percentage, and Cancel
 
 The e-transmit command still occupies Revit during Revit-API operations. The dockable pane fixes visual obstruction; it does not make document-editing operations concurrent with an executing Revit command.
 
+## Collection preflight in 2.1.11
+
+**Repath off + Cleanup off + Upgrade off means no additional host opening.** An
+already-open local/ACC host contributes its currently available direct-reference
+inventory even when it is modified or its loaded/cache revision differs. The RVT bytes
+copied to the package still come from the saved file/cache. A closed collect-only host
+uses saved metadata and reports discovery limitations rather than silently opening it.
+
+Cleanup or Upgrade may open/process the **package copy** even when Repath is off;
+neither option implicitly enables repathing or final link-opening verification.
+
+The old **Deep Inspection** and **Load Unloaded Files** controls are removed. Unloaded
+direct Revit links appear in a separate per-link dialog. Links start unchecked:
+available saved/cache bytes can still be collected without reloading; checking a link
+explicitly authorizes a temporary source reload attempt. e-transmit snapshots the host
+first, captures the identified link source, and restores the original unloaded state
+before package processing. A user-local unload override is restored at the same scope.
+Revit reload/unload operations can clear Undo history; restoring the load state does
+not restore that history.
+
+If a selected open host has unsaved changes, the choices are **Continue without
+saving**, **Save and continue**, or **Cancel**. Save and continue uses only the existing
+document's normal in-place Save and stops if a clean saved state is not produced.
+
+Raw collect-only workshared or ACC-cache RVTs retain their original central/cloud
+association. When opening such a package independently, use **Detach from Central →
+Preserve Worksets** and never synchronize it back to the source. Detaching is an
+opening/worksharing operation; it does not repath external references.
+
 ## File Structure Organization
 
 Each host gets an independent model-named folder with its original-named RVT,
@@ -107,7 +138,7 @@ control collection, not guaranteed discovery or format-specific repathing.
 
 | Source | Current behavior |
 |---|---|
-| Saved local/network RVT | Recursive saved reference scan, including unloaded links, deduplicated by canonical path. Default deep inspection opens detached internal copies for additional APIs. |
+| Saved local/network RVT | Open hosts use available direct-reference inventory plus saved metadata where available. Closed collect-only hosts use saved metadata without hidden opening. Direct linked RVTs are copied but not recursively inspected. |
 | CAD / IFC | Copy the original exposed source. No geometry conversion. CAD-internal Xrefs, images, fonts and other dependencies are **not parsed**; add them or use AutoCAD eTransmit for that portion. |
 | Linked PDF / raster image | Copy the complete original file. No rasterization. Image repathing preserves PDF page and stored resolution when using the Revit API. |
 | Point cloud | Copy the exposed source plus the adjacent `<RCP name> Support` tree when present. External RCS scans and internal RCP paths remain unverified; add other scan folders and verify in ReCap. |
@@ -128,12 +159,13 @@ GUIDs and region from the saved host's references. The link type supplies its fi
 No APS sign-in is needed for this cache route.
 
 Prefer a cache candidate matching both the loaded revision GUID and save count.
-Otherwise, a single unambiguous native saved cache edition of the same linked
-model is accepted, with its revision difference reported. When no linked document
-is loaded, report that no loaded-revision comparison was possible. Different
-candidates are never chosen by timestamp. Cache stability, hashes, native metadata
-and Revit format are checked before accepting a copy. A different saved revision
-is inspected for its own dependencies rather than borrowing the loaded inventory.
+Otherwise, a single unambiguous native saved cache edition of the same identified
+model may be accepted, with its revision difference reported. Different candidates
+are never chosen by timestamp. Cache stability, hashes, native metadata and Revit
+format are checked before accepting a copy. A revision difference by itself no
+longer triggers another host opening; available direct-reference inventory from the
+already-open document is used for discovery while the exported RVT bytes remain the
+selected saved/cache edition.
 
 Separately browsed local/Desktop Connector files retain their exact source paths.
 Exact prefix mappings must preserve the configured source, including Shared/Consumed.
@@ -144,25 +176,25 @@ bytes associated with that open Revit document; PacCache is not used.
 
 ## Repath, upgrade and cleanup
 
-**Load Unloaded Files** defaults on and loads successfully acquired Revit links
-in exported copies. Turn it off to preserve their recorded load states. The option
-is disabled when repathing is off and is retained with saved settings. Working
-models are never reloaded. Existing link elements are repathed rather than recreated.
+Repath remains an explicit checkbox. With Repath off, reference locations in the
+host are intentionally left unchanged. If Cleanup and Upgrade are also off, no
+additional host opening or opening verification is performed. Recipients may need
+Reload From, and workshared/cache host copies may need Detach from Central.
+
+Unloaded links preserve their original intended load state. There is no global
+"load all unloaded files" switch. The preflight checklist is only permission to
+temporarily reload selected source links when acquisition requires it; it does not
+authorize leaving those links loaded in the working model or package.
 
 Packages and ZIPs contain no `_HostState` duplicate. Temporary staging outside the
 deliverable supports rollback on failure or cancellation. Reports separate requested,
 copied and verified Revit links; a copied host alone does not prove portability.
 
-The default is deep inspection plus supported repathing, with upgrade and all
-cleanup OFF. No source model transaction is performed. Inspection copies are
-opened without a model tab and closed without saving. Metadata-only inspection
-is faster but cannot discover all images/cloud/external references.
-
-Native external references are repathed through TransmissionData in package
-copies, preserving known load intent. Additional image and mapped external RVT
-repath operations may require opening and saving a detached copy. Repath methods
-not exposed by the API are reported as `MANUAL_REPAIR_REQUIRED`; they are not
-faked by deleting and recreating instances. Point-cloud paths may need repair.
+Native file references supported by TransmissionData are repathed in closed package
+copies using relative package paths. Additional image or external-resource operations
+may require opening and saving a package copy. Methods not exposed by the API are
+reported rather than simulated by recreating instances. Point-cloud paths may need
+manual repair.
 
 Saving an older model in the running Revit upgrades it. Unless Upgrade or Cleanup
 is checked, additional repathing that would require that save is skipped with
@@ -176,11 +208,11 @@ A view/purge deletion that cascades into a retained view rolls back. Purge is
 available only where the public `Document.GetUnusedElements` API exists.
 Directly collected linked RVTs remain unchanged. Cleanup/upgrade applies only to package models explicitly processed by the host workflow.
 
-Model processing is copy-only. If it fails, the baseline collected output file is
-restored and the failure is reported. Workshared outputs may be marked transmitted
-or saved as a new package central. **Never synchronize a package to the original
-central.** A workshared file that could not be marked transmitted is explicitly
-flagged; open that copy using Detach from Central.
+Model processing affects package copies only. If it fails, the baseline collected
+output file is restored and the failure is reported. A raw collect-only workshared/
+ACC-cache copy can retain its original central association and therefore require
+**Detach from Central → Preserve Worksets** when opened independently. Never
+synchronize a package copy to the original central.
 
 ## Reports and verification
 

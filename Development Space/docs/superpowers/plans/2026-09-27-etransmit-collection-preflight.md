@@ -89,5 +89,5 @@ Focused tests: `test_221_collection_policy.py`, `test_221_preflight.py`; existin
 - Baseline: 415 tests, 4 platform skips, Linux Python; all passed.
 - Latest detach observation: examine original journal bytes because Files parsed journals as invalid UTF-16. Do not infer corruption. Earlier exports retained/restored original cloud-cache host bytes.
 
-- Local implementation: 438 tests passed (4 platform skips). New regression cases were observed failing before production changes. Python/WPF runtime remains a workstation acceptance requirement.
+- Local implementation: 439 tests passed (4 platform skips). New regression cases were observed failing before production changes. Python/WPF runtime remains a workstation acceptance requirement.
 - Review: preserve local unload overrides; stop on state changes after selection; report unknown central association rather than infer detachment from changed bytes.

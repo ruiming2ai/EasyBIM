@@ -28,3 +28,20 @@ real ACC cache acquisition, Desktop Connector hydration, linked annotations,
 real placement, final image/cloud repathing, and relocation acceptance.
 Portable/API-shaped tests do not establish actual Revit portability or speed.
 See e-transmit-2.1.8.md for scope, timers and workstation acceptance.
+
+
+e-transmit 2.1.11 collection-preflight validation
+-------------------------------------------------
+Local portable/API-shaped verification:
+- 439 tests passed; 4 platform skips.
+- Python compileall passed for lib, e-transmit button, and e-transmit tests.
+- window.xaml, unloaded_links.xaml, and progress.xaml parsed successfully.
+- Focused 2.1.11 tests cover collect-only no-open policy, Cleanup/Upgrade exceptions,
+  explicit in-place Save consent, unloaded-link selection/acquisition/restoration,
+  local unload overrides, cancellation/failure recovery, and Detach guidance.
+
+This does not replace real Revit/pyRevit acceptance. Required workstation checks:
+- Repath/Cleanup/Upgrade all off -> no additional host open/save.
+- Cleanup or Upgrade may process only package copies.
+- Selected unloaded links restore original source state.
+- Raw workshared/cache copies may require Detach from Central to open independently.

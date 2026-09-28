@@ -4,15 +4,16 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.10.
+- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.11.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.
 - Verify all file categories default ON after changing and reopening the dialog.
   Upgrade/cleanup must always default OFF, including after saving preferences.
-- Verify **Load Unloaded Files** defaults ON, persists when saving preferences,
-  and is disabled when Repath is off. With it OFF, preserve saved load states;
-  with it ON, successfully acquired unloaded RVT links load in package copies.
+- Confirm there is no **Load Unloaded Files** or **Deep Inspection** checkbox.
+  When unloaded direct Revit links exist, verify the separate checklist appears,
+  starts unchecked, and offers Reload selected / Continue without reloading / Cancel.
+  Originally unloaded links must remain unloaded after the run.
 - Check the separate **File Structure Organization** dropdown: categories by default,
   original hierarchy and flat Links. Save/reopen each preference. Older settings
   must default to categories. Test same-name/case-only files without renaming.
@@ -140,3 +141,30 @@ an unperformed check into a pass.
 - Confirm phase, long filename/detail text, progress bar, percentage and Cancel remain individually readable at normal and high-DPI scaling.
 - Check the approved blue/purple/green/amber/red/gray phase colors and confirm the pane hides when the command finishes.
 - Click Cancel during a chunked copy and confirm cancellation is honored. Revit open/save/provider calls may still return before cancellation can be observed.
+
+
+2.1.11 collection-preflight checks:
+
+- With Repath, Cleanup and Upgrade all OFF, export the same already-open local and
+  ACC hosts used in the September 27 tests. Confirm timings contain **no additional
+  host revit_open/revit_save**, even when the host is modified or its saved/cache
+  revision differs. The host RVT bytes must come from saved state.
+- Repeat collect-only with a closed RVT. Confirm discovery is metadata-only and
+  does not silently open the host. Missing unsupported references must be reported.
+- Turn Cleanup ON with Repath OFF, then Upgrade ON with Repath OFF. Copied-host
+  processing may open/save the package copy, but reference paths must not be
+  intentionally repathed and final link-opening verification must remain skipped.
+- Modify a selected open host and test all preflight choices: Continue without
+  saving, Save and continue, Cancel. Save must be normal in-place Save only and
+  must stop if the document remains modified; never SaveAs, Sync or Publish.
+- Test an unloaded link whose saved/cache file is already identifiable: leave it
+  unchecked and confirm the file can still be collected without source reload.
+- Test an unloaded ACC link that needs acquisition: select it, confirm the source
+  host is snapshotted first, then confirm its original global/local unloaded state
+  is restored after success, failure and cancellation. Review Undo-history warning.
+- Open a raw collect-only workshared/ACC-cache host using **Detach from Central →
+  Preserve Worksets**. Confirm START_HERE/REPORT explains that copying bytes does
+  not sever central/cloud association and that Detach does not repath links.
+- With Repath enabled, verify supported packaged paths actually point into Links.
+  Keep the known ACC same-session LoadFrom restriction visible as a failure rather
+  than reporting a verified package when conversion cannot complete.

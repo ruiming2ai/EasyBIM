@@ -207,14 +207,14 @@ class Backend(object):
         current=f.text(getattr(self.app,'VersionNumber',''))
         if current.isdigit() and info['version'].isdigit() and int(info['version'])>int(current):
             raise model_payload.PayloadError('Saved Revit '+info['version']+' requires that version or newer; running '+current+'.')
-        result=dict(references=[],issues=[],version=info['version'],opened_in_revit=False)
+        result=dict(references=[],issues=[],version=info['version'],opened_in_revit=False,is_workshared=info['workshared'])
         if getattr(self, 'payloads', None): self.payloads.bind_stage(stage, source)
         if info.get('metadata_warning'):
             result['issues'].append(issue('BASIC_METADATA_FALLBACK',source,info['metadata_warning']))
         base=info.get('central') if info.get('workshared') and f.absolute(info.get('central', '')) else source
         try: result['references']=self.rows(stage, base)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
-        if not options.get('deep',True):
+        if not f.host_processing_allowed(options) or not options.get('deep',True):
             result['issues'].append(issue('METADATA_ONLY_SCAN',source,
                                          'Image/PDF, cloud, point-cloud and some other dependencies can be absent from saved reference metadata.'))
             return result

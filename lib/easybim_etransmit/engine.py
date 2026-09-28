@@ -162,6 +162,9 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         entry=registry.get(source) if registry else None
         if entry and entry.get('discovery_performance'):
             initial.append(dict(source=source, timing=entry['discovery_performance']))
+        if entry:
+            for capture in entry.get('preflight_timings',[]):
+                initial.append(dict(source=source,scope='preflight_session',timing=capture))
     result['performance']['initial_discovery']=initial
     result['performance']['measured_total_seconds']=round(result['performance']['elapsed_seconds']+
         sum(x['timing']['elapsed_seconds'] for x in initial),6)
@@ -240,6 +243,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
     def add_inventory(source, record, scan):
         record['inventory_status']='PARTIAL' if scan.get('open_failed') else ('NEEDS_REVIEW' if scan.get('issues') else 'SCANNED')
         record['revit_version']=scan.get('version','')
+        record['is_workshared']=scan.get('is_workshared',False)
         record['opened_in_revit']=scan.get('opened_in_revit',False)
         record['inspection_status']=scan.get('inspection_status') or ('OPENED' if scan.get('opened_in_revit') else 'METADATA_ONLY')
         if scan.get('source_mode'): record['source_mode']=scan['source_mode']
@@ -248,9 +252,8 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
         for ref in scan.get('references',[]):
             ref=dict(ref);ref.update(owner=source,status='PENDING')
             if ref.get('kind')=='RevitLink':
-                ref['original_loaded']=ref.get('loaded')
-                ref['package_loaded']=(True if opts.get('repath') and opts.get('load_unloaded_files',True)
-                                       and ref.get('loaded') is False else ref.get('loaded'))
+                ref['original_loaded']=ref.get('original_loaded',ref.get('loaded'))
+                ref['package_loaded']=ref.get('original_loaded',ref.get('loaded'))
             edges.append(ref);queue.append((ref.get('source',''),source,False,ref))
 
     def organize(recover=False):
@@ -723,7 +726,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
-                if record.get('is_primary_host'):
+                if record.get('is_primary_host') and opts.get('repath'):
                     missing=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])
                              and (r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target')]
                     if missing:
@@ -856,6 +859,15 @@ def _write_reports_at(result, root):
         result['performance']=performance.current().snapshot()
     result['counts']=package_counts(result)
     result['link_discovery_status']=link_discovery_status(result)
+    for record in result['files']:
+        context=record.get('source_context',{})
+        workshared=bool(record.get('is_workshared') or context.get('is_workshared'))
+        if workshared:
+            record['opening_guidance']='DETACH_RECOMMENDED_FOR_WORKSHARED_COPY'
+            record['original_central_association_preserved']=bool(
+                record.get('saved_state_sha256') and record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None
+        if record.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED':
+            record['verification_open_mode']='DETACH_IF_WORKSHARED'
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
         out.write(f.text(json.dumps(result, ensure_ascii=False, indent=2)))
     hosts = []
@@ -873,6 +885,13 @@ def _write_reports_at(result, root):
              'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    if not result['options'].get('repath'):
+        lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
+    lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
+        'Use Revit File > Open > Detach from Central, then Preserve Worksets, for an independent review of workshared copies.',
+        'Copying RVT bytes does not sever the original central/cloud association. A copied cache is not automatically a detached model.',
+        'Do not synchronize these copies to the original central. Detaching does not repath external links.',
+        'Our Revit opening checks use Detach when workshared; they do not certify a normal non-detached open.'])
     if result.get('recovery_directory'): lines.append('Undelivered/recovery files retained at: '+result['recovery_directory'])
     for record in result['files']:
         if record.get('recovery_path'):
@@ -884,7 +903,10 @@ def _write_reports_at(result, root):
                 lines.append('Host acquisition checksum: '+record.get('sha256','NOT_ACQUIRED'))
                 lines.extend(cache_diagnostic_lines(context.get('cache_evidence', {})))
             if context.get('saved_state_only'):
-                lines.append('Unsaved edits are excluded. Open/source models were not saved, synchronized, published, reloaded or relocated.')
+                events=context.get('preflight_events',[])
+                lines.append('Unsaved edits are excluded unless the user explicitly saved first. Export uses saved RVT bytes. Source Save/reload occurs only when explicitly selected in preflight; no source SaveAs, Sync, Publish, Close or relocation.')
+                for event in events:
+                    lines.append('Preflight: '+f.text(event.get('action',''))+' | '+f.text(event.get('link',event.get('model',''))))
                 metadata=context.get('cache_metadata',{})
                 if metadata.get('cache_path'):
                     lines.append('Read-only cached source: '+metadata['cache_path'])
@@ -921,7 +943,7 @@ def _write_reports_at(result, root):
     if result.get('performance'):
         timing_rows=[dict(row,scope='package') for row in result['performance']['operations']]
         for capture in result['performance'].get('initial_discovery',[]):
-            timing_rows.extend(dict(row,scope='initial_discovery') for row in capture['timing']['operations'])
+            timing_rows.extend(dict(row,scope=capture.get('scope','initial_discovery')) for row in capture['timing']['operations'])
         f.write_csv(os.path.join(root,'timings.csv'),timing_rows,
             ['scope','phase','operation','file','target','start_seconds','seconds','self_seconds','status','bytes','mib_per_second','copy_method','error_type'])
     with io.open(os.path.join(root, 'START_HERE.txt'), 'w', encoding='utf-8') as out:
@@ -929,7 +951,7 @@ def _write_reports_at(result, root):
     if result['options'].get('reports', True):
         with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
-                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','packaged_sha256'])
+                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','verification_open_mode','opening_guidance','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
                     ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])

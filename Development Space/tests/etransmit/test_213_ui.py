@@ -6,26 +6,27 @@ import test_211_ui_plugins as fixtures
 
 
 class LoadUnloadedOption(fixtures.UI):
-    def test_checkbox_option_defaults_on_and_is_transmitted(self):
-        d=self.form();d.transmit_click(None,None)
-        self.assertTrue(d.result[2]['load_unloaded_files'])
+    def test_obsolete_load_preference_cannot_force_output_links_loaded(self):
+        d=self.form();d.LoadUnloadedFiles.IsChecked=True;d.transmit_click(None,None)
+        self.assertFalse(d.result[2].get('load_unloaded_files',False))
 
-    def test_unchecked_preference_is_saved(self):
-        d=self.form();d.LoadUnloadedFiles.IsChecked=False;d.SaveSettings.IsChecked=True
-        d.settings=os.path.join(self.root,'settings.json');d.client_id='';d.callback_uri='http://localhost'
+    def test_obsolete_preferences_are_not_saved(self):
+        d=self.form();d.SaveSettings.IsChecked=True
+        d.settings=os.path.join(self.root,'settings.json')
         d.transmit_click(None,None)
-        self.assertFalse(d.result[2]['load_unloaded_files'])
         with io.open(d.settings,encoding='utf-8') as inp:saved=json.load(inp)
-        self.assertFalse(saved['load_unloaded_files'])
+        self.assertNotIn('load_unloaded_files',saved)
+        self.assertNotIn('deep',saved)
 
-    def test_checkbox_default_and_repath_enable_binding(self):
+    def test_global_checkbox_replaced_by_per_link_popup(self):
         path=os.path.join(fixtures.ROOT,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml')
-        root=ET.parse(path).getroot()
-        name='{http://schemas.microsoft.com/winfx/2006/xaml}Name'
-        box=next(e for e in root.iter() if e.get(name)=='LoadUnloadedFiles')
-        self.assertEqual(box.get('Content'),'Load Unloaded Files')
-        self.assertEqual(box.get('IsChecked'),'True')
-        self.assertEqual(box.get('IsEnabled'),'{Binding IsChecked, ElementName=Repath}')
+        root=ET.parse(path).getroot();name='{http://schemas.microsoft.com/winfx/2006/xaml}Name'
+        self.assertFalse(any(e.get(name)=='LoadUnloadedFiles' for e in root.iter()))
+        popup=os.path.join(fixtures.ROOT,'lib','easybim_etransmit','unloaded_links.xaml')
+        with io.open(popup,encoding='utf-8') as inp:text=inp.read()
+        self.assertIn('Reload selected and continue',text)
+        self.assertIn('Continue without reloading',text)
+        self.assertIn('Undo history',text)
 
 
 for name in fixtures.UI.__dict__:
