@@ -467,19 +467,10 @@ class SessionBackend(Backend):
             return [r['source'] for r in entry['graph'].entries if r['source']!=source]
         return []
     def skip_dependency(self,source,owner,options):
-        if self.registry.saved_state_only and self.registry.owns(source):
-            return False  # Cache reads are not published/cloud downloads.
-        if not options.get('skip_cloud_links',False):return False
-        entry=self.registry.get(source)
-        if entry:
-            original=f.text(entry.get('original_path',''))
-            remote_path=f.is_desktop_connector_path(original) or original.lower().startswith(
-                ('autodesk docs://','bim 360://','acc://','cld://','cld:'))
-            return bool(entry.get('is_linked') and (entry.get('cloud') or remote_path or
-                        getattr(entry.get('document'),'IsModelInCloud',False)))
-        value=f.text(source or '')
-        return value.lower().endswith('.rvt') and (f.is_desktop_connector_path(value) or
-            value.lower().startswith(('autodesk docs://','bim 360://','acc://','cld://','cld:')))
+        # 2.1.13 fixed policy: there is no global "skip cloud" mode. Verified
+        # saved/cache sources are collected; unavailable sources are reported by
+        # acquisition instead of being silently skipped.
+        return False
     @performance.timed('discovery', 'host_reference_inventory', file_index=1)
     def inventory_before_copy(self,source,options):
         entry=self.registry.get(source)
