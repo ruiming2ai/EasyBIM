@@ -138,6 +138,11 @@ def completion_message(results, requested, cancelled=False):
         *(sum(c[k] for c in counts) for k in ('revit_links_requested','revit_links_copied','revit_links_verified'))))
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for result in results:
+        for record in result['files']:
+            if record.get('is_primary_host') and record.get('status')=='COPIED' and record.get('transmission_status'):
+                lines.append('Transmission status: '+f.text(record['transmission_status'])+
+                             ' | '+f.text(record.get('relative','')))
+    for result in results:
         if link_discovery_status(result).startswith(('NOT_PERFORMED', 'INCOMPLETE')):
             lines.append('Revit link discovery: '+link_discovery_status(result))
     issues=sorted(issues,key=lambda i:(i['severity']!='error',not i['code'].startswith('HOST_')))
@@ -410,6 +415,37 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     try:
                         if os.path.isfile(path):os.remove(path)
                     except Exception:pass
+
+        # Make final primary workshared hosts behave like eTransmit files without
+        # opening/saving them. The Revit backend preserves existing file-based
+        # reference path/load intent while setting TransmissionData.IsTransmitted.
+        transmitter=getattr(backend,'mark_transmitted_package',None)
+        if transmitter:
+            for record in result['files']:
+                if (record.get('status')!='COPIED' or not record.get('is_primary_host')
+                        or not record.get('is_workshared') or not record.get('target')
+                        or not record['target'].lower().endswith('.rvt')):
+                    continue
+                try:
+                    state=performance.call('metadata','mark_host_transmitted',record['source'],
+                                           transmitter,record['target'])
+                    if state is True:
+                        record['transmission_status']='TRANSMITTED'
+                        record['pre_transmission_sha256']=record.get('packaged_sha256') or record.get('sha256')
+                        record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
+                        record['verified_signature']=f.signature(record['target'])
+                    elif state is None:
+                        record['transmission_status']='NOT_WORKSHARED'
+                    else:
+                        record['transmission_status']='TRANSMIT_UNAVAILABLE'
+                        add_issue('WORKSHARING_COPY_NOT_TRANSMITTED',record['source'],
+                                  'The packaged workshared host could not be marked transmitted without opening it. '
+                                  'Open this copy with Detach from Central and Preserve Worksets; never synchronize it to the source central.')
+                except Exception as exc:
+                    record['transmission_status']='TRANSMIT_UNAVAILABLE'
+                    add_issue('WORKSHARING_COPY_NOT_TRANSMITTED',record['source'],
+                              'The packaged workshared host could not be marked transmitted without opening it: '+f.text(exc)+
+                              '. Open this copy with Detach from Central and Preserve Worksets; never synchronize it to the source central.')
 
         verifier = getattr(backend, 'verify_package', None)
         for record in reversed(result['files']):
@@ -816,7 +852,8 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 try:
                     rec['packaged_sha256'] = f.verified_hash(rec['target'],rec)
                     rec['packaged_size'] = rec['verified_signature'][0]
-                    if rec.get('is_primary_host') and rec.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW'):
+                    if (rec.get('is_primary_host') and rec.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW')
+                            and rec.get('transmission_status')!='TRANSMITTED'):
                         if rec['packaged_sha256']!=rec['sha256']:
                             raise IOError('Unprocessed/restored host differs from the acquired copy.')
                 except Exception as exc:
@@ -863,9 +900,12 @@ def _write_reports_at(result, root):
         context=record.get('source_context',{})
         workshared=bool(record.get('is_workshared') or context.get('is_workshared'))
         if workshared:
-            record['opening_guidance']='DETACH_RECOMMENDED_FOR_WORKSHARED_COPY'
-            record['original_central_association_preserved']=bool(
-                record.get('saved_state_sha256') and record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None
+            transmitted=record.get('transmission_status')=='TRANSMITTED'
+            record['opening_guidance']=('OPEN_AS_TRANSMITTED_MODEL' if transmitted
+                                        else 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
+            record['original_central_association_preserved']=(True if transmitted else
+                (bool(record.get('saved_state_sha256') and
+                      record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None))
         if record.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED':
             record['verification_open_mode']='DETACH_IF_WORKSHARED'
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
@@ -885,13 +925,17 @@ def _write_reports_at(result, root):
              'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
+    for record in result['files']:
+        if record.get('is_primary_host') and record.get('status')=='COPIED':
+            lines.append('Transmission status: '+f.text(record.get('transmission_status','NOT_APPLICABLE'))+
+                         ' | '+f.text(record.get('relative','')))
     if not result['options'].get('repath'):
         lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
     lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
-        'Use Revit File > Open > Detach from Central, then Preserve Worksets, for an independent review of workshared copies.',
-        'Copying RVT bytes does not sever the original central/cloud association. A copied cache is not automatically a detached model.',
-        'Do not synchronize these copies to the original central. Detaching does not repath external links.',
-        'Our Revit opening checks use Detach when workshared; they do not certify a normal non-detached open.'])
+        'When the host report says TRANSMITTED, open the packaged RVT normally. Revit opens detached from its central model because the packaged workshared file is marked transmitted, and may show transmitted-model handling.',
+        'If transmission status is unavailable, use Revit File > Open > Detach from Central, then Preserve Worksets.',
+        'Marking a copy transmitted changes opening/worksharing behavior; it does not repath external links or rewrite ACC external-resource references.',
+        'Do not synchronize package copies to the original central.'])
     if result.get('recovery_directory'): lines.append('Undelivered/recovery files retained at: '+result['recovery_directory'])
     for record in result['files']:
         if record.get('recovery_path'):
@@ -951,7 +995,7 @@ def _write_reports_at(result, root):
     if result['options'].get('reports', True):
         with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
-                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','verification_open_mode','opening_guidance','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','packaged_sha256'])
+                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','verification_open_mode','transmission_status','opening_guidance','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','pre_transmission_sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
                     ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])

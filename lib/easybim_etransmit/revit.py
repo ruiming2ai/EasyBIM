@@ -472,6 +472,51 @@ class Backend(object):
         except Exception:
             dispose(opts); raise
 
+    def mark_transmitted_package(self, path):
+        """Mark a closed packaged workshared RVT transmitted without opening it.
+
+        Preserve TransmissionData-backed reference paths/load states explicitly,
+        because Revit applies desired reference data when a transmitted file opens.
+        External-server references (including true ACC resources) are not contained
+        in TransmissionData and are therefore left untouched.
+        """
+        self.guard(path)
+        if not self.basic(path).get('workshared'):
+            return None
+        model_path=self.mp(path);td=None
+        try:
+            td=self.DB.TransmissionData.ReadTransmissionData(model_path)
+            if td is None:return False
+            already=bool(td.IsTransmitted)
+            for ident in td.GetAllExternalFileReferenceIds():
+                f.check(self.cancelled)
+                ref=ref_path=None
+                try:
+                    ref=td.GetDesiredReferenceData(ident) if already else None
+                    if ref is None:ref=td.GetLastSavedReferenceData(ident)
+                    if ref is None:continue
+                    ref_path=ref.GetPath()
+                    status_text=f.text(ref.GetLinkedFileStatus())
+                    should_load=load_intent(status_text)
+                    if should_load is None:should_load=(status_text!='Unloaded')
+                    td.SetDesiredReferenceData(ident,ref_path,ref.PathType,bool(should_load))
+                finally:
+                    dispose(ref_path);dispose(ref)
+            td.IsTransmitted=True
+            self.DB.TransmissionData.WriteTransmissionData(model_path,td)
+        finally:
+            dispose(td);dispose(model_path)
+        check=getattr(self.DB.TransmissionData,'IsDocumentTransmitted',None)
+        model_path=self.mp(path);verify=None
+        try:
+            if check is not None:
+                try:return bool(check(model_path))
+                except Exception:pass
+            verify=self.DB.TransmissionData.ReadTransmissionData(model_path)
+            return bool(verify is not None and verify.IsTransmitted)
+        finally:
+            dispose(verify);dispose(model_path)
+
     def apply_metadata(self, path, target, rows, relative=True):
         self.guard(path); self.guard(target)
         for row in rows:
