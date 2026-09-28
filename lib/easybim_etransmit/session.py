@@ -108,6 +108,7 @@ class Registry(object):
         entry=dict(source=key,mode='LIVE_DOCUMENT',document=doc,name=name,original_path=original,
                    cloud=cloud_identity(doc),document_version=doc_version(doc),
                    state_basis='LIVE_INVENTORY_ONLY',children=[],snapshot_path=None,is_linked=bool(getattr(doc,'IsLinked',False)),
+                   is_workshared=bool(getattr(doc,'IsWorkshared',False)),
                    is_modified=bool(getattr(doc,'IsModified',False)))
         self.entries[key]=entry;self._documents.append((doc,key))
         result=dict(references=[],issues=[],version=f.text(getattr(self.app,'VersionNumber','')),
@@ -132,6 +133,10 @@ class Registry(object):
         except Exception as exc:
             result['issues'].append(issue('LIVE_INVENTORY_FAILED',key,exc,'error'))
             result['open_failed']=True
+        # Unloaded links have no GetLinkDocument(). Their link type still carries
+        # a real name and external-resource identity; never require loading for naming.
+        from .preflight import enrich_link_types
+        enrich_link_types(self,entry)
         try:
             for instance in self.scanner.elements(doc,'RevitLinkInstance'):
                 f.check(self.cancelled)
@@ -167,6 +172,34 @@ class Registry(object):
         except Exception as exc:
             result['issues'].append(issue('LIVE_LINK_TRAVERSAL_FAILED',key,exc,'error'))
         return key
+    def capture_reloaded_link(self,choice):
+        """Capture selected linked saved bytes before its original unload is restored."""
+        entry=self.entries[choice.owner];doc=entry['document'];child=None
+        rows=[r for r in entry['inventory']['references']
+              if r.get('kind')=='RevitLink' and r.get('element_id')==choice.element_id]
+        for instance in self.scanner.elements(doc,'RevitLinkInstance'):
+            if eid(instance.GetTypeId())==choice.element_id:
+                child=instance.GetLinkDocument()
+                if child is not None:break
+        if child is None:
+            raise SourceError('RELOADED_LINK_DOCUMENT_UNAVAILABLE','Reloaded link exposes no placed linked document. No unrelated file was substituted.')
+        expected=cache_sources.reference_identity(rows[0]) if rows else None
+        actual=cloud_identity(child)
+        if expected and not cache_sources.same_identity(expected,actual):
+            raise SourceError('RELOADED_LINK_IDENTITY_MISMATCH','Reloaded cloud identity differs from the selected reference.')
+        key=self.add_live(child,inspect=False)
+        self.snapshot(key)
+        for row in rows:
+            row['configured_source']=row.get('source','')
+            row['source']=key
+            row['source_evidence']='EXPLICIT_TEMPORARY_RELOAD_SAVED_SOURCE'
+            row['loaded']=False
+            row['original_loaded']=False
+            row['local_unload_override']=choice.local_override
+            row.pop('resolution_failed',None)
+            if actual:row['cloud_identity']=actual
+        return key
+
     def add_graph(self,graph,client):
         self.graphs[graph.key]=graph;self.clients[graph.key]=client
         for item in graph.entries:
@@ -196,7 +229,8 @@ class Registry(object):
                 'snapshot_sha256','snapshot_validation','snapshot_error','snapshot_error_type',
                 'snapshot_started_at','snapshot_completed_at','saved_document_version',
                 'working_location_changed','snapshot_authorization','is_modified','cache_metadata',
-                'cache_evidence','unsaved_edits_excluded','saved_state_only','inventory_basis')
+                'cache_evidence','unsaved_edits_excluded','saved_state_only','inventory_basis',
+                'preflight_events','is_workshared')
         result=dict((k,entry[k]) for k in fields if k in entry)
         if entry['mode']=='PUBLISHED_VERSION':
             result.update(project_id=entry['graph'].project,host_version_id=entry['graph'].version,
@@ -456,6 +490,8 @@ class SessionBackend(Backend):
             # does not open a temporary Revit document.
             result=copy.deepcopy(entry['inventory'])
             result['source_mode']='LIVE_DOCUMENT'
+            result['opened_in_revit']=False
+            result['is_workshared']=entry.get('is_workshared',False)
             physical=f.text(entry.get('original_path') or '')
             try:
                 if f.absolute(physical) and not f.cache_source(physical) and not f.is_desktop_connector_path(physical):
@@ -475,13 +511,25 @@ class SessionBackend(Backend):
             result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
             entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
             return result
+        if entry and entry['mode']=='LIVE_DOCUMENT':
+            result=copy.deepcopy(entry['inventory'])
+            result['opened_in_revit']=False
+            result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            result['source_mode']='LIVE_INVENTORY_SAVED_FILE_COPY'
+            result['is_workshared']=entry.get('is_workshared',False)
+            entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            if options.get('include',{}).get('revit',True):self._bind_saved_links(entry,result)
+            if entry.get('is_modified'):
+                result.setdefault('issues',[]).append(issue('UNSAVED_EDITS_EXCLUDED',source,
+                    'Dependency locations came from the open model; exported RVT bytes are the saved file/cache. Unsaved edits are not exported.','info'))
+            return result
         if self.registry.saved_state_only:
-            return None  # Cloud saved-state inventory still comes from the selected cache edition.
+            return None
         return copy.deepcopy(entry['inventory']) if entry and entry['mode']=='LIVE_DOCUMENT' else None
     def inventory_after_copy(self,source,options):
         # Optional vendor inspection cannot prevent the initial host copy.
         entry=self.registry.get(source)
-        if not entry or entry['mode']!='LIVE_DOCUMENT' or not self.registry.collect_plugins or (self.registry.saved_state_only and not self._can_use_live_inventory(entry)):
+        if not entry or entry.get('is_linked') or entry['mode']!='LIVE_DOCUMENT' or not self.registry.collect_plugins or (self.registry.saved_state_only and not self._can_use_live_inventory(entry)):
             return None
         if entry.get('plugins_scanned'):
             return copy.deepcopy(entry.get('plugin_inventory'))
@@ -576,8 +624,7 @@ class SessionBackend(Backend):
         meta.update(source_stability='SESSION_SNAPSHOT',source_context=self.registry.public(source))
         return meta
     def _can_use_live_inventory(self,entry):
-        return (entry.get('document') is not None and not entry.get('is_modified') and
-                entry.get('cache_metadata',{}).get('revision_check')=='MATCHES_LOADED_SAVED_VERSION')
+        return entry.get('document') is not None
 
     def scan(self,source,stage,options):
         entry=self.registry.get(source)
@@ -585,8 +632,8 @@ class SessionBackend(Backend):
             if self._can_use_live_inventory(entry):
                 result=copy.deepcopy(entry['inventory'])
                 result['opened_in_revit']=False
-                result['inspection_status']='LOADED_SAVED_REVISION_INVENTORY'
-                entry['inventory_basis']='UNMODIFIED_LOADED_DOCUMENT_MATCHED_TO_SAVED_REVISION'
+                result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+                entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
             else:
                 # Unsaved reference additions/deletions are not authoritative
                 # for the exported saved file. Inspect only its disposable copy.
@@ -602,7 +649,7 @@ class SessionBackend(Backend):
                 result['issues'].append(issue(revision,source,
                     'Exported saved cache revision '+f.text(metadata.get('cache_document_version'))+
                     '; loaded revision '+f.text(metadata.get('loaded_document_version'))+
-                    '. Dependencies were inspected from the saved copy.',
+                    '. Dependency locations came from the available inventory; no revision-matching reopen was requested.',
                     'warning' if revision=='SAVED_CACHE_DIFFERS_FROM_LOADED' else 'info'))
             result['source_mode']='SAVED_LOCAL_STATE'
             return result

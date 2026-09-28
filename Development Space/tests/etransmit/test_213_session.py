@@ -33,6 +33,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
     def run_export(self,rows,load=True,repath=False):
         self.doc.IsModified=True
         key=self.r.add_live(self.doc)
+        self.r.get(key)['inventory']['references']=copy.deepcopy(rows.get('Host.rvt',[]))
         self.saved_scans(rows)
         out=os.path.join(self.root,'out')
         backend=s.SessionBackend(self.db,self.app,out,self.r)
@@ -78,11 +79,11 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.assertIn('Element 4815243',report)
         self.assertIn('Cache roots:',report)
 
-    def test_load_option_records_original_and_requested_states(self):
+    def test_obsolete_load_option_is_ignored_and_unloaded_state_preserved(self):
         self.put_link();result=self.run_export({'Host.rvt':[cloud_row()]},repath=True)
         ref=result['references'][0]
         self.assertFalse(ref['loaded']);self.assertFalse(ref['original_loaded'])
-        self.assertTrue(ref['package_loaded'])
+        self.assertFalse(ref['package_loaded'])
 
     def test_load_option_off_preserves_unloaded_state(self):
         self.put_link();result=self.run_export({'Host.rvt':[cloud_row()]},load=False,repath=True)
@@ -92,7 +93,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.put_link();result=self.run_export({'Host.rvt':[cloud_row()]},load=True,repath=False)
         self.assertFalse(result['references'][0]['package_loaded'])
 
-    def test_mismatched_link_uses_saved_dependency_inventory_and_no_live_plugins(self):
+    def test_mismatched_link_uses_live_inventory_but_never_scans_nested_plugins(self):
         self.doc.IsLinked=True
         self.r.collect_plugins=True
         self.r.scanner.scan_plugins=lambda *a:self.fail('different loaded revision is not authoritative')
@@ -105,7 +106,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         backend=s.SessionBackend(self.db,self.app,self.root,self.r)
         self.assertIsNone(backend.inventory_after_copy(key,f.defaults()))
         result=backend.scan(key,'unused',f.defaults())
-        self.assertEqual([r['source'] for r in result['references']],['Right.pdf'])
+        self.assertEqual([r['source'] for r in result['references']],['Wrong.pdf'])
         self.assertTrue(any(i['code']=='SAVED_CACHE_DIFFERS_FROM_LOADED' for i in result['issues']))
 
     def test_cancellation_during_processing_restores_single_host(self):

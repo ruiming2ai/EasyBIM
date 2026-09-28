@@ -9,7 +9,7 @@ import re
 import traceback
 from pyrevit import forms, script, DB
 from . import VERSION, files as f
-from . import cleanup, engine, batch, layout
+from . import cleanup, engine, batch, layout, preflight, performance
 from .session import Registry, SessionBackend
 
 
@@ -190,6 +190,32 @@ def validate_source_modes(models):
     return True
 
 
+class UnloadedLinksDialog(forms.WPFWindow):
+    def __init__(self, choices):
+        forms.WPFWindow.__init__(self,os.path.join(os.path.dirname(__file__),'unloaded_links.xaml'))
+        self.choices=choices;self.result=None
+        self.Links.ItemsSource=choices
+    def reload_selected(self,sender,args):
+        self.Links.CommitEdit()
+        self.result=[row for row in self.choices if row.Checked];self.Close()
+    def continue_without_reload(self,sender,args):
+        self.result=[];self.Close()
+    def cancel_reload(self,sender,args):
+        self.result=None;self.Close()
+
+
+def source_save_choice(choices):
+    modified=[r for r in choices if getattr(r,'Document',None) is not None
+              and bool(getattr(r.Document,'IsModified',False))]
+    if not modified:return 'continue'
+    answer=forms.alert('These selected models have unsaved changes:\n'+
+        '\n'.join(f.text(r.Document.Title) for r in modified)+
+        '\n\nContinue exports the last saved file/cache, not unsaved edits. Save means normal in-place Save only; no SaveAs, Sync or Publish.',
+        title='e-transmit: unsaved changes',
+        options=['Continue without saving','Save and continue','Cancel'])
+    return {'Continue without saving':'continue','Save and continue':'save'}.get(answer,'cancel')
+
+
 class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
@@ -207,9 +233,7 @@ class Dialog(forms.WPFWindow):
             with io.open(self.settings,encoding='utf-8') as inp: saved=json.load(inp)
             self.Output.Text=saved.get('output','')
             self.mappings=[Choice(a+'  ->  '+b,source=b,key=a) for a,b in saved.get('mappings',[])]
-            self.DeepScan.IsChecked=saved.get('deep',True)
             self.Repath.IsChecked=saved.get('repath',True); self.Reports.IsChecked=saved.get('reports',True)
-            self.LoadUnloadedFiles.IsChecked=saved.get('load_unloaded_files',True)
             self.FileStructure.SelectedIndex=[x.Key for x in self.structures].index(layout.mode(saved.get('file_structure')))
             self.Zip.IsChecked=saved.get('zip',False)
             self.ZipPerModel.IsChecked=saved.get('zip_per_model',False)
@@ -310,8 +334,7 @@ class Dialog(forms.WPFWindow):
         if not os.path.isdir(output): return forms.alert('Select an existing output directory.')
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
         opts['file_structure']=layout.mode(self.FileStructure.SelectedItem.Key if self.FileStructure.SelectedItem else None)
-        opts.update(deep=bool(self.DeepScan.IsChecked),repath=bool(self.Repath.IsChecked),
-                    load_unloaded_files=bool(self.LoadUnloadedFiles.IsChecked),
+        opts.update(repath=bool(self.Repath.IsChecked),
                     cleanup=bool(self.Cleanup.IsChecked),upgrade=bool(self.Upgrade.IsChecked or self.Cleanup.IsChecked),
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
                     views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=True,
@@ -343,12 +366,12 @@ class Dialog(forms.WPFWindow):
             try: cleanup.view_deletions([],opts['views'],opts['view_types'])
             except ValueError as exc: return forms.alert(f.text(exc))
         notes=[]
-        # The visible UI disclosure states saved/cache state only. No source save consent or SaveAs path is used.
+        # Source-save choice is made once, before collecting the selected documents.
         if opts['upgrade']: notes.append('Package copies will be saved in Revit '+f.text(self.uiapp.Application.VersionNumber)+'. They cannot be opened in an older Revit.')
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
         if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True,title='Process package copies / Transmit'): return
         if self.SaveSettings.IsChecked:
-            saved=dict((k,opts[k]) for k in ('deep','repath','load_unloaded_files','file_structure','per_model','reports','zip','zip_per_model','mappings'))
+            saved=dict((k,opts[k]) for k in ('repath','file_structure','per_model','reports','zip','zip_per_model','mappings'))
             saved['output']=output
             folder=os.path.dirname(self.settings)
             try:
@@ -364,6 +387,9 @@ def run(uiapp,xaml):
         dialog.ShowDialog()
         if not dialog.result:return
         choices,root,opts,extras=dialog.result
+        save_decision=source_save_choice(choices)
+        with performance.Collector() as save_timing:
+            save_events=preflight.save_selected(choices,save_decision)
         with DockableTransferProgress() as pb:
             def cancel():return pb.cancelled
             def pulse(label,current,total):
@@ -378,6 +404,20 @@ def run(uiapp,xaml):
                     sources.append(key);live_keys.append(key);model_names[key]=registry.get(key)['name']
                 else:
                     sources.append(row.Source);model_names[row.Source]=getattr(row,'Name',row.Source)
+            if live_keys:
+                registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(save_timing.snapshot())
+                for key in live_keys:
+                    entry=registry.get(key)
+                    entry.setdefault('preflight_events',[]).extend(event for event in save_events
+                        if event.get('model')==f.text(entry['document'].Title) and event.get('source')==f.text(entry['document'].PathName or ''))
+                unloaded=preflight.unloaded_links(registry,live_keys) if opts['include'].get('revit',True) else []
+                if unloaded:
+                    chooser=UnloadedLinksDialog(unloaded);chooser.ShowDialog()
+                    if chooser.result is None:raise f.Cancelled()
+                    with performance.Collector() as reload_timing:
+                        with preflight.TemporaryReloads(registry,chooser.result,pulse) as reloads:
+                            reloads.acquire()
+                    registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(reload_timing.snapshot())
             if sources:
                 results=batch.run_batch(sources,root,
                     lambda package,source:SessionBackend(DB,uiapp.Application,package,registry,cancel),
@@ -396,7 +436,11 @@ def run(uiapp,xaml):
         message=engine.completion_message(results,len(choices),cancelled=was_cancelled)
         forms.alert(message+'\n\nOutput: '+root+'\n\nKeep the full model-named job folders, including their Links folders together. Read each START_HERE.txt and batch.json before delivery.',title='EasyBIM e-transmit')
         os.startfile(root)
+    except f.Cancelled:
+        forms.alert('Transmission cancelled. Any explicitly requested source saves already completed are retained.',title='EasyBIM e-transmit')
+    except preflight.PreflightError as exc:
+        forms.alert(f.text(exc),title='e-transmit preflight stopped')
     finally:
         if registry is not None:
             try:registry.close()
-            except Exception:script.get_logger().warning('Temporary read-only source snapshots could not all be removed; the open working models were not saved or closed.')
+            except Exception:script.get_logger().warning('Temporary read-only source snapshots could not all be removed; no working model was closed or relocated.')

@@ -64,19 +64,19 @@ class SavedCacheSession(unittest.TestCase):
         self.assertEqual(f.digest(path),f.digest(local))
         self.assertEqual(self.r.get(key)['state_basis'],'VERIFIED_LOCAL_FILE_SAVED_STATE')
         self.assertTrue(self.doc.IsModified)
-    def test_modified_host_does_not_use_unsaved_reference_inventory(self):
+    def test_modified_host_uses_available_live_inventory_without_inspection_open(self):
         self.doc.IsModified=True
-        self.r.scanner.scan_open=lambda doc,source,info,result:result['references'].append(dict(id='unsaved-only',source='NeverSaved.pdf',kind='Image'))
+        self.r.scanner.scan_open=lambda doc,source,info,result:result['references'].append(dict(id='live',source='Drawing.pdf',kind='Image'))
         key=self.r.add_live(self.doc);b=s.SessionBackend(self.db,self.app,self.root,self.r)
-        self.assertIsNone(b.inventory_before_copy(key,f.defaults()))
+        result=b.inventory_before_copy(key,f.defaults())
+        self.assertEqual([r['id'] for r in result['references']],['live'])
+        self.assertFalse(result['opened_in_revit'])
         self.r.snapshot(key)
         old=s.Backend.scan
-        def saved_scan(inner,source,stage,options):
-            return dict(references=[dict(id='saved',source='Saved.pdf',kind='Image')],issues=[],version='2024')
-        s.Backend.scan=saved_scan
+        s.Backend.scan=lambda *a:self.fail('modified live host must not be reopened')
         try:result=b.scan(key,os.path.join(self.root,'stage.rvt'),f.defaults())
         finally:s.Backend.scan=old
-        self.assertEqual([r['id'] for r in result['references']],['saved'])
+        self.assertEqual([r['id'] for r in result['references']],['live'])
     def test_original_version_change_during_capture_is_rejected(self):
         key=self.r.add_live(self.doc);done=[False]
         def pulse(*args):

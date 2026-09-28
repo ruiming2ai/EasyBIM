@@ -145,7 +145,7 @@ def report_lines(data):
            data['scope'], data['phase_basis']]
     initial=sum(x['timing']['elapsed_seconds'] for x in data.get('initial_discovery',[]))
     if data.get('initial_discovery'):
-        lines += ['Initial reference discovery: {0:.3f} seconds'.format(initial),
+        lines += ['Initial reference discovery / preflight: {0:.3f} seconds'.format(initial),
                   'Measured total including initial discovery: {0:.3f} seconds'.format(data['measured_total_seconds']),
                   'timings.csv scope distinguishes discovery from package-relative start offsets.']
     for row in sorted(data['phases'],key=lambda r:-r['seconds']):
