@@ -74,14 +74,7 @@
             <ListBox x:Name="Extras" Height="70"/>
           </StackPanel>
         </GroupBox>
-        <GroupBox Header="4  Exact source mappings">
-          <StackPanel>
-            <TextBlock Text="Prefix mappings are optional fallbacks for exact file-based sources. They must point to the SAME configured hierarchy, including Shared/Consumed. Never map a consumed source to WIP. Live ACC models are opened through native Revit, not selected from an EasyBIM published-model browser." TextWrapping="Wrap" Foreground="#536273"/>
-            <ListBox x:Name="Mappings" Height="65" DisplayMemberPath="Name"/>
-            <WrapPanel><Button Content="Add exact prefix mapping..." Click="add_mapping"/><Button Content="Remove mapping" Click="remove_mapping"/></WrapPanel>
-          </StackPanel>
-        </GroupBox>
-        <GroupBox Header="5  Upgrade and cleanup — package copies only">
+        <GroupBox Header="4  Upgrade and cleanup — package copies only">
           <StackPanel>
             <CheckBox x:Name="Upgrade" Content="Upgrade package models to this running Revit version"/>
             <CheckBox x:Name="Cleanup" Content="Enable cleanup (older package models will also be upgraded)" Click="cleanup_toggle"/>
@@ -92,7 +85,7 @@
               <Button Content="Select view types to retain..." Click="select_view_types" HorizontalAlignment="Left"/>
               <TextBlock x:Name="ViewTypesLabel" Text="No additional view types selected" TextWrapping="Wrap"/>
             </StackPanel>
-            <CheckBox x:Name="SaveSettings" Content="Remember destination, mappings and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
+            <CheckBox x:Name="SaveSettings" Content="Remember destination and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
           </StackPanel>
         </GroupBox>
       </StackPanel>
