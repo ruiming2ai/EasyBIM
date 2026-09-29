@@ -82,6 +82,16 @@ class DockableProgressTests(unittest.TestCase):
         self.assertIn(('open',self.progress.PANEL_ID),self.calls)
         self.assertIn(('close',self.progress.PANEL_ID),self.calls)
 
+    def test_registered_panel_instance_survives_module_global_loss(self):
+        self.assertTrue(self.progress.register())
+        panel=self.panel_instance
+        self.progress._PANEL_INSTANCE=None
+        with self.progress.ProgressController() as controller:
+            self.assertTrue(controller.available)
+            self.assertIs(controller.panel,panel)
+            self.assertEqual(controller.mode,'DOCKABLE_PANE')
+        self.assertFalse(any(c[0]=='register' for c in self.calls[1:]))
+
     def test_missing_registered_instance_degrades_to_noop_without_registration(self):
         self.progress._REGISTERED=True
         self.progress._PANEL_INSTANCE=None
@@ -122,13 +132,51 @@ class DockableProgressTests(unittest.TestCase):
         self.assertTrue(overlay.closed)
         self.assertFalse(self.warnings)
 
-    def test_overlay_class_keeps_phase_color_mapping_and_transparency(self):
+    def test_overlay_class_keeps_phase_color_mapping_transparency_and_ribbon_anchor(self):
         source_path=os.path.join(ROOT,'lib','easybim','etransmit_progress_panel.py')
         with io.open(source_path,encoding='utf-8') as inp:text=inp.read()
         self.assertIn('class TransferProgressBar(forms.ProgressBar)',text)
         self.assertIn('self.Opacity = 0.92',text)
         self.assertIn('_set_brush(self.pbar, color)',text)
+        self.assertIn('ribbon_bottom = _ribbon_bottom_dip()',text)
+        self.assertIn("self._etransmit_position_source = 'RIBBON_BOTTOM'",text)
         self.assertNotIn('script.get_logger().warning',text)
+
+    def test_ribbon_bottom_helper_uses_wpf_device_transform(self):
+        old_autodesk=sys.modules.get('Autodesk')
+        old_windows=sys.modules.get('Autodesk.Windows')
+        old_system=sys.modules.get('System')
+        old_system_windows=sys.modules.get('System.Windows')
+
+        class Point(object):
+            def __init__(self,x,y):self.X=x;self.Y=y
+        class Matrix(object):
+            def Transform(self,point):return Point(point.X/2.0,point.Y/2.0)
+        class Target(object):
+            TransformFromDevice=Matrix()
+        class Source(object):
+            CompositionTarget=Target()
+        class PresentationSource(object):
+            @staticmethod
+            def FromVisual(value):return Source()
+        class Ribbon(object):
+            ActualHeight=100.0
+            def PointToScreen(self,point):return Point(point.X,400.0)
+        aw=types.ModuleType('Autodesk.Windows')
+        aw.ComponentManager=Obj(Ribbon=Ribbon())
+        autodesk=types.ModuleType('Autodesk');autodesk.Windows=aw
+        sw=types.ModuleType('System.Windows')
+        sw.Point=Point;sw.PresentationSource=PresentationSource
+        system=types.ModuleType('System');system.Windows=sw
+        sys.modules['Autodesk']=autodesk;sys.modules['Autodesk.Windows']=aw
+        sys.modules['System']=system;sys.modules['System.Windows']=sw
+        try:
+            self.assertEqual(self.progress._ribbon_bottom_dip(),200.0)
+        finally:
+            for name,old in [('System.Windows',old_system_windows),('System',old_system),
+                             ('Autodesk.Windows',old_windows),('Autodesk',old_autodesk)]:
+                if old is None:sys.modules.pop(name,None)
+                else:sys.modules[name]=old
 
     def test_panel_keeps_phase_filename_percent_and_cancel_separate(self):
         panel=self.progress.TransferProgressPanel()
