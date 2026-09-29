@@ -47,7 +47,7 @@ class SourceAutomationTests(unittest.TestCase):
         tracker = tracker_module(self)
         source = self.make('Downloads/Host.rvt', b'rvt')
         app = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.current.txt'))
-        tracker.record_opening(source, state_path=self.state, now=100.0)
+        tracker.record_opening(source, state_path=self.state, now=100.0, application=app)
         doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
                   IsModelInCloud=False, IsWorkshared=True)
         tracker.record_opened(doc, application=app, state_path=self.state, now=101.0)
@@ -58,7 +58,7 @@ class SourceAutomationTests(unittest.TestCase):
         source = self.make('Downloads/Host.rvt', b'rvt')
         app1 = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.0001.txt'))
         app2 = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.0002.txt'))
-        tracker.record_opening(source, state_path=self.state, now=100.0)
+        tracker.record_opening(source, state_path=self.state, now=100.0, application=app1)
         doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
                   IsModelInCloud=False, IsWorkshared=True)
         tracker.record_opened(doc, application=app1, state_path=self.state, now=101.0)
@@ -76,9 +76,9 @@ class SourceAutomationTests(unittest.TestCase):
                    IsModelInCloud=False, IsWorkshared=True, GetHashCode=lambda:101)
         doc2 = Obj(Title='Host_detached', PathName='', IsDetached=True,
                    IsModelInCloud=False, IsWorkshared=True, GetHashCode=lambda:202)
-        tracker.record_opening(source1, state_path=self.state, now=100.0)
+        tracker.record_opening(source1, state_path=self.state, now=100.0, application=app)
         tracker.record_opened(doc1, application=app, state_path=self.state, now=101.0)
-        tracker.record_opening(source2, state_path=self.state, now=102.0)
+        tracker.record_opening(source2, state_path=self.state, now=102.0, application=app)
         tracker.record_opened(doc2, application=app, state_path=self.state, now=103.0)
         self.assertEqual(tracker.source_for_document(doc1, application=app, state_path=self.state), source1)
         self.assertEqual(tracker.source_for_document(doc2, application=app, state_path=self.state), source2)
@@ -97,6 +97,13 @@ class SourceAutomationTests(unittest.TestCase):
         app = Obj(RecordingJournalFilename=journal)
         self.assertEqual(tracker.source_for_document(doc, application=app, state_path=self.state), '')
 
+    def test_windows_journal_relative_file_name_resolves_against_journals_folder(self):
+        tracker = tracker_module(self)
+        journal = r'C:\\Users\\rliu\\AppData\\Local\\Autodesk\\Revit\\Autodesk Revit 2026\\Journals\\journal.0178.txt'
+        relative = r'..\\..\\..\\..\\..\\..\\Downloads\\170 MEP_selected\\1RED0-MHGC-AEI-013.rvt'
+        expected = r'C:\\Users\\rliu\\Downloads\\170 MEP_selected\\1RED0-MHGC-AEI-013.rvt'
+        self.assertEqual(tracker._journal_resolve_path(relative, journal), expected)
+
     def test_journal_fallback_recovers_local_file_for_already_open_detached_model(self):
         tracker = tracker_module(self)
         source = os.path.join(self.root, 'Downloads', 'Host.rvt')
@@ -109,6 +116,34 @@ class SourceAutomationTests(unittest.TestCase):
                   IsModelInCloud=False, IsWorkshared=True)
         app = Obj(RecordingJournalFilename=journal)
         self.assertEqual(tracker.source_for_document(doc, application=app, state_path=self.state), source)
+
+    def test_real_revit_journal_continuation_and_relative_file_name_are_recovered(self):
+        tracker = tracker_module(self)
+        source = self.make('Downloads/Host.rvt', b'rvt')
+        journal_dir = os.path.join(self.root, 'AppData', 'Local', 'Autodesk', 'Revit',
+                                   'Autodesk Revit 2026', 'Journals')
+        os.makedirs(journal_dir)
+        journal = os.path.join(journal_dir, 'journal.0178.txt')
+        relative = os.path.relpath(source, journal_dir)
+        with io.open(journal, 'w', encoding='utf-8') as out:
+            out.write(u'  Jrn.Data  _\n')
+            out.write(u'          "File Name"  , "IDOK" , "' + relative + u'"\n')
+        doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
+                  IsModelInCloud=False, IsWorkshared=True)
+        app = Obj(RecordingJournalFilename=journal)
+        self.assertEqual(os.path.normpath(tracker.source_for_document(
+            doc, application=app, state_path=self.state)), os.path.normpath(source))
+
+    def test_pending_open_event_from_another_journal_session_is_not_reused(self):
+        tracker = tracker_module(self)
+        source = self.make('Downloads/Host.rvt', b'rvt')
+        app1 = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.0001.txt'))
+        app2 = Obj(RecordingJournalFilename=os.path.join(self.root,'journal.0002.txt'))
+        tracker.record_opening(source, state_path=self.state, now=100.0, application=app1)
+        doc = Obj(Title='Host_detached', PathName='', IsDetached=True,
+                  IsModelInCloud=False, IsWorkshared=True)
+        self.assertEqual(tracker.record_opened(doc, application=app2,
+                                               state_path=self.state, now=101.0), '')
 
     def test_default_connector_roots_include_custom_workspace(self):
         helper = getattr(f, '_desktop_connector_workspace_locations', None)
