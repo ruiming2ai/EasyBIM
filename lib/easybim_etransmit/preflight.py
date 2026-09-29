@@ -132,13 +132,16 @@ def save_detached_current(doc, output, DB=None):
     return target
 
 
-def _adopt_detached_saved_source(row, path, evidence):
-    """Use one saved RVT as a standalone source after explicit recovery."""
+def _bind_detached_saved_source(row, path, evidence):
+    """Keep the live detached document for dependency discovery.
+
+    The resolved saved RVT supplies the transmitted host bytes. Keeping the
+    document handle allows batch preflight to inspect placed Revit links and,
+    when approved, temporarily load ACC/cloud links before packaging.
+    """
     row.ResolvedSource = path
     row.Source = path
-    row.Mode = 'SAVED_FILE'
     row.DetachedRecovery = evidence
-    row.Document = None
     row.Modified = False
 
 
@@ -149,9 +152,7 @@ def _bind_detached_browse_source(row, path):
     document remains available only to discover/load Revit links; it is never
     saved by this recovery path.
     """
-    row.ResolvedSource = path
-    row.Source = path
-    row.DetachedRecovery = 'USER_BROWSE'
+    _bind_detached_saved_source(row, path, 'USER_BROWSE')
 
 
 def _recover_detached_source(row, doc, application, DB, output, detached_recovery, initial_error=''):
@@ -166,7 +167,7 @@ def _recover_detached_source(row, doc, application, DB, output, detached_recover
         if action == 'SAVE_CURRENT':
             path = save_detached_current(doc, output, DB)
             ready = _validate_local_primary(path, f.text(getattr(row, 'Name', '') or ''), 'USER_SAVE_CURRENT')
-            _adopt_detached_saved_source(row, path, 'USER_SAVE_CURRENT')
+            _bind_detached_saved_source(row, path, 'USER_SAVE_CURRENT')
             return ready
 
         if action == 'BROWSE':
