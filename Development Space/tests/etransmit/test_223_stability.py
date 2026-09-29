@@ -98,7 +98,7 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertEqual(row.ResolvedSource,self.host)
         self.assertEqual(row.DetachedRecovery,'USER_BROWSE')
 
-    def test_pathless_detached_host_can_save_current_state_and_continue_as_saved_file(self):
+    def test_pathless_detached_host_can_save_current_state_and_keep_live_link_context(self):
         doc=Obj(PathName='',Title='Host_detached',IsModelInCloud=False,IsWorkshared=True)
         row=self.row(doc)
         from easybim_etransmit import source_tracker
@@ -115,9 +115,10 @@ class PrimaryHostReadiness(unittest.TestCase):
             preflight.save_detached_current=old_save
         self.assertEqual(result[0]['path'],self.host)
         self.assertEqual(result[0]['evidence'],'USER_SAVE_CURRENT')
-        self.assertEqual(row.Mode,'SAVED_FILE')
+        self.assertEqual(row.Mode,'LIVE_DOCUMENT')
         self.assertEqual(row.Source,self.host)
-        self.assertIsNone(row.Document)
+        self.assertEqual(row.ResolvedSource,self.host)
+        self.assertIs(row.Document,doc)
         self.assertEqual(row.DetachedRecovery,'USER_SAVE_CURRENT')
 
     def test_pathless_detached_host_accepts_explicit_existing_rvt_without_identity_match(self):
