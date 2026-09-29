@@ -27,18 +27,21 @@ When the user chooses **Load model from file location…**:
 2. That path becomes the saved host source to transmit.
 3. The open detached document is retained only for Revit-link discovery.
 4. Unsaved changes in that detached document are not saved or transmitted.
-5. Loaded Revit links are matched to their live linked Documents.
-6. Unloaded Revit links are shown in the existing temporary-reload dialog.
-7. ACC/cloud links are preselected because their saved cache commonly requires
+5. Saved `TransmissionData` Revit-link rows remain authoritative for ordinary
+   file links, but live ACC/server external-resource rows are merged back when
+   they are missing from `TransmissionData`.
+6. Loaded Revit links are matched to their live linked Documents.
+7. Unloaded Revit links are shown in the existing temporary-reload dialog.
+8. ACC/cloud links are preselected because their saved cache commonly requires
    Revit to load the link first.
-8. When the user approves **Reload selected and continue**, EasyBIM:
+9. When the user approves **Reload selected and continue**, EasyBIM:
    - snapshots the selected host saved state before any reload;
    - temporarily reloads the selected link in the open detached document;
    - captures the linked Document identity and exact saved local cloud-cache
      revision;
    - restores the link to its original unloaded/local-unloaded state;
    - packages the captured RVT as a linked dependency.
-9. No source Save or Sync follows the temporary reload.
+10. No source Save or Sync follows the temporary reload.
 
 The existing warning remains: Revit Reload can affect Undo history and the
 working document's modified flag even though the original unloaded state is
