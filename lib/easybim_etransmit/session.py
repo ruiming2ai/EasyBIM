@@ -230,7 +230,7 @@ class Registry(object):
                 'snapshot_started_at','snapshot_completed_at','saved_document_version',
                 'working_location_changed','snapshot_authorization','is_modified','cache_metadata',
                 'cache_evidence','unsaved_edits_excluded','saved_state_only','inventory_basis',
-                'preflight_events','is_workshared')
+                'preflight_events','is_workshared','detached_recovery')
         result=dict((k,entry[k]) for k in fields if k in entry)
         if entry['mode']=='PUBLISHED_VERSION':
             result.update(project_id=entry['graph'].project,host_version_id=entry['graph'].version,
