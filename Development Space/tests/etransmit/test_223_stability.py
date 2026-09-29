@@ -236,6 +236,25 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertTrue(choices[0].Checked)
         self.assertIn('No directly readable saved RVT',choices[0].Availability)
 
+    def test_auto_detected_detached_host_preselects_unresolved_placed_link(self):
+        row=dict(kind='RevitLink',element_id='10',id='10',source='',
+                 link_name='Cloud-like unresolved link')
+        link=Obj(Id=Obj(IntegerValue=10),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=10))
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,detached_recovery='AUTO_DETACHED',
+                   inventory=dict(references=[row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        registry=Obj(cancelled=None,DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=lambda document,name:
+                         [instance] if name=='RevitLinkInstance' else [link]),
+                     get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual(len(choices),1)
+        self.assertTrue(choices[0].Checked)
+
     def test_detached_browse_does_not_preselect_unloaded_server_file_link(self):
         row=dict(kind='RevitLink',element_id='8',id='8',
                  source=self.host,link_name='Architecture')
@@ -336,7 +355,8 @@ class UIContracts(unittest.TestCase):
         self.assertIn('Do not include current changes',text)
         self.assertNotIn('force_saved_host_inspection_sources',text)
         self.assertIn("getattr(row.Document, 'IsDetached', False)",text)
-        self.assertIn("entry['detached_recovery']=row.DetachedRecovery",text)
+        self.assertIn("detached_marker='AUTO_DETACHED'",text)
+        self.assertIn("entry['detached_recovery']=detached_marker",text)
         self.assertIn("DetachedRecovery','')!='USER_BROWSE'",text)
 
     def test_document_opening_hook_stamps_pending_source_with_current_journal(self):
