@@ -56,7 +56,10 @@ class UnloadedLinksDialog(forms.WPFWindow):
 
 
 def source_save_choice(choices):
+    # USER_BROWSE explicitly chose existing saved bytes. Keep the open detached
+    # document only for link discovery/reload; do not offer to save its edits.
     modified=[r for r in choices if getattr(r,'Document',None) is not None
+              and getattr(r,'DetachedRecovery','')!='USER_BROWSE'
               and bool(getattr(r.Document,'IsModified',False))]
     if not modified:return 'continue'
     answer=forms.alert('These selected models have unsaved changes:\n'+
@@ -263,16 +266,6 @@ class Dialog(forms.WPFWindow):
                     reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked))
         opts['mappings']=[]
         opts['saved_state_only']=True
-        # A model explicitly selected for detached recovery is authoritative,
-        # but closed-file TransmissionData is not complete for every external
-        # Revit/server reference. Always inspect a disposable copy so its links
-        # can be collected even when Repath/Cleanup/Upgrade are all off.
-        opts['force_saved_host_inspection_sources']=[
-            f.text(getattr(row,'ResolvedSource','') or '')
-            for row in models
-            if getattr(row,'DetachedRecovery','')=='USER_BROWSE'
-            and f.text(getattr(row,'ResolvedSource','') or '')
-        ]
         if opts['zip_per_model'] or any(x.Mode=='LIVE_DOCUMENT' for x in models):opts['per_model']=True
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
         planned=[];planned_names={}
@@ -336,7 +329,10 @@ def run(uiapp,xaml):
                 if row.Mode=='LIVE_DOCUMENT':
                     trace.write(uiapp,'ET_STEP_12_LIVE_DOCUMENT_REGISTER_START',root,row.Name)
                     key=registry.add_live(row.Document,configured_source=getattr(row,'ResolvedSource','') or None)
-                    sources.append(key);live_keys.append(key);model_names[key]=registry.get(key)['name']
+                    entry=registry.get(key)
+                    if getattr(row,'DetachedRecovery',''):
+                        entry['detached_recovery']=row.DetachedRecovery
+                    sources.append(key);live_keys.append(key);model_names[key]=entry['name']
                     trace.write(uiapp,'ET_STEP_13_LIVE_DOCUMENT_REGISTER_DONE',root,row.Name)
                 else:
                     source=getattr(row,'ResolvedSource',None) or row.Source
