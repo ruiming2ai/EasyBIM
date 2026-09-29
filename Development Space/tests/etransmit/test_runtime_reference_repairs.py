@@ -49,6 +49,7 @@ class References(unittest.TestCase):
         self.db.ExternalFileUtils=Obj(
             GetAllExternalFileReferences=lambda d:[],
             GetExternalFileReference=lambda doc,ident:ref)
+        self.db.ElementId=lambda value:value
         self.b.visible=lambda value:value
         row=dict(element_id='20',id='20',kind='CADLink',target=target,source='old.dwg')
         old_system=sys.modules.get('System')
