@@ -2,6 +2,8 @@
 """Explicit source save/reload choices. Never SaveAs, Sync, Publish or close a source."""
 from __future__ import unicode_literals
 import os
+import shutil
+import tempfile
 from . import files as f, performance
 from .engine import issue
 
@@ -56,7 +58,275 @@ def _validate_local_primary(path, model_name, evidence):
     return dict(path=path, evidence=evidence, mode='LOCAL_SAVED_RVT')
 
 
-def primary_host_sources(choices, application=None):
+def _dispose(value):
+    try:
+        if value is not None and hasattr(value, 'Dispose'):
+            value.Dispose()
+    except Exception:
+        pass
+
+
+def _identity_path(value):
+    return f.text(value or '').strip().replace('/', '\\').rstrip('\\').lower()
+
+
+def _live_central_path(doc, DB):
+    if not bool(getattr(doc, 'IsWorkshared', False)) or DB is None:
+        return ''
+    model_path = None
+    try:
+        model_path = doc.GetWorksharingCentralModelPath()
+        if model_path is None:
+            return ''
+        return f.text(DB.ModelPathUtils.ConvertModelPathToUserVisiblePath(model_path) or '')
+    except Exception:
+        return ''
+    finally:
+        _dispose(model_path)
+
+
+def _basic_file_identity(path, DB):
+    if DB is None:
+        return dict(central='', version='', workshared=None)
+    info = None
+    try:
+        info = DB.BasicFileInfo.Extract(path)
+        return dict(
+            central=f.text(getattr(info, 'CentralPath', '') or ''),
+            version=f.text(getattr(info, 'Format', '') or ''),
+            workshared=bool(getattr(info, 'IsWorkshared', False)),
+        )
+    except Exception as exc:
+        raise PreflightError('The selected RVT metadata could not be read: '+f.text(exc))
+    finally:
+        _dispose(info)
+
+
+def _project_information_unique_id(doc):
+    try:
+        info = doc.ProjectInformation
+        return f.text(getattr(info, 'UniqueId', '') or '')
+    except Exception:
+        return ''
+
+
+def _candidate_project_information_unique_id(path, application, DB):
+    """Open only a task-owned scratch copy to prove model identity."""
+    if application is None or DB is None:
+        raise PreflightError('Revit could not verify the selected RVT identity in this session.')
+
+    folder = tempfile.mkdtemp(prefix='EasyBIM_ET_identity_')
+    scratch = os.path.join(folder, 'candidate.rvt')
+    model_path = td = opts = worksets = candidate = None
+    try:
+        f.copy_file(path, scratch)
+        model_path = DB.ModelPathUtils.ConvertUserVisiblePathToModelPath(scratch)
+
+        # Unload TransmissionData-backed references in the scratch copy before
+        # opening. The user-selected source is never written.
+        try:
+            td = DB.TransmissionData.ReadTransmissionData(model_path)
+            if td is not None:
+                already = bool(td.IsTransmitted)
+                for ident in td.GetAllExternalFileReferenceIds():
+                    ref = ref_path = None
+                    try:
+                        ref = td.GetDesiredReferenceData(ident) if already else None
+                        if ref is None:
+                            ref = td.GetLastSavedReferenceData(ident)
+                        if ref is None:
+                            continue
+                        ref_path = ref.GetPath()
+                        td.SetDesiredReferenceData(ident, ref_path, ref.PathType, False)
+                    finally:
+                        _dispose(ref_path)
+                        _dispose(ref)
+                td.IsTransmitted = True
+                DB.TransmissionData.WriteTransmissionData(model_path, td)
+        finally:
+            _dispose(td)
+            td = None
+
+        identity = _basic_file_identity(scratch, DB)
+        current = f.text(getattr(application, 'VersionNumber', '') or '')
+        if (current.isdigit() and identity.get('version', '').isdigit()
+                and int(identity['version']) > int(current)):
+            raise PreflightError(
+                'The selected RVT was saved in Revit {0}, newer than this Revit {1}.'.format(
+                    identity['version'], current)
+            )
+
+        opts = DB.OpenOptions()
+        if identity.get('workshared'):
+            opts.DetachFromCentralOption = DB.DetachFromCentralOption.DetachAndPreserveWorksets
+            worksets = DB.WorksetConfiguration(DB.WorksetConfigurationOption.CloseAllWorksets)
+            opts.SetOpenWorksetsConfiguration(worksets)
+        candidate = application.OpenDocumentFile(model_path, opts)
+        return _project_information_unique_id(candidate)
+    except PreflightError:
+        raise
+    except Exception as exc:
+        raise PreflightError(
+            'eTransmit could not safely verify the selected RVT against the open detached model: '
+            + f.text(exc)
+        )
+    finally:
+        if candidate is not None:
+            try:
+                candidate.Close(False)
+            except Exception:
+                pass
+        _dispose(worksets)
+        _dispose(opts)
+        _dispose(model_path)
+        try:
+            shutil.rmtree(folder)
+        except Exception:
+            pass
+
+
+def verify_detached_candidate(doc, path, application=None, DB=None):
+    """Prove that one explicitly browsed RVT is the open detached model."""
+    ready = _validate_local_primary(path, f.text(getattr(doc, 'Title', '') or ''), 'USER_BROWSE')
+    path = ready['path']
+
+    live_central = _live_central_path(doc, DB)
+    file_identity = _basic_file_identity(path, DB)
+    candidate_central = file_identity.get('central', '')
+    if live_central and candidate_central and _identity_path(live_central) == _identity_path(candidate_central):
+        return 'CENTRAL_IDENTITY'
+
+    live_project = _project_information_unique_id(doc)
+    candidate_project = _candidate_project_information_unique_id(path, application, DB)
+    if live_project and candidate_project and live_project == candidate_project:
+        return 'PROJECT_INFORMATION_UNIQUE_ID'
+
+    selected = f.text(path)
+    if live_project and candidate_project:
+        detail = 'Project Information identity does not match.'
+    elif live_central and candidate_central:
+        detail = 'Central-model identity does not match and element identity could not verify a match.'
+    else:
+        detail = 'Revit could not prove that both files are the same model.'
+
+    raise PreflightError(
+        'The selected RVT does not appear to be the same model as the open detached model.\n\n'
+        + detail + '\n\nSelected file:\n' + selected +
+        '\n\nNo file was transmitted. Choose the correct RVT and try again.'
+    )
+
+
+def _unique_detached_save_path(output, doc):
+    if not output or not os.path.isdir(output):
+        raise PreflightError('The eTransmit destination folder is unavailable.')
+    title = f.text(getattr(doc, 'Title', '') or '').strip() or 'Detached Model'
+    title = title.replace('/', '_').replace('\\', '_')
+    if not title.lower().endswith('.rvt'):
+        title += '.rvt'
+    stem, ext = os.path.splitext(title)
+    target = os.path.join(output, title)
+    index = 2
+    while os.path.exists(target):
+        target = os.path.join(output, stem + '_' + f.text(index) + ext)
+        index += 1
+    try:
+        f.validate_destination_path(target)
+    except Exception as exc:
+        raise PreflightError('The detached-model save path is not valid: '+f.text(exc))
+    return target
+
+
+def save_detached_current(doc, output, DB=None):
+    """Explicitly SaveAs the current detached state into the chosen output folder."""
+    if DB is None:
+        raise PreflightError('Revit Save As services are unavailable.')
+    if (getattr(doc, 'IsReadOnly', False) or getattr(doc, 'IsLinked', False)
+            or getattr(doc, 'IsModifiable', False)):
+        raise PreflightError(
+            'The detached model cannot be saved in its current document state. '
+            'No alternate Save As was attempted.'
+        )
+
+    target = _unique_detached_save_path(output, doc)
+    save = worksharing = None
+    try:
+        save = DB.SaveAsOptions()
+        save.OverwriteExistingFile = False
+        try:
+            save.MaximumBackups = 1
+        except Exception:
+            pass
+        if bool(getattr(doc, 'IsWorkshared', False)):
+            worksharing = DB.WorksharingSaveAsOptions()
+            worksharing.SaveAsCentral = True
+            save.SetWorksharingOptions(worksharing)
+        performance.call('preflight', 'detached_save_as', target, doc.SaveAs, target, save)
+    except Exception as exc:
+        raise PreflightError(
+            'Save As failed for the detached model: '+f.text(exc)+
+            '. No Sync, Publish, alternate filename search, or source substitution was attempted.'
+        )
+    finally:
+        _dispose(worksharing)
+        _dispose(save)
+
+    path_after = f.text(getattr(doc, 'PathName', '') or '')
+    if _identity_path(path_after) != _identity_path(target):
+        raise PreflightError(
+            'Revit did not leave the open model at the new eTransmit save location. '
+            'Transmission stopped so the working model state can be reviewed.'
+        )
+    _validate_local_primary(target, f.text(getattr(doc, 'Title', '') or ''), 'USER_SAVE_CURRENT')
+    return target
+
+
+def _adopt_detached_saved_source(row, path, evidence):
+    """Continue through the ordinary SAVED_FILE pipeline after explicit recovery."""
+    row.ResolvedSource = path
+    row.Source = path
+    row.Mode = 'SAVED_FILE'
+    row.DetachedRecovery = evidence
+    row.Document = None
+    row.Modified = False
+
+
+def _recover_detached_source(row, doc, application, DB, output, detached_recovery, initial_error=''):
+    feedback = f.text(initial_error or '')
+    while True:
+        resolution = detached_recovery(row, feedback) if detached_recovery else None
+        if not resolution:
+            raise f.Cancelled()
+        action = f.text(resolution.get('action', '') or '').upper()
+        feedback = ''
+
+        if action == 'SAVE_CURRENT':
+            path = save_detached_current(doc, output, DB)
+            ready = _validate_local_primary(path, f.text(getattr(row, 'Name', '') or ''), 'USER_SAVE_CURRENT')
+            _adopt_detached_saved_source(row, path, 'USER_SAVE_CURRENT')
+            return ready
+
+        if action == 'BROWSE':
+            path = f.text(resolution.get('path', '') or '').strip()
+            if not path:
+                raise f.Cancelled()
+            try:
+                identity_evidence = verify_detached_candidate(doc, path, application, DB)
+                ready = _validate_local_primary(
+                    path, f.text(getattr(row, 'Name', '') or ''),
+                    'USER_BROWSE_' + identity_evidence
+                )
+            except PreflightError as exc:
+                feedback = f.text(exc)
+                continue
+            _adopt_detached_saved_source(row, ready['path'], ready['evidence'])
+            return ready
+
+        if action == 'CANCEL':
+            raise f.Cancelled()
+        raise PreflightError('Unknown detached-model recovery choice.')
+
+
+def primary_host_sources(choices, application=None, DB=None, output='', detached_recovery=None):
     """Prove every primary host source before any dependency collection starts.
 
     Stores ResolvedSource on each UI row so the later Registry receives the
@@ -97,9 +367,33 @@ def primary_host_sources(choices, application=None):
         direct = f.text(getattr(doc, 'PathName', '') or '').strip()
         if direct:
             path, evidence = direct, 'DOCUMENT_PATH'
-        else:
-            path, evidence = source_tracker.source_for_document_with_evidence(
-                doc, application=application)
+            ready = _validate_local_primary(path, name, evidence)
+            row.ResolvedSource = ready['path']
+            results.append(ready)
+            continue
+
+        path, evidence = source_tracker.source_for_document_with_evidence(
+            doc, application=application)
+        if path:
+            try:
+                ready = _validate_local_primary(path, name, evidence or 'UNVERIFIED')
+                row.ResolvedSource = ready['path']
+                results.append(ready)
+                continue
+            except PreflightError as exc:
+                if detached_recovery is None:
+                    raise
+                ready = _recover_detached_source(
+                    row, doc, application, DB, output, detached_recovery, f.text(exc))
+                results.append(ready)
+                continue
+
+        if detached_recovery is not None:
+            ready = _recover_detached_source(
+                row, doc, application, DB, output, detached_recovery)
+            results.append(ready)
+            continue
+
         ready = _validate_local_primary(path, name, evidence or 'UNVERIFIED')
         row.ResolvedSource = ready['path']
         results.append(ready)
