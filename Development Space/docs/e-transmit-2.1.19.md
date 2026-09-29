@@ -77,7 +77,9 @@ context:
   host bytes and retains the open detached document for link discovery/reload.
 
 This is needed for ACC/cloud links that may only expose a usable saved cache
-revision after a temporary Revit load.
+revision after a temporary Revit load. The same detached-host marker is applied
+when EasyBIM automatically resolves the saved source, so batch preflight does
+not depend on which detached recovery path was used.
 
 ## Progress fallback placement
 
