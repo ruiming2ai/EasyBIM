@@ -19,10 +19,12 @@ class TD:
     def GetAllExternalFileReferenceIds(self): return [Id(100)]
     def GetLastSavedReferenceData(self, ident):
         return NS(GetPath=lambda:'relative.rvt',GetAbsolutePath=lambda:'C:\\Shared\\a.rvt',
-                  GetLinkedFileStatus=lambda:'Unloaded',ExternalFileReferenceType='RevitLink')
+                  GetLinkedFileStatus=lambda:'Unloaded',ExternalFileReferenceType='RevitLink',
+                  PathType='Relative')
     def GetDesiredReferenceData(self, ident):
         return NS(GetPath=lambda:'desired.rvt',GetAbsolutePath=lambda:'C:\\Consumed\\a.rvt',
-                  GetLinkedFileStatus=lambda:'Loaded',ExternalFileReferenceType='RevitLink')
+                  GetLinkedFileStatus=lambda:'Loaded',ExternalFileReferenceType='RevitLink',
+                  PathType='Absolute')
     def SetDesiredReferenceData(self, *args): self.writes.append(args)
     def Dispose(self): self.disposed=True
 
