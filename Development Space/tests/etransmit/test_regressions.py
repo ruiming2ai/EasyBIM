@@ -51,6 +51,25 @@ class APIBoundary(unittest.TestCase):
         self.backend.apply_metadata(self.stage,self.target,rows)
         self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',False))
         self.assertTrue(self.td.IsTransmitted); self.assertTrue(self.td.disposed)
+    def test_cad_transmission_reference_repaths_even_without_live_loaded_flag(self):
+        rows=[dict(id='100',element_id='100',kind='CADLink',
+                   target=str(self.root/'CAD'/'site.dwg'))]
+        self.backend.apply_metadata(self.stage,self.target,rows)
+        self.assertEqual(len(self.td.writes),1)
+        self.assertEqual(self.td.writes[0][1:],
+                         (os.path.join('CAD','site.dwg'),'Relative',False))
+        self.assertEqual(rows[0]['repath'],'TRANSMISSION_DATA')
+
+    def test_pdf_transmission_reference_repaths_using_saved_load_state(self):
+        self.td.IsTransmitted=True
+        rows=[dict(id='100',element_id='100',kind='Image',special='image',
+                   target=str(self.root/'PDF'/'details.pdf'))]
+        self.backend.apply_metadata(self.stage,self.target,rows)
+        self.assertEqual(len(self.td.writes),1)
+        self.assertEqual(self.td.writes[0][1:],
+                         (os.path.join('PDF','details.pdf'),'Relative',True))
+        self.assertEqual(rows[0]['repath'],'TRANSMISSION_DATA')
+
     def test_external_alias_id_repaths_using_original_element_id(self):
         rows=[dict(id='100:0',element_id='100',target=str(self.root/'Consumed'/'a.rvt'),loaded=True)]
         self.backend.apply_metadata(self.stage,self.target,rows)
