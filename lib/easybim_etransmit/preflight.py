@@ -318,6 +318,27 @@ def link_type_name(DB,link):
     return ''
 
 
+def placed_revit_link_type_ids(registry, doc):
+    """Return direct RevitLinkType ids that actually have placed host instances.
+
+    Revit can retain unused/outdated RevitLinkType definitions after every
+    instance has been removed. Those types are not host dependencies and must
+    never appear in the temporary-reload decision list.
+    """
+    from .revit import eid
+    try:
+        instances=registry.scanner.elements(doc,'RevitLinkInstance')
+    except Exception:
+        return None
+    placed=set()
+    for instance in instances:
+        try:
+            placed.add(eid(instance.GetTypeId()))
+        except Exception:
+            pass
+    return placed
+
+
 def enrich_link_types(registry,entry):
     """Preserve direct unloaded type names even when no child Document is loaded."""
     from .revit import eid
@@ -325,12 +346,14 @@ def enrich_link_types(registry,entry):
     doc=entry.get('document')
     if doc is None:return
     rows=entry['inventory']['references']
+    placed=placed_revit_link_type_ids(registry,doc)
     try:types=registry.scanner.elements(doc,'RevitLinkType')
     except Exception:return
     for link in types:
         f.check(registry.cancelled)
         if bool(getattr(link,'IsNestedLink',False)):continue
         ident=eid(link.Id)
+        if placed is not None and ident not in placed:continue
         matches=[r for r in rows if r.get('kind')=='RevitLink' and r.get('element_id')==ident]
         if not matches:
             row=None
@@ -391,9 +414,11 @@ def unloaded_links(registry,keys):
         entry=registry.get(key);doc=entry.get('document')
         if doc is None:continue
         rows=entry['inventory']['references']
+        placed=placed_revit_link_type_ids(registry,doc)
         for link in registry.scanner.elements(doc,'RevitLinkType'):
             if bool(getattr(link,'IsNestedLink',False)):continue
             ident=eid(link.Id)
+            if placed is not None and ident not in placed:continue
             row=next((r for r in rows if r.get('kind')=='RevitLink' and r.get('element_id')==ident),None)
             if row is None:continue
             try:loaded=bool(registry.DB.RevitLinkType.IsLoaded(doc,link.Id))
