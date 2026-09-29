@@ -93,8 +93,10 @@ class PrimaryHostReadiness(unittest.TestCase):
             detached_recovery=lambda r,feedback='':dict(action='BROWSE',path=self.host))
         self.assertEqual(result[0]['path'],self.host)
         self.assertEqual(result[0]['evidence'],'USER_BROWSE')
-        self.assertEqual(row.Mode,'SAVED_FILE')
-        self.assertIsNone(row.Document)
+        self.assertEqual(row.Mode,'LIVE_DOCUMENT')
+        self.assertIs(row.Document,doc)
+        self.assertEqual(row.ResolvedSource,self.host)
+        self.assertEqual(row.DetachedRecovery,'USER_BROWSE')
 
     def test_pathless_detached_host_can_save_current_state_and_continue_as_saved_file(self):
         doc=Obj(PathName='',Title='Host_detached',IsModelInCloud=False,IsWorkshared=True)
@@ -131,9 +133,10 @@ class PrimaryHostReadiness(unittest.TestCase):
         finally:
             source_tracker.source_for_document_with_evidence=old_source
         self.assertEqual(result[0]['evidence'],'USER_BROWSE')
-        self.assertEqual(row.Mode,'SAVED_FILE')
-        self.assertIsNone(row.Document)
+        self.assertEqual(row.Mode,'LIVE_DOCUMENT')
+        self.assertIs(row.Document,doc)
         self.assertEqual(row.Source,self.host)
+        self.assertEqual(row.ResolvedSource,self.host)
         self.assertEqual(row.DetachedRecovery,'USER_BROWSE')
 
     def test_explicit_browse_accepts_user_selected_native_rvt_without_model_comparison(self):
@@ -153,7 +156,50 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertEqual(result[0]['path'],alternate)
         self.assertEqual(result[0]['evidence'],'USER_BROWSE')
         self.assertEqual(row.Source,alternate)
+        self.assertEqual(row.Mode,'LIVE_DOCUMENT')
+        self.assertIs(row.Document,doc)
         self.assertFalse(hasattr(preflight,'verify_detached_candidate'))
+
+    def test_detached_browse_preselects_unloaded_acc_link_for_temporary_reload(self):
+        project='11111111-1111-1111-1111-111111111111'
+        model='22222222-2222-2222-2222-222222222222'
+        row=dict(kind='RevitLink',element_id='7',id='7',source='',
+                 link_name='ACC Mechanical',
+                 cloud_identity=dict(project_guid=project,model_guid=model,region='US'))
+        link=Obj(Id=Obj(IntegerValue=7),IsNestedLink=False,LocallyUnloaded=False)
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
+                   inventory=dict(references=[row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        registry=Obj(cancelled=None,
+                     DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=lambda document,name:[link]),
+                     get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual(len(choices),1)
+        self.assertTrue(choices[0].Checked)
+        self.assertIn('ACC/cloud link',choices[0].Availability)
+
+    def test_detached_browse_does_not_preselect_unloaded_server_file_link(self):
+        row=dict(kind='RevitLink',element_id='8',id='8',
+                 source=r'\\server\share\Architecture.rvt',link_name='Architecture')
+        link=Obj(Id=Obj(IntegerValue=8),IsNestedLink=False,LocallyUnloaded=False)
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
+                   inventory=dict(references=[row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        registry=Obj(cancelled=None,
+                     DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=lambda document,name:[link]),
+                     get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual(len(choices),1)
+        self.assertFalse(choices[0].Checked)
+        self.assertIn('Saved file available',choices[0].Availability)
 
     def test_browsed_saved_host_is_delivered_collect_only_without_opening_host(self):
         row=Obj(Name='Host_detached',Mode='SAVED_FILE',Source=self.host,Document=None)
@@ -211,8 +257,10 @@ class UIContracts(unittest.TestCase):
         self.assertIn('selected file unavailable',text)
         self.assertIn('Save current changes and transmit',text)
         self.assertIn('Do not include current changes',text)
-        self.assertIn('force_saved_host_inspection_sources',text)
+        self.assertNotIn('force_saved_host_inspection_sources',text)
         self.assertIn("getattr(row.Document, 'IsDetached', False)",text)
+        self.assertIn("entry['detached_recovery']=row.DetachedRecovery",text)
+        self.assertIn("DetachedRecovery','')!='USER_BROWSE'",text)
 
     def test_document_opening_hook_stamps_pending_source_with_current_journal(self):
         hook=os.path.join(ROOT,'hooks','doc-opening.py')
