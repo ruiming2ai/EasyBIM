@@ -428,8 +428,12 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     continue
                 try:
                     model_rows=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])]
-                    state=performance.call('metadata','mark_host_transmitted',record['source'],
-                                           transmitter,record['target'],model_rows)
+                    if bool(getattr(backend,'mark_transmitted_rows_supported',False)):
+                        state=performance.call('metadata','mark_host_transmitted',record['source'],
+                                               transmitter,record['target'],model_rows)
+                    else:
+                        state=performance.call('metadata','mark_host_transmitted',record['source'],
+                                               transmitter,record['target'])
                     if state is True:
                         record['transmission_status']='TRANSMITTED'
                         record['pre_transmission_sha256']=record.get('packaged_sha256') or record.get('sha256')
