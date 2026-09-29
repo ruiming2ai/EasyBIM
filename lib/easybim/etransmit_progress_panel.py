@@ -9,7 +9,7 @@ must remain stable for that same lifetime.
 from __future__ import unicode_literals
 import os
 
-from pyrevit import forms, script
+from pyrevit import forms
 
 
 PANEL_ID = '8e4dc5df-aedf-45e7-8ef4-68d4a4c4e210'
@@ -30,10 +30,8 @@ _REGISTERED = False
 
 
 def _log(message):
-    try:
-        script.get_logger().warning(message)
-    except Exception:
-        pass
+    """Progress UI is optional; never open pyRevit output for its failures."""
+    del message
 
 
 def _text(value):
@@ -175,6 +173,33 @@ class TransferProgressPanel(forms.WPFPanel):
         _pump_dispatcher(self)
 
 
+class TransferProgressBar(forms.ProgressBar):
+    """Fallback top overlay used when the persistent Revit pane is unavailable."""
+    def update_window(self):
+        if getattr(self, '_etransmit_positioned', False):
+            return
+        forms.ProgressBar.update_window(self)
+        try:
+            self.Top = getattr(self, 'Top', 0) + float(getattr(self, 'user_height', 32) or 32)
+        except Exception:
+            pass
+        try:
+            self.Opacity = 0.92
+        except Exception:
+            pass
+        self._etransmit_positioned = True
+
+    def set_phase(self, label):
+        phase, color, value = progress_phase(label)
+        detail = _phase_detail(value, phase)
+        self.title = phase if not detail else phase + ' | ' + detail
+        try:
+            _set_brush(self.pbar, color)
+        except Exception:
+            pass
+        return phase
+
+
 def _is_registered():
     if _REGISTERED:
         return True
@@ -232,46 +257,110 @@ def close_panel():
 
 
 class ProgressController(object):
-    """Fail-safe command-facing progress API."""
+    """Fail-safe command-facing progress API with a silent overlay fallback."""
     def __init__(self):
+        self.panel = None
+        self.overlay = None
+        self._overlay_attempted = False
+
+    def _open_overlay(self):
+        if self.overlay is not None:
+            return self.overlay
+        if self._overlay_attempted:
+            return None
+        self._overlay_attempted = True
+        candidate = None
+        try:
+            candidate = TransferProgressBar(title='e-transmit', cancellable=True, indeterminate=True)
+            entered = candidate.__enter__()
+            self.overlay = entered if entered is not None else candidate
+            return self.overlay
+        except Exception:
+            try:
+                if candidate is not None:
+                    candidate.__exit__(None, None, None)
+            except Exception:
+                pass
+            self.overlay = None
+            return None
+
+    def _close_overlay(self):
+        overlay = self.overlay
+        self.overlay = None
+        if overlay is None:
+            return
+        try:
+            overlay.__exit__(None, None, None)
+        except Exception:
+            pass
+
+    def _drop_panel(self):
+        if self.panel is not None:
+            try:
+                close_panel()
+            except Exception:
+                pass
         self.panel = None
 
     def __enter__(self):
         self.panel = open_panel()
         if self.panel is None:
-            _log('PROGRESS_UI_UNAVAILABLE')
+            self._open_overlay()
         return self
 
     def __exit__(self, *args):
         if self.panel is not None:
             close_panel()
+            self.panel = None
+        self._close_overlay()
 
     @property
     def available(self):
-        return self.panel is not None
+        return self.panel is not None or self.overlay is not None
+
+    @property
+    def mode(self):
+        if self.panel is not None:
+            return 'DOCKABLE_PANE'
+        if self.overlay is not None:
+            return 'TOP_OVERLAY'
+        return 'NONE'
 
     @property
     def cancelled(self):
         try:
-            return bool(self.panel is not None and self.panel.cancelled)
+            if self.panel is not None:
+                return bool(self.panel.cancelled)
+            if self.overlay is not None:
+                return bool(self.overlay.cancelled)
+            return False
         except Exception:
             return False
 
     def set_phase(self, label):
-        if self.panel is None:
-            return progress_phase(label)[0]
-        try:
-            return self.panel.set_phase(label)
-        except Exception as exc:
-            _log('PROGRESS_UI_UNAVAILABLE: {0}'.format(exc))
-            self.panel = None
-            return progress_phase(label)[0]
+        if self.panel is not None:
+            try:
+                return self.panel.set_phase(label)
+            except Exception:
+                self._drop_panel()
+                self._open_overlay()
+        if self.overlay is not None:
+            try:
+                return self.overlay.set_phase(label)
+            except Exception:
+                self._close_overlay()
+        return progress_phase(label)[0]
 
     def update_progress(self, current, total):
-        if self.panel is None:
-            return
-        try:
-            self.panel.update_progress(current, total)
-        except Exception as exc:
-            _log('PROGRESS_UI_UNAVAILABLE: {0}'.format(exc))
-            self.panel = None
+        if self.panel is not None:
+            try:
+                self.panel.update_progress(current, total)
+                return
+            except Exception:
+                self._drop_panel()
+                self._open_overlay()
+        if self.overlay is not None:
+            try:
+                self.overlay.update_progress(current, total)
+            except Exception:
+                self._close_overlay()

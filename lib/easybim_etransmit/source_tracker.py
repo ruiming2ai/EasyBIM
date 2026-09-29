@@ -82,23 +82,35 @@ def runtime_document_key(doc):
     return title + '|' + runtime_id if runtime_id else title
 
 
-def record_opening(path, state_path=None, now=None):
+def record_opening(path, state_path=None, now=None, application=None):
+    """Record the exact path Revit was asked to open in this journal session."""
     path = text(path or '').strip()
     if not path:
         return
     state_path = state_path or _state_path()
     state = _load(state_path)
-    state['pending'].append({'path': path, 'time': float(now if now is not None else time.time())})
+    state['pending'].append({
+        'path': path,
+        'time': float(now if now is not None else time.time()),
+        'journal': _journal_name(application),
+    })
     state['pending'] = state['pending'][-32:]
     _save(state_path, state)
 
 
-def _best_pending(state, title):
+def _best_pending(state, title, application=None):
     key = normalize_title(title)
+    current_journal = _journal_name(application)
     for index in range(len(state.get('pending', [])) - 1, -1, -1):
         item = state['pending'][index]
-        if normalize_title(item.get('path', '')) == key:
-            return index, item.get('path', '')
+        if normalize_title(item.get('path', '')) != key:
+            continue
+        recorded_journal = text(item.get('journal', '') or '')
+        # Pending entries persist on disk. A same-named opening from another
+        # Revit session is not proof of the source for the document open now.
+        if current_journal and recorded_journal != current_journal:
+            continue
+        return index, item.get('path', '')
     return None, ''
 
 
@@ -113,7 +125,7 @@ def record_opened(doc, application=None, state_path=None, now=None):
     evidence = 'DOCUMENT_PATH' if path else ''
     index = None
     if not path:
-        index, path = _best_pending(state, getattr(doc, 'Title', ''))
+        index, path = _best_pending(state, getattr(doc, 'Title', ''), application)
         if path:
             evidence = 'OPEN_EVENT'
     if not path and application is not None:
@@ -144,6 +156,23 @@ def _journal_unescape(value):
     return value
 
 
+def _journal_resolve_path(value, journal_path):
+    """Resolve an exact journal path without searching by filename."""
+    value = _journal_unescape(value)
+    if not value:
+        return ''
+    if '://' in value:
+        return value
+    journal_path = text(journal_path or '')
+    windows = bool(re.match(r'^[A-Za-z]:[\\/]', value) or value.startswith('\\\\') or
+                   re.match(r'^[A-Za-z]:[\\/]', journal_path) or '\\' in journal_path)
+    pathmod = ntpath if windows else os.path
+    if pathmod.isabs(value):
+        return pathmod.normpath(value)
+    base = pathmod.dirname(journal_path)
+    return pathmod.normpath(pathmod.join(base, value)) if base else pathmod.normpath(value)
+
+
 def _journal_candidates(journal_path):
     if not journal_path or not os.path.isfile(journal_path):
         return []
@@ -161,17 +190,19 @@ def _journal_candidates(journal_path):
         return []
 
     hits = []
-    # Ordinary File > Open, including local files opened Detached.
-    for match in re.finditer(r'Jrn\.Data\s+"File Name"[\s\S]{0,700}?"IDOK"\s*,\s*"([^"]+)"',
+    # Ordinary File > Open, including local files opened Detached. Real Revit
+    # journals normally put a line-continuation underscore after Jrn.Data, so
+    # "File Name" does not necessarily follow whitespace only.
+    for match in re.finditer(r'Jrn\.Data[\s\S]{0,240}?"File Name"[\s_]*,\s*"IDOK"\s*,\s*"([^"]+)"',
                              content, re.I):
-        hits.append((match.start(), _journal_unescape(match.group(1))))
+        hits.append((match.start(), _journal_resolve_path(match.group(1), journal_path)))
     # Workshared local open records are more direct in some journal versions.
     for match in re.finditer(r'>Open:Local\s+"([^"]+)"', content, re.I):
-        hits.append((match.start(), _journal_unescape(match.group(1))))
+        hits.append((match.start(), _journal_resolve_path(match.group(1), journal_path)))
     # Cloud journals commonly contain central/local pairs.  The local value is
     # an exact cache file for that cloud identity; retain both as metadata.
     for match in re.finditer(r'central="([^"]+)"\s+local="([^"]+)"', content, re.I):
-        hits.append((match.start(), _journal_unescape(match.group(1))))
+        hits.append((match.start(), _journal_resolve_path(match.group(1), journal_path)))
     hits.sort(key=lambda pair: pair[0])
     return [value for _, value in hits]
 

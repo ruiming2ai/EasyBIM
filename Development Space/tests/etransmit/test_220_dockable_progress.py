@@ -16,6 +16,7 @@ class Obj(object):
 class DockableProgressTests(unittest.TestCase):
     def setUp(self):
         self.calls=[]
+        self.warnings=[]
         owner=self
 
         class WPFPanel(object):
@@ -51,7 +52,7 @@ class DockableProgressTests(unittest.TestCase):
                        register_dockable_panel=register,
                        open_dockable_panel=open_panel,
                        close_dockable_panel=close_panel)
-        fake.script=Obj(get_logger=lambda:Obj(warning=lambda *a:None,info=lambda *a:None))
+        fake.script=Obj(get_logger=lambda:Obj(warning=lambda *a:owner.warnings.append(a),info=lambda *a:None))
         fake.DB=Obj(Document=Obj())
         self.old=sys.modules.get('pyrevit')
         self.old_progress=sys.modules.pop('easybim.etransmit_progress_panel',None)
@@ -90,6 +91,44 @@ class DockableProgressTests(unittest.TestCase):
             controller.set_phase('COLLECTING | Host.rvt')
             controller.update_progress(1,2)
         self.assertFalse(any(c[0]=='register' for c in self.calls))
+        self.assertFalse(self.warnings)
+
+    def test_missing_pane_uses_colored_top_overlay_fallback_without_warning_console(self):
+        owner=self
+        class Overlay(object):
+            def __init__(self,*args,**kwargs):
+                owner.calls.append(('overlay_create',kwargs.get('title')))
+                self.cancelled=False;self.phases=[];self.values=[];self.closed=False
+            def __enter__(self):
+                owner.calls.append(('overlay_open',))
+                return self
+            def __exit__(self,*args):
+                self.closed=True;owner.calls.append(('overlay_close',))
+            def set_phase(self,label):
+                self.phases.append(label);return owner.progress.progress_phase(label)[0]
+            def update_progress(self,current,total):
+                self.values.append((current,total))
+        self.progress.TransferProgressBar=Overlay
+        self.progress._REGISTERED=True
+        self.progress._PANEL_INSTANCE=None
+        with self.progress.ProgressController() as controller:
+            self.assertTrue(controller.available)
+            self.assertEqual(controller.mode,'TOP_OVERLAY')
+            controller.set_phase('REPATHING | Host.rvt')
+            controller.update_progress(2,4)
+            overlay=controller.overlay
+            self.assertEqual(overlay.values,[(2,4)])
+            self.assertEqual(overlay.phases,['REPATHING | Host.rvt'])
+        self.assertTrue(overlay.closed)
+        self.assertFalse(self.warnings)
+
+    def test_overlay_class_keeps_phase_color_mapping_and_transparency(self):
+        source_path=os.path.join(ROOT,'lib','easybim','etransmit_progress_panel.py')
+        with io.open(source_path,encoding='utf-8') as inp:text=inp.read()
+        self.assertIn('class TransferProgressBar(forms.ProgressBar)',text)
+        self.assertIn('self.Opacity = 0.92',text)
+        self.assertIn('_set_brush(self.pbar, color)',text)
+        self.assertNotIn('script.get_logger().warning',text)
 
     def test_panel_keeps_phase_filename_percent_and_cancel_separate(self):
         panel=self.progress.TransferProgressPanel()

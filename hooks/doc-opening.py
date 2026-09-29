@@ -12,10 +12,16 @@ except Exception:
     pass
 
 # e-transmit source capture: Document.PathName becomes empty after a detached
-# open, so remember the exact path exposed by DocumentOpeningEventArgs.
+# open, so remember the exact path exposed by DocumentOpeningEventArgs. Stamp
+# it with the current Revit journal so a same-named pending record left by an
+# older session can never be rebound to the document opening now.
 try:
     from easybim_etransmit import source_tracker
     _args = EXEC_PARAMS.event_args
-    source_tracker.record_opening(getattr(_args, "PathName", "") if _args else "")
+    _app = getattr(__revit__, "Application", None)
+    source_tracker.record_opening(
+        getattr(_args, "PathName", "") if _args else "",
+        application=_app,
+    )
 except Exception:
     pass

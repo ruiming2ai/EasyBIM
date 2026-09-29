@@ -227,7 +227,8 @@ def run(uiapp,xaml):
         trace.write(uiapp,'ET_STEP_07_SAVE_PREFLIGHT_DONE',root)
         trace.write(uiapp,'ET_STEP_08_PROGRESS_LOOKUP_START',root)
         with DockableTransferProgress() as pb:
-            trace.write(uiapp,'ET_STEP_09_PROGRESS_VISIBLE' if pb.available else 'ET_STEP_09_PROGRESS_UNAVAILABLE',root)
+            trace.write(uiapp,'ET_STEP_09_PROGRESS_VISIBLE' if pb.available else 'ET_STEP_09_PROGRESS_UNAVAILABLE',
+                        root,getattr(pb,'mode','NONE'))
             def cancel():return pb.cancelled
             def pulse(label,current,total):
                 pb.set_phase(label);pb.update_progress(current,max(1,total))
