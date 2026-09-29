@@ -235,6 +235,9 @@ class Dialog(forms.WPFWindow):
                 detached_recovery=lambda row, feedback='': detached_source_recovery(
                     row, output, feedback)
             )
+        except f.Cancelled:
+            trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_CANCELLED')
+            return
         except preflight.PreflightError as exc:
             trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_BLOCKED',detail=f.text(exc))
             return forms.alert(f.text(exc),title='e-transmit host source unavailable')
