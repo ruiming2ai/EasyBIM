@@ -109,6 +109,28 @@ class EngineRepairs(unittest.TestCase):
         self.assertEqual(calls,['finish','verify'])
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
+    def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
+        root=tempfile.mkdtemp(prefix='ET_posttx_');self.addCleanup(shutil.rmtree,root)
+        host=os.path.join(root,'Host.rvt')
+        with open(host,'wb') as out:out.write(b'host')
+        calls=[]
+        class B(object):
+            def scan(self,*args):
+                return dict(references=[],issues=[],is_workshared=True,version='2026')
+            def finish(self,*args):
+                calls.append('finish')
+                return dict(issues=[],verified_in_process=True)
+            def mark_transmitted_package(self,path,rows=None):
+                calls.append('transmit')
+                return True
+            def verify_package(self,*args):
+                calls.append('verify')
+                return []
+        result=e.transmit([host],os.path.join(root,'out'),B())
+        self.assertEqual(calls,['finish','transmit','verify'])
+        self.assertEqual(result['files'][0].get('transmission_status'),'TRANSMITTED')
+        self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
+
     def test_parent_is_processed_after_collected_link(self):
         root=tempfile.mkdtemp(prefix='ET_order_');self.addCleanup(shutil.rmtree,root)
         host=os.path.join(root,'Host.rvt');link=os.path.join(root,'Arch.rvt')
