@@ -46,6 +46,17 @@ class UnloadedLinksDialog(forms.WPFWindow):
         forms.WPFWindow.__init__(self,os.path.join(os.path.dirname(__file__),'unloaded_links.xaml'))
         self.choices=choices;self.result=None
         self.Links.ItemsSource=choices
+    def _set_all(self,value):
+        try:self.Links.CommitEdit()
+        except Exception:pass
+        for row in self.choices:row.Checked=bool(value)
+        try:self.Links.Items.Refresh()
+        except Exception:
+            self.Links.ItemsSource=None;self.Links.ItemsSource=self.choices
+    def select_all(self,sender,args):
+        self._set_all(True)
+    def select_none(self,sender,args):
+        self._set_all(False)
     def reload_selected(self,sender,args):
         self.Links.CommitEdit()
         self.result=[row for row in self.choices if row.Checked];self.Close()
@@ -85,9 +96,8 @@ def detached_source_recovery(row, output, feedback=''):
     """User-directed recovery for a pathless detached LIVE_DOCUMENT."""
     if feedback:
         answer = forms.alert(
-            f.text(feedback) +
-            '\n\nThe selected file could not be used. Load another RVT from its file location, or cancel.',
-            title='eTransmit — selected file unavailable',
+            'eTransmit cannot locate the detached model. Please load from selected file locations.',
+            title='eTransmit — detached model not located',
             options=['Load another model from file location…', 'Cancel']
         )
         if answer != 'Load another model from file location…':
@@ -306,54 +316,73 @@ def run(uiapp,xaml):
         if not dialog.result:return
         choices,root,opts,extras=dialog.result
         trace.write(uiapp,'ET_STEP_04_DIALOG_ACCEPTED',root)
+
+        # Batch preflight: collect every user decision before any model package
+        # starts. Detached-source recovery already completed for all selected
+        # rows in Dialog.transmit_click(). Now resolve save and reload choices
+        # across the complete batch.
         trace.write(uiapp,'ET_STEP_05_SAVE_PROMPT_START',root)
         save_decision=source_save_choice(choices)
         trace.write(uiapp,'ET_STEP_06_SAVE_PROMPT_DONE',root,save_decision)
         with performance.Collector() as save_timing:
             save_events=preflight.save_selected(choices,save_decision)
         trace.write(uiapp,'ET_STEP_07_SAVE_PREFLIGHT_DONE',root)
+
+        cancel_provider=[lambda:False]
+        def cancel():return bool(cancel_provider[0]())
+
+        trace.write(uiapp,'ET_STEP_10_REGISTRY_START',root)
+        registry=Registry(DB,uiapp.Application,root+'_ReadOnlySnapshots',cancel,
+                          opts['include'].get('spreadsheets',True),saved_state_only=True)
+        trace.write(uiapp,'ET_STEP_11_REGISTRY_READY',root)
+        sources=[];model_names={};live_keys=[]
+        for row in choices:
+            if row.Mode=='LIVE_DOCUMENT':
+                trace.write(uiapp,'ET_STEP_12_LIVE_DOCUMENT_REGISTER_START',root,row.Name)
+                key=registry.add_live(row.Document,configured_source=getattr(row,'ResolvedSource','') or None)
+                entry=registry.get(key)
+                if getattr(row,'DetachedRecovery',''):
+                    entry['detached_recovery']=row.DetachedRecovery
+                sources.append(key);live_keys.append(key);model_names[key]=entry['name']
+                trace.write(uiapp,'ET_STEP_13_LIVE_DOCUMENT_REGISTER_DONE',root,row.Name)
+            else:
+                source=getattr(row,'ResolvedSource',None) or row.Source
+                sources.append(source);model_names[source]=getattr(row,'Name',source)
+
+        reload_selection=[]
+        if live_keys:
+            registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(save_timing.snapshot())
+            for key in live_keys:
+                entry=registry.get(key)
+                entry.setdefault('preflight_events',[]).extend(event for event in save_events
+                    if event.get('model')==f.text(entry['document'].Title) and event.get('source')==f.text(entry['document'].PathName or ''))
+            trace.write(uiapp,'ET_STEP_14_UNLOADED_LINK_PREFLIGHT_START',root)
+            unloaded=preflight.unloaded_links(registry,live_keys) if opts['include'].get('revit',True) else []
+            if unloaded:
+                chooser=UnloadedLinksDialog(unloaded);chooser.ShowDialog()
+                if chooser.result is None:raise f.Cancelled()
+                reload_selection=list(chooser.result)
+            trace.write(uiapp,'ET_STEP_15_UNLOADED_LINK_PREFLIGHT_DONE',root)
+
+        # All decisions are complete here. From this point forward the command
+        # can process the complete batch without stopping for another source or
+        # unloaded-link choice.
         trace.write(uiapp,'ET_STEP_08_PROGRESS_LOOKUP_START',root)
         with DockableTransferProgress() as pb:
             trace.write(uiapp,'ET_STEP_09_PROGRESS_VISIBLE' if pb.available else 'ET_STEP_09_PROGRESS_UNAVAILABLE',
                         root,getattr(pb,'mode','NONE'))
-            def cancel():return pb.cancelled
+            cancel_provider[0]=lambda:pb.cancelled
             def pulse(label,current,total):
                 pb.set_phase(label);pb.update_progress(current,max(1,total))
-            trace.write(uiapp,'ET_STEP_10_REGISTRY_START',root)
-            registry=Registry(DB,uiapp.Application,root+'_ReadOnlySnapshots',cancel,
-                              opts['include'].get('spreadsheets',True),saved_state_only=True)
-            trace.write(uiapp,'ET_STEP_11_REGISTRY_READY',root)
-            sources=[];model_names={};live_keys=[]
-            for row in choices:
-                if cancel():break
-                if row.Mode=='LIVE_DOCUMENT':
-                    trace.write(uiapp,'ET_STEP_12_LIVE_DOCUMENT_REGISTER_START',root,row.Name)
-                    key=registry.add_live(row.Document,configured_source=getattr(row,'ResolvedSource','') or None)
-                    entry=registry.get(key)
-                    if getattr(row,'DetachedRecovery',''):
-                        entry['detached_recovery']=row.DetachedRecovery
-                    sources.append(key);live_keys.append(key);model_names[key]=entry['name']
-                    trace.write(uiapp,'ET_STEP_13_LIVE_DOCUMENT_REGISTER_DONE',root,row.Name)
-                else:
-                    source=getattr(row,'ResolvedSource',None) or row.Source
-                    sources.append(source);model_names[source]=getattr(row,'Name',source)
-            if live_keys:
-                registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(save_timing.snapshot())
-                for key in live_keys:
-                    entry=registry.get(key)
-                    entry.setdefault('preflight_events',[]).extend(event for event in save_events
-                        if event.get('model')==f.text(entry['document'].Title) and event.get('source')==f.text(entry['document'].PathName or ''))
-                trace.write(uiapp,'ET_STEP_14_UNLOADED_LINK_PREFLIGHT_START',root)
-                unloaded=preflight.unloaded_links(registry,live_keys) if opts['include'].get('revit',True) else []
-                if unloaded:
-                    chooser=UnloadedLinksDialog(unloaded);chooser.ShowDialog()
-                    if chooser.result is None:raise f.Cancelled()
-                    with performance.Collector() as reload_timing:
-                        with preflight.TemporaryReloads(registry,chooser.result,pulse) as reloads:
-                            reloads.acquire()
+
+            if reload_selection:
+                with performance.Collector() as reload_timing:
+                    with preflight.TemporaryReloads(registry,reload_selection,pulse) as reloads:
+                        reloads.acquire()
+                if live_keys:
                     registry.get(live_keys[0]).setdefault('preflight_timings',[]).append(reload_timing.snapshot())
-                trace.write(uiapp,'ET_STEP_15_UNLOADED_LINK_PREFLIGHT_DONE',root)
-            if sources:
+
+            if sources and not cancel():
                 trace.write(uiapp,'ET_STEP_16_BATCH_START',root)
                 results=batch.run_batch(sources,root,
                     lambda package,source:SessionBackend(DB,uiapp.Application,package,registry,cancel),
