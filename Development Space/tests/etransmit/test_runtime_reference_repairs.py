@@ -42,6 +42,26 @@ class References(unittest.TestCase):
         self.assertEqual(row['id'],'20');self.assertFalse(row['loaded'])
         self.assertEqual(row['special'],'external')
         self.assertEqual(row['resource_information']['Path'],actual)
+    def test_final_verification_checks_cad_link_path(self):
+        target='C:\\Out\\CAD\\site.dwg'
+        ref=Obj(GetAbsolutePath=lambda:target)
+        element=Obj()
+        self.db.ExternalFileUtils=Obj(
+            GetAllExternalFileReferences=lambda d:[],
+            GetExternalFileReference=lambda doc,ident:ref)
+        self.b.visible=lambda value:value
+        row=dict(element_id='20',id='20',kind='CADLink',target=target,source='old.dwg')
+        old_system=sys.modules.get('System')
+        sys.modules['System']=Obj(Int64=int,Int32=int)
+        try:
+            issues=self.b._verify_document(Obj(GetElement=lambda ident:element),
+                                           'C:\\Out\\Host.rvt',[row],{})
+        finally:
+            if old_system is None:sys.modules.pop('System',None)
+            else:sys.modules['System']=old_system
+        self.assertEqual(issues,[])
+        self.assertEqual(row.get('verification'),'PATH_CHECKED')
+
     def test_unknown_metadata_value_is_not_invented_as_source(self):
         self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
