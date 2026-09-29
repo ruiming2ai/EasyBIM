@@ -24,10 +24,11 @@ class ProgressUI(unittest.TestCase):
         cases=[('Copying Architecture.rvt','COLLECTING','#2F80ED'),('Repath / cleanup Host.rvt','REPATHING','#2F80ED'),('FINALIZING ACC LINKS | Host.rvt','FINALIZING ACC LINKS','#8E44AD'),('PACKAGE BUILT — VERIFYING FINAL PACKAGE | Host.rvt','VERIFYING FINAL PACKAGE','#8E44AD'),('READY','READY','#27AE60'),('READY — REVIEW ISSUES','READY — REVIEW ISSUES','#F2C94C'),('INCOMPLETE','INCOMPLETE','#EB5757'),('CANCELLED','CANCELLED','#828282')]
         for label,phase,color in cases:
             actual=self.ui.progress_phase(label);self.assertEqual(actual[0],phase);self.assertEqual(actual[1],color)
-    def test_progress_surface_uses_persistent_revit_dockable_panel_not_overlay_geometry(self):
+    def test_progress_prefers_persistent_panel_and_keeps_overlay_only_as_fallback(self):
         self.assertTrue(issubclass(self.progress.TransferProgressPanel,self.progress.forms.WPFPanel))
         self.assertFalse(hasattr(self.ui,'TransferProgressPanel'))
         self.assertFalse(hasattr(self.ui,'TransferProgressBar'))
+        self.assertTrue(hasattr(self.progress,'TransferProgressBar'))
         self.assertTrue(self.progress.TransferProgressPanel.panel_source.endswith('etransmit_progress_panel.xaml'))
     def test_engine_has_explicit_finalization_and_verification_labels(self):
         with io.open(os.path.join(ROOT,'lib','easybim_etransmit','engine.py'),encoding='utf-8') as inp:text=inp.read()
