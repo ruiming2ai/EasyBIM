@@ -233,8 +233,8 @@ class Dialog(forms.WPFWindow):
             needs_detached_recovery = any(
                 getattr(row, 'Mode', '') == 'LIVE_DOCUMENT'
                 and getattr(row, 'Document', None) is not None
+                and bool(getattr(row.Document, 'IsDetached', False))
                 and not bool(getattr(row.Document, 'IsModelInCloud', False))
-                and not f.text(getattr(row.Document, 'PathName', '') or '').strip()
                 for row in models
             )
             if needs_detached_recovery:
