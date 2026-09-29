@@ -472,7 +472,7 @@ class Backend(object):
         except Exception:
             dispose(opts); raise
 
-    def mark_transmitted_package(self, path):
+    def mark_transmitted_package(self, path, rows=None):
         """Mark a closed packaged workshared RVT transmitted without opening it.
 
         Preserve TransmissionData-backed reference paths/load states explicitly,
@@ -484,6 +484,13 @@ class Backend(object):
         if not self.basic(path).get('workshared'):
             return None
         model_path=self.mp(path);td=None
+        intended={}
+        for row in rows or []:
+            if row.get('kind')!='RevitLink':
+                continue
+            state=package_load_state(row)
+            if state is not None:
+                intended[f.text(row.get('element_id',row.get('id','')))]=bool(state)
         try:
             td=self.DB.TransmissionData.ReadTransmissionData(model_path)
             if td is None:return False
@@ -497,7 +504,9 @@ class Backend(object):
                     if ref is None:continue
                     ref_path=ref.GetPath()
                     status_text=f.text(ref.GetLinkedFileStatus())
-                    should_load=load_intent(status_text)
+                    should_load=intended.get(eid(ident))
+                    if should_load is None:
+                        should_load=load_intent(status_text)
                     if should_load is None:should_load=(status_text!='Unloaded')
                     td.SetDesiredReferenceData(ident,ref_path,ref.PathType,bool(should_load))
                 finally:
