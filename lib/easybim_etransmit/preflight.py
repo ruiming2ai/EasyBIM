@@ -367,10 +367,18 @@ def primary_host_sources(choices, application=None, DB=None, output='', detached
         direct = f.text(getattr(doc, 'PathName', '') or '').strip()
         if direct:
             path, evidence = direct, 'DOCUMENT_PATH'
-            ready = _validate_local_primary(path, name, evidence)
-            row.ResolvedSource = ready['path']
-            results.append(ready)
-            continue
+            try:
+                ready = _validate_local_primary(path, name, evidence)
+                row.ResolvedSource = ready['path']
+                results.append(ready)
+                continue
+            except PreflightError as exc:
+                if detached_recovery is None or not bool(getattr(doc, 'IsDetached', False)):
+                    raise
+                ready = _recover_detached_source(
+                    row, doc, application, DB, output, detached_recovery, f.text(exc))
+                results.append(ready)
+                continue
 
         path, evidence = source_tracker.source_for_document_with_evidence(
             doc, application=application)
