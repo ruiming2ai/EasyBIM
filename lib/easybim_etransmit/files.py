@@ -34,9 +34,22 @@ class Cancelled(Exception):
     pass
 
 
-def host_processing_allowed(options):
-    """Only selected copy-processing options may authorize a host open."""
-    return any(bool(options.get(k)) for k in ('repath','cleanup','upgrade'))
+def host_processing_allowed(options, source=None):
+    """Return whether a disposable host copy may be opened in Revit.
+
+    Repath/Cleanup/Upgrade authorize the established processing path. A model
+    explicitly chosen for detached recovery also authorizes discovery-only
+    inspection of its task-owned copy so external Revit/server references are
+    not lost when closed-file TransmissionData is incomplete.
+    """
+    if any(bool(options.get(k)) for k in ('repath','cleanup','upgrade')):
+        return True
+    if source:
+        wanted=canonical(source)
+        for value in options.get('force_saved_host_inspection_sources',[]) or []:
+            if canonical(value)==wanted:
+                return True
+    return False
 
 
 def defaults():

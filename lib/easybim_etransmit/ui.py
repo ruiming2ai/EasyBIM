@@ -83,8 +83,8 @@ def detached_source_recovery(row, output, feedback=''):
     if feedback:
         answer = forms.alert(
             f.text(feedback) +
-            '\n\nThe selected file was not used. Load the correct model from its file location, or cancel.',
-            title='eTransmit — selected model does not match',
+            '\n\nThe selected file could not be used. Load another RVT from its file location, or cancel.',
+            title='eTransmit — selected file unavailable',
             options=['Load another model from file location…', 'Cancel']
         )
         if answer != 'Load another model from file location…':
@@ -263,6 +263,16 @@ class Dialog(forms.WPFWindow):
                     reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked))
         opts['mappings']=[]
         opts['saved_state_only']=True
+        # A model explicitly selected for detached recovery is authoritative,
+        # but closed-file TransmissionData is not complete for every external
+        # Revit/server reference. Always inspect a disposable copy so its links
+        # can be collected even when Repath/Cleanup/Upgrade are all off.
+        opts['force_saved_host_inspection_sources']=[
+            f.text(getattr(row,'ResolvedSource','') or '')
+            for row in models
+            if getattr(row,'DetachedRecovery','')=='USER_BROWSE'
+            and f.text(getattr(row,'ResolvedSource','') or '')
+        ]
         if opts['zip_per_model'] or any(x.Mode=='LIVE_DOCUMENT' for x in models):opts['per_model']=True
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
         planned=[];planned_names={}
