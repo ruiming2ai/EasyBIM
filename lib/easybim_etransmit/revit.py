@@ -546,7 +546,11 @@ class Backend(object):
                 ref=td.GetLastSavedReferenceData(ident)
             if ref is None:
                 return None
-            return load_intent(f.text(ref.GetLinkedFileStatus()))
+            status_text=f.text(ref.GetLinkedFileStatus())
+            state=load_intent(status_text)
+            if state is None and status_text:
+                state=(status_text!='Unloaded')
+            return state
         except Exception:
             return None
         finally:
