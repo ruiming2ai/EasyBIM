@@ -587,7 +587,7 @@ class Backend(object):
         for row in rows:
             if not row.get('target') or row.get('skip_repath'): continue
             kind=row.get('kind')
-            if kind!='RevitLink' and row.get('special')!='image': continue
+            if kind not in ('RevitLink','CADLink') and row.get('special')!='image': continue
             row.pop('verification',None)
             f.check(self.cancelled)
             try:
@@ -599,10 +599,23 @@ class Backend(object):
                     raise RuntimeError('Original reference element is missing from the packaged model.')
                 if kind=='RevitLink':
                     reference=element.GetExternalFileReference()
-                    actual=self.visible(reference.GetAbsolutePath())
+                    actual_path=None
+                    try:
+                        actual_path=reference.GetAbsolutePath()
+                        actual=self.visible(actual_path)
+                    finally:
+                        dispose(actual_path)
                     expected_load=package_load_state(row)
                     if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
                         raise RuntimeError('Packaged Revit link load state does not match the requested state.')
+                elif kind=='CADLink':
+                    reference=self.DB.ExternalFileUtils.GetExternalFileReference(doc,ident)
+                    actual_path=None
+                    try:
+                        actual_path=reference.GetAbsolutePath()
+                        actual=self.visible(actual_path)
+                    finally:
+                        dispose(actual_path)
                 else:
                     actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
                 if f.canonical(actual)!=f.canonical(row['target']):
