@@ -517,6 +517,30 @@ class Backend(object):
         finally:
             dispose(verify);dispose(model_path)
 
+    def _transmission_load_state(self, td, ident, row):
+        """Preserve load intent when the live inventory has no load flag.
+
+        CAD/PDF/other TransmissionData references do not always expose a useful
+        loaded value through the same API surface as RevitLinkType. Re-read the
+        exact saved TransmissionData record instead of skipping repath.
+        """
+        state=package_load_state(row)
+        if state is not None:
+            return bool(state)
+        ref=None
+        try:
+            ref=td.GetDesiredReferenceData(ident) if bool(td.IsTransmitted) else None
+            if ref is None:
+                ref=td.GetLastSavedReferenceData(ident)
+            if ref is None:
+                return None
+            return load_intent(f.text(ref.GetLinkedFileStatus()))
+        except Exception:
+            return None
+        finally:
+            dispose(ref)
+
+
     def apply_metadata(self, path, target, rows, relative=True):
         self.guard(path); self.guard(target)
         for row in rows:
@@ -527,13 +551,18 @@ class Backend(object):
             ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds())
             for row in rows:
                 ident_key=row.get('element_id',row['id'])
-                if not row.get('target') or ident_key not in ids or package_load_state(row) is None: continue
+                if not row.get('target') or ident_key not in ids: continue
                 # Cloud references need the resource-server conversion first,
                 # even if a native API representation also supplied a TD id.
                 if cache_sources.reference_identity(row) and row.get('repath')!='API_LOCAL_LINK':continue
+                desired_load=self._transmission_load_state(td,ids[ident_key],row)
+                if desired_load is None:
+                    continue
                 value=relative_path(row['target'],os.path.dirname(target)) if relative else row['target']
                 typ=self.DB.PathType.Relative if relative else self.DB.PathType.Absolute
-                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(package_load_state(row)))
+                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(desired_load))
+                if row.get('kind')=='RevitLink' and package_load_state(row) is None:
+                    row['package_loaded']=bool(desired_load)
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
             td.IsTransmitted=True
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
