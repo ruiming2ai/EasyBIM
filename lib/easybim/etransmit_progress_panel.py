@@ -175,10 +175,21 @@ class TransferProgressPanel(forms.WPFPanel):
 
 
 def _ribbon_bottom_dip():
-    """Best-effort WPF position immediately below Revit's visible ribbon."""
+    """Return the screen Y just below Revit's full ribbon, in WPF DIPs.
+
+    pyRevit's prompt bars intentionally use the Revit *window* top. For this
+    fallback we need the ribbon bottom instead. AdWindows is not guaranteed to
+    be referenced in a clean IronPython engine, so load it explicitly before
+    asking ComponentManager for the live RibbonControl.
+    """
     try:
+        try:
+            import clr
+            clr.AddReference('AdWindows')
+        except Exception:
+            pass
         from Autodesk.Windows import ComponentManager
-        from System.Windows import Point, PresentationSource
+        from System.Windows import Point
         ribbon = ComponentManager.Ribbon
         if ribbon is None:
             return None
@@ -186,36 +197,53 @@ def _ribbon_bottom_dip():
         if height <= 0.0:
             return None
         point = ribbon.PointToScreen(Point(0.0, height))
+        y = float(point.Y)
+
+        # Match pyRevit TemplatePromptBar's own pixel-to-DIP conversion. This
+        # avoids mixed DPI coordinates on scaled displays.
         try:
-            source = PresentationSource.FromVisual(ribbon)
-            target = getattr(source, 'CompositionTarget', None) if source is not None else None
-            transform = getattr(target, 'TransformFromDevice', None) if target is not None else None
-            if transform is not None:
-                point = transform.Transform(point)
+            from pyrevit import HOST_APP
+            scale = float(getattr(HOST_APP, 'proc_screen_scalefactor', 1.0) or 1.0)
+            if scale > 0.0:
+                y = y / scale
         except Exception:
-            pass
-        value = float(point.Y)
-        return value if value >= 0.0 else None
+            try:
+                from System.Windows import PresentationSource
+                source = PresentationSource.FromVisual(ribbon)
+                target = getattr(source, 'CompositionTarget', None) if source is not None else None
+                transform = getattr(target, 'TransformFromDevice', None) if target is not None else None
+                if transform is not None:
+                    y = float(transform.Transform(point).Y)
+            except Exception:
+                pass
+        return y if y >= 0.0 else None
     except Exception:
         return None
 
 
 class TransferProgressBar(forms.ProgressBar):
-    """Fallback overlay anchored at the lower edge of Revit's ribbon."""
-    def update_window(self):
-        if getattr(self, '_etransmit_positioned', False):
-            return
-        forms.ProgressBar.update_window(self)
+    """Fallback overlay anchored immediately below Revit's full ribbon."""
+    def _anchor_below_ribbon(self):
         ribbon_bottom = _ribbon_bottom_dip()
-        if ribbon_bottom is not None:
+        if ribbon_bottom is None:
+            return False
+        try:
+            # One DIP of separation avoids visually covering the ribbon border
+            # while keeping the strip above Revit's document/view tabs.
+            self.Top = ribbon_bottom + 1.0
+            self._etransmit_position_source = 'RIBBON_BOTTOM'
+            return True
+        except Exception:
+            return False
+
+    def update_window(self):
+        # pyRevit repositions TemplatePromptBar to the Revit window top every
+        # time update_window runs. Always call it first and then re-anchor;
+        # never keep a one-shot flag that lets a later base reposition win.
+        forms.ProgressBar.update_window(self)
+        if not self._anchor_below_ribbon():
             try:
-                self.Top = ribbon_bottom
-                self._etransmit_position_source = 'RIBBON_BOTTOM'
-            except Exception:
-                pass
-        else:
-            # Last-resort legacy placement when Autodesk.Windows is unavailable.
-            try:
+                # Only if AdWindows/ribbon geometry is truly unavailable.
                 self.Top = getattr(self, 'Top', 0) + float(getattr(self, 'user_height', 32) or 32)
                 self._etransmit_position_source = 'TOP_OFFSET'
             except Exception:
@@ -224,7 +252,13 @@ class TransferProgressBar(forms.ProgressBar):
             self.Opacity = 0.92
         except Exception:
             pass
-        self._etransmit_positioned = True
+
+    def __enter__(self):
+        entered = forms.ProgressBar.__enter__(self)
+        # Show() can apply another layout pass after construction. Re-anchor
+        # once the window is visible so the final position is below the ribbon.
+        self.update_window()
+        return entered
 
     def set_phase(self, label):
         phase, color, value = progress_phase(label)

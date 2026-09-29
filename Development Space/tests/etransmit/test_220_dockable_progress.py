@@ -139,7 +139,10 @@ class DockableProgressTests(unittest.TestCase):
         self.assertIn('self.Opacity = 0.92',text)
         self.assertIn('_set_brush(self.pbar, color)',text)
         self.assertIn('ribbon_bottom = _ribbon_bottom_dip()',text)
+        self.assertIn("clr.AddReference('AdWindows')",text)
         self.assertIn("self._etransmit_position_source = 'RIBBON_BOTTOM'",text)
+        self.assertIn('self.Top = ribbon_bottom + 1.0',text)
+        self.assertNotIn('_etransmit_positioned',text)
         self.assertNotIn('script.get_logger().warning',text)
 
     def test_ribbon_bottom_helper_uses_wpf_device_transform(self):
@@ -175,6 +178,37 @@ class DockableProgressTests(unittest.TestCase):
         finally:
             for name,old in [('System.Windows',old_system_windows),('System',old_system),
                              ('Autodesk.Windows',old_windows),('Autodesk',old_autodesk)]:
+                if old is None:sys.modules.pop(name,None)
+                else:sys.modules[name]=old
+
+    def test_ribbon_bottom_prefers_pyrevit_screen_scale_factor(self):
+        old_autodesk=sys.modules.get('Autodesk')
+        old_windows=sys.modules.get('Autodesk.Windows')
+        old_system=sys.modules.get('System')
+        old_system_windows=sys.modules.get('System.Windows')
+        old_pyrevit=sys.modules.get('pyrevit')
+
+        class Point(object):
+            def __init__(self,x,y):self.X=x;self.Y=y
+        class Ribbon(object):
+            ActualHeight=100.0
+            def PointToScreen(self,point):return Point(point.X,500.0)
+        aw=types.ModuleType('Autodesk.Windows');aw.ComponentManager=Obj(Ribbon=Ribbon())
+        autodesk=types.ModuleType('Autodesk');autodesk.Windows=aw
+        sw=types.ModuleType('System.Windows');sw.Point=Point
+        system=types.ModuleType('System');system.Windows=sw
+        fake=types.ModuleType('pyrevit')
+        fake.forms=self.progress.forms
+        fake.HOST_APP=Obj(proc_screen_scalefactor=1.25)
+        sys.modules['Autodesk']=autodesk;sys.modules['Autodesk.Windows']=aw
+        sys.modules['System']=system;sys.modules['System.Windows']=sw
+        sys.modules['pyrevit']=fake
+        try:
+            self.assertEqual(self.progress._ribbon_bottom_dip(),400.0)
+        finally:
+            for name,old in [('pyrevit',old_pyrevit),('System.Windows',old_system_windows),
+                             ('System',old_system),('Autodesk.Windows',old_windows),
+                             ('Autodesk',old_autodesk)]:
                 if old is None:sys.modules.pop(name,None)
                 else:sys.modules[name]=old
 

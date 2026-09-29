@@ -4,15 +4,21 @@
         MinWidth="700" MinHeight="330" WindowStartupLocation="CenterScreen">
   <DockPanel Margin="16">
     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
-      <TextBlock Text="Choose links to reload temporarily" FontSize="20" FontWeight="SemiBold"/>
-      <TextBlock Text="Unchecked links are still collected when their saved files/cache are available. For detached-model file recovery, ACC/cloud links that usually require a live Revit load are selected by default. Originally unloaded links are restored afterward; exported load intent stays unloaded." TextWrapping="Wrap" Margin="0,8,0,6"/>
+      <TextBlock Text="Batch preflight — choose links to reload temporarily" FontSize="20" FontWeight="SemiBold"/>
+      <TextBlock Text="All selected hosts have been scanned before batch processing. Only placed host links are listed. ACC/cloud links and links without a directly readable saved RVT are selected by default. Originally unloaded links are restored afterward; exported load intent stays unloaded." TextWrapping="Wrap" Margin="0,8,0,6"/>
       <TextBlock Text="Warning: Revit Reload can clear Undo history and change the working document's modified flag. Restoring Unloaded does not restore Undo history. No source Save or Sync follows temporary reload." TextWrapping="Wrap" Foreground="#A0522D"/>
     </StackPanel>
-    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-      <Button Content="Reload selected and continue" Click="reload_selected" Padding="10,6" Margin="4,0"/>
-      <Button Content="Continue without reloading" Click="continue_without_reload" Padding="10,6" Margin="4,0"/>
-      <Button Content="Cancel" Click="cancel_reload" IsCancel="True" Padding="10,6" Margin="4,0"/>
-    </StackPanel>
+    <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+      <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" HorizontalAlignment="Left">
+        <Button Content="Select All" Click="select_all" Padding="10,6" Margin="0,0,6,0"/>
+        <Button Content="Select None" Click="select_none" Padding="10,6" Margin="0,0,6,0"/>
+      </StackPanel>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Content="Reload selected and continue" Click="reload_selected" Padding="10,6" Margin="4,0"/>
+        <Button Content="Continue without reloading" Click="continue_without_reload" Padding="10,6" Margin="4,0"/>
+        <Button Content="Cancel" Click="cancel_reload" IsCancel="True" Padding="10,6" Margin="4,0"/>
+      </StackPanel>
+    </DockPanel>
     <DataGrid x:Name="Links" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
       <DataGrid.Columns>
         <DataGridCheckBoxColumn Header="Reload" Width="60" Binding="{Binding Checked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>

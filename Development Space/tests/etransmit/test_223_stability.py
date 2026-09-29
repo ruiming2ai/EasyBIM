@@ -98,7 +98,7 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertEqual(row.ResolvedSource,self.host)
         self.assertEqual(row.DetachedRecovery,'USER_BROWSE')
 
-    def test_pathless_detached_host_can_save_current_state_and_continue_as_saved_file(self):
+    def test_pathless_detached_host_can_save_current_state_and_keep_live_link_context(self):
         doc=Obj(PathName='',Title='Host_detached',IsModelInCloud=False,IsWorkshared=True)
         row=self.row(doc)
         from easybim_etransmit import source_tracker
@@ -115,9 +115,10 @@ class PrimaryHostReadiness(unittest.TestCase):
             preflight.save_detached_current=old_save
         self.assertEqual(result[0]['path'],self.host)
         self.assertEqual(result[0]['evidence'],'USER_SAVE_CURRENT')
-        self.assertEqual(row.Mode,'SAVED_FILE')
+        self.assertEqual(row.Mode,'LIVE_DOCUMENT')
         self.assertEqual(row.Source,self.host)
-        self.assertIsNone(row.Document)
+        self.assertEqual(row.ResolvedSource,self.host)
+        self.assertIs(row.Document,doc)
         self.assertEqual(row.DetachedRecovery,'USER_SAVE_CURRENT')
 
     def test_pathless_detached_host_accepts_explicit_existing_rvt_without_identity_match(self):
@@ -198,6 +199,7 @@ class PrimaryHostReadiness(unittest.TestCase):
                  link_name='ACC Mechanical',
                  cloud_identity=dict(project_guid=project,model_guid=model,region='US'))
         link=Obj(Id=Obj(IntegerValue=7),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=7))
         doc=Obj()
         entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
                    inventory=dict(references=[row]))
@@ -206,17 +208,58 @@ class PrimaryHostReadiness(unittest.TestCase):
             def IsLoaded(document,ident):return False
         registry=Obj(cancelled=None,
                      DB=Obj(RevitLinkType=LinkType),
-                     scanner=Obj(elements=lambda document,name:[link]),
+                     scanner=Obj(elements=lambda document,name:
+                         [instance] if name=='RevitLinkInstance' else [link]),
                      get=lambda key:entry)
         choices=preflight.unloaded_links(registry,['host'])
         self.assertEqual(len(choices),1)
         self.assertTrue(choices[0].Checked)
         self.assertIn('ACC/cloud link',choices[0].Availability)
 
+    def test_detached_recovery_preselects_unloaded_link_without_readable_saved_rvt(self):
+        row=dict(kind='RevitLink',element_id='9',id='9',source='',
+                 link_name='Unresolved Link')
+        link=Obj(Id=Obj(IntegerValue=9),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=9))
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
+                   inventory=dict(references=[row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        registry=Obj(cancelled=None,DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=lambda document,name:
+                         [instance] if name=='RevitLinkInstance' else [link]),
+                     get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual(len(choices),1)
+        self.assertTrue(choices[0].Checked)
+        self.assertIn('No directly readable saved RVT',choices[0].Availability)
+
+    def test_auto_detected_detached_host_preselects_unresolved_placed_link(self):
+        row=dict(kind='RevitLink',element_id='10',id='10',source='',
+                 link_name='Cloud-like unresolved link')
+        link=Obj(Id=Obj(IntegerValue=10),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=10))
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,detached_recovery='AUTO_DETACHED',
+                   inventory=dict(references=[row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        registry=Obj(cancelled=None,DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=lambda document,name:
+                         [instance] if name=='RevitLinkInstance' else [link]),
+                     get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual(len(choices),1)
+        self.assertTrue(choices[0].Checked)
+
     def test_detached_browse_does_not_preselect_unloaded_server_file_link(self):
         row=dict(kind='RevitLink',element_id='8',id='8',
                  source=self.host,link_name='Architecture')
         link=Obj(Id=Obj(IntegerValue=8),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=8))
         doc=Obj()
         entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
                    inventory=dict(references=[row]))
@@ -225,12 +268,33 @@ class PrimaryHostReadiness(unittest.TestCase):
             def IsLoaded(document,ident):return False
         registry=Obj(cancelled=None,
                      DB=Obj(RevitLinkType=LinkType),
-                     scanner=Obj(elements=lambda document,name:[link]),
+                     scanner=Obj(elements=lambda document,name:
+                         [instance] if name=='RevitLinkInstance' else [link]),
                      get=lambda key:entry)
         choices=preflight.unloaded_links(registry,['host'])
         self.assertEqual(len(choices),1)
         self.assertFalse(choices[0].Checked)
         self.assertIn('Saved file available',choices[0].Availability)
+
+    def test_unloaded_reload_list_excludes_unplaced_outdated_link_types(self):
+        placed_row=dict(kind='RevitLink',element_id='7',id='7',source=self.host,
+                        link_name='Placed Mechanical')
+        unused_row=dict(kind='RevitLink',element_id='99',id='99',source=self.host,
+                        link_name='_OUTDATED_unused.rvt')
+        placed_type=Obj(Id=Obj(IntegerValue=7),IsNestedLink=False,LocallyUnloaded=False)
+        unused_type=Obj(Id=Obj(IntegerValue=99),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=7))
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,inventory=dict(references=[placed_row,unused_row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        def elements(document,name):
+            return [instance] if name=='RevitLinkInstance' else [placed_type,unused_type]
+        registry=Obj(cancelled=None,DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=elements),get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual([x.Name for x in choices],['Placed Mechanical'])
 
     def test_browsed_saved_host_is_delivered_collect_only_without_opening_host(self):
         row=Obj(Name='Host_detached',Mode='SAVED_FILE',Source=self.host,Document=None)
@@ -285,12 +349,14 @@ class UIContracts(unittest.TestCase):
         self.assertIn('Load another model from file location…',text)
         self.assertNotIn('Browse another RVT',text)
         self.assertNotIn('selected model does not match',text)
-        self.assertIn('selected file unavailable',text)
+        self.assertIn('eTransmit cannot locate the detached model. Please load from selected file locations.',text)
+        self.assertNotIn('selected file unavailable',text)
         self.assertIn('Save current changes and transmit',text)
         self.assertIn('Do not include current changes',text)
         self.assertNotIn('force_saved_host_inspection_sources',text)
         self.assertIn("getattr(row.Document, 'IsDetached', False)",text)
-        self.assertIn("entry['detached_recovery']=row.DetachedRecovery",text)
+        self.assertIn("detached_marker='AUTO_DETACHED'",text)
+        self.assertIn("entry['detached_recovery']=detached_marker",text)
         self.assertIn("DetachedRecovery','')!='USER_BROWSE'",text)
 
     def test_document_opening_hook_stamps_pending_source_with_current_journal(self):
@@ -298,6 +364,28 @@ class UIContracts(unittest.TestCase):
         with io.open(hook,encoding='utf-8') as inp:text=inp.read()
         self.assertIn("_app = getattr(__revit__, \"Application\", None)",text)
         self.assertIn('application=_app',text)
+
+    def test_batch_preflight_collects_reload_decision_before_batch_processing(self):
+        ui=os.path.join(ROOT,'lib','easybim_etransmit','ui.py')
+        with io.open(ui,encoding='utf-8') as inp:text=inp.read()
+        chooser=text.index('chooser=UnloadedLinksDialog(unloaded)')
+        reload_plan=text.index('reload_selection=list(chooser.result)')
+        batch=text.index("trace.write(uiapp,'ET_STEP_16_BATCH_START'")
+        self.assertLess(chooser,reload_plan)
+        self.assertLess(reload_plan,batch)
+        self.assertIn('All decisions are complete here.',text)
+
+    def test_reload_dialog_exposes_select_all_and_select_none(self):
+        xaml=os.path.join(ROOT,'lib','easybim_etransmit','unloaded_links.xaml')
+        ui=os.path.join(ROOT,'lib','easybim_etransmit','ui.py')
+        with io.open(xaml,encoding='utf-8') as inp:x=inp.read()
+        with io.open(ui,encoding='utf-8') as inp:u=inp.read()
+        self.assertIn('Content="Select All"',x)
+        self.assertIn('Content="Select None"',x)
+        self.assertIn('Click="select_all"',x)
+        self.assertIn('Click="select_none"',x)
+        self.assertIn('def select_all(',u)
+        self.assertIn('def select_none(',u)
 
     def test_command_contains_crash_boundaries_and_no_runtime_registration(self):
         ui=os.path.join(ROOT,'lib','easybim_etransmit','ui.py')

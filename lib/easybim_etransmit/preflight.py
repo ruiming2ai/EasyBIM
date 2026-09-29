@@ -132,13 +132,16 @@ def save_detached_current(doc, output, DB=None):
     return target
 
 
-def _adopt_detached_saved_source(row, path, evidence):
-    """Use one saved RVT as a standalone source after explicit recovery."""
+def _bind_detached_saved_source(row, path, evidence):
+    """Keep the live detached document for dependency discovery.
+
+    The resolved saved RVT supplies the transmitted host bytes. Keeping the
+    document handle allows batch preflight to inspect placed Revit links and,
+    when approved, temporarily load ACC/cloud links before packaging.
+    """
     row.ResolvedSource = path
     row.Source = path
-    row.Mode = 'SAVED_FILE'
     row.DetachedRecovery = evidence
-    row.Document = None
     row.Modified = False
 
 
@@ -149,9 +152,7 @@ def _bind_detached_browse_source(row, path):
     document remains available only to discover/load Revit links; it is never
     saved by this recovery path.
     """
-    row.ResolvedSource = path
-    row.Source = path
-    row.DetachedRecovery = 'USER_BROWSE'
+    _bind_detached_saved_source(row, path, 'USER_BROWSE')
 
 
 def _recover_detached_source(row, doc, application, DB, output, detached_recovery, initial_error=''):
@@ -166,7 +167,7 @@ def _recover_detached_source(row, doc, application, DB, output, detached_recover
         if action == 'SAVE_CURRENT':
             path = save_detached_current(doc, output, DB)
             ready = _validate_local_primary(path, f.text(getattr(row, 'Name', '') or ''), 'USER_SAVE_CURRENT')
-            _adopt_detached_saved_source(row, path, 'USER_SAVE_CURRENT')
+            _bind_detached_saved_source(row, path, 'USER_SAVE_CURRENT')
             return ready
 
         if action == 'BROWSE':
@@ -318,6 +319,27 @@ def link_type_name(DB,link):
     return ''
 
 
+def placed_revit_link_type_ids(registry, doc):
+    """Return direct RevitLinkType ids that actually have placed host instances.
+
+    Revit can retain unused/outdated RevitLinkType definitions after every
+    instance has been removed. Those types are not host dependencies and must
+    never appear in the temporary-reload decision list.
+    """
+    from .revit import eid
+    try:
+        instances=registry.scanner.elements(doc,'RevitLinkInstance')
+    except Exception:
+        return None
+    placed=set()
+    for instance in instances:
+        try:
+            placed.add(eid(instance.GetTypeId()))
+        except Exception:
+            pass
+    return placed
+
+
 def enrich_link_types(registry,entry):
     """Preserve direct unloaded type names even when no child Document is loaded."""
     from .revit import eid
@@ -372,10 +394,13 @@ class ReloadChoice(object):
         self.Host=registry.get(owner)['name'];self.Checked=bool(checked)
         source=row.get('source','')
         cloud=bool(cache_sources.reference_identity(row))
-        if cloud and self.Checked:
+        saved_file=bool(f.absolute(source) and f.file_exists(source))
+        if self.Checked and cloud:
             self.Availability='ACC/cloud link — reload selected by default to acquire its saved cache'
+        elif self.Checked and not saved_file:
+            self.Availability='No directly readable saved RVT — reload selected by default to acquire source/cache'
         else:
-            self.Availability=('Saved file available; reload is optional' if f.absolute(source) and f.file_exists(source)
+            self.Availability=('Saved file available; reload is optional' if saved_file
                                else 'Identified source/cache will be checked; select only to request a reload')
         self.State='Unloaded for me' if self.local_override else 'Unloaded'
     def is_loaded(self):
@@ -391,17 +416,20 @@ def unloaded_links(registry,keys):
         entry=registry.get(key);doc=entry.get('document')
         if doc is None:continue
         rows=entry['inventory']['references']
+        placed=placed_revit_link_type_ids(registry,doc)
         for link in registry.scanner.elements(doc,'RevitLinkType'):
             if bool(getattr(link,'IsNestedLink',False)):continue
             ident=eid(link.Id)
+            if placed is not None and ident not in placed:continue
             row=next((r for r in rows if r.get('kind')=='RevitLink' and r.get('element_id')==ident),None)
             if row is None:continue
             try:loaded=bool(registry.DB.RevitLinkType.IsLoaded(doc,link.Id))
             except Exception:loaded=row.get('loaded')
             if loaded is False:
                 from . import cache_sources
-                default_reload=(entry.get('detached_recovery')=='USER_BROWSE'
-                                and bool(cache_sources.reference_identity(row)))
+                saved_file=bool(f.absolute(row.get('source','')) and f.file_exists(row.get('source','')))
+                default_reload=(bool(entry.get('detached_recovery'))
+                                and (bool(cache_sources.reference_identity(row)) or not saved_file))
                 choices.append(ReloadChoice(registry,key,link,row,default_reload))
     return choices
 
