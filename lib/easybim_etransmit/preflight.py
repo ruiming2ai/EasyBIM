@@ -394,10 +394,13 @@ class ReloadChoice(object):
         self.Host=registry.get(owner)['name'];self.Checked=bool(checked)
         source=row.get('source','')
         cloud=bool(cache_sources.reference_identity(row))
-        if cloud and self.Checked:
+        saved_file=bool(f.absolute(source) and f.file_exists(source))
+        if self.Checked and cloud:
             self.Availability='ACC/cloud link — reload selected by default to acquire its saved cache'
+        elif self.Checked and not saved_file:
+            self.Availability='No directly readable saved RVT — reload selected by default to acquire source/cache'
         else:
-            self.Availability=('Saved file available; reload is optional' if f.absolute(source) and f.file_exists(source)
+            self.Availability=('Saved file available; reload is optional' if saved_file
                                else 'Identified source/cache will be checked; select only to request a reload')
         self.State='Unloaded for me' if self.local_override else 'Unloaded'
     def is_loaded(self):
@@ -424,8 +427,9 @@ def unloaded_links(registry,keys):
             except Exception:loaded=row.get('loaded')
             if loaded is False:
                 from . import cache_sources
-                default_reload=(entry.get('detached_recovery')=='USER_BROWSE'
-                                and bool(cache_sources.reference_identity(row)))
+                saved_file=bool(f.absolute(row.get('source','')) and f.file_exists(row.get('source','')))
+                default_reload=(bool(entry.get('detached_recovery'))
+                                and (bool(cache_sources.reference_identity(row)) or not saved_file))
                 choices.append(ReloadChoice(registry,key,link,row,default_reload))
     return choices
 
