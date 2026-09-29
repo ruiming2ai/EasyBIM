@@ -184,7 +184,7 @@ class PrimaryHostReadiness(unittest.TestCase):
 
     def test_detached_browse_does_not_preselect_unloaded_server_file_link(self):
         row=dict(kind='RevitLink',element_id='8',id='8',
-                 source=r'\\server\share\Architecture.rvt',link_name='Architecture')
+                 source=self.host,link_name='Architecture')
         link=Obj(Id=Obj(IntegerValue=8),IsNestedLink=False,LocallyUnloaded=False)
         doc=Obj()
         entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
