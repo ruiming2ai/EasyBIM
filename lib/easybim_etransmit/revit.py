@@ -214,7 +214,7 @@ class Backend(object):
         base=info.get('central') if info.get('workshared') and f.absolute(info.get('central', '')) else source
         try: result['references']=self.rows(stage, base)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
-        if not f.host_processing_allowed(options) or not options.get('deep',True):
+        if not f.host_processing_allowed(options, source) or not options.get('deep',True):
             result['issues'].append(issue('METADATA_ONLY_SCAN',source,
                                          'Image/PDF, cloud, point-cloud and some other dependencies can be absent from saved reference metadata.'))
             return result
