@@ -216,6 +216,26 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertTrue(choices[0].Checked)
         self.assertIn('ACC/cloud link',choices[0].Availability)
 
+    def test_detached_recovery_preselects_unloaded_link_without_readable_saved_rvt(self):
+        row=dict(kind='RevitLink',element_id='9',id='9',source='',
+                 link_name='Unresolved Link')
+        link=Obj(Id=Obj(IntegerValue=9),IsNestedLink=False,LocallyUnloaded=False)
+        instance=Obj(GetTypeId=lambda:Obj(IntegerValue=9))
+        doc=Obj()
+        entry=dict(name='Host.rvt',document=doc,detached_recovery='USER_BROWSE',
+                   inventory=dict(references=[row]))
+        class LinkType(object):
+            @staticmethod
+            def IsLoaded(document,ident):return False
+        registry=Obj(cancelled=None,DB=Obj(RevitLinkType=LinkType),
+                     scanner=Obj(elements=lambda document,name:
+                         [instance] if name=='RevitLinkInstance' else [link]),
+                     get=lambda key:entry)
+        choices=preflight.unloaded_links(registry,['host'])
+        self.assertEqual(len(choices),1)
+        self.assertTrue(choices[0].Checked)
+        self.assertIn('No directly readable saved RVT',choices[0].Availability)
+
     def test_detached_browse_does_not_preselect_unloaded_server_file_link(self):
         row=dict(kind='RevitLink',element_id='8',id='8',
                  source=self.host,link_name='Architecture')
