@@ -88,15 +88,11 @@ class PrimaryHostReadiness(unittest.TestCase):
         doc=Obj(PathName='Host_detached.rvt',Title='Host_detached',
                 IsModelInCloud=False,IsWorkshared=True,IsDetached=True)
         row=self.row(doc)
-        old_verify=preflight.verify_detached_candidate
-        preflight.verify_detached_candidate=lambda d,p,application=None,DB=None:'PROJECT_INFORMATION_UNIQUE_ID'
-        try:
-            result=preflight.primary_host_sources(
-                [row],Obj(),DB=Obj(),output=self.root,
-                detached_recovery=lambda r,feedback='':dict(action='BROWSE',path=self.host))
-        finally:
-            preflight.verify_detached_candidate=old_verify
+        result=preflight.primary_host_sources(
+            [row],Obj(),DB=Obj(),output=self.root,
+            detached_recovery=lambda r,feedback='':dict(action='BROWSE',path=self.host))
         self.assertEqual(result[0]['path'],self.host)
+        self.assertEqual(result[0]['evidence'],'USER_BROWSE')
         self.assertEqual(row.Mode,'SAVED_FILE')
         self.assertIsNone(row.Document)
 
@@ -122,75 +118,42 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertIsNone(row.Document)
         self.assertEqual(row.DetachedRecovery,'USER_SAVE_CURRENT')
 
-    def test_pathless_detached_host_can_browse_verified_existing_rvt(self):
+    def test_pathless_detached_host_accepts_explicit_existing_rvt_without_identity_match(self):
         doc=Obj(PathName='',Title='Host_detached',IsModelInCloud=False,IsWorkshared=True)
         row=self.row(doc)
         from easybim_etransmit import source_tracker
         old_source=source_tracker.source_for_document_with_evidence
-        old_verify=preflight.verify_detached_candidate
         source_tracker.source_for_document_with_evidence=lambda d,application=None:('','')
-        preflight.verify_detached_candidate=lambda d,p,application=None,DB=None:'PROJECT_INFORMATION_UNIQUE_ID'
         try:
             result=preflight.primary_host_sources(
                 [row],Obj(),DB=Obj(),output=self.root,
                 detached_recovery=lambda r,feedback='':dict(action='BROWSE',path=self.host))
         finally:
             source_tracker.source_for_document_with_evidence=old_source
-            preflight.verify_detached_candidate=old_verify
-        self.assertEqual(result[0]['evidence'],'USER_BROWSE_PROJECT_INFORMATION_UNIQUE_ID')
+        self.assertEqual(result[0]['evidence'],'USER_BROWSE')
         self.assertEqual(row.Mode,'SAVED_FILE')
         self.assertIsNone(row.Document)
         self.assertEqual(row.Source,self.host)
+        self.assertEqual(row.DetachedRecovery,'USER_BROWSE')
 
-    def test_wrong_browsed_rvt_is_rejected_and_recovery_can_browse_again(self):
-        wrong=os.path.join(self.root,'Wrong.rvt')
-        with open(wrong,'wb') as out:out.write(compound(suffix='wrong'))
+    def test_explicit_browse_accepts_user_selected_native_rvt_without_model_comparison(self):
+        alternate=os.path.join(self.root,'Alternate.rvt')
+        with open(alternate,'wb') as out:out.write(compound(suffix='alternate'))
         doc=Obj(PathName='',Title='Host_detached',IsModelInCloud=False,IsWorkshared=True)
         row=self.row(doc)
         from easybim_etransmit import source_tracker
         old_source=source_tracker.source_for_document_with_evidence
-        old_verify=preflight.verify_detached_candidate
         source_tracker.source_for_document_with_evidence=lambda d,application=None:('','')
-        calls=[]
-        def verify(d,p,application=None,DB=None):
-            if p==wrong:
-                raise preflight.PreflightError('The selected RVT does not appear to be the same model.')
-            return 'PROJECT_INFORMATION_UNIQUE_ID'
-        def recover(r,feedback=''):
-            calls.append(feedback)
-            return dict(action='BROWSE',path=wrong if len(calls)==1 else self.host)
-        preflight.verify_detached_candidate=verify
         try:
             result=preflight.primary_host_sources(
-                [row],Obj(),DB=Obj(),output=self.root,detached_recovery=recover)
+                [row],Obj(),DB=Obj(),output=self.root,
+                detached_recovery=lambda r,feedback='':dict(action='BROWSE',path=alternate))
         finally:
             source_tracker.source_for_document_with_evidence=old_source
-            preflight.verify_detached_candidate=old_verify
-        self.assertEqual(len(calls),2)
-        self.assertEqual(calls[0],'')
-        self.assertIn('same model',calls[1])
-        self.assertEqual(result[0]['path'],self.host)
-
-    def test_browse_identity_accepts_matching_worksharing_central_without_opening_candidate(self):
-        central='Autodesk Docs://Project X/Host.rvt'
-        class BasicInfo(object):
-            CentralPath=central
-            Format='2026'
-            IsWorkshared=True
-            def Dispose(self):pass
-        class BasicFileInfo(object):
-            @staticmethod
-            def Extract(path):return BasicInfo()
-        class ModelPathUtils(object):
-            @staticmethod
-            def ConvertModelPathToUserVisiblePath(value):return central
-        DB=Obj(BasicFileInfo=BasicFileInfo,ModelPathUtils=ModelPathUtils)
-        doc=Obj(Title='Host_detached',IsWorkshared=True,
-                GetWorksharingCentralModelPath=lambda:'model-path',
-                ProjectInformation=Obj(UniqueId='live-project-id'))
-        self.assertEqual(
-            preflight.verify_detached_candidate(doc,self.host,application=None,DB=DB),
-            'CENTRAL_IDENTITY')
+        self.assertEqual(result[0]['path'],alternate)
+        self.assertEqual(result[0]['evidence'],'USER_BROWSE')
+        self.assertEqual(row.Source,alternate)
+        self.assertFalse(hasattr(preflight,'verify_detached_candidate'))
 
     def test_browsed_saved_host_is_delivered_collect_only_without_opening_host(self):
         row=Obj(Name='Host_detached',Mode='SAVED_FILE',Source=self.host,Document=None)
@@ -244,9 +207,11 @@ class UIContracts(unittest.TestCase):
         self.assertIn('Option 2 — Load model from file location…',text)
         self.assertIn('Load another model from file location…',text)
         self.assertNotIn('Browse another RVT',text)
+        self.assertNotIn('selected model does not match',text)
+        self.assertIn('selected file unavailable',text)
         self.assertIn('Save current changes and transmit',text)
         self.assertIn('Do not include current changes',text)
-        self.assertIn('selected model does not match',text)
+        self.assertIn('force_saved_host_inspection_sources',text)
         self.assertIn("getattr(row.Document, 'IsDetached', False)",text)
 
     def test_document_opening_hook_stamps_pending_source_with_current_journal(self):
