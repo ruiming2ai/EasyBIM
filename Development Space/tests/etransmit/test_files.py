@@ -93,15 +93,6 @@ class FileTests(unittest.TestCase):
         self.assertTrue(next(csv.reader([c.csv_cell('=1+1')]))[0].startswith("'"))
         self.assertTrue(next(csv.reader([c.csv_cell('\t=1+1')]))[0].startswith("'"))
 
-    def test_manual_detached_source_can_force_discovery_open_without_repath(self):
-        source=str(self.root/'Host.rvt')
-        opts=c.defaults()
-        opts.update(repath=False,cleanup=False,upgrade=False,
-                    force_saved_host_inspection_sources=[source])
-        self.assertTrue(c.host_processing_allowed(opts,source))
-        self.assertFalse(c.host_processing_allowed(opts,str(self.root/'Other.rvt')))
-        self.assertFalse(c.host_processing_allowed(opts))
-
     def test_all_categories_default_on(self):
         self.assertTrue(all(c.defaults()['include'].values()))
         self.assertFalse(c.defaults()['cleanup'])

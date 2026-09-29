@@ -133,13 +133,25 @@ def save_detached_current(doc, output, DB=None):
 
 
 def _adopt_detached_saved_source(row, path, evidence):
-    """Continue through the ordinary SAVED_FILE pipeline after explicit recovery."""
+    """Use one saved RVT as a standalone source after explicit recovery."""
     row.ResolvedSource = path
     row.Source = path
     row.Mode = 'SAVED_FILE'
     row.DetachedRecovery = evidence
     row.Document = None
     row.Modified = False
+
+
+def _bind_detached_browse_source(row, path):
+    """Keep the open detached document for link discovery, but transmit saved bytes.
+
+    The user's explicit RVT supplies the host file. The already-open detached
+    document remains available only to discover/load Revit links; it is never
+    saved by this recovery path.
+    """
+    row.ResolvedSource = path
+    row.Source = path
+    row.DetachedRecovery = 'USER_BROWSE'
 
 
 def _recover_detached_source(row, doc, application, DB, output, detached_recovery, initial_error=''):
@@ -171,7 +183,7 @@ def _recover_detached_source(row, doc, application, DB, output, detached_recover
             except PreflightError as exc:
                 feedback = f.text(exc)
                 continue
-            _adopt_detached_saved_source(row, ready['path'], ready['evidence'])
+            _bind_detached_browse_source(row, ready['path'])
             return ready
 
         if action == 'CANCEL':
@@ -351,15 +363,20 @@ def enrich_link_types(registry,entry):
 
 
 class ReloadChoice(object):
-    def __init__(self,registry,owner,link,row):
+    def __init__(self,registry,owner,link,row,checked=False):
+        from . import cache_sources
         self.registry=registry;self.owner=owner;self.link=link
         self.element_id=row['element_id'];self.original_loaded=False
         self.local_override=bool(getattr(link,'LocallyUnloaded',False))
         self.Name=row.get('link_name') or 'Revit link '+self.element_id
-        self.Host=registry.get(owner)['name'];self.Checked=False
+        self.Host=registry.get(owner)['name'];self.Checked=bool(checked)
         source=row.get('source','')
-        self.Availability=('Saved file available; reload is optional' if f.absolute(source) and f.file_exists(source)
-                           else 'Identified source/cache will be checked; select only to request a reload')
+        cloud=bool(cache_sources.reference_identity(row))
+        if cloud and self.Checked:
+            self.Availability='ACC/cloud link — reload selected by default to acquire its saved cache'
+        else:
+            self.Availability=('Saved file available; reload is optional' if f.absolute(source) and f.file_exists(source)
+                               else 'Identified source/cache will be checked; select only to request a reload')
         self.State='Unloaded for me' if self.local_override else 'Unloaded'
     def is_loaded(self):
         doc=self.registry.get(self.owner)['document']
@@ -381,7 +398,11 @@ def unloaded_links(registry,keys):
             if row is None:continue
             try:loaded=bool(registry.DB.RevitLinkType.IsLoaded(doc,link.Id))
             except Exception:loaded=row.get('loaded')
-            if loaded is False:choices.append(ReloadChoice(registry,key,link,row))
+            if loaded is False:
+                from . import cache_sources
+                default_reload=(entry.get('detached_recovery')=='USER_BROWSE'
+                                and bool(cache_sources.reference_identity(row)))
+                choices.append(ReloadChoice(registry,key,link,row,default_reload))
     return choices
 
 

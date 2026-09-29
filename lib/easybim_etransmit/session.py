@@ -53,6 +53,41 @@ def file_version(DB,path):
     finally:dispose(version);dispose(info)
 
 
+def merge_detached_revit_rows(saved_rows, live_rows):
+    """Merge saved TD rows with live-only cloud/server Revit references.
+
+    TransmissionData remains authoritative for ordinary file Revit links.
+    During explicit detached-file recovery, live external-resource rows may be
+    the only representation of ACC/server-managed links, so preserve those and
+    enrich matching saved rows with cloud identity metadata.
+    """
+    merged=[copy.deepcopy(row) for row in saved_rows]
+    by_id=dict((f.text(row.get('element_id',row.get('id',''))),row) for row in merged)
+    for live in live_rows:
+        if live.get('kind')!='RevitLink':
+            continue
+        ident=f.text(live.get('element_id',live.get('id','')))
+        identity=cache_sources.reference_identity(live)
+        source=f.text(live.get('source') or live.get('in_session_path') or '')
+        external=bool(identity or live.get('special')=='external' or '://' in source)
+        saved=by_id.get(ident)
+        if saved is not None:
+            if identity:
+                saved['cloud_identity']=dict(identity)
+            for field in ('resource_information','in_session_path','server',
+                          'resource_version','link_name'):
+                if live.get(field) and not saved.get(field):
+                    saved[field]=copy.deepcopy(live[field])
+            continue
+        if not external:
+            continue
+        row=copy.deepcopy(live)
+        row.setdefault('source_evidence','DETACHED_LIVE_EXTERNAL_RESOURCE')
+        merged.append(row)
+        by_id[ident]=row
+    return merged
+
+
 class Registry(object):
     def __init__(self,DB,application,recovery_root,cancelled=None,collect_plugins=True,
                  saved_state_only=True,cache_roots=None):
@@ -230,7 +265,7 @@ class Registry(object):
                 'snapshot_started_at','snapshot_completed_at','saved_document_version',
                 'working_location_changed','snapshot_authorization','is_modified','cache_metadata',
                 'cache_evidence','unsaved_edits_excluded','saved_state_only','inventory_basis',
-                'preflight_events','is_workshared')
+                'preflight_events','is_workshared','detached_recovery')
         result=dict((k,entry[k]) for k in fields if k in entry)
         if entry['mode']=='PUBLISHED_VERSION':
             result.update(project_id=entry['graph'].project,host_version_id=entry['graph'].version,
@@ -488,12 +523,22 @@ class SessionBackend(Backend):
                 if f.absolute(physical) and not f.cache_source(physical) and not f.is_desktop_connector_path(physical):
                     saved=self.rows(physical,entry.get('plugin_base') or physical)
                     saved_revit=[row for row in saved if row.get('kind')=='RevitLink']
-                    live_non_revit=[row for row in result.get('references',[]) if row.get('kind')!='RevitLink']
+                    live_rows=list(result.get('references',[]))
+                    live_non_revit=[row for row in live_rows if row.get('kind')!='RevitLink']
+                    if entry.get('detached_recovery')=='USER_BROWSE':
+                        # True ACC/server Revit resources can be absent from
+                        # TransmissionData. The open detached document is kept
+                        # only to expose/reload those references and capture
+                        # their exact saved cache revisions.
+                        saved_revit=merge_detached_revit_rows(saved_revit,live_rows)
+                        basis='SAVED_REFERENCE_METADATA_PLUS_DETACHED_LIVE_EXTERNAL_REVIT'
+                    else:
+                        basis='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
                     result['references']=saved_revit+live_non_revit
                     if options.get('include',{}).get('revit',True):
                         self._bind_saved_links(entry,result)
-                    result['inspection_status']='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
-                    entry['inventory_basis']='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
+                    result['inspection_status']=basis
+                    entry['inventory_basis']=basis
                     return result
             except Exception as exc:
                 result.setdefault('issues',[]).append(issue(
