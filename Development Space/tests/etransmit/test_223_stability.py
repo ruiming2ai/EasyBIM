@@ -10,7 +10,7 @@ import unittest
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
 
-from easybim_etransmit import preflight
+from easybim_etransmit import preflight, engine, files as f
 from test_payload_acquisition import compound
 
 class Obj(object):
@@ -84,6 +84,32 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertEqual(result[0]['evidence'],'SAVED_FILE_SELECTION')
         self.assertEqual(row.ResolvedSource,self.host)
 
+    def test_browsed_saved_host_is_delivered_collect_only_without_opening_host(self):
+        row=Obj(Name='Host_detached',Mode='SAVED_FILE',Source=self.host,Document=None)
+        preflight.primary_host_sources([row],Obj())
+        scans=[]
+        testcase=self
+        class Backend(object):
+            def set_staging_root(self,path): self.staging_root=path
+            def scan(self,source,stage,options):
+                scans.append(dict(options))
+                testcase.assertFalse(f.host_processing_allowed(options),
+                                     'collect-only browse must not authorize a Revit host open')
+                return dict(references=[],issues=[],version='2025',opened_in_revit=False,
+                            is_workshared=False,inspection_status='METADATA_ONLY')
+            def finish(self,*args):
+                testcase.fail('collect-only browse must not process/open the packaged host')
+        opts=f.defaults();opts.update(repath=False,cleanup=False,upgrade=False)
+        output=os.path.join(self.root,'browse_collect_only')
+        result=engine.transmit([row.ResolvedSource],output,Backend(),opts)
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
+        self.assertEqual(len(scans),1)
+        hosts=[record for record in result['files'] if record.get('is_primary_host')]
+        self.assertEqual(len(hosts),1)
+        self.assertTrue(os.path.isfile(hosts[0]['target']))
+        self.assertEqual(f.digest(hosts[0]['target']),f.digest(self.host))
+        self.assertFalse(hosts[0].get('opened_in_revit'))
+
 
 class UIContracts(unittest.TestCase):
     def test_obsolete_source_controls_and_options_are_absent(self):
@@ -100,6 +126,12 @@ class UIContracts(unittest.TestCase):
         self.assertNotIn('skip_cloud_links',s)
         self.assertNotIn('self.mappings',u)
         self.assertIn("opts['mappings']=[]",u)
+
+    def test_document_opening_hook_stamps_pending_source_with_current_journal(self):
+        hook=os.path.join(ROOT,'hooks','doc-opening.py')
+        with io.open(hook,encoding='utf-8') as inp:text=inp.read()
+        self.assertIn("_app = getattr(__revit__, \"Application\", None)",text)
+        self.assertIn('application=_app',text)
 
     def test_command_contains_crash_boundaries_and_no_runtime_registration(self):
         ui=os.path.join(ROOT,'lib','easybim_etransmit','ui.py')
