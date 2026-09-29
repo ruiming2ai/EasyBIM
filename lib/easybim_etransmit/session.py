@@ -525,11 +525,11 @@ class SessionBackend(Backend):
                     saved_revit=[row for row in saved if row.get('kind')=='RevitLink']
                     live_rows=list(result.get('references',[]))
                     live_non_revit=[row for row in live_rows if row.get('kind')!='RevitLink']
-                    if entry.get('detached_recovery')=='USER_BROWSE':
+                    if entry.get('detached_recovery'):
                         # True ACC/server Revit resources can be absent from
-                        # TransmissionData. The open detached document is kept
-                        # only to expose/reload those references and capture
-                        # their exact saved cache revisions.
+                        # TransmissionData. For every detached host, the live
+                        # document remains the discovery context so those placed
+                        # external links and captured cache revisions survive.
                         saved_revit=merge_detached_revit_rows(saved_revit,live_rows)
                         basis='SAVED_REFERENCE_METADATA_PLUS_DETACHED_LIVE_EXTERNAL_REVIT'
                     else:
