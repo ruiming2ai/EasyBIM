@@ -98,9 +98,9 @@ def detached_source_recovery(row, output, feedback=''):
         answer = forms.alert(
             'eTransmit cannot locate the detached model. Please load from selected file locations.',
             title='eTransmit — detached model not located',
-            options=['Load another model from file location…', 'Cancel']
+            options=['Load model from file location…', 'Cancel']
         )
-        if answer != 'Load another model from file location…':
+        if answer != 'Load model from file location…':
             return dict(action='CANCEL')
         return _browse_detached_source()
 
