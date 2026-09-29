@@ -19,10 +19,12 @@ class TD:
     def GetAllExternalFileReferenceIds(self): return [Id(100)]
     def GetLastSavedReferenceData(self, ident):
         return NS(GetPath=lambda:'relative.rvt',GetAbsolutePath=lambda:'C:\\Shared\\a.rvt',
-                  GetLinkedFileStatus=lambda:'Unloaded',ExternalFileReferenceType='RevitLink')
+                  GetLinkedFileStatus=lambda:'Unloaded',ExternalFileReferenceType='RevitLink',
+                  PathType='Relative')
     def GetDesiredReferenceData(self, ident):
         return NS(GetPath=lambda:'desired.rvt',GetAbsolutePath=lambda:'C:\\Consumed\\a.rvt',
-                  GetLinkedFileStatus=lambda:'Loaded',ExternalFileReferenceType='RevitLink')
+                  GetLinkedFileStatus=lambda:'Loaded',ExternalFileReferenceType='RevitLink',
+                  PathType='Absolute')
     def SetDesiredReferenceData(self, *args): self.writes.append(args)
     def Dispose(self): self.disposed=True
 
@@ -51,6 +53,25 @@ class APIBoundary(unittest.TestCase):
         self.backend.apply_metadata(self.stage,self.target,rows)
         self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',False))
         self.assertTrue(self.td.IsTransmitted); self.assertTrue(self.td.disposed)
+    def test_cad_transmission_reference_repaths_even_without_live_loaded_flag(self):
+        rows=[dict(id='100',element_id='100',kind='CADLink',
+                   target=str(self.root/'CAD'/'site.dwg'))]
+        self.backend.apply_metadata(self.stage,self.target,rows)
+        self.assertEqual(len(self.td.writes),1)
+        self.assertEqual(self.td.writes[0][1:],
+                         (os.path.join('CAD','site.dwg'),'Relative',False))
+        self.assertEqual(rows[0]['repath'],'TRANSMISSION_DATA')
+
+    def test_pdf_transmission_reference_repaths_using_saved_load_state(self):
+        self.td.IsTransmitted=True
+        rows=[dict(id='100',element_id='100',kind='Image',special='image',
+                   target=str(self.root/'PDF'/'details.pdf'))]
+        self.backend.apply_metadata(self.stage,self.target,rows)
+        self.assertEqual(len(self.td.writes),1)
+        self.assertEqual(self.td.writes[0][1:],
+                         (os.path.join('PDF','details.pdf'),'Relative',True))
+        self.assertEqual(rows[0]['repath'],'TRANSMISSION_DATA')
+
     def test_external_alias_id_repaths_using_original_element_id(self):
         rows=[dict(id='100:0',element_id='100',target=str(self.root/'Consumed'/'a.rvt'),loaded=True)]
         self.backend.apply_metadata(self.stage,self.target,rows)
@@ -70,6 +91,13 @@ class APIBoundary(unittest.TestCase):
     def test_metadata_missing_is_detectable(self):
         self.db.TransmissionData.ReadTransmissionData=lambda p:None
         self.assertIs(self.backend.apply_metadata(self.stage,self.target,[]),False)
+    def test_mark_transmitted_uses_intended_revit_link_load_state(self):
+        self.backend.basic=lambda p:dict(version='2026',workshared=True,central='source.rvt')
+        rows=[dict(id='100',element_id='100',kind='RevitLink',loaded=True)]
+        self.assertTrue(self.backend.mark_transmitted_package(self.stage,rows))
+        self.assertTrue(self.td.IsTransmitted)
+        self.assertEqual(self.td.writes[-1][3],True)
+
     def test_workshared_without_td_warns_about_original_central(self):
         self.db.TransmissionData.ReadTransmissionData=lambda p:None
         self.backend.basic=lambda p:dict(version='2026',workshared=True,central='source.rvt')

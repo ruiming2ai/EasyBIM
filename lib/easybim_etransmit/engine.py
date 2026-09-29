@@ -427,8 +427,13 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         or not record['target'].lower().endswith('.rvt')):
                     continue
                 try:
-                    state=performance.call('metadata','mark_host_transmitted',record['source'],
-                                           transmitter,record['target'])
+                    model_rows=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])]
+                    if bool(getattr(backend,'mark_transmitted_rows_supported',False)):
+                        state=performance.call('metadata','mark_host_transmitted',record['source'],
+                                               transmitter,record['target'],model_rows)
+                    else:
+                        state=performance.call('metadata','mark_host_transmitted',record['source'],
+                                               transmitter,record['target'])
                     if state is True:
                         record['transmission_status']='TRANSMITTED'
                         record['pre_transmission_sha256']=record.get('packaged_sha256') or record.get('sha256')
@@ -452,7 +457,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
             if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
             if record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE' and not record.get('is_primary_host'):
                 record['model_verification']='FILE_INTEGRITY_ONLY'; continue
-            if record.get('verified_in_process'):
+            if record.get('verified_in_process') and record.get('transmission_status')!='TRANSMITTED':
                 record['model_verification']='OPENED_AND_REFERENCES_CHECKED'; continue
             if not opts.get('repath') or not verifier:
                 record['model_verification'] = 'NOT_ATTEMPTED'; continue

@@ -42,6 +42,27 @@ class References(unittest.TestCase):
         self.assertEqual(row['id'],'20');self.assertFalse(row['loaded'])
         self.assertEqual(row['special'],'external')
         self.assertEqual(row['resource_information']['Path'],actual)
+    def test_final_verification_checks_cad_link_path(self):
+        target='C:\\Out\\CAD\\site.dwg'
+        ref=Obj(GetAbsolutePath=lambda:target)
+        element=Obj()
+        self.db.ExternalFileUtils=Obj(
+            GetAllExternalFileReferences=lambda d:[],
+            GetExternalFileReference=lambda doc,ident:ref)
+        self.db.ElementId=lambda value:value
+        self.b.visible=lambda value:value
+        row=dict(element_id='20',id='20',kind='CADLink',target=target,source='old.dwg')
+        old_system=sys.modules.get('System')
+        sys.modules['System']=Obj(Int64=int,Int32=int)
+        try:
+            issues=self.b._verify_document(Obj(GetElement=lambda ident:element),
+                                           'C:\\Out\\Host.rvt',[row],{})
+        finally:
+            if old_system is None:sys.modules.pop('System',None)
+            else:sys.modules['System']=old_system
+        self.assertEqual(issues,[])
+        self.assertEqual(row.get('verification'),'PATH_CHECKED')
+
     def test_unknown_metadata_value_is_not_invented_as_source(self):
         self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
@@ -107,6 +128,28 @@ class EngineRepairs(unittest.TestCase):
               finish=lambda *a:calls.append('finish') or [],verify_package=verify)
         result=e.transmit([host],os.path.join(root,'out'),b)
         self.assertEqual(calls,['finish','verify'])
+        self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
+
+    def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
+        root=tempfile.mkdtemp(prefix='ET_posttx_');self.addCleanup(shutil.rmtree,root)
+        host=os.path.join(root,'Host.rvt')
+        with open(host,'wb') as out:out.write(b'host')
+        calls=[]
+        class B(object):
+            def scan(self,*args):
+                return dict(references=[],issues=[],is_workshared=True,version='2026')
+            def finish(self,*args):
+                calls.append('finish')
+                return dict(issues=[],verified_in_process=True)
+            def mark_transmitted_package(self,path,rows=None):
+                calls.append('transmit')
+                return True
+            def verify_package(self,*args):
+                calls.append('verify')
+                return []
+        result=e.transmit([host],os.path.join(root,'out'),B())
+        self.assertEqual(calls,['finish','transmit','verify'])
+        self.assertEqual(result['files'][0].get('transmission_status'),'TRANSMITTED')
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
     def test_parent_is_processed_after_collected_link(self):
