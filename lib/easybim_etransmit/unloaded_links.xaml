@@ -5,7 +5,7 @@
   <DockPanel Margin="16">
     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
       <TextBlock Text="Batch preflight — choose links to reload temporarily" FontSize="20" FontWeight="SemiBold"/>
-      <TextBlock Text="All selected hosts have been scanned before batch processing. Only placed host links are listed. ACC/cloud links that usually require a live Revit load are selected by default. Originally unloaded links are restored afterward; exported load intent stays unloaded." TextWrapping="Wrap" Margin="0,8,0,6"/>
+      <TextBlock Text="All selected hosts have been scanned before batch processing. Only placed host links are listed. ACC/cloud links and links without a directly readable saved RVT are selected by default. Originally unloaded links are restored afterward; exported load intent stays unloaded." TextWrapping="Wrap" Margin="0,8,0,6"/>
       <TextBlock Text="Warning: Revit Reload can clear Undo history and change the working document's modified flag. Restoring Unloaded does not restore Undo history. No source Save or Sync follows temporary reload." TextWrapping="Wrap" Foreground="#A0522D"/>
     </StackPanel>
     <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
