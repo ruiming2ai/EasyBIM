@@ -71,7 +71,7 @@ def _browse_detached_source():
     path = forms.pick_file(
         file_ext='rvt',
         multi_file=False,
-        title='Select the existing RVT for this detached model'
+        title='Load the existing model from file location'
     )
     if not path:
         return dict(action='CANCEL')
@@ -83,11 +83,11 @@ def detached_source_recovery(row, output, feedback=''):
     if feedback:
         answer = forms.alert(
             f.text(feedback) +
-            '\n\nThe selected file was not used. Browse another RVT or cancel.',
+            '\n\nThe selected file was not used. Load the correct model from its file location, or cancel.',
             title='eTransmit — selected model does not match',
-            options=['Browse another RVT', 'Cancel']
+            options=['Load another model from file location…', 'Cancel']
         )
-        if answer != 'Browse another RVT':
+        if answer != 'Load another model from file location…':
             return dict(action='CANCEL')
         return _browse_detached_source()
 
@@ -101,12 +101,12 @@ def detached_source_recovery(row, output, feedback=''):
         title='eTransmit — detached model not located',
         options=[
             'Option 1 — Save current detached model and transmit',
-            'Option 2 — Browse for the existing model',
+            'Option 2 — Load model from file location…',
             'Cancel'
         ]
     )
 
-    if answer == 'Option 2 — Browse for the existing model':
+    if answer == 'Option 2 — Load model from file location…':
         return _browse_detached_source()
     if answer != 'Option 1 — Save current detached model and transmit':
         return dict(action='CANCEL')
