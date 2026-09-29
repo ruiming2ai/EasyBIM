@@ -84,6 +84,22 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertEqual(result[0]['evidence'],'SAVED_FILE_SELECTION')
         self.assertEqual(row.ResolvedSource,self.host)
 
+    def test_filename_only_detached_path_enters_recovery_instead_of_hard_stopping(self):
+        doc=Obj(PathName='Host_detached.rvt',Title='Host_detached',
+                IsModelInCloud=False,IsWorkshared=True,IsDetached=True)
+        row=self.row(doc)
+        old_verify=preflight.verify_detached_candidate
+        preflight.verify_detached_candidate=lambda d,p,application=None,DB=None:'PROJECT_INFORMATION_UNIQUE_ID'
+        try:
+            result=preflight.primary_host_sources(
+                [row],Obj(),DB=Obj(),output=self.root,
+                detached_recovery=lambda r,feedback='':dict(action='BROWSE',path=self.host))
+        finally:
+            preflight.verify_detached_candidate=old_verify
+        self.assertEqual(result[0]['path'],self.host)
+        self.assertEqual(row.Mode,'SAVED_FILE')
+        self.assertIsNone(row.Document)
+
     def test_pathless_detached_host_can_save_current_state_and_continue_as_saved_file(self):
         doc=Obj(PathName='',Title='Host_detached',IsModelInCloud=False,IsWorkshared=True)
         row=self.row(doc)
@@ -229,6 +245,7 @@ class UIContracts(unittest.TestCase):
         self.assertIn('Save current changes and transmit',text)
         self.assertIn('Do not include current changes',text)
         self.assertIn('selected model does not match',text)
+        self.assertIn("getattr(row.Document, 'IsDetached', False)",text)
 
     def test_document_opening_hook_stamps_pending_source_with_current_journal(self):
         hook=os.path.join(ROOT,'hooks','doc-opening.py')
