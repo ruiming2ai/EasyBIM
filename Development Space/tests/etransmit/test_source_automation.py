@@ -99,9 +99,9 @@ class SourceAutomationTests(unittest.TestCase):
 
     def test_windows_journal_relative_file_name_resolves_against_journals_folder(self):
         tracker = tracker_module(self)
-        journal = r'C:\\Users\\rliu\\AppData\\Local\\Autodesk\\Revit\\Autodesk Revit 2026\\Journals\\journal.0178.txt'
-        relative = r'..\\..\\..\\..\\..\\..\\Downloads\\170 MEP_selected\\1RED0-MHGC-AEI-013.rvt'
-        expected = r'C:\\Users\\rliu\\Downloads\\170 MEP_selected\\1RED0-MHGC-AEI-013.rvt'
+        journal = r'C:\Users\rliu\AppData\Local\Autodesk\Revit\Autodesk Revit 2026\Journals\journal.0178.txt'
+        relative = r'..\..\..\..\..\..\Downloads\170 MEP_selected\1RED0-MHGC-AEI-013.rvt'
+        expected = r'C:\Users\rliu\Downloads\170 MEP_selected\1RED0-MHGC-AEI-013.rvt'
         self.assertEqual(tracker._journal_resolve_path(relative, journal), expected)
 
     def test_journal_fallback_recovers_local_file_for_already_open_detached_model(self):
