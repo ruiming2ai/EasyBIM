@@ -2,8 +2,6 @@
 """Source save/reload choices. SaveAs is allowed only for explicit detached recovery."""
 from __future__ import unicode_literals
 import os
-import shutil
-import tempfile
 from . import files as f, performance
 from .engine import issue
 
@@ -68,152 +66,6 @@ def _dispose(value):
 
 def _identity_path(value):
     return f.text(value or '').strip().replace('/', '\\').rstrip('\\').lower()
-
-
-def _live_central_path(doc, DB):
-    if not bool(getattr(doc, 'IsWorkshared', False)) or DB is None:
-        return ''
-    model_path = None
-    try:
-        model_path = doc.GetWorksharingCentralModelPath()
-        if model_path is None:
-            return ''
-        return f.text(DB.ModelPathUtils.ConvertModelPathToUserVisiblePath(model_path) or '')
-    except Exception:
-        return ''
-    finally:
-        _dispose(model_path)
-
-
-def _basic_file_identity(path, DB):
-    if DB is None:
-        return dict(central='', version='', workshared=None)
-    info = None
-    try:
-        info = DB.BasicFileInfo.Extract(path)
-        return dict(
-            central=f.text(getattr(info, 'CentralPath', '') or ''),
-            version=f.text(getattr(info, 'Format', '') or ''),
-            workshared=bool(getattr(info, 'IsWorkshared', False)),
-        )
-    except Exception as exc:
-        raise PreflightError('The selected RVT metadata could not be read: '+f.text(exc))
-    finally:
-        _dispose(info)
-
-
-def _project_information_unique_id(doc):
-    try:
-        info = doc.ProjectInformation
-        return f.text(getattr(info, 'UniqueId', '') or '')
-    except Exception:
-        return ''
-
-
-def _candidate_project_information_unique_id(path, application, DB):
-    """Open only a task-owned scratch copy to prove model identity."""
-    if application is None or DB is None:
-        raise PreflightError('Revit could not verify the selected RVT identity in this session.')
-
-    folder = tempfile.mkdtemp(prefix='EasyBIM_ET_identity_')
-    scratch = os.path.join(folder, 'candidate.rvt')
-    model_path = td = opts = worksets = candidate = None
-    try:
-        f.copy_file(path, scratch)
-        model_path = DB.ModelPathUtils.ConvertUserVisiblePathToModelPath(scratch)
-
-        # Unload TransmissionData-backed references in the scratch copy before
-        # opening. The user-selected source is never written.
-        try:
-            td = DB.TransmissionData.ReadTransmissionData(model_path)
-            if td is not None:
-                already = bool(td.IsTransmitted)
-                for ident in td.GetAllExternalFileReferenceIds():
-                    ref = ref_path = None
-                    try:
-                        ref = td.GetDesiredReferenceData(ident) if already else None
-                        if ref is None:
-                            ref = td.GetLastSavedReferenceData(ident)
-                        if ref is None:
-                            continue
-                        ref_path = ref.GetPath()
-                        td.SetDesiredReferenceData(ident, ref_path, ref.PathType, False)
-                    finally:
-                        _dispose(ref_path)
-                        _dispose(ref)
-                td.IsTransmitted = True
-                DB.TransmissionData.WriteTransmissionData(model_path, td)
-        finally:
-            _dispose(td)
-            td = None
-
-        identity = _basic_file_identity(scratch, DB)
-        current = f.text(getattr(application, 'VersionNumber', '') or '')
-        if (current.isdigit() and identity.get('version', '').isdigit()
-                and int(identity['version']) > int(current)):
-            raise PreflightError(
-                'The selected RVT was saved in Revit {0}, newer than this Revit {1}.'.format(
-                    identity['version'], current)
-            )
-
-        opts = DB.OpenOptions()
-        if identity.get('workshared'):
-            opts.DetachFromCentralOption = DB.DetachFromCentralOption.DetachAndPreserveWorksets
-            worksets = DB.WorksetConfiguration(DB.WorksetConfigurationOption.CloseAllWorksets)
-            opts.SetOpenWorksetsConfiguration(worksets)
-        candidate = application.OpenDocumentFile(model_path, opts)
-        return _project_information_unique_id(candidate)
-    except PreflightError:
-        raise
-    except Exception as exc:
-        raise PreflightError(
-            'eTransmit could not safely verify the selected RVT against the open detached model: '
-            + f.text(exc)
-        )
-    finally:
-        if candidate is not None:
-            try:
-                candidate.Close(False)
-            except Exception:
-                pass
-        _dispose(worksets)
-        _dispose(opts)
-        _dispose(model_path)
-        try:
-            shutil.rmtree(folder)
-        except Exception:
-            pass
-
-
-def verify_detached_candidate(doc, path, application=None, DB=None):
-    """Prove that one explicitly browsed RVT is the open detached model."""
-    ready = _validate_local_primary(path, f.text(getattr(doc, 'Title', '') or ''), 'USER_BROWSE')
-    path = ready['path']
-
-    live_central = _live_central_path(doc, DB)
-    file_identity = _basic_file_identity(path, DB)
-    candidate_central = file_identity.get('central', '')
-    if live_central and candidate_central and _identity_path(live_central) == _identity_path(candidate_central):
-        return 'CENTRAL_IDENTITY'
-
-    live_project = _project_information_unique_id(doc)
-    candidate_project = _candidate_project_information_unique_id(path, application, DB)
-    if live_project and candidate_project and live_project == candidate_project:
-        return 'PROJECT_INFORMATION_UNIQUE_ID'
-
-    selected = f.text(path)
-    if live_project and candidate_project:
-        detail = 'Project Information identity does not match.'
-    elif live_central and candidate_central:
-        detail = 'Central-model identity does not match and element identity could not verify a match.'
-    else:
-        detail = 'Revit could not prove that both files are the same model.'
-
-    raise PreflightError(
-        'The selected RVT does not appear to be the same model as the open detached model.\n\n'
-        + detail + '\n\nSelected file:\n' + selected +
-        '\n\nNo file was transmitted. Choose the correct RVT and try again.'
-    )
 
 
 def _unique_detached_save_path(output, doc):
@@ -310,10 +162,11 @@ def _recover_detached_source(row, doc, application, DB, output, detached_recover
             if not path:
                 raise f.Cancelled()
             try:
-                identity_evidence = verify_detached_candidate(doc, path, application, DB)
+                # The user's explicit file selection is authoritative. Validate
+                # only that it is a readable native RVT; do not compare it to
+                # the open detached document or block on fragile model identity.
                 ready = _validate_local_primary(
-                    path, f.text(getattr(row, 'Name', '') or ''),
-                    'USER_BROWSE_' + identity_evidence
+                    path, f.text(getattr(row, 'Name', '') or ''), 'USER_BROWSE'
                 )
             except PreflightError as exc:
                 feedback = f.text(exc)
