@@ -347,14 +347,12 @@ def enrich_link_types(registry,entry):
     doc=entry.get('document')
     if doc is None:return
     rows=entry['inventory']['references']
-    placed=placed_revit_link_type_ids(registry,doc)
     try:types=registry.scanner.elements(doc,'RevitLinkType')
     except Exception:return
     for link in types:
         f.check(registry.cancelled)
         if bool(getattr(link,'IsNestedLink',False)):continue
         ident=eid(link.Id)
-        if placed is not None and ident not in placed:continue
         matches=[r for r in rows if r.get('kind')=='RevitLink' and r.get('element_id')==ident]
         if not matches:
             row=None
