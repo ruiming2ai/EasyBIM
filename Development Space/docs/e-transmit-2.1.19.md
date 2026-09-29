@@ -17,9 +17,11 @@ can be offered.
 This prevents unused definitions such as old `_OUTDATED_...` link types from
 appearing merely because they still exist in the RVT database.
 
-The same placed-instance filter is also used when enriching unloaded link
-metadata, so unused link types are not promoted into the host dependency
-inventory.
+The broader link-type metadata enrichment is retained so unloaded ACC/cloud
+links can still expose their identity and name. The placed-instance filter is
+applied specifically when building the reload decision list, which prevents
+unused types from being shown to the user without discarding useful cloud
+metadata.
 
 ## Detached source recovery message
 
