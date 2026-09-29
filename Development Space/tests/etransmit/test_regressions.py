@@ -89,6 +89,13 @@ class APIBoundary(unittest.TestCase):
     def test_metadata_missing_is_detectable(self):
         self.db.TransmissionData.ReadTransmissionData=lambda p:None
         self.assertIs(self.backend.apply_metadata(self.stage,self.target,[]),False)
+    def test_mark_transmitted_uses_intended_revit_link_load_state(self):
+        self.backend.basic=lambda p:dict(version='2026',workshared=True,central='source.rvt')
+        rows=[dict(id='100',element_id='100',kind='RevitLink',loaded=True)]
+        self.assertTrue(self.backend.mark_transmitted_package(self.stage,rows))
+        self.assertTrue(self.td.IsTransmitted)
+        self.assertEqual(self.td.writes[-1][3],True)
+
     def test_workshared_without_td_warns_about_original_central(self):
         self.db.TransmissionData.ReadTransmissionData=lambda p:None
         self.backend.basic=lambda p:dict(version='2026',workshared=True,central='source.rvt')
