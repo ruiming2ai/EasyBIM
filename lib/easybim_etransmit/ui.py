@@ -341,8 +341,13 @@ def run(uiapp,xaml):
                 trace.write(uiapp,'ET_STEP_12_LIVE_DOCUMENT_REGISTER_START',root,row.Name)
                 key=registry.add_live(row.Document,configured_source=getattr(row,'ResolvedSource','') or None)
                 entry=registry.get(key)
-                if getattr(row,'DetachedRecovery',''):
-                    entry['detached_recovery']=row.DetachedRecovery
+                detached_marker=getattr(row,'DetachedRecovery','')
+                if (not detached_marker and getattr(row,'Document',None) is not None
+                        and bool(getattr(row.Document,'IsDetached',False))
+                        and not bool(getattr(row.Document,'IsModelInCloud',False))):
+                    detached_marker='AUTO_DETACHED'
+                if detached_marker:
+                    entry['detached_recovery']=detached_marker
                 sources.append(key);live_keys.append(key);model_names[key]=entry['name']
                 trace.write(uiapp,'ET_STEP_13_LIVE_DOCUMENT_REGISTER_DONE',root,row.Name)
             else:
