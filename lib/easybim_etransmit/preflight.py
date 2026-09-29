@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Explicit source save/reload choices. Never SaveAs, Sync, Publish or close a source."""
+"""Source save/reload choices. SaveAs is allowed only for explicit detached recovery."""
 from __future__ import unicode_literals
 import os
 import shutil
