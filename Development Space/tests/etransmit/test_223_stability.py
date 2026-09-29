@@ -177,15 +177,17 @@ class PrimaryHostReadiness(unittest.TestCase):
         project='11111111-1111-1111-1111-111111111111'
         model='22222222-2222-2222-2222-222222222222'
         saved=[dict(kind='RevitLink',element_id='7',id='7',
-                    source='Autodesk Docs://Project/Mechanical.rvt',td=True)]
+                    source='Autodesk Docs://Project/Mechanical.rvt',td=True,loaded=False)]
         live=[dict(kind='RevitLink',element_id='7',id='7',source='open://child/Mechanical.rvt',
-                   special='external',link_name='Mechanical',
+                   special='external',link_name='Mechanical',loaded=True,
                    cloud_identity=dict(project_guid=project,model_guid=model,region='US'))]
         merged=session.merge_detached_revit_rows(saved,live)
         self.assertEqual(len(merged),1)
         self.assertEqual(merged[0]['source'],'Autodesk Docs://Project/Mechanical.rvt')
         self.assertEqual(merged[0]['cloud_identity']['model_guid'],model)
         self.assertEqual(merged[0]['link_name'],'Mechanical')
+        self.assertTrue(merged[0]['loaded'])
+        self.assertTrue(merged[0]['live_loaded_state'])
 
     def test_detached_merge_does_not_invent_live_only_local_file_link(self):
         live=[dict(kind='RevitLink',element_id='8',id='8',
