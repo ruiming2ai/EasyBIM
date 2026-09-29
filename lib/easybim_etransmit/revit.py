@@ -43,6 +43,8 @@ def package_load_state(row):
 
 
 class Backend(object):
+    mark_transmitted_rows_supported = True
+
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
         self.staging_root = None
@@ -504,7 +506,8 @@ class Backend(object):
                     if ref is None:continue
                     ref_path=ref.GetPath()
                     status_text=f.text(ref.GetLinkedFileStatus())
-                    should_load=intended.get(eid(ident))
+                    ident_key=(f.text(ident) if isinstance(ident,f.string_types) else eid(ident))
+                    should_load=intended.get(ident_key)
                     if should_load is None:
                         should_load=load_intent(status_text)
                     if should_load is None:should_load=(status_text!='Unloaded')
