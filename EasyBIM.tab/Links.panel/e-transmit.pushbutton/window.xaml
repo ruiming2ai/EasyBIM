@@ -11,7 +11,7 @@
     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
       <TextBlock Text="e-transmit" FontSize="25" FontWeight="SemiBold"/>
       <TextBlock x:Name="VersionLabel" Foreground="#536273"/>
-      <TextBlock Text="Open models: saved local/cache state only. Unsaved edits are excluded. Saving and temporary link reloads require your choice. No SaveAs, Sync, Publish or working-location change."
+      <TextBlock Text="Open models: saved local/cache state only. Unsaved edits are excluded unless you explicitly choose detached-model Save As recovery. Saving and temporary link reloads require your choice. No Sync or Publish."
                  TextWrapping="Wrap" Margin="0,7,0,0"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom">
@@ -39,7 +39,7 @@
               <Button Content="Browse folder..." Click="browse_model_folder"/>
               <Button Content="Remove selected" Click="remove_model"/>
             </WrapPanel>
-            <TextBlock Text="The active project is checked by default. For live ACC cloud-workshared models, open the model first in native Revit Home → Autodesk Docs, then select the open row here. Open rows use saved local/cache state; unsaved edits are excluded. Browse selects saved local RVTs." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="The active project is checked by default. For live ACC cloud-workshared models, open the model first in native Revit Home → Autodesk Docs, then select the open row here. Open rows use saved local/cache state; unsaved edits are excluded unless detached-model recovery explicitly saves the current state. Browse selects saved local RVTs." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="2  Destination and collection">
