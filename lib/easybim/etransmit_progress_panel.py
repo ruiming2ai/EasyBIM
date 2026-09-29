@@ -27,6 +27,7 @@ PHASE_COLORS = dict(
 
 _PANEL_INSTANCE = None
 _REGISTERED = False
+_PROGRESS_INSTANCE_ATTR = '_easybim_etransmit_progress_panel_instance'
 
 
 def _log(message):
@@ -173,16 +174,52 @@ class TransferProgressPanel(forms.WPFPanel):
         _pump_dispatcher(self)
 
 
+def _ribbon_bottom_dip():
+    """Best-effort WPF position immediately below Revit's visible ribbon."""
+    try:
+        from Autodesk.Windows import ComponentManager
+        from System.Windows import Point, PresentationSource
+        ribbon = ComponentManager.Ribbon
+        if ribbon is None:
+            return None
+        height = float(getattr(ribbon, 'ActualHeight', 0.0) or 0.0)
+        if height <= 0.0:
+            return None
+        point = ribbon.PointToScreen(Point(0.0, height))
+        try:
+            source = PresentationSource.FromVisual(ribbon)
+            target = getattr(source, 'CompositionTarget', None) if source is not None else None
+            transform = getattr(target, 'TransformFromDevice', None) if target is not None else None
+            if transform is not None:
+                point = transform.Transform(point)
+        except Exception:
+            pass
+        value = float(point.Y)
+        return value if value >= 0.0 else None
+    except Exception:
+        return None
+
+
 class TransferProgressBar(forms.ProgressBar):
-    """Fallback top overlay used when the persistent Revit pane is unavailable."""
+    """Fallback overlay anchored at the lower edge of Revit's ribbon."""
     def update_window(self):
         if getattr(self, '_etransmit_positioned', False):
             return
         forms.ProgressBar.update_window(self)
-        try:
-            self.Top = getattr(self, 'Top', 0) + float(getattr(self, 'user_height', 32) or 32)
-        except Exception:
-            pass
+        ribbon_bottom = _ribbon_bottom_dip()
+        if ribbon_bottom is not None:
+            try:
+                self.Top = ribbon_bottom
+                self._etransmit_position_source = 'RIBBON_BOTTOM'
+            except Exception:
+                pass
+        else:
+            # Last-resort legacy placement when Autodesk.Windows is unavailable.
+            try:
+                self.Top = getattr(self, 'Top', 0) + float(getattr(self, 'user_height', 32) or 32)
+                self._etransmit_position_source = 'TOP_OFFSET'
+            except Exception:
+                pass
         try:
             self.Opacity = 0.92
         except Exception:
@@ -214,6 +251,8 @@ def register():
     global _REGISTERED, _PANEL_INSTANCE
     if _is_registered():
         _REGISTERED = True
+        if _PANEL_INSTANCE is None:
+            _PANEL_INSTANCE = getattr(forms, _PROGRESS_INSTANCE_ATTR, None)
         return True
     register_fn = getattr(forms, 'register_dockable_panel', None)
     if register_fn is None:
@@ -224,6 +263,10 @@ def register():
         panel = register_fn(TransferProgressPanel, default_visible=False)
         if panel is not None:
             _PANEL_INSTANCE = panel
+            try:
+                setattr(forms, _PROGRESS_INSTANCE_ATTR, panel)
+            except Exception:
+                pass
         _REGISTERED = True
         return True
     except Exception as exc:
@@ -233,9 +276,14 @@ def register():
 
 def open_panel():
     """Open the already-registered pane. Never attempts registration here."""
+    global _PANEL_INSTANCE
     if not _is_registered():
         return None
     panel = _PANEL_INSTANCE
+    if panel is None:
+        panel = getattr(forms, _PROGRESS_INSTANCE_ATTR, None)
+        if panel is not None:
+            _PANEL_INSTANCE = panel
     if panel is None:
         return None
     try:
