@@ -74,6 +74,15 @@ def merge_detached_revit_rows(saved_rows, live_rows):
         if saved is not None:
             if identity:
                 saved['cloud_identity']=dict(identity)
+            # For detached hosts, the live document is the user's authoritative
+            # load-state context. The saved RVT supplies bytes/paths, but its
+            # persisted TransmissionData load flag can be stale relative to the
+            # model the user is actually transmitting from.
+            if live.get('loaded') is not None:
+                saved['loaded']=bool(live.get('loaded'))
+                saved['live_loaded_state']=bool(live.get('loaded'))
+            if live.get('original_loaded') is not None:
+                saved['original_loaded']=bool(live.get('original_loaded'))
             for field in ('resource_information','in_session_path','server',
                           'resource_version','link_name'):
                 if live.get(field) and not saved.get(field):
