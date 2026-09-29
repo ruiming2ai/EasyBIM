@@ -42,9 +42,11 @@ The batch unloaded-link dialog now provides:
 - **Continue without reloading**
 - **Cancel**
 
-ACC/cloud links that normally require a live Revit load remain selected by
-default during detached-model file recovery. Direct file/server links remain
-unselected by default when a saved path is already available.
+During detached-model recovery, unloaded links are selected by default when
+they have ACC/cloud identity **or** no directly readable saved RVT path. A
+direct local/network/server RVT whose saved file is already readable remains
+unselected by default because it can normally be copied without changing the
+working document.
 
 ## Batch preflight order
 
