@@ -230,11 +230,23 @@ class Dialog(forms.WPFWindow):
         application=getattr(uiapp,'Application',None)
         trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_START')
         try:
-            preflight.primary_host_sources(
-                models, application, DB=DB, output=output,
-                detached_recovery=lambda row, feedback='': detached_source_recovery(
-                    row, output, feedback)
+            needs_detached_recovery = any(
+                getattr(row, 'Mode', '') == 'LIVE_DOCUMENT'
+                and getattr(row, 'Document', None) is not None
+                and not bool(getattr(row.Document, 'IsModelInCloud', False))
+                and not f.text(getattr(row.Document, 'PathName', '') or '').strip()
+                for row in models
             )
+            if needs_detached_recovery:
+                preflight.primary_host_sources(
+                    models, application, DB=DB, output=output,
+                    detached_recovery=lambda row, feedback='': detached_source_recovery(
+                        row, output, feedback)
+                )
+            else:
+                # Preserve the established two-argument path for ordinary
+                # local/cloud sources and existing integration shims.
+                preflight.primary_host_sources(models, application)
         except f.Cancelled:
             trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_CANCELLED')
             return
