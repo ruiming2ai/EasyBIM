@@ -67,6 +67,71 @@ def source_save_choice(choices):
     return {'Continue without saving':'continue','Save and continue':'save'}.get(answer,'cancel')
 
 
+def _browse_detached_source():
+    path = forms.pick_file(
+        file_ext='rvt',
+        multi_file=False,
+        title='Select the existing RVT for this detached model'
+    )
+    if not path:
+        return dict(action='CANCEL')
+    return dict(action='BROWSE', path=f.text(path))
+
+
+def detached_source_recovery(row, output, feedback=''):
+    """User-directed recovery for a pathless detached LIVE_DOCUMENT."""
+    if feedback:
+        answer = forms.alert(
+            f.text(feedback) +
+            '\n\nThe selected file was not used. Browse another RVT or cancel.',
+            title='eTransmit — selected model does not match',
+            options=['Browse another RVT', 'Cancel']
+        )
+        if answer != 'Browse another RVT':
+            return dict(action='CANCEL')
+        return _browse_detached_source()
+
+    message = (
+        "eTransmit couldn't locate the detached model.\n\n"
+        "So please make the following decisions to transmit:\n\n"
+        "Model: " + f.text(getattr(row, 'Name', '') or '')
+    )
+    answer = forms.alert(
+        message,
+        title='eTransmit — detached model not located',
+        options=[
+            'Option 1 — Save current detached model and transmit',
+            'Option 2 — Browse for the existing model',
+            'Cancel'
+        ]
+    )
+
+    if answer == 'Option 2 — Browse for the existing model':
+        return _browse_detached_source()
+    if answer != 'Option 1 — Save current detached model and transmit':
+        return dict(action='CANCEL')
+
+    change_choice = forms.alert(
+        'The new RVT will be saved automatically in the eTransmit destination:\n'
+        + f.text(output) +
+        '\n\nThis Save As changes the open Revit document to that new file. '
+        'Choose whether the current in-memory changes should be included.',
+        title='eTransmit — save detached model',
+        options=[
+            'Save current changes and transmit',
+            'Do not include current changes',
+            'Cancel'
+        ]
+    )
+    if change_choice == 'Save current changes and transmit':
+        return dict(action='SAVE_CURRENT')
+    if change_choice == 'Do not include current changes':
+        # Revit SaveAs always writes the current in-memory state. To exclude
+        # current changes, the user must identify the existing saved RVT.
+        return _browse_detached_source()
+    return dict(action='CANCEL')
+
+
 class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
@@ -165,7 +230,11 @@ class Dialog(forms.WPFWindow):
         application=getattr(uiapp,'Application',None)
         trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_START')
         try:
-            preflight.primary_host_sources(models,application)
+            preflight.primary_host_sources(
+                models, application, DB=DB, output=output,
+                detached_recovery=lambda row, feedback='': detached_source_recovery(
+                    row, output, feedback)
+            )
         except preflight.PreflightError as exc:
             trace.write(uiapp,'ET_STEP_02_HOST_PREFLIGHT_BLOCKED',detail=f.text(exc))
             return forms.alert(f.text(exc),title='e-transmit host source unavailable')
