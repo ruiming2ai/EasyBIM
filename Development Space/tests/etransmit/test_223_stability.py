@@ -10,7 +10,7 @@ import unittest
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
 
-from easybim_etransmit import preflight, engine, files as f
+from easybim_etransmit import preflight, engine, files as f, session
 from test_payload_acquisition import compound
 
 class Obj(object):
@@ -159,6 +159,37 @@ class PrimaryHostReadiness(unittest.TestCase):
         self.assertEqual(row.Mode,'LIVE_DOCUMENT')
         self.assertIs(row.Document,doc)
         self.assertFalse(hasattr(preflight,'verify_detached_candidate'))
+
+    def test_detached_merge_keeps_live_acc_link_absent_from_transmission_data(self):
+        project='11111111-1111-1111-1111-111111111111'
+        model='22222222-2222-2222-2222-222222222222'
+        live=[dict(kind='RevitLink',element_id='7',id='7',source='open://child/ACC.rvt',
+                   special='external',link_name='ACC Mechanical',
+                   cloud_identity=dict(project_guid=project,model_guid=model,region='US'))]
+        merged=session.merge_detached_revit_rows([],live)
+        self.assertEqual(len(merged),1)
+        self.assertEqual(merged[0]['element_id'],'7')
+        self.assertEqual(merged[0]['source'],'open://child/ACC.rvt')
+        self.assertEqual(merged[0]['source_evidence'],'DETACHED_LIVE_EXTERNAL_RESOURCE')
+
+    def test_detached_merge_enriches_saved_link_with_live_cloud_identity(self):
+        project='11111111-1111-1111-1111-111111111111'
+        model='22222222-2222-2222-2222-222222222222'
+        saved=[dict(kind='RevitLink',element_id='7',id='7',
+                    source='Autodesk Docs://Project/Mechanical.rvt',td=True)]
+        live=[dict(kind='RevitLink',element_id='7',id='7',source='open://child/Mechanical.rvt',
+                   special='external',link_name='Mechanical',
+                   cloud_identity=dict(project_guid=project,model_guid=model,region='US'))]
+        merged=session.merge_detached_revit_rows(saved,live)
+        self.assertEqual(len(merged),1)
+        self.assertEqual(merged[0]['source'],'Autodesk Docs://Project/Mechanical.rvt')
+        self.assertEqual(merged[0]['cloud_identity']['model_guid'],model)
+        self.assertEqual(merged[0]['link_name'],'Mechanical')
+
+    def test_detached_merge_does_not_invent_live_only_local_file_link(self):
+        live=[dict(kind='RevitLink',element_id='8',id='8',
+                   source=self.host,special='native',link_name='Local')]
+        self.assertEqual(session.merge_detached_revit_rows([],live),[])
 
     def test_detached_browse_preselects_unloaded_acc_link_for_temporary_reload(self):
         project='11111111-1111-1111-1111-111111111111'
