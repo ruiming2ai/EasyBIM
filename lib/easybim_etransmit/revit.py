@@ -642,7 +642,8 @@ class Backend(object):
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
         external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
                   and (not r.get('td') or cache_sources.reference_identity(r))]
-        needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external))
+        cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink' and not r.get('repath')]
+        needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external or cad))
         if needs_document and reference_target != target:
             raise ValueError('Direct layout is only valid for metadata-only host processing.')
         if needs_document and info['version']!=f.text(self.app.VersionNumber) and not options.get('upgrade'):
@@ -683,6 +684,22 @@ class Backend(object):
                         finally:dispose(result);dispose(resource);dispose(model_path)
                         if package_load_state(row) is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
+                    for row in cad:
+                        f.check(self.cancelled)
+                        number=int(row['element_id'])
+                        ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                        link=doc.GetElement(ident)
+                        result=None
+                        try:
+                            if link is None:
+                                raise RuntimeError('CAD link type is missing from the package model.')
+                            result=link.LoadFrom(row['target'])
+                            load_result=f.text(getattr(result,'LoadResult',''))
+                            if load_result and load_result not in ('LinkLoaded','LinkAlreadyLoaded'):
+                                raise RuntimeError('CAD link reload failed: '+load_result)
+                            row['repath']='API_CAD_LINK'
+                        finally:
+                            dispose(result)
                 if options.get('cleanup'):
                     from .cleanup import run
                     run(doc,self.DB,options,self.cancelled)
