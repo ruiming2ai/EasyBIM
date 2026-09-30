@@ -69,10 +69,31 @@ class Backend(object):
                         (not r.get('td') or cache_sources.reference_identity(r))) for r in rows)
 
     def requires_final_host_open(self, record, rows, options):
-        """True cloud/external Revit links need one final document API conversion."""
-        if not record.get('is_primary_host') or not options.get('repath'): return False
-        return any(r.get('target') and r.get('kind')=='RevitLink' and
-                   (not r.get('td') or cache_sources.reference_identity(r)) for r in rows)
+        """Defer document-API repairs until the host is at its FINAL package path.
+
+        A workshared ImageType relative path is based on the central location.
+        Saving/relinking in a temporary preparation folder and moving the RVT
+        afterward can therefore leave linked PDFs resolving against the removed
+        temporary central. Any operation that opens/saves the host is finalized
+        only after delivery.
+        """
+        if not record.get('is_primary_host'):
+            return False
+        if options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache'):
+            return True
+        if not options.get('repath'):
+            return False
+        for row in rows:
+            if not row.get('target'):
+                continue
+            if row.get('special')=='image':
+                return True
+            if row.get('kind')=='CADLink':
+                return True
+            if (row.get('kind')=='RevitLink' and
+                    (not row.get('td') or cache_sources.reference_identity(row))):
+                return True
+        return False
 
     def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
         self.guard(target)
