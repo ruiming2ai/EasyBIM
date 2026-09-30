@@ -53,27 +53,32 @@ saved-cache normalization. The worker SaveAsCentral target is the final exported
 RVT itself, and the Links targets supplied to ReloadFrom are already their
 final packaged paths.
 
-## Package central rather than re-transmitted host
+## Package central repair base, then transmitted output
 
 The early e-transmit implementation saved a detached/preserved-workset copy as a
 new central before writing relative links. That state is useful because relative
 PDF/image paths in a workshared project have a stable central-file base.
 
-The separate worker now deliberately restores that behavior:
+The separate worker now deliberately restores the early repair order:
 
 1. open the task-owned stage RVT detached/preserve-worksets;
-2. save it as a **new package-owned central** at the exported host path;
-3. repath Revit/CAD/PDF/image references against package files;
+2. save it as a **new package-owned central** at the final exported host path;
+3. repath Revit/CAD/PDF/image references against final package files;
 4. save and close;
-5. do **not** mark that successfully worker-repaired host transmitted again.
+5. only after the Revit document is closed, mark that repaired package central
+   **Transmitted** using closed-file TransmissionData.
 
-There is no durable "saved detached document" state that is equivalent to an
-unsaved detached session while preserving worksets. A preserved-workset SaveAs
-becomes a workshared file. 2.1.23 keeps it as a package-owned central so relative
-linked images/PDFs continue to resolve. Recipients can open it normally or
-create a detached/local working copy as required.
+This implements the useful part of the proposed "non-detached first, repath,
+then detached/transmitted" workflow without ever relocating the user's working
+document. There is no durable "saved detached document" state equivalent to an
+unsaved detached session while preserving worksets: SaveAs with preserved
+worksets creates a workshared central. The Transmitted flag is therefore applied
+only after the package central has already established the correct relative
+reference base and all ReloadFrom operations have been saved.
 
-The package report records transmission status `PACKAGE_CENTRAL`.
+If closed-file transmitted marking is unavailable, the already repaired
+package-owned central is retained and reported as `PACKAGE_CENTRAL`; otherwise
+the final report records `TRANSMITTED`.
 
 ## One Revit worker for the whole batch
 
