@@ -366,10 +366,14 @@ def _record_suppressed(kind, args, result_code=None, note=''):
         time=time.time()))
 
 
-def _install_automation_handlers(uiapp):
-    """Auto-dismiss worker dialogs and roll transaction errors back without UI."""
-    if _AUTOMATION_INSTALLED[0] or uiapp is None:
+def _install_automation_handlers(application):
+    """Install noninteractive worker handlers on UIApplication or startup application."""
+    if _AUTOMATION_INSTALLED[0] or application is None:
         return
+    dialog_source=application if hasattr(application,'DialogBoxShowing') else None
+    failure_source=getattr(application,'Application',None)
+    if failure_source is None:
+        failure_source=getattr(application,'ControlledApplication',None)
     try:
         def on_dialog(sender, args):
             del sender
@@ -387,7 +391,10 @@ def _install_automation_handlers(uiapp):
             _record_suppressed('DialogBoxShowing', args, accepted,
                                '' if accepted is not None else 'OverrideResult was not accepted.')
         _DIALOG_HANDLER[0] = on_dialog
-        uiapp.DialogBoxShowing += _DIALOG_HANDLER[0]
+        if dialog_source is not None:
+            dialog_source.DialogBoxShowing += _DIALOG_HANDLER[0]
+        else:
+            raise RuntimeError('No DialogBoxShowing event source is available.')
     except Exception as exc:
         _SUPPRESSED.append(dict(kind='DialogHandlerInstall',message=f.text(exc),time=time.time()))
 
@@ -419,11 +426,21 @@ def _install_automation_handlers(uiapp):
             except Exception as exc:
                 _SUPPRESSED.append(dict(kind='FailuresProcessingHandler',message=f.text(exc),time=time.time()))
         _FAILURE_HANDLER[0] = on_failures
-        uiapp.Application.FailuresProcessing += _FAILURE_HANDLER[0]
+        if failure_source is not None:
+            failure_source.FailuresProcessing += _FAILURE_HANDLER[0]
+        else:
+            raise RuntimeError('No FailuresProcessing event source is available.')
     except Exception as exc:
         _SUPPRESSED.append(dict(kind='FailuresHandlerInstall',message=f.text(exc),time=time.time()))
 
     _AUTOMATION_INSTALLED[0] = True
+
+
+def install_startup_handlers(application):
+    if not is_worker_process():
+        return False
+    _install_automation_handlers(application)
+    return True
 
 
 def _worker_result(job, status, message='', processing_result=None, rows=None,
