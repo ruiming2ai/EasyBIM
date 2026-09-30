@@ -59,6 +59,11 @@ try:
 except Exception:
     my_ribbon = None
 
+try:
+    from easybim_etransmit import worker as etransmit_worker
+except Exception:
+    etransmit_worker = None
+
 
 #: Mirrors the live delegate and its event source across a pyRevit reload.
 HANDLER_ENVVAR = "EASYBIM_IDLING_HANDLER"
@@ -303,6 +308,12 @@ def _notify(message):
 
 
 def _run_consumers(sender):
+    # A disposable e-transmit repair process exists only to repair one package
+    # copy. Never let ordinary startup jobs, ribbon work or auto-update run
+    # there; they add delay and can reload the engine while the repair is active.
+    if etransmit_worker is not None and etransmit_worker.is_worker_process():
+        _guarded("eTransmitWorker", etransmit_worker.run_pending, sender)
+        return
     _guarded("StartupJobs", _run_startup_jobs, sender)
     _guarded("TempPhaseCloseRecovery", _run_temp_phase_close, sender)
     _guarded("MyRibbonApply", _run_my_ribbon_apply, sender)
