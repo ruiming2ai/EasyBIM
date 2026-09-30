@@ -771,12 +771,43 @@ class Backend(object):
                             if image is None:
                                 row['repath']='REMOVED_BY_CLEANUP'; continue
                             opts=self.image_options(row,True,target)
+                            try:
+                                valid=getattr(opts,'IsValid',None)
+                                if valid is not None and not bool(valid(doc)):
+                                    raise RuntimeError('Packaged image/PDF options are not valid for this document.')
+                            except TypeError:
+                                pass
                             tx.Start()
                             image.ReloadFrom(opts)
                             if row.get('loaded') is False: image.Unload()
                             if tx.Commit()!=self.DB.TransactionStatus.Committed:
                                 raise RuntimeError('Relative image reload not committed.')
-                            row['repath']='API_IMAGE_RELATIVE';needs_resave=True
+                            can_reload=getattr(image,'CanReload',None)
+                            if can_reload is not None and not bool(can_reload()):
+                                # A workshared relative image path is based on the
+                                # central location. If Revit cannot resolve the
+                                # just-written relative path, prefer a working
+                                # absolute packaged path over a broken "Not Found"
+                                # reference. This fallback is reported.
+                                opts_abs=self.image_options(row,False,target)
+                                tx_abs=self.DB.Transaction(doc,'e-transmit: absolute image fallback')
+                                try:
+                                    tx_abs.Start()
+                                    image.ReloadFrom(opts_abs)
+                                    if row.get('loaded') is False: image.Unload()
+                                    if tx_abs.Commit()!=self.DB.TransactionStatus.Committed:
+                                        raise RuntimeError('Absolute image fallback was not committed.')
+                                    row['repath']='API_IMAGE_ABSOLUTE_FALLBACK'
+                                    issues.append(issue('IMAGE_RELATIVE_FALLBACK_ABSOLUTE',row.get('source',''),
+                                                        'Revit could not resolve the package-relative image/PDF path; '
+                                                        'the package copy was saved with the absolute packaged file path.'))
+                                finally:
+                                    dispose(tx_abs);dispose(opts_abs)
+                            else:
+                                row['repath']='API_IMAGE_RELATIVE'
+                            row['saved_path']=f.text(getattr(image,'Path','') or '')
+                            row['saved_path_type']=f.text(getattr(image,'PathType','') or '')
+                            needs_resave=True
                         except f.Cancelled: raise
                         except Exception as exc:
                             if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
