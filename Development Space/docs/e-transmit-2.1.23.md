@@ -14,12 +14,21 @@ folder containing the RVT. Revit's API also allows an absolute local file path
 to be supplied to ImageTypeOptions while `useRelativePath=True`; Revit then
 stores the corresponding relative reference.
 
-2.1.23 therefore:
+Reviewing the first working e-transmit implementation also exposed a concrete
+regression: the early code first reloaded each linked PDF/image from its
+**absolute packaged path before SaveAs**, then reloaded it a second time as
+relative **after SaveAs** established the package central/project base. Later
+versions had dropped that first absolute preload.
 
-1. gives `ImageType.ReloadFrom` the exact absolute packaged PDF/image file;
-2. asks Revit itself to store the link relatively;
-3. calls `ImageType.CanReload()` immediately in the same open worker document;
-4. if Revit still cannot resolve that relative path, retries that one reference
+2.1.23 restores that two-stage sequence:
+
+1. before SaveAs, `ImageType.ReloadFrom` loads the exact absolute packaged
+   PDF/image, proving the copied file itself is usable;
+2. SaveAs establishes the package-owned central/project location;
+3. after SaveAs, EasyBIM gives Revit that same exact absolute file while asking
+   `ImageTypeOptions(useRelativePath=True)` to store the reference relatively;
+4. `ImageType.CanReload()` is checked immediately in the same open worker document;
+5. if Revit still cannot resolve that relative path, retries that one reference
    using the absolute packaged path and reports
    `IMAGE_RELATIVE_FALLBACK_ABSOLUTE` instead of leaving a broken Not Found
    reference.
