@@ -107,6 +107,7 @@ class Registry(object):
         self.cache_roots=cache_roots
         self._cache_store=None
         self._authorized_snapshots=set()
+        self._revit_worker=None
         self.scanner=Backend(DB,application,recovery_root,cancelled)
     def get(self,key):return self.entries.get(key)
     def owns(self,key):return key in self.entries
@@ -482,7 +483,19 @@ class Registry(object):
             if item['model_guid']==model_guid:matches.append(item)
         if len(matches)>1:raise SourceError('CLOUD_IDENTITY_AMBIGUOUS','The chosen published graph contains multiple items for the loaded cloud model identity.')
         return matches[0]['source'] if matches else None
+    def worker_session(self, pulse=None):
+        from . import worker
+        if self._revit_worker is None:
+            self._revit_worker=worker.WorkerSession(
+                self.app,cancelled=self.cancelled,pulse=pulse)
+        elif pulse is not None:
+            self._revit_worker.pulse=pulse
+        return self._revit_worker
+
     def close(self):
+        if self._revit_worker is not None:
+            try:self._revit_worker.close()
+            finally:self._revit_worker=None
         self._documents[:]=[];self.entries.clear();self.graphs.clear();self.clients.clear();self._authorized_snapshots.clear()
         if self._temp:f.remove_tree_retry(self._temp);self._temp=None
 
@@ -519,11 +532,8 @@ class SessionBackend(Backend):
         """
         source=f.text(options.get('_host_source','') or '')
         if self._requires_separate_worker(source,options):
-            from . import worker
-            return worker.run_separate_revit(
-                self.app,stage,target,rows,options,
-                cancelled=self.cancelled,
-                pulse=options.get('_worker_pulse'))
+            return self.registry.worker_session(
+                options.get('_worker_pulse')).run(stage,target,rows,options)
         return Backend.finish(self,stage,target,rows,options)
 
     def is_virtual_source(self,source):return self.registry.owns(source)
