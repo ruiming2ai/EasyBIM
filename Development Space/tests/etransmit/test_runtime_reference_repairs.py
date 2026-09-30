@@ -192,7 +192,7 @@ class EngineRepairs(unittest.TestCase):
         self.assertTrue(result['files'][0].get('worker_repaired'))
         self.assertEqual(result['files'][0].get('model_verification'),'WORKER_SAVE_COMPLETED')
 
-    def test_worker_package_central_is_not_marked_transmitted_or_reopened(self):
+    def test_worker_package_central_is_marked_transmitted_only_after_repair_and_not_reopened(self):
         root=tempfile.mkdtemp(prefix='ET_pkgcentral_');self.addCleanup(shutil.rmtree,root)
         host=os.path.join(root,'Host.rvt')
         with open(host,'wb') as out:out.write(b'host')
@@ -208,9 +208,10 @@ class EngineRepairs(unittest.TestCase):
             def verify_package(self,*args):
                 calls.append('verify');return []
         result=e.transmit([host],os.path.join(root,'out'),B())
-        self.assertEqual(calls,['finish'])
+        self.assertEqual(calls,['finish','transmit'])
         row=result['files'][0]
-        self.assertEqual(row.get('transmission_status'),'PACKAGE_CENTRAL')
+        self.assertEqual(row.get('transmission_status'),'TRANSMITTED')
+        self.assertTrue(row.get('package_central_repair_base'))
         self.assertEqual(row.get('model_verification'),'WORKER_SAVE_COMPLETED')
 
     def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
