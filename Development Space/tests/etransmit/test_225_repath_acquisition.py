@@ -39,7 +39,7 @@ class RecordingRevitBoundary(session.SessionBackend):
         self.finalizations.append(dict(target=target, rows=copy.deepcopy(rows),
                                        options=dict(options)))
         shutil.copyfile(stage, target)
-        return dict(issues=[], verified_in_process=False)
+        return dict(issues=[], verified_in_process=False, worker_repaired=True)
 
 
 class ReportRepathAcquisition(unittest.TestCase):
@@ -129,7 +129,7 @@ class ReportRepathAcquisition(unittest.TestCase):
         self.assertEqual(len(backend.finalizations), 1, repr(result['issues']))
         call = backend.finalizations[0]
         self.assertTrue(call['options']['repath'])
-        self.assertTrue(call['options']['verify_in_process'])
+        self.assertFalse(call['options']['verify_in_process'])
         self.assertEqual(len(call['rows']), 7)
         for row in call['rows']:
             self.assertTrue(os.path.isfile(row['target']))
@@ -143,6 +143,9 @@ class ReportRepathAcquisition(unittest.TestCase):
         self.assertEqual(link['source_context']['cache_metadata']['revision_check'],
                          'SAVED_CACHE_DIFFERS_FROM_LOADED')
         self.assertFalse(any(i['code'] == 'HOST_PRESERVED_WITHOUT_LINK_REPATH' for i in result['issues']))
+        host=next(r for r in result['files'] if r.get('is_primary_host'))
+        self.assertEqual(host.get('model_verification'),'WORKER_SAVE_COMPLETED')
+        self.assertTrue(host.get('worker_repaired'))
         self.assertEqual(dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in self.sources), self.before)
 
     def test_acc_live_report_pair_reaches_repath_with_all_dependencies(self):
