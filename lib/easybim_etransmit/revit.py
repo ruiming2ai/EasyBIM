@@ -662,7 +662,11 @@ class Backend(object):
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
         external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
                   and (not r.get('td') or cache_sources.reference_identity(r))]
-        cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink' and not r.get('repath')]
+        # Revit's CADLinkType.LoadFrom(String) supports linked DWG. Other
+        # CAD formats remain on their TransmissionData/API-specific path.
+        cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink'
+             and os.path.splitext(r.get('target',''))[1].lower()=='.dwg'
+             and not r.get('repath')]
         needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external or cad))
         if needs_document and reference_target != target:
             raise ValueError('Direct layout is only valid for metadata-only host processing.')
