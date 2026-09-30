@@ -37,6 +37,72 @@ class EngineSingleOpen(unittest.TestCase):
     def test_acc_host_finalizes_after_delivery_and_skips_second_verification_open(self):
         b=EngineFinalizationBackend(self.host,self.link,self.out);opts=f.defaults();opts['repath']=True;result=engine.transmit([self.host],self.out,b,opts)
         self.assertEqual([c[0] for c in b.calls],['finish']);self.assertFalse(b.calls[0][2]);self.assertTrue(b.assert_final);host=next(r for r in result['files'] if r.get('is_primary_host'));self.assertEqual(host['model_verification'],'WORKER_SAVE_COMPLETED');self.assertTrue(host.get('worker_repaired'));self.assertFalse(host.get('verified_in_process'))
+
+class ImageFinalizationBackend(object):
+    def __init__(self,host,pdf,root):
+        self.host=host;self.pdf=pdf;self.root=root;self.calls=[];self.staging_root=None
+    def set_staging_root(self,p):self.staging_root=p
+    def source_relative(self,s):return os.path.basename(s)
+    def defer_file_copy(self,*a):return True
+    def can_deliver_direct(self,*a):return False
+    def is_virtual_source(self,s):return False
+    def resolve_acquired_source(self,s,o=''):return s
+    def inventory_before_copy(self,source,opts):
+        if source!=self.host:return None
+        row=dict(id='55',element_id='55',kind='Image',source=self.pdf,
+                 loaded=True,special='image',page=1,resolution=300)
+        return dict(references=[row],issues=[],version='2025',is_workshared=True,
+                    inspection_status='LIVE_DOCUMENT_REFERENCE_INVENTORY')
+    def acquire_file(self,source,target,owner='',cancelled=None,pulse=None):
+        return f.copy_file(source,target,cancelled,pulse)
+    def acquired_identity(self,source,meta):return f.canonical(source)
+    def requires_final_host_open(self,record,rows,options):
+        return revit.Backend.requires_final_host_open(self,record,rows,options)
+    def finish(self,stage,target,rows,options):
+        self.calls.append(dict(stage=stage,target=target,rows=[dict(r) for r in rows],
+                               options=dict(options)))
+        shutil.copyfile(stage,target)
+        for row in rows:row['repath']='API_IMAGE_RELATIVE'
+        return dict(issues=[],verified_in_process=False,worker_repaired=True,
+                    package_central=True)
+    mark_transmitted_rows_supported=True
+    def mark_transmitted_package(self,*args):
+        self.calls.append(dict(transmit=True))
+        return True
+    def verify_package(self,*args):
+        self.fail_verify=True;return []
+    def source_context(self,*a):return {}
+
+
+class ImageFinalLocation(unittest.TestCase):
+    def setUp(self):
+        self.root=tempfile.mkdtemp(prefix='ET219_pdf_')
+        self.addCleanup(shutil.rmtree,self.root)
+        source=os.path.join(self.root,'src');os.makedirs(source)
+        self.host=os.path.join(source,'Host.rvt')
+        self.pdf=os.path.join(source,'Details.pdf')
+        with open(self.host,'wb') as out:out.write(compound(suffix='host'))
+        with open(self.pdf,'wb') as out:out.write(b'pdf')
+        self.out=os.path.join(self.root,'out')
+
+    def test_image_host_is_repaired_only_after_delivery_at_final_package_path(self):
+        backend=ImageFinalizationBackend(self.host,self.pdf,self.out)
+        opts=f.defaults();opts['repath']=True
+        result=engine.transmit([self.host],self.out,backend,opts)
+        repair_calls=[c for c in backend.calls if not c.get('transmit')]
+        self.assertEqual(len(repair_calls),1,repr(result['issues']))
+        call=repair_calls[0]
+        self.assertEqual(f.canonical(call['target']),
+                         f.canonical(os.path.join(self.out,'Host.rvt')))
+        self.assertTrue(f.within(call['rows'][0]['target'],self.out))
+        self.assertNotEqual(f.canonical(call['stage']),f.canonical(call['target']))
+        host=next(r for r in result['files'] if r.get('is_primary_host'))
+        self.assertEqual(host.get('model_verification'),'WORKER_SAVE_COMPLETED')
+        self.assertEqual(host.get('transmission_status'),'TRANSMITTED')
+        self.assertTrue(host.get('package_central_repair_base'))
+        self.assertFalse(getattr(backend,'fail_verify',False))
+
+
 class RevitSingleOpen(unittest.TestCase):
     def setUp(self):
         self.root=tempfile.mkdtemp(prefix='ET219_revit_');self.addCleanup(shutil.rmtree,self.root)

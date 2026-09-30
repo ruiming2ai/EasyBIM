@@ -53,6 +53,12 @@ class APIBoundary(unittest.TestCase):
         self.backend.apply_metadata(self.stage,self.target,rows)
         self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',False))
         self.assertTrue(self.td.IsTransmitted); self.assertTrue(self.td.disposed)
+    def test_package_central_metadata_does_not_mark_host_transmitted(self):
+        rows=[dict(id='100',target=str(self.root/'Consumed'/'a.rvt'),loaded=True)]
+        self.backend.apply_metadata(self.stage,self.target,rows,mark_transmitted=False)
+        self.assertFalse(self.td.IsTransmitted)
+        self.assertEqual(len(self.td.writes),1)
+
     def test_cad_transmission_reference_repaths_even_without_live_loaded_flag(self):
         rows=[dict(id='100',element_id='100',kind='CADLink',
                    target=str(self.root/'CAD'/'site.dwg'))]

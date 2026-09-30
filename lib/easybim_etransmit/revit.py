@@ -69,10 +69,31 @@ class Backend(object):
                         (not r.get('td') or cache_sources.reference_identity(r))) for r in rows)
 
     def requires_final_host_open(self, record, rows, options):
-        """True cloud/external Revit links need one final document API conversion."""
-        if not record.get('is_primary_host') or not options.get('repath'): return False
-        return any(r.get('target') and r.get('kind')=='RevitLink' and
-                   (not r.get('td') or cache_sources.reference_identity(r)) for r in rows)
+        """Defer document-API repairs until the host is at its FINAL package path.
+
+        A workshared ImageType relative path is based on the central location.
+        Saving/relinking in a temporary preparation folder and moving the RVT
+        afterward can therefore leave linked PDFs resolving against the removed
+        temporary central. Any operation that opens/saves the host is finalized
+        only after delivery.
+        """
+        if not record.get('is_primary_host'):
+            return False
+        if options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache'):
+            return True
+        if not options.get('repath'):
+            return False
+        for row in rows:
+            if not row.get('target'):
+                continue
+            if row.get('special')=='image':
+                return True
+            if row.get('kind')=='CADLink':
+                return True
+            if (row.get('kind')=='RevitLink' and
+                    (not row.get('td') or cache_sources.reference_identity(row))):
+                return True
+        return False
 
     def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
         self.guard(target)
@@ -462,10 +483,12 @@ class Backend(object):
 
     def image_options(self, row, relative, model_path=None):
         self.guard(row['target'])
+        # Always give Revit the exact existing package file to read. When
+        # useRelativePath=True Revit itself stores the reference relative to the
+        # project/central model location. Manually passing "Links\\PDF\\..."
+        # can be resolved against the wrong workshared central and produce a
+        # saved relative path that immediately reports Not Found.
         path=row['target']
-        if relative and model_path:
-            pm=ntpath if f.is_windows(model_path) else os.path
-            path=relative_path(path,pm.dirname(model_path))
         opts=self.DB.ImageTypeOptions(path,relative,self.DB.ImageTypeSource.Link)
         try:
             if row['target'].lower().endswith('.pdf'): opts.PageNumber=row['page']
@@ -557,7 +580,7 @@ class Backend(object):
             dispose(ref)
 
 
-    def apply_metadata(self, path, target, rows, relative=True):
+    def apply_metadata(self, path, target, rows, relative=True, mark_transmitted=True):
         self.guard(path); self.guard(target)
         for row in rows:
             if row.get('target'): self.guard(row['target'])
@@ -580,7 +603,7 @@ class Backend(object):
                 if row.get('kind')=='RevitLink' and package_load_state(row) is None:
                     row['package_loaded']=bool(desired_load)
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
-            td.IsTransmitted=True
+            td.IsTransmitted=bool(mark_transmitted)
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
             return True
         finally: dispose(td)
@@ -665,7 +688,11 @@ class Backend(object):
             if row.get('target'): self.guard(row['target'])
         reference_target=options.get('reference_target') or target
         self.guard(reference_target)
-        transmitted=self.apply_metadata(stage,reference_target,rows) if options.get('repath') else False
+        package_central=bool(options.get('package_central'))
+        transmitted=self.apply_metadata(
+            stage,reference_target,rows,
+            relative=not package_central,
+            mark_transmitted=not package_central) if options.get('repath') else False
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
         external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
                   and (not r.get('td') or cache_sources.reference_identity(r))]
@@ -674,7 +701,10 @@ class Backend(object):
         cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink'
              and os.path.splitext(r.get('target',''))[1].lower()=='.dwg'
              and not r.get('repath')]
-        needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external or cad))
+        needs_document=(options.get('cleanup') or options.get('upgrade') or
+                        options.get('normalize_saved_cache') or
+                        (package_central and info.get('workshared')) or
+                        (options.get('repath') and (special or external or cad)))
         if needs_document and reference_target != target:
             raise ValueError('Direct layout is only valid for metadata-only host processing.')
         if needs_document and info['version']!=f.text(self.app.VersionNumber) and not options.get('upgrade'):
@@ -691,7 +721,9 @@ class Backend(object):
         else:
             doc=None
             try:
-                if options.get('repath'): self.apply_metadata(stage,target,rows,relative=False)
+                if options.get('repath'):
+                    self.apply_metadata(stage,target,rows,relative=False,
+                                        mark_transmitted=not package_central)
                 doc=self.open_copy(stage,bool(options.get('cleanup') and options.get('discard_worksets')))
                 if options.get('repath'):
                     from System import Int64, Int32
@@ -716,6 +748,38 @@ class Backend(object):
                         if package_load_state(row) is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
                     issues.extend(self.repath_cad_links(doc,cad))
+                    # Restore the early working image/PDF sequence: load every
+                    # linked image from its exact packaged ABSOLUTE file before
+                    # SaveAs establishes the package project/central base. The
+                    # second pass below then asks Revit to persist it relatively.
+                    for row in special:
+                        f.check(self.cancelled)
+                        tx=self.DB.Transaction(doc,'e-transmit: preload package image')
+                        opts_image=None
+                        try:
+                            number=int(row['element_id'])
+                            ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                            image=doc.GetElement(ident)
+                            if image is None:
+                                row['repath']='REMOVED_BY_CLEANUP'; continue
+                            opts_image=self.image_options(row,False,target)
+                            valid=getattr(opts_image,'IsValid',None)
+                            if valid is not None and not bool(valid(doc)):
+                                raise RuntimeError('Packaged image/PDF cannot be loaded from the copied file.')
+                            tx.Start()
+                            image.ReloadFrom(opts_image)
+                            if row.get('loaded') is False: image.Unload()
+                            if tx.Commit()!=self.DB.TransactionStatus.Committed:
+                                raise RuntimeError('Absolute packaged image preload was not committed.')
+                            row['repath']='API_IMAGE_ABSOLUTE'
+                        except f.Cancelled:
+                            raise
+                        except Exception as exc:
+                            if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
+                            row['repath']='FAILED'
+                            issues.append(issue('IMAGE_ABSOLUTE_PRELOAD_FAILED',row.get('source',''),exc,'error'))
+                        finally:
+                            dispose(tx);dispose(opts_image)
                 if options.get('cleanup'):
                     from .cleanup import run
                     run(doc,self.DB,options,self.cancelled)
@@ -749,10 +813,12 @@ class Backend(object):
                             row['repath']='API_LOCAL_LINK_RELATIVE';needs_resave=True
                         finally:dispose(result);dispose(resource);dispose(model_path)
                 if options.get('repath') and special:
-                    # SaveAs has established the correct final base. Revit may
-                    # accept a short relative path when the absolute dependency
-                    # path exceeds MAX_PATH. Keep each reload isolated.
+                    # SaveAs has established the final package project/central
+                    # base. Convert the already-working absolute package links
+                    # to relative references one by one.
                     for row in special:
+                        if row.get('repath')=='FAILED':
+                            continue
                         f.check(self.cancelled)
                         tx=self.DB.Transaction(doc,'e-transmit: relative image path')
                         opts=None
@@ -763,12 +829,43 @@ class Backend(object):
                             if image is None:
                                 row['repath']='REMOVED_BY_CLEANUP'; continue
                             opts=self.image_options(row,True,target)
+                            try:
+                                valid=getattr(opts,'IsValid',None)
+                                if valid is not None and not bool(valid(doc)):
+                                    raise RuntimeError('Packaged image/PDF options are not valid for this document.')
+                            except TypeError:
+                                pass
                             tx.Start()
                             image.ReloadFrom(opts)
                             if row.get('loaded') is False: image.Unload()
                             if tx.Commit()!=self.DB.TransactionStatus.Committed:
                                 raise RuntimeError('Relative image reload not committed.')
-                            row['repath']='API_IMAGE_RELATIVE';needs_resave=True
+                            can_reload=getattr(image,'CanReload',None)
+                            if can_reload is not None and not bool(can_reload()):
+                                # A workshared relative image path is based on the
+                                # central location. If Revit cannot resolve the
+                                # just-written relative path, prefer a working
+                                # absolute packaged path over a broken "Not Found"
+                                # reference. This fallback is reported.
+                                opts_abs=self.image_options(row,False,target)
+                                tx_abs=self.DB.Transaction(doc,'e-transmit: absolute image fallback')
+                                try:
+                                    tx_abs.Start()
+                                    image.ReloadFrom(opts_abs)
+                                    if row.get('loaded') is False: image.Unload()
+                                    if tx_abs.Commit()!=self.DB.TransactionStatus.Committed:
+                                        raise RuntimeError('Absolute image fallback was not committed.')
+                                    row['repath']='API_IMAGE_ABSOLUTE_FALLBACK'
+                                    issues.append(issue('IMAGE_RELATIVE_FALLBACK_ABSOLUTE',row.get('source',''),
+                                                        'Revit could not resolve the package-relative image/PDF path; '
+                                                        'the package copy was saved with the absolute packaged file path.'))
+                                finally:
+                                    dispose(tx_abs);dispose(opts_abs)
+                            else:
+                                row['repath']='API_IMAGE_RELATIVE'
+                            row['saved_path']=f.text(getattr(image,'Path','') or '')
+                            row['saved_path_type']=f.text(getattr(image,'PathType','') or '')
+                            needs_resave=True
                         except f.Cancelled: raise
                         except Exception as exc:
                             if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
@@ -786,7 +883,9 @@ class Backend(object):
             finally:
                 if doc is not None:
                     if not performance.call('repath','revit_close',target,doc.Close,False): raise RuntimeError('Temporary output model could not be closed.')
-            if options.get('repath'): self.apply_metadata(target,target,rows)
+            if options.get('repath'):
+                self.apply_metadata(target,target,rows,
+                                    mark_transmitted=not package_central)
         if options.get('repath'):
             for row in rows:
                 if row.get('target') and row.get('special')=='plugin_spreadsheet':

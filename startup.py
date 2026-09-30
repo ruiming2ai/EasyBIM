@@ -2,6 +2,21 @@
 """EasyBIM extension startup automation."""
 
 
+# A disposable e-transmit worker must be noninteractive from the earliest point
+# pyRevit loads. Register dialog/failure handlers before any ordinary EasyBIM
+# startup work can trigger Revit UI.
+try:
+    from easybim_etransmit import worker as _etransmit_worker
+    if _etransmit_worker.is_worker_process():
+        try:
+            _worker_app = __revit__
+        except NameError:
+            _worker_app = None
+        _etransmit_worker.install_startup_handlers(_worker_app)
+except Exception:
+    pass
+
+
 try:
     from easybim import coordination_review_passive
 
