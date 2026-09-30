@@ -62,6 +62,7 @@ jobs:
           path: |
             lib/easybim_etransmit/
             lib/easybim/etransmit_progress_panel.py
+            lib/easybim/idling.py
             lib/easybim/ui/etransmit_progress_panel.xaml
             startup.py
             hooks/doc-opening.py
