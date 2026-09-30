@@ -51,7 +51,7 @@ class ImageFinalizationBackend(object):
         if source!=self.host:return None
         row=dict(id='55',element_id='55',kind='Image',source=self.pdf,
                  loaded=True,special='image',page=1,resolution=300)
-        return dict(references=[row],issues=[],version='2025',
+        return dict(references=[row],issues=[],version='2025',is_workshared=True,
                     inspection_status='LIVE_DOCUMENT_REFERENCE_INVENTORY')
     def acquire_file(self,source,target,owner='',cancelled=None,pulse=None):
         return f.copy_file(source,target,cancelled,pulse)
