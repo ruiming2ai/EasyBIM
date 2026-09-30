@@ -376,11 +376,13 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
         for record in reversed(result['files']):
             if not record.get('finalize_after_delivery') or record.get('status')!='COPIED': continue
             rows=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source']) and not r.get('skip_repath')]
-            if any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
+            if (opts.get('repath') and
+                    any((r.get('kind')=='RevitLink' or r.get('category')=='revit')
+                        and not r.get('target') for r in rows)):
                 record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
                 record['model_verification']='DEFERRED'
                 add_issue('MODEL_VERIFICATION_DEFERRED',record['source'],
-                          'A linked model was not delivered; finalization was deferred to prevent source/cloud fallback.','error')
+                          'A linked model was not delivered; link repath finalization was deferred to prevent source/cloud fallback.','error')
                 continue
             stage=f.temporary_path(work); backup=f.temporary_path(work)
             try:
