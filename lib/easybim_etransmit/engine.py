@@ -429,9 +429,18 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         if os.path.isfile(path):os.remove(path)
                     except Exception:pass
 
-        # Make final primary workshared hosts behave like eTransmit files without
-        # opening/saving them. The Revit backend preserves existing file-based
-        # reference path/load intent while setting TransmissionData.IsTransmitted.
+        # A worker SaveAsCentral is already a final package-owned workshared
+        # state. Record it independently from the optional closed-file
+        # TransmissionData transmitter below.
+        for record in result['files']:
+            if (record.get('status')=='COPIED' and record.get('is_primary_host')
+                    and record.get('is_workshared') and record.get('package_central')):
+                record['transmission_status']='PACKAGE_CENTRAL'
+
+        # Make remaining primary workshared hosts behave like eTransmit files
+        # without opening/saving them. The Revit backend preserves existing
+        # file-based reference path/load intent while setting
+        # TransmissionData.IsTransmitted.
         transmitter=getattr(backend,'mark_transmitted_package',None)
         if transmitter:
             for record in result['files']:
