@@ -448,13 +448,6 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         or not record.get('is_workshared') or not record.get('target')
                         or not record['target'].lower().endswith('.rvt')):
                     continue
-                if record.get('package_central') or record.get('worker_repaired'):
-                    # Worker SaveAsCentral established a new package-owned central.
-                    # Keep that state: workshared relative image/PDF paths resolve
-                    # against the central location. Marking it transmitted again
-                    # can remove the stable package-central base.
-                    record['transmission_status']='PACKAGE_CENTRAL'
-                    continue
                 try:
                     model_rows=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])]
                     if bool(getattr(backend,'mark_transmitted_rows_supported',False)):
@@ -464,6 +457,8 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         state=performance.call('metadata','mark_host_transmitted',record['source'],
                                                transmitter,record['target'])
                     if state is True:
+                        if record.get('package_central'):
+                            record['package_central_repair_base']=True
                         record['transmission_status']='TRANSMITTED'
                         record['pre_transmission_sha256']=record.get('packaged_sha256') or record.get('sha256')
                         record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
@@ -950,8 +945,7 @@ def _write_reports_at(result, root):
         workshared=bool(record.get('is_workshared') or context.get('is_workshared'))
         if workshared:
             transmitted=record.get('transmission_status')=='TRANSMITTED'
-            package_central=bool(record.get('package_central') or
-                                 record.get('transmission_status')=='PACKAGE_CENTRAL')
+            package_central=bool(record.get('transmission_status')=='PACKAGE_CENTRAL')
             record['opening_guidance']=('OPEN_PACKAGE_CENTRAL_OR_DETACH_COPY' if package_central
                                         else 'OPEN_AS_TRANSMITTED_MODEL' if transmitted
                                         else 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
@@ -996,8 +990,10 @@ def _write_reports_at(result, root):
             lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
         if record.get('worker_repaired'):
             lines.append('Separate Revit repair worker completed LoadFrom/ReloadFrom and saved the package copy. No verification reopen was performed.')
-            if record.get('package_central'):
-                lines.append('Worker output state: PACKAGE_CENTRAL -- a new package-owned central was saved before relative PDF/image paths were written.')
+            if record.get('package_central_repair_base'):
+                lines.append('Worker repair base: a package-owned central was saved at the final location before relative PDF/image paths were written; the closed host was then marked transmitted.')
+            elif record.get('package_central'):
+                lines.append('Worker output state: PACKAGE_CENTRAL -- marking the closed package host transmitted was unavailable, so the package-owned central was retained.')
             if record.get('worker_session_reused'):
                 lines.append('Worker process: reused the existing batch Revit worker session.')
             if record.get('suppressed_dialogs'):
