@@ -502,6 +502,30 @@ class SessionBackend(Backend):
             raise SourceError('ORIGINAL_DOCUMENT_GUARD','A linked working document cannot be processed as an export copy.')
         return document
 
+    def _requires_separate_worker(self, source, options):
+        entry=self.registry.get(source) if source else None
+        if not entry or entry.get('mode')!='LIVE_DOCUMENT':
+            return False
+        return bool(options.get('repath') or options.get('cleanup') or
+                    options.get('upgrade') or options.get('normalize_saved_cache'))
+
+    def finish(self, stage, target, rows, options):
+        """Repair live-host package copies in a second Revit process.
+
+        Opening a detached/local/cloud copy of a workshared model in the same
+        Revit process as its working source can raise
+        CannotOpenBothCentralAndLocalException. The worker process has no source
+        document open, so it can perform LoadFrom/ReloadFrom and SaveAs safely.
+        """
+        source=f.text(options.get('_host_source','') or '')
+        if self._requires_separate_worker(source,options):
+            from . import worker
+            return worker.run_separate_revit(
+                self.app,stage,target,rows,options,
+                cancelled=self.cancelled,
+                pulse=options.get('_worker_pulse'))
+        return Backend.finish(self,stage,target,rows,options)
+
     def is_virtual_source(self,source):return self.registry.owns(source)
     def source_context(self,source):return self.registry.public(source) if self.registry.owns(source) else {}
     def source_relative(self,source):return self.registry.relative(source) if self.registry.owns(source) else f.mirror_path(source)

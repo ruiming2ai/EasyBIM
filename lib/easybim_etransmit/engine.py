@@ -387,16 +387,21 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 notify('FINALIZING ACC LINKS | '+record['source'],0,1)
                 f.copy_file(record['target'],backup,delivery_cancel)
                 f.copy_file(record['target'],stage,delivery_cancel)
-                final_options=dict(opts);final_options['verify_in_process']=True
+                final_options=dict(opts);final_options['verify_in_process']=False
                 final_options['reference_target']=record['target']
                 final_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
-                raw=performance.call('verification','finalize_and_verify_host',record['source'],
+                final_options['_host_source']=record['source']
+                final_options['_worker_pulse']=notify
+                raw=performance.call('repath','finalize_host_in_separate_revit',record['source'],
                                      backend.finish,stage,record['target'],rows,final_options)
                 problems,verified=normalize_processing_result(raw)
+                worker_repaired=bool(isinstance(raw,dict) and raw.get('worker_repaired'))
                 result['issues'].extend(problems)
                 record['verified_in_process']=verified
+                record['worker_repaired']=worker_repaired
                 record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
                 record['model_verification']=('FAILED' if any(p.get('severity')=='error' for p in problems)
+                                               else 'WORKER_SAVE_COMPLETED' if worker_repaired
                                                else 'OPENED_AND_REFERENCES_CHECKED' if verified else 'DEFERRED')
                 record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
                 record['verified_signature']=f.signature(record['target'])
@@ -457,6 +462,11 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
             if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
             if record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE' and not record.get('is_primary_host'):
                 record['model_verification']='FILE_INTEGRITY_ONLY'; continue
+            if record.get('worker_repaired'):
+                # The repair worker already performed LoadFrom/ReloadFrom and a
+                # successful Save/Close in a separate Revit process. Do not
+                # reopen the package merely to compare paths.
+                record['model_verification']='WORKER_SAVE_COMPLETED'; continue
             if record.get('verified_in_process') and record.get('transmission_status')!='TRANSMITTED':
                 record['model_verification']='OPENED_AND_REFERENCES_CHECKED'; continue
             if not opts.get('repath') or not verifier:
@@ -797,12 +807,16 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     if direct_delivery[0]:
                         processing_options['reference_target']=f.destination(root,record['relative'])
                     processing_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
+                    processing_options['_host_source']=record['source']
+                    processing_options['_worker_pulse']=notify
                     f.validate_destination_path(target)
                     raw_processing=performance.call('repath','process_host',record['source'],
                         backend.finish,stage, target, model_edges, processing_options)
                     processing_issues,verified_in_process=normalize_processing_result(raw_processing)
+                    worker_repaired=bool(isinstance(raw_processing,dict) and raw_processing.get('worker_repaired'))
                     result['issues'].extend(processing_issues)
                     record['verified_in_process']=verified_in_process
+                    record['worker_repaired']=worker_repaired
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
                     record['verified_signature'] = f.signature(target)
@@ -928,7 +942,8 @@ def _write_reports_at(result, root):
                  counts['revit_links_requested'],counts['revit_links_copied'],counts['revit_links_verified']),
              'Revit link discovery: '+result['link_discovery_status'],
              'File structure: '+layout.mode(result['options'].get('file_structure')),
-             'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
+             'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')),
+             'Host RVTs repaired and saved by separate Revit worker: {0}'.format(sum(1 for r in result['files'] if r.get('worker_repaired'))), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for record in result['files']:
         if record.get('is_primary_host') and record.get('status')=='COPIED':
@@ -945,6 +960,8 @@ def _write_reports_at(result, root):
     for record in result['files']:
         if record.get('recovery_path'):
             lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
+        if record.get('worker_repaired'):
+            lines.append('Separate Revit repair worker completed LoadFrom/ReloadFrom and saved the package copy. No verification reopen was performed.')
         context=record.get('source_context',{})
         if context:
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))

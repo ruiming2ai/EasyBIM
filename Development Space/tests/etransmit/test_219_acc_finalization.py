@@ -25,7 +25,7 @@ class EngineFinalizationBackend(object):
         self.calls.append(('finish',target,options.get('verify_in_process',False)));self.assert_final=target==os.path.join(self.root,'Host.rvt');shutil.copyfile(stage,target)
         with open(target,'ab') as out:out.write(b'finalized')
         for row in rows:row['verification']='PATH_AND_LOAD_CHECKED';row['repath']='API_LOCAL_LINK_RELATIVE'
-        return dict(issues=[],verified_in_process=True)
+        return dict(issues=[],verified_in_process=False,worker_repaired=True)
     def verify_package(self,target,rows,options):self.calls.append(('verify',target));return []
     def source_context(self,*a):return {}
 class EngineSingleOpen(unittest.TestCase):
@@ -36,7 +36,7 @@ class EngineSingleOpen(unittest.TestCase):
         self.out=os.path.join(self.root,'out')
     def test_acc_host_finalizes_after_delivery_and_skips_second_verification_open(self):
         b=EngineFinalizationBackend(self.host,self.link,self.out);opts=f.defaults();opts['repath']=True;result=engine.transmit([self.host],self.out,b,opts)
-        self.assertEqual([c[0] for c in b.calls],['finish']);self.assertTrue(b.calls[0][2]);self.assertTrue(b.assert_final);host=next(r for r in result['files'] if r.get('is_primary_host'));self.assertEqual(host['model_verification'],'OPENED_AND_REFERENCES_CHECKED');self.assertTrue(host.get('verified_in_process'))
+        self.assertEqual([c[0] for c in b.calls],['finish']);self.assertFalse(b.calls[0][2]);self.assertTrue(b.assert_final);host=next(r for r in result['files'] if r.get('is_primary_host'));self.assertEqual(host['model_verification'],'WORKER_SAVE_COMPLETED');self.assertTrue(host.get('worker_repaired'));self.assertFalse(host.get('verified_in_process'))
 class RevitSingleOpen(unittest.TestCase):
     def setUp(self):
         self.root=tempfile.mkdtemp(prefix='ET219_revit_');self.addCleanup(shutil.rmtree,self.root)
