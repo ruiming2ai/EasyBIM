@@ -942,7 +942,8 @@ def _write_reports_at(result, root):
                  counts['revit_links_requested'],counts['revit_links_copied'],counts['revit_links_verified']),
              'Revit link discovery: '+result['link_discovery_status'],
              'File structure: '+layout.mode(result['options'].get('file_structure')),
-             'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
+             'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')),
+             'Host RVTs repaired and saved by separate Revit worker: {0}'.format(sum(1 for r in result['files'] if r.get('worker_repaired'))), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for record in result['files']:
         if record.get('is_primary_host') and record.get('status')=='COPIED':
@@ -959,6 +960,8 @@ def _write_reports_at(result, root):
     for record in result['files']:
         if record.get('recovery_path'):
             lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
+        if record.get('worker_repaired'):
+            lines.append('Separate Revit repair worker completed LoadFrom/ReloadFrom and saved the package copy. No verification reopen was performed.')
         context=record.get('source_context',{})
         if context:
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
