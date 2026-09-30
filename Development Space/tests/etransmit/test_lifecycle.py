@@ -54,8 +54,8 @@ class Lifecycle(unittest.TestCase):
         with patch.dict(sys.modules,{'System':NS(Int32=int,Int64=int)}):
             issues=self.backend.finish(self.stage,self.target,[self.row],f.defaults())
         self.assertEqual(self.closed,[False]);self.assertEqual(self.saved,[self.target,self.target])
-        self.assertEqual([x['Relative'] for x in self.reloads],[True])
-        self.assertEqual(self.reloads[0]['Path'],'details.pdf')
+        self.assertEqual([x['Relative'] for x in self.reloads],[False,True])
+        self.assertEqual([x['Path'] for x in self.reloads],[self.image_path,self.image_path])
         self.assertTrue(all(x['Resolution']==240 and x['PageNumber']==3 for x in self.reloads))
         self.assertEqual(self.row['repath'],'API_IMAGE_RELATIVE');self.assertEqual(issues,[])
     def test_one_image_failure_does_not_roll_back_other_image_repaths(self):
@@ -67,8 +67,28 @@ class Lifecycle(unittest.TestCase):
             issues=self.backend.finish(self.stage,self.target,[bad,self.row],f.defaults())
         self.assertEqual(self.row['repath'],'API_IMAGE_RELATIVE')
         self.assertEqual(bad['repath'],'FAILED')
-        self.assertEqual([i['code'] for i in issues],['IMAGE_REPATH_FAILED'])
+        self.assertEqual([i['code'] for i in issues],['IMAGE_ABSOLUTE_PRELOAD_FAILED'])
         self.assertTrue(Path(self.target).exists())
+
+    def test_relative_pdf_not_found_falls_back_to_absolute_packaged_file(self):
+        reload_count=[0]
+        class Image(object):
+            def ReloadFrom(inner,opts):
+                reload_count[0]+=1
+                self.reloads.append(vars(opts).copy())
+            def Unload(inner):pass
+            def CanReload(inner):
+                # Absolute preload succeeds; the first relative stored path is
+                # deliberately unresolved, then absolute fallback succeeds.
+                return reload_count[0] >= 3
+            Path='C:\\Out\\details.pdf'
+            PathType='Absolute'
+        self.doc.GetElement=lambda ident:Image()
+        with patch.dict(sys.modules,{'System':NS(Int32=int,Int64=int)}):
+            issues=self.backend.finish(self.stage,self.target,[self.row],f.defaults())
+        self.assertEqual(self.row['repath'],'API_IMAGE_ABSOLUTE_FALLBACK')
+        self.assertTrue(any(i['code']=='IMAGE_RELATIVE_FALLBACK_ABSOLUTE' for i in issues))
+        self.assertEqual([x['Relative'] for x in self.reloads],[False,True,False])
 
     def test_save_failure_closes_temporary_document(self):
         def fail(*args): raise IOError('save failed')
