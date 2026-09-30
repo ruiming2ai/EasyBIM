@@ -949,9 +949,12 @@ def _write_reports_at(result, root):
             record['opening_guidance']=('OPEN_PACKAGE_CENTRAL_OR_DETACH_COPY' if package_central
                                         else 'OPEN_AS_TRANSMITTED_MODEL' if transmitted
                                         else 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
-            record['original_central_association_preserved']=(True if transmitted else
-                (bool(record.get('saved_state_sha256') and
-                      record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None))
+            if record.get('package_central_repair_base') or record.get('package_central'):
+                record['original_central_association_preserved']=False
+            else:
+                record['original_central_association_preserved']=(True if transmitted else
+                    (bool(record.get('saved_state_sha256') and
+                          record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None))
         if record.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED':
             record['verification_open_mode']='DETACH_IF_WORKSHARED'
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
