@@ -349,8 +349,14 @@ def run_pending(sender=None):
     if not job_path:
         return False
 
-    _WORKER_RUNNING[0] = True
     uiapp = _resolve_uiapp(sender)
+    # During application initialization HOST_APP.uiapp can still be None. The
+    # job must wait for the next Idling tick instead of failing before Revit is
+    # interactive enough to open a document.
+    if uiapp is None:
+        return True
+
+    _WORKER_RUNNING[0] = True
     try:
         job = _read_json(job_path)
         _write_json(job['status_path'], dict(phase='repairing package copy',
