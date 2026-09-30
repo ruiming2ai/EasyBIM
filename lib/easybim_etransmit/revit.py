@@ -680,7 +680,10 @@ class Backend(object):
         cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink'
              and os.path.splitext(r.get('target',''))[1].lower()=='.dwg'
              and not r.get('repath')]
-        needs_document=options.get('cleanup') or options.get('upgrade') or options.get('normalize_saved_cache') or (options.get('repath') and (special or external or cad))
+        needs_document=(options.get('cleanup') or options.get('upgrade') or
+                        options.get('normalize_saved_cache') or
+                        (package_central and info.get('workshared')) or
+                        (options.get('repath') and (special or external or cad)))
         if needs_document and reference_target != target:
             raise ValueError('Direct layout is only valid for metadata-only host processing.')
         if needs_document and info['version']!=f.text(self.app.VersionNumber) and not options.get('upgrade'):
