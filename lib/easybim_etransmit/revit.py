@@ -629,6 +629,26 @@ class Backend(object):
                 issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
         return issues
 
+    def repath_cad_links(self, doc, rows):
+        """Point linked DWG CADLinkTypes at packaged files in the open copy."""
+        from System import Int64, Int32
+        for row in rows:
+            f.check(self.cancelled)
+            number=int(row['element_id'])
+            ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+            link=doc.GetElement(ident)
+            result=None
+            try:
+                if link is None:
+                    raise RuntimeError('CAD link type is missing from the package model.')
+                result=link.LoadFrom(row['target'])
+                load_result=f.text(getattr(result,'LoadResult',''))
+                if load_result and load_result not in ('LinkLoaded','LinkAlreadyLoaded'):
+                    raise RuntimeError('CAD link reload failed: '+load_result)
+                row['repath']='API_CAD_LINK'
+            finally:
+                dispose(result)
+
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
         self.guard(stage); self.guard(target)
@@ -684,22 +704,7 @@ class Backend(object):
                         finally:dispose(result);dispose(resource);dispose(model_path)
                         if package_load_state(row) is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
-                    for row in cad:
-                        f.check(self.cancelled)
-                        number=int(row['element_id'])
-                        ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
-                        link=doc.GetElement(ident)
-                        result=None
-                        try:
-                            if link is None:
-                                raise RuntimeError('CAD link type is missing from the package model.')
-                            result=link.LoadFrom(row['target'])
-                            load_result=f.text(getattr(result,'LoadResult',''))
-                            if load_result and load_result not in ('LinkLoaded','LinkAlreadyLoaded'):
-                                raise RuntimeError('CAD link reload failed: '+load_result)
-                            row['repath']='API_CAD_LINK'
-                        finally:
-                            dispose(result)
+                    self.repath_cad_links(doc,cad)
                 if options.get('cleanup'):
                     from .cleanup import run
                     run(doc,self.DB,options,self.cancelled)
