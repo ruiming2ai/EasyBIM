@@ -255,10 +255,38 @@ def candidate_role(path, roots, identity):
     return matches[0] if len(matches) == 1 else dict(role='UNKNOWN', scope='')
 
 
+def _linked_saved_role(choices, evidence):
+    """Recover a linked saved edition, not an exact loaded-revision match.
+
+    A stale directly opened cache may coexist with the loaded link's saved
+    cache. Limit role-based recovery to one DIRECT/LinkedModels pair within
+    one account/project/root and format. NumberOfSaves alone never certifies
+    revision equality: the caller retains SAVED_CACHE_DIFFERS_FROM_LOADED.
+    """
+    expected = version(evidence.get('expected_document_version'))
+    if not evidence.get('source_is_linked') or not expected or len(choices) != 2:
+        return None
+    if any(item[2] for item in choices):
+        return None  # Exact revision matches keep their established priority.
+    roles = dict((item[1]['cache_role'], item) for item in choices)
+    if set(roles) != set(('DIRECT', 'LINKED_MODELS')):
+        return None
+    direct, linked = roles['DIRECT'], roles['LINKED_MODELS']
+    a, b = direct[1], linked[1]
+    if (not a['cache_scope'] or a['cache_scope'] != b['cache_scope'] or
+            a['cache_format'] != b['cache_format']):
+        return None
+    if (b['cache_document_version']['saves'] != expected['saves'] or
+            a['cache_document_version']['saves'] >= expected['saves']):
+        return None
+    return linked
+
+
 def select_candidate(choices, evidence):
-    """Resolve only a same-edition direct/LinkedModels pair within one authority."""
+    """Resolve validated saved candidates without filename/timestamp guessing."""
     ordered = sorted(choices, key=lambda item: (item[1]['cache_role'] != 'DIRECT',
                                                f.canonical(item[1]['cache_path']), item[1]['cache_path']))
+    chosen = ordered[0]
     reason = 'IDENTICAL_BYTES' if len(choices) > 1 else 'UNIQUE_CANDIDATE'
     if len(set(item[1]['sha256'] for item in choices)) != 1:
         scopes = set(item[1]['cache_scope'] for item in choices)
@@ -270,11 +298,19 @@ def select_candidate(choices, evidence):
         for role in roles:
             if len(set(item[1]['sha256'] for item in choices if item[1]['cache_role'] == role)) != 1:
                 paired = False
-        if not paired:
-            raise CacheError('CACHE_CANDIDATES_AMBIGUOUS',
-                             'Conflicting cache copies cannot be resolved by a same-edition direct/LinkedModels pair. No newest-timestamp selection was made.', evidence)
-        reason = 'DIRECT_SAME_EDITION_PAIR'
-    chosen = ordered[0]
+        if paired:
+            reason = 'DIRECT_SAME_EDITION_PAIR'
+        else:
+            chosen = _linked_saved_role(choices, evidence)
+            if chosen is None:
+                raise CacheError('CACHE_CANDIDATES_AMBIGUOUS',
+                                 'Conflicting cache copies cannot be resolved by saved-edition or linked-role evidence. No newest-timestamp selection was made.', evidence)
+            reason = 'LINKED_MODELS_LOADED_SAVE_COUNT'
+            evidence['selection_note'] = (
+                'Selected the saved LinkedModels copy in the same account/project '
+                'scope: its save count matches the loaded link and the DIRECT copy '
+                'has an older save count. Version GUIDs differ; this is not an exact '
+                'revision match. Source caches were not changed.')
     evidence.update(selection_reason=reason, selected_path=chosen[1]['cache_path'])
     for attempt in evidence['attempts']:
         if attempt.get('status') != 'REJECTED':
@@ -312,7 +348,8 @@ class Store(object):
         primary_modified = bool(entry.get('is_modified') and not entry.get('is_linked'))
         saved_link = bool(entry.get('is_linked'))
         evidence = dict(roots=list(self.roots), identity=dict(identity),
-                        expected_document_version=expected, attempts=[])
+                        expected_document_version=expected, source_is_linked=saved_link,
+                        attempts=[])
         if not expected and not (primary_modified or saved_link):
             raise CacheError('CACHE_VERSION_UNAVAILABLE', 'The loaded saved DocumentVersion is unavailable.', evidence)
         if f.cache_source(self.staging_root) or any(f.within(self.staging_root, r) for r in self.roots):
