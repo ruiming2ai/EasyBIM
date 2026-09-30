@@ -79,6 +79,24 @@ class References(unittest.TestCase):
         self.assertEqual(calls,['C:\\Out\\CAD\\site.dwg'])
         self.assertEqual(row['repath'],'API_CAD_LINK')
 
+    def test_cad_repath_failure_is_reported_without_aborting_other_repairs(self):
+        bad=Obj(LoadFrom=lambda path:(_ for _ in ()).throw(RuntimeError('bad dwg')))
+        good_result=Obj(LoadResult='LinkLoaded',Dispose=lambda:None)
+        good=Obj(LoadFrom=lambda path:good_result)
+        self.db.ElementId=lambda value:value
+        old_system=sys.modules.get('System')
+        sys.modules['System']=Obj(Int64=int,Int32=int)
+        rows=[dict(element_id='20',id='20',kind='CADLink',source='bad.dwg',target='C:\\Out\\CAD\\bad.dwg'),
+              dict(element_id='21',id='21',kind='CADLink',source='good.dwg',target='C:\\Out\\CAD\\good.dwg')]
+        try:
+            issues=self.b.repath_cad_links(Obj(GetElement=lambda ident:bad if ident==20 else good),rows)
+        finally:
+            if old_system is None:sys.modules.pop('System',None)
+            else:sys.modules['System']=old_system
+        self.assertEqual(rows[0]['repath'],'FAILED')
+        self.assertEqual(rows[1]['repath'],'API_CAD_LINK')
+        self.assertEqual([x['code'] for x in issues],['CAD_REPATH_FAILED'])
+
     def test_unknown_metadata_value_is_not_invented_as_source(self):
         self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
