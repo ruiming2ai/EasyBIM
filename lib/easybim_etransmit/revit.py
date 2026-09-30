@@ -727,6 +727,38 @@ class Backend(object):
                         if package_load_state(row) is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
                     issues.extend(self.repath_cad_links(doc,cad))
+                    # Restore the early working image/PDF sequence: load every
+                    # linked image from its exact packaged ABSOLUTE file before
+                    # SaveAs establishes the package project/central base. The
+                    # second pass below then asks Revit to persist it relatively.
+                    for row in special:
+                        f.check(self.cancelled)
+                        tx=self.DB.Transaction(doc,'e-transmit: preload package image')
+                        opts_image=None
+                        try:
+                            number=int(row['element_id'])
+                            ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                            image=doc.GetElement(ident)
+                            if image is None:
+                                row['repath']='REMOVED_BY_CLEANUP'; continue
+                            opts_image=self.image_options(row,False,target)
+                            valid=getattr(opts_image,'IsValid',None)
+                            if valid is not None and not bool(valid(doc)):
+                                raise RuntimeError('Packaged image/PDF cannot be loaded from the copied file.')
+                            tx.Start()
+                            image.ReloadFrom(opts_image)
+                            if row.get('loaded') is False: image.Unload()
+                            if tx.Commit()!=self.DB.TransactionStatus.Committed:
+                                raise RuntimeError('Absolute packaged image preload was not committed.')
+                            row['repath']='API_IMAGE_ABSOLUTE'
+                        except f.Cancelled:
+                            raise
+                        except Exception as exc:
+                            if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
+                            row['repath']='FAILED'
+                            issues.append(issue('IMAGE_ABSOLUTE_PRELOAD_FAILED',row.get('source',''),exc,'error'))
+                        finally:
+                            dispose(tx);dispose(opts_image)
                 if options.get('cleanup'):
                     from .cleanup import run
                     run(doc,self.DB,options,self.cancelled)
@@ -760,10 +792,12 @@ class Backend(object):
                             row['repath']='API_LOCAL_LINK_RELATIVE';needs_resave=True
                         finally:dispose(result);dispose(resource);dispose(model_path)
                 if options.get('repath') and special:
-                    # SaveAs has established the correct final base. Revit may
-                    # accept a short relative path when the absolute dependency
-                    # path exceeds MAX_PATH. Keep each reload isolated.
+                    # SaveAs has established the final package project/central
+                    # base. Convert the already-working absolute package links
+                    # to relative references one by one.
                     for row in special:
+                        if row.get('repath')=='FAILED':
+                            continue
                         f.check(self.cancelled)
                         tx=self.DB.Transaction(doc,'e-transmit: relative image path')
                         opts=None
