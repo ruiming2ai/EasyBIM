@@ -35,6 +35,24 @@ versions had dropped that first absolute preload.
 
 Imported PDFs/images are embedded and are not repathed.
 
+## Repair only at the final package path
+
+A second regression was found in the newer preparation/delivery pipeline. A
+host could be opened, SaveAs'd and repathed while it still lived under EasyBIM's
+temporary preparation directory, then moved to the final package directory
+afterward.
+
+That is unsafe for workshared relative PDF/image paths because their base is the
+central-model location established by the SaveAs. Moving the RVT later does not
+guarantee that Revit changes that saved central/path base.
+
+2.1.23 therefore defers every host operation that requires an open Revit
+Document until **after package delivery** whenever the host contains linked
+PDF/images, linked CAD, true external/cloud Revit links, Cleanup, Upgrade, or
+saved-cache normalization. The worker SaveAsCentral target is the final exported
+RVT itself, and the Links targets supplied to ReloadFrom are already their
+final packaged paths.
+
 ## Package central rather than re-transmitted host
 
 The early e-transmit implementation saved a detached/preserved-workset copy as a
