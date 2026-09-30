@@ -97,6 +97,16 @@ class References(unittest.TestCase):
         self.assertEqual(rows[1]['repath'],'API_CAD_LINK')
         self.assertEqual([x['code'] for x in issues],['CAD_REPATH_FAILED'])
 
+    def test_image_relative_option_uses_absolute_file_for_revit_to_relativize(self):
+        self.b.guard=lambda path:None
+        self.db.ImageTypeSource=Obj(Link='Link')
+        captured=[]
+        self.db.ImageTypeOptions=lambda path,rel,src:captured.append((path,rel,src)) or Obj(Path=path)
+        row=dict(target='C:\\Out\\Links\\PDF\\Details.pdf',page=1,resolution=300)
+        self.b.image_options(row,True,'C:\\Out\\Host.rvt')
+        self.assertEqual(captured[0][0],row['target'])
+        self.assertTrue(captured[0][1])
+
     def test_unknown_metadata_value_is_not_invented_as_source(self):
         self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
@@ -119,7 +129,7 @@ class References(unittest.TestCase):
         row=dict(target='C:\\Out\\PDF\\Details.pdf',page=1,resolution=300)
         try:options=self.b.image_options(row,True,'C:\\Out\\RVT\\Host.rvt')
         except TypeError: self.fail('image_options must accept final model path for real relative paths')
-        self.assertEqual(options.Path,'..\\PDF\\Details.pdf')
+        self.assertEqual(options.Path,'C:\\Out\\PDF\\Details.pdf')
 
 class EngineRepairs(unittest.TestCase):
     def test_metadata_failure_is_not_retried_in_finishing(self):
@@ -181,6 +191,27 @@ class EngineRepairs(unittest.TestCase):
         self.assertEqual(calls,['finish'])
         self.assertTrue(result['files'][0].get('worker_repaired'))
         self.assertEqual(result['files'][0].get('model_verification'),'WORKER_SAVE_COMPLETED')
+
+    def test_worker_package_central_is_not_marked_transmitted_or_reopened(self):
+        root=tempfile.mkdtemp(prefix='ET_pkgcentral_');self.addCleanup(shutil.rmtree,root)
+        host=os.path.join(root,'Host.rvt')
+        with open(host,'wb') as out:out.write(b'host')
+        calls=[]
+        class B(object):
+            mark_transmitted_rows_supported=True
+            def scan(self,*args):return dict(references=[],issues=[],is_workshared=True,version='2026')
+            def finish(self,*args):
+                calls.append('finish')
+                return dict(issues=[],verified_in_process=False,worker_repaired=True,package_central=True)
+            def mark_transmitted_package(self,*args):
+                calls.append('transmit');return True
+            def verify_package(self,*args):
+                calls.append('verify');return []
+        result=e.transmit([host],os.path.join(root,'out'),B())
+        self.assertEqual(calls,['finish'])
+        row=result['files'][0]
+        self.assertEqual(row.get('transmission_status'),'PACKAGE_CENTRAL')
+        self.assertEqual(row.get('model_verification'),'WORKER_SAVE_COMPLETED')
 
     def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
         root=tempfile.mkdtemp(prefix='ET_posttx_');self.addCleanup(shutil.rmtree,root)
