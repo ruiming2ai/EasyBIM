@@ -632,13 +632,14 @@ class Backend(object):
     def repath_cad_links(self, doc, rows):
         """Point linked DWG CADLinkTypes at packaged files in the open copy."""
         from System import Int64, Int32
+        issues=[]
         for row in rows:
             f.check(self.cancelled)
-            number=int(row['element_id'])
-            ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
-            link=doc.GetElement(ident)
             result=None
             try:
+                number=int(row['element_id'])
+                ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                link=doc.GetElement(ident)
                 if link is None:
                     raise RuntimeError('CAD link type is missing from the package model.')
                 result=link.LoadFrom(row['target'])
@@ -646,8 +647,14 @@ class Backend(object):
                 if load_result and load_result not in ('LinkLoaded','LinkAlreadyLoaded'):
                     raise RuntimeError('CAD link reload failed: '+load_result)
                 row['repath']='API_CAD_LINK'
+            except f.Cancelled:
+                raise
+            except Exception as exc:
+                row['repath']='FAILED'
+                issues.append(issue('CAD_REPATH_FAILED',row.get('source',''),exc,'error'))
             finally:
                 dispose(result)
+        return issues
 
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
@@ -708,7 +715,7 @@ class Backend(object):
                         finally:dispose(result);dispose(resource);dispose(model_path)
                         if package_load_state(row) is False: link.Unload(None)
                         row['repath']='API_LOCAL_LINK'
-                    self.repath_cad_links(doc,cad)
+                    issues.extend(self.repath_cad_links(doc,cad))
                 if options.get('cleanup'):
                     from .cleanup import run
                     run(doc,self.DB,options,self.cancelled)
