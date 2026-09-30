@@ -61,9 +61,9 @@ class WorkerRuntime(unittest.TestCase):
                 job=json.loads(stream.read())
             returned=[dict(rows[0],repath='API_IMAGE_RELATIVE')]
             worker._write_json(job['result_path'],dict(
-                status='SUCCEEDED',message='',process_id=42,
+                status='SUCCEEDED',message='',job_id=job['job_id'],process_id=42,
                 processing_result=dict(issues=[],verified_in_process=False),
-                rows=returned))
+                rows=returned,suppressed_dialogs=[]))
             return process
         result=worker.run_separate_revit(
             app,self.stage,self.target,rows,
@@ -74,19 +74,40 @@ class WorkerRuntime(unittest.TestCase):
         self.assertEqual(result['worker_process_id'],42)
         self.assertEqual(rows[0]['repath'],'API_IMAGE_RELATIVE')
 
+    def test_worker_session_reuses_one_revit_process_for_multiple_models(self):
+        app=Obj(VersionNumber='2026')
+        starts=[]
+        process=FakeProcess()
+        session=worker.WorkerSession(
+            app,process_factory=lambda exe,job_path:starts.append(job_path) or process,
+            executable='Revit.exe',sleeper=lambda seconds:None,clock=lambda:0)
+        def fake_wait(payload):
+            return dict(status='SUCCEEDED',job_id=payload['job_id'],process_id=77,
+                        processing_result=dict(issues=[],verified_in_process=False),
+                        rows=payload['rows'],suppressed_dialogs=[])
+        session._wait=fake_wait
+        try:
+            first=session.run(self.stage,self.target,[],dict(repath=True))
+            second_target=os.path.join(self.root,'package','Host2.rvt')
+            second=session.run(self.stage,second_target,[],dict(repath=True))
+        finally:
+            session.close()
+        self.assertEqual(len(starts),1)
+        self.assertFalse(first['worker_session_reused'])
+        self.assertTrue(second['worker_session_reused'])
+        self.assertEqual(first['worker_process_id'],77)
+        self.assertEqual(second['worker_process_id'],77)
+
     def test_live_session_backend_routes_repath_to_worker(self):
         source='open://host/Host.rvt'
-        registry=Obj(get=lambda key:dict(mode='LIVE_DOCUMENT') if key==source else None)
-        backend=SessionBackend(None,Obj(VersionNumber='2026'),self.root,registry)
         calls=[]
-        old=worker.run_separate_revit
-        worker.run_separate_revit=lambda *a,**k:calls.append((a,k)) or dict(
-            issues=[],verified_in_process=False,worker_repaired=True)
-        try:
-            result=backend.finish(self.stage,self.target,[],
-                                  dict(repath=True,_host_source=source))
-        finally:
-            worker.run_separate_revit=old
+        worker_session=Obj(run=lambda *a,**k:calls.append((a,k)) or dict(
+            issues=[],verified_in_process=False,worker_repaired=True,package_central=True))
+        registry=Obj(get=lambda key:dict(mode='LIVE_DOCUMENT') if key==source else None,
+                     worker_session=lambda pulse=None:worker_session)
+        backend=SessionBackend(None,Obj(VersionNumber='2026'),self.root,registry)
+        result=backend.finish(self.stage,self.target,[],
+                              dict(repath=True,_host_source=source))
         self.assertTrue(result['worker_repaired'])
         self.assertEqual(len(calls),1)
 
@@ -95,6 +116,14 @@ class WorkerRuntime(unittest.TestCase):
         registry=Obj(get=lambda key:dict(mode='SAVED_FILE') if key==source else None)
         backend=SessionBackend(None,Obj(VersionNumber='2026'),self.root,registry)
         self.assertFalse(backend._requires_separate_worker(source,dict(repath=True)))
+
+    def test_worker_source_contains_dialog_and_failure_suppression(self):
+        path=os.path.join(ROOT,'lib','easybim_etransmit','worker.py')
+        with io.open(path,'r',encoding='utf-8') as stream:text=stream.read()
+        self.assertIn('DialogBoxShowing +=',text)
+        self.assertIn('OverrideResult(code)',text)
+        self.assertIn('FailuresProcessing +=',text)
+        self.assertIn('ProceedWithRollBack',text)
 
     def test_idling_worker_process_short_circuits_ordinary_consumers(self):
         path=os.path.join(ROOT,'lib','easybim','idling.py')
