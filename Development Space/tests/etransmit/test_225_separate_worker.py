@@ -125,6 +125,13 @@ class WorkerRuntime(unittest.TestCase):
         self.assertIn('FailuresProcessing +=',text)
         self.assertIn('ProceedWithRollBack',text)
 
+    def test_startup_installs_worker_dialog_handlers_before_normal_startup(self):
+        path=os.path.join(ROOT,'startup.py')
+        with io.open(path,'r',encoding='utf-8') as stream:text=stream.read()
+        install=text.index('_etransmit_worker.install_startup_handlers')
+        ordinary=text.index('coordination_review_passive')
+        self.assertLess(install,ordinary)
+
     def test_idling_worker_process_short_circuits_ordinary_consumers(self):
         path=os.path.join(ROOT,'lib','easybim','idling.py')
         with io.open(path,'r',encoding='utf-8') as stream:text=stream.read()
