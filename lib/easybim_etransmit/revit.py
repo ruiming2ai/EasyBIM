@@ -462,10 +462,12 @@ class Backend(object):
 
     def image_options(self, row, relative, model_path=None):
         self.guard(row['target'])
+        # Always give Revit the exact existing package file to read. When
+        # useRelativePath=True Revit itself stores the reference relative to the
+        # project/central model location. Manually passing "Links\\PDF\\..."
+        # can be resolved against the wrong workshared central and produce a
+        # saved relative path that immediately reports Not Found.
         path=row['target']
-        if relative and model_path:
-            pm=ntpath if f.is_windows(model_path) else os.path
-            path=relative_path(path,pm.dirname(model_path))
         opts=self.DB.ImageTypeOptions(path,relative,self.DB.ImageTypeSource.Link)
         try:
             if row['target'].lower().endswith('.pdf'): opts.PageNumber=row['page']
@@ -557,7 +559,7 @@ class Backend(object):
             dispose(ref)
 
 
-    def apply_metadata(self, path, target, rows, relative=True):
+    def apply_metadata(self, path, target, rows, relative=True, mark_transmitted=True):
         self.guard(path); self.guard(target)
         for row in rows:
             if row.get('target'): self.guard(row['target'])
@@ -580,7 +582,7 @@ class Backend(object):
                 if row.get('kind')=='RevitLink' and package_load_state(row) is None:
                     row['package_loaded']=bool(desired_load)
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
-            td.IsTransmitted=True
+            td.IsTransmitted=bool(mark_transmitted)
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
             return True
         finally: dispose(td)
@@ -665,7 +667,11 @@ class Backend(object):
             if row.get('target'): self.guard(row['target'])
         reference_target=options.get('reference_target') or target
         self.guard(reference_target)
-        transmitted=self.apply_metadata(stage,reference_target,rows) if options.get('repath') else False
+        package_central=bool(options.get('package_central'))
+        transmitted=self.apply_metadata(
+            stage,reference_target,rows,
+            relative=not package_central,
+            mark_transmitted=not package_central) if options.get('repath') else False
         special=[r for r in rows if r.get('target') and r.get('special')=='image' and not r.get('repath')]
         external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
                   and (not r.get('td') or cache_sources.reference_identity(r))]
@@ -691,7 +697,9 @@ class Backend(object):
         else:
             doc=None
             try:
-                if options.get('repath'): self.apply_metadata(stage,target,rows,relative=False)
+                if options.get('repath'):
+                    self.apply_metadata(stage,target,rows,relative=False,
+                                        mark_transmitted=not package_central)
                 doc=self.open_copy(stage,bool(options.get('cleanup') and options.get('discard_worksets')))
                 if options.get('repath'):
                     from System import Int64, Int32
@@ -786,7 +794,9 @@ class Backend(object):
             finally:
                 if doc is not None:
                     if not performance.call('repath','revit_close',target,doc.Close,False): raise RuntimeError('Temporary output model could not be closed.')
-            if options.get('repath'): self.apply_metadata(target,target,rows)
+            if options.get('repath'):
+                self.apply_metadata(target,target,rows,
+                                    mark_transmitted=not package_central)
         if options.get('repath'):
             for row in rows:
                 if row.get('target') and row.get('special')=='plugin_spreadsheet':
