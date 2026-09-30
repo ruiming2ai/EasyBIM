@@ -303,8 +303,11 @@ class WorkerSession(object):
                 self.job_id += 1
                 _write_json(self.job_path, dict(
                     format=JOB_FORMAT, action='STOP', job_id=self.job_id))
-                started = self.clock()
-                while self._alive() and self.clock() - started < 20:
+                # Bounded poll count keeps shutdown deterministic even
+                # under test clocks; real runtime still gives Revit ~20 seconds.
+                for unused in range(80):
+                    if not self._alive():
+                        break
                     _pump_windows_messages()
                     self.sleep(0.25)
             except Exception:
