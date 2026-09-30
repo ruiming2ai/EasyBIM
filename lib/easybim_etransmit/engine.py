@@ -975,7 +975,7 @@ def _write_reports_at(result, root):
         lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
     lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
         'When the host report says PACKAGE_CENTRAL, the exported RVT is a new package-owned central created by the repair worker. Open it normally or make a detached/local working copy as required; do not synchronize it to the original project central.',
-        'When the host report says TRANSMITTED, open the packaged RVT normally and follow Revit transmitted-model handling.',
+        'When the host report says TRANSMITTED, open the packaged RVT normally. Revit opens detached from its central model and follows transmitted-model handling.',
         'If neither package-central nor transmitted status is available, use Revit File > Open > Detach from Central, then Preserve Worksets.',
         'Package-central output is retained so workshared relative PDF/image paths resolve against the exported host location.',
         'Do not synchronize package copies to the original central.'])
