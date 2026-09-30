@@ -65,6 +65,10 @@ class ImageFinalizationBackend(object):
         for row in rows:row['repath']='API_IMAGE_RELATIVE'
         return dict(issues=[],verified_in_process=False,worker_repaired=True,
                     package_central=True)
+    mark_transmitted_rows_supported=True
+    def mark_transmitted_package(self,*args):
+        self.calls.append(dict(transmit=True))
+        return True
     def verify_package(self,*args):
         self.fail_verify=True;return []
     def source_context(self,*a):return {}
@@ -85,15 +89,17 @@ class ImageFinalLocation(unittest.TestCase):
         backend=ImageFinalizationBackend(self.host,self.pdf,self.out)
         opts=f.defaults();opts['repath']=True
         result=engine.transmit([self.host],self.out,backend,opts)
-        self.assertEqual(len(backend.calls),1,repr(result['issues']))
-        call=backend.calls[0]
+        repair_calls=[c for c in backend.calls if not c.get('transmit')]
+        self.assertEqual(len(repair_calls),1,repr(result['issues']))
+        call=repair_calls[0]
         self.assertEqual(f.canonical(call['target']),
                          f.canonical(os.path.join(self.out,'Host.rvt')))
         self.assertTrue(f.within(call['rows'][0]['target'],self.out))
         self.assertNotEqual(f.canonical(call['stage']),f.canonical(call['target']))
         host=next(r for r in result['files'] if r.get('is_primary_host'))
         self.assertEqual(host.get('model_verification'),'WORKER_SAVE_COMPLETED')
-        self.assertEqual(host.get('transmission_status'),'PACKAGE_CENTRAL')
+        self.assertEqual(host.get('transmission_status'),'TRANSMITTED')
+        self.assertTrue(host.get('package_central_repair_base'))
         self.assertFalse(getattr(backend,'fail_verify',False))
 
 
