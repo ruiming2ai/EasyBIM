@@ -212,6 +212,7 @@ class EngineRepairs(unittest.TestCase):
         row=result['files'][0]
         self.assertEqual(row.get('transmission_status'),'TRANSMITTED')
         self.assertTrue(row.get('package_central_repair_base'))
+        self.assertFalse(row.get('original_central_association_preserved'))
         self.assertEqual(row.get('model_verification'),'WORKER_SAVE_COMPLETED')
 
     def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
