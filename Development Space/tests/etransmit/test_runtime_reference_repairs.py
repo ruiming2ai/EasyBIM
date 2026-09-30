@@ -63,6 +63,22 @@ class References(unittest.TestCase):
         self.assertEqual(issues,[])
         self.assertEqual(row.get('verification'),'PATH_CHECKED')
 
+    def test_cad_link_repair_uses_packaged_target(self):
+        calls=[]
+        result=Obj(LoadResult='LinkLoaded',Dispose=lambda:None)
+        link=Obj(LoadFrom=lambda path:calls.append(path) or result)
+        self.db.ElementId=lambda value:value
+        old_system=sys.modules.get('System')
+        sys.modules['System']=Obj(Int64=int,Int32=int)
+        row=dict(element_id='20',id='20',kind='CADLink',target='C:\\Out\\CAD\\site.dwg')
+        try:
+            self.b.repath_cad_links(Obj(GetElement=lambda ident:link),[row])
+        finally:
+            if old_system is None:sys.modules.pop('System',None)
+            else:sys.modules['System']=old_system
+        self.assertEqual(calls,['C:\\Out\\CAD\\site.dwg'])
+        self.assertEqual(row['repath'],'API_CAD_LINK')
+
     def test_unknown_metadata_value_is_not_invented_as_source(self):
         self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
@@ -129,6 +145,24 @@ class EngineRepairs(unittest.TestCase):
         result=e.transmit([host],os.path.join(root,'out'),b)
         self.assertEqual(calls,['finish','verify'])
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
+
+    def test_worker_repaired_host_is_not_reopened_for_verification(self):
+        root=tempfile.mkdtemp(prefix='ET_worker_noverify_');self.addCleanup(shutil.rmtree,root)
+        host=os.path.join(root,'Host.rvt')
+        with open(host,'wb') as out:out.write(b'host')
+        calls=[]
+        class B(object):
+            def scan(self,*args):return dict(references=[],issues=[],is_workshared=False,version='2026')
+            def finish(self,*args):
+                calls.append('finish')
+                return dict(issues=[],verified_in_process=False,worker_repaired=True)
+            def verify_package(self,*args):
+                calls.append('verify')
+                return []
+        result=e.transmit([host],os.path.join(root,'out'),B())
+        self.assertEqual(calls,['finish'])
+        self.assertTrue(result['files'][0].get('worker_repaired'))
+        self.assertEqual(result['files'][0].get('model_verification'),'WORKER_SAVE_COMPLETED')
 
     def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
         root=tempfile.mkdtemp(prefix='ET_posttx_');self.addCleanup(shutil.rmtree,root)
