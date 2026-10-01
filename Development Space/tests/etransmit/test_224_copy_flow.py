@@ -228,6 +228,82 @@ class MetadataCopyFlow(unittest.TestCase):
         self.assertEqual(self.backend.verify_metadata_package(self.target, rows, self.opts), [])
         with open(workbook, 'rb') as stream: self.assertEqual(stream.read(), b'copied workbook')
 
+    def test_simple_mode_copies_mixed_native_pdf_and_cloud_references_without_worker(self):
+        pdf = os.path.join(os.path.dirname(self.target), 'Reference.pdf')
+        external = os.path.join(os.path.dirname(self.target), 'Cloud.rvt')
+        with open(pdf, 'wb') as stream: stream.write(b'%PDF copied reference')
+        with open(external, 'wb') as stream: stream.write(compound(suffix='cloud link'))
+        cloud_identity = dict(project_guid=P, model_guid=M, region='US')
+        original_cloud = 'Autodesk Docs://Project/Cloud.rvt'
+        rows = self.rows + [
+            dict(id='3', element_id='3', kind='Image', special='image',
+                 source='N:/Project/Reference.pdf', target=pdf, page=2, resolution=300),
+            dict(id='4', element_id='4', kind='RevitLink', special='external',
+                 source=original_cloud, target=external, td=False, loaded=True,
+                 cloud_identity=copy.deepcopy(cloud_identity))]
+        self.td.references['4'] = Reference(original_cloud, 'RevitLink', True)
+        source = 'open://host/Host.rvt'
+        registry = Obj(get=lambda key: dict(mode='LIVE_DOCUMENT') if key == source else None)
+        backend = session.SessionBackend(self.db, Obj(VersionNumber='2024'), self.root, registry)
+        backend.open_copy = lambda *args: self.fail('Simple mode must not open the mixed host')
+        backend.finish_independent = lambda *args: self.fail('Simple mode must not SaveAs the mixed host')
+        original = worker.run_separate_revit
+        worker.run_separate_revit = lambda *args, **kwargs: self.fail('Simple mode must not launch a worker')
+        self.addCleanup(setattr, worker, 'run_separate_revit', original)
+        options = dict(self.opts, simple_repath=True, _host_source=source)
+        result = backend.finish(self.stage, self.target, rows, options)
+        self.assertTrue(result['metadata_repathed'])
+        self.assertFalse(result.get('worker_repaired'))
+        self.assertEqual(self.td.writes[0]['path'], self.target)
+        self.assertEqual(self.td.writes[0]['before'], self.payload)
+        with open(self.stage, 'rb') as stream: self.assertEqual(stream.read(), self.payload)
+        self.assertEqual([row['repath'] for row in rows[:2]], ['TRANSMISSION_DATA'] * 2)
+        self.assertEqual([row['repath'] for row in rows[2:]], ['MANUAL_REPAIR_REQUIRED'] * 2)
+        self.assertEqual(len(result['issues']), 2, repr(result['issues']))
+        self.assertTrue(all(item['severity'] == 'warning' for item in result['issues']))
+        self.assertEqual(rows[3]['cloud_identity'], cloud_identity)
+        self.assertEqual(rows[3]['source'], original_cloud)
+        self.assertEqual((rows[2]['page'], rows[2]['resolution']), (2, 300))
+        persisted = self.td.read(self.target)
+        self.assertEqual(persisted.saved['4'].path, original_cloud)
+        self.assertNotIn('4', persisted.desired)
+        self.assertNotIn('3', persisted.desired)
+        self.assertEqual(backend.verify_metadata_package(self.target, rows, options), [])
+        self.assertTrue(all('CHECKED' in row.get('verification', '') for row in rows[:2]))
+
+    def test_simple_mode_still_requires_no_cleanup_or_upgrade(self):
+        row = dict(id='3', kind='Image', special='image', target=self.cad)
+        options = dict(self.opts, simple_repath=True)
+        self.assertTrue(self.backend.can_finish_metadata_copy([row], options))
+        for flags in (dict(cleanup=True), dict(upgrade=True), dict(repath=False)):
+            self.assertFalse(self.backend.can_finish_metadata_copy([row], dict(options, **flags)))
+
+    def test_default_simple_scan_reads_saved_metadata_without_inspection_open(self):
+        calls = []
+        def forbidden(name):
+            def operation(*args):
+                calls.append(name)
+                self.fail('Simple saved-host scan must not ' + name)
+            return operation
+        self.backend.prepare_scan = forbidden('prepare')
+        self.backend.open_copy = forbidden('open')
+        options = f.defaults()
+        self.assertTrue(options['simple_repath'])
+        result = self.backend.scan(self.stage, self.stage, options)
+        self.assertEqual(calls, [])
+        self.assertFalse(result['opened_in_revit'])
+        self.assertFalse(result.get('open_failed'))
+        self.assertEqual(dict((row['id'], row['source']) for row in result['references']),
+                         dict((row['id'], row['source']) for row in self.rows))
+        self.assertEqual(dict((row['id'], row['loaded']) for row in result['references']),
+                         {'1': False, '2': True})
+        self.assertEqual([item['code'] for item in result['issues']], ['METADATA_ONLY_SCAN'])
+        self.assertEqual(result['issues'][0]['severity'], 'warning')
+        self.assertIn('Image/PDF', result['issues'][0]['message'])
+        self.assertIn('cloud', result['issues'][0]['message'])
+        self.assertEqual(self.td.writes, [])
+        with open(self.stage, 'rb') as stream: self.assertEqual(stream.read(), self.payload)
+
     def test_session_keeps_worker_for_cleanup_upgrade_image_and_cloud(self):
         source = 'open://host/Host.rvt'
         registry = Obj(get=lambda key: dict(mode='LIVE_DOCUMENT') if key == source else None)
@@ -237,10 +313,11 @@ class MetadataCopyFlow(unittest.TestCase):
         original = worker.run_separate_revit
         worker.run_separate_revit = lambda *args, **kwargs: calls.append(args) or dict(worker_repaired=True)
         self.addCleanup(setattr, worker, 'run_separate_revit', original)
-        cases = [(self.rows, dict(self.opts, cleanup=True)),
-                 (self.rows, dict(self.opts, upgrade=True)),
-                 ([dict(id='3', kind='Image', special='image', target=self.cad)], self.opts),
-                 ([dict(self.rows[0], cloud_identity=dict(project_guid=P, model_guid=M))], self.opts)]
+        options = dict(self.opts, simple_repath=False)
+        cases = [(self.rows, dict(options, cleanup=True)),
+                 (self.rows, dict(options, upgrade=True)),
+                 ([dict(id='3', kind='Image', special='image', target=self.cad)], options),
+                 ([dict(self.rows[0], cloud_identity=dict(project_guid=P, model_guid=M))], options)]
         for rows, options in cases:
             result = backend.finish(self.stage, self.target, rows, dict(options, _host_source=source))
             self.assertTrue(result['worker_repaired'])

@@ -113,7 +113,8 @@ class APIBoundary(unittest.TestCase):
         self.backend.basic=lambda p:dict(version='2023',workshared=False,central='')
         self.backend.open_copy=lambda *a: self.fail('Must not open for saving without upgrade consent')
         rows=[dict(id='200',target=str(self.root/'page.pdf'),source='page.pdf',special='image',loaded=True)]
-        issues=self.backend.finish(self.stage,self.target,rows,f.defaults())
+        options=f.defaults();options['simple_repath']=False
+        issues=self.backend.finish(self.stage,self.target,rows,options)
         self.assertTrue(any(i['code']=='UPGRADE_CONSENT_REQUIRED' for i in issues))
         self.assertEqual(Path(self.target).read_bytes(),b'original')
 

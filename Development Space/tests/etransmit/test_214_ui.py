@@ -24,7 +24,7 @@ class StructureUI(fixtures.UI):
         class Window(object):
             @staticmethod
             def __init__(window,xaml):
-                for name in ('Categories','ViewMode','VersionLabel','Output','DeepScan','FileStructure','Repath',
+                for name in ('Categories','ViewMode','VersionLabel','Output','DeepScan','FileStructure','Repath','SimpleRepath',
                              'Reports','LoadUnloadedFiles','Zip','ZipPerModel','Purge','Models','Extras','Mappings'):
                     setattr(window,name,Obj())
         old_window=self.ui.forms.WPFWindow;old_db=self.ui.DB

@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
+import io
+import json
 import os
 import shutil
 import sys
 import tempfile
 import types
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
-from easybim_etransmit import revit
+from easybim_etransmit import files as f, revit
+import test_211_ui_plugins as ui_fixtures
 
 
 class Obj(object):
@@ -220,6 +224,63 @@ class CopyFirstTransmission(unittest.TestCase):
             self.assertEqual(self.store.desired['2'],(self.relative_link,'Relative',False))
             self.assertEqual(rows[0]['repath'],'API_CAD_LINK')
             self.assertEqual(saved,[True])
+
+
+class SimpleRepathUI(unittest.TestCase):
+    setUp=ui_fixtures.UI.setUp
+    cleanup=ui_fixtures.UI.cleanup
+    form=ui_fixtures.UI.form
+
+    def loaded_dialog(self):
+        xaml=os.path.join(ROOT,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml')
+        name='{http://schemas.microsoft.com/winfx/2006/xaml}Name'
+        class Window(object):
+            @staticmethod
+            def __init__(window,path):
+                for node in ET.parse(path).getroot().iter():
+                    control_name=node.get(name)
+                    if control_name:
+                        setattr(window,control_name,Obj(
+                            IsChecked=node.get('IsChecked')=='True',Text=node.get('Text','')))
+        old_window=self.ui.forms.WPFWindow;old_db=self.ui.DB
+        old_appdata=os.environ.get('APPDATA')
+        self.ui.forms.WPFWindow=Window;self.ui.DB=Obj(Document=Obj())
+        os.environ['APPDATA']=self.root
+        try:
+            return self.ui.Dialog(Obj(Application=Obj(VersionNumber='2024',Documents=[]),
+                                      ActiveUIDocument=None),xaml)
+        finally:
+            self.ui.forms.WPFWindow=old_window;self.ui.DB=old_db
+            if old_appdata is None:os.environ.pop('APPDATA',None)
+            else:os.environ['APPDATA']=old_appdata
+
+    def test_default_options_and_actual_xaml_dialog_enable_simple_repath(self):
+        self.assertTrue(f.defaults()['simple_repath'])
+        self.assertTrue(self.loaded_dialog().SimpleRepath.IsChecked)
+        dialog=self.form()
+        dialog.transmit_click(None,None)
+        self.assertTrue(dialog.result[2]['simple_repath'])
+
+    def test_checked_and_unchecked_choices_are_transmitted_saved_and_reloaded(self):
+        for enabled in (False,True):
+            dialog=self.form()
+            dialog.SimpleRepath=Obj(IsChecked=enabled)
+            dialog.SaveSettings.IsChecked=True
+            dialog.settings=os.path.join(self.root,'EasyBIM','e-transmit','settings.json')
+            dialog.transmit_click(None,None)
+            self.assertEqual(dialog.result[2]['simple_repath'],enabled)
+            with io.open(dialog.settings,encoding='utf-8') as inp:saved=json.load(inp)
+            self.assertEqual(saved['simple_repath'],enabled)
+            self.assertEqual(self.loaded_dialog().SimpleRepath.IsChecked,enabled)
+
+    def test_older_preferences_missing_option_use_simple_repath_default(self):
+        settings=os.path.join(self.root,'EasyBIM','e-transmit','settings.json')
+        os.makedirs(os.path.dirname(settings))
+        with io.open(settings,'w',encoding='utf-8') as out:
+            out.write(json.dumps(dict(repath=True,file_structure='categories')))
+        dialog=self.loaded_dialog()
+        self.assertTrue(dialog.SimpleRepath.IsChecked)
+        self.assertTrue(dialog.Repath.IsChecked)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

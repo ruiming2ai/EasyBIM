@@ -6,7 +6,9 @@ PyRevit Tools created by Ruiming Liu
 Native CAD/Revit repathing now copies the saved host/cache first and updates its
 closed-file reference metadata, without opening the host or creating a new
 central. Final transmission handling preserves packaged paths and unloaded
-states. PDF/image and ACC External Resource repairs still use the Revit worker.
+states. The default **Simple copy and repath** choice also keeps mixed hosts on
+this path, reporting unsupported PDF/image and ACC resources for manual repair.
+Uncheck it for automatic Revit worker repairs.
 See the [2.1.24 notes](Development%20Space/docs/e-transmit-2.1.24.md) for the
 2.1.23 regression and the required desktop acceptance checks.
 

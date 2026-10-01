@@ -30,7 +30,7 @@ class FinalReferenceBase(unittest.TestCase):
         self.assertEqual(writes[0][1],os.path.join('Links','Arch.rvt'))
         with open(prepared,'rb') as inp:self.assertEqual(inp.read(),b'original')
     def test_api_images_need_preparation_but_native_cache_hosts_deliver_direct(self):
-        backend=Backend(None,None,'unused');opts=f.defaults()
+        backend=Backend(None,None,'unused');opts=f.defaults();opts['simple_repath']=False
         self.assertFalse(backend.can_deliver_direct({},[dict(special='image')],opts))
         self.assertTrue(backend.can_deliver_direct(dict(copy_method='COLLABORATION_CACHE_READ_ONLY'),[],opts))
 

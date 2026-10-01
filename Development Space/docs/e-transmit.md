@@ -5,6 +5,13 @@ The current release restores copy-first native CAD/Revit repathing and fixes the
 See [2.1.24 release notes](e-transmit-2.1.24.md) for the current processing flow and
 validation limits. Earlier workflow details below retain their version context.
 
+For the copy-only repath test, leave **Simple copy and repath (native file links)**
+checked (the default), enable **Repath**, and leave **Cleanup/Upgrade OFF**. The
+host/cache copy is repathed through closed-file TransmissionData; unsupported
+PDF/image or true ACC External Resource references are reported for manual repair
+without opening the host in a worker. Uncheck the simple option for full API
+repair. Selecting cleanup or upgrade retains document processing.
+
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
 independent pyRevit implementation inspired by Autodesk eTransmit, not a wrapper

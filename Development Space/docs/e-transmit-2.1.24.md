@@ -1,10 +1,14 @@
 # EasyBIM e-transmit 2.1.24 — copy first and preserve final repaths
 
-The simple repath workflow now copies the identified saved host/cache RVT and
-dependencies, then updates supported file-based CAD and Revit links through
-closed-file `TransmissionData`. It does not open the host in a worker, SaveAs it,
-or create a new package central. Exact saved/cache acquisition rules remain in
-place; this changes processing after collection, not which edition is copied.
+**Simple copy and repath (native file links)** is enabled by default. With
+**Repath ON** and **Cleanup/Upgrade OFF**, it copies the identified saved
+host/cache RVT and dependencies, then updates supported file-based CAD and Revit
+links through closed-file `TransmissionData`. Even a mixed host with linked
+PDFs/images or cloud links takes this simple route: the host is not opened in a
+worker, SaveAs is not performed, and a new package central is not created.
+References that TransmissionData cannot repair receive manual-repath warnings.
+Exact saved/cache acquisition rules remain in place; this changes processing
+after collection, not which edition is copied.
 
 ## Why 2.1.23 could lose a repath
 
@@ -23,11 +27,14 @@ requires `IsTransmitted = true` for desired paths/load states to apply. This fla
 can cause a workshared copy to open detached from its original central. The
 simple repath workflow still avoids creating a new central during export.
 
-## When document processing is still needed
+## Full API repair and opt-in processing
 
-Linked PDFs/images and true ACC External Resource links still require Revit API
-repair in the disposable worker. Cleanup and upgrade remain opt-in and retain
-their document-processing workflow. Worker repairs are followed by the same final
+Uncheck **Simple copy and repath (native file links)** to use full API repair for
+linked PDFs/images and true ACC External Resource links in the disposable worker.
+The simple mode copies these dependencies when available but leaves unsupported
+references for manual repair instead of launching that worker. Cleanup and
+upgrade remain opt-in; selecting them retains document processing regardless of
+the simple-mode preference. Worker repairs are followed by the same final
 packaged-target overlay so transmission marking does not discard their results.
 
 ## Validation limit
