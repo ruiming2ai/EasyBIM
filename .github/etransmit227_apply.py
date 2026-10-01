@@ -18,6 +18,8 @@ if hashlib.sha256(patch).hexdigest() != meta['patch_sha256']:
 # This script runs only in an isolated ephemeral CI checkout, never in a user installation.
 if os.environ.get('GITHUB_ACTIONS') != 'true':
     raise SystemExit('Disposable GitHub Actions checkout required.')
+subprocess.check_call(['git', 'config', 'core.autocrlf', 'false'])
+subprocess.check_call(['git', 'config', 'core.eol', 'lf'])
 subprocess.check_call(['git', 'checkout', '--detach', meta['base']])
 paths = sorted(meta['sha256'])
 for name in paths:
