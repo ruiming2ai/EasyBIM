@@ -325,7 +325,7 @@ class MetadataCopyFlow(unittest.TestCase):
 
 
 class LiveCacheNativeDelivery(unittest.TestCase):
-    setUp = getattr(cache_fixtures.SavedCacheSession.setUp, '__func__', cache_fixtures.SavedCacheSession.setUp)
+    setUp = cache_fixtures.SavedCacheSession.__dict__['setUp']
 
     def prepare(self, missing=False):
         link = os.path.join(self.root, 'Architecture.rvt')

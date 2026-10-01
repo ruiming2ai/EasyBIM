@@ -227,9 +227,10 @@ class CopyFirstTransmission(unittest.TestCase):
 
 
 class SimpleRepathUI(unittest.TestCase):
-    setUp=ui_fixtures.UI.setUp
-    cleanup=ui_fixtures.UI.cleanup
-    form=ui_fixtures.UI.form
+    # Copy functions, not Python 2 methods bound to the original fixture class.
+    setUp=ui_fixtures.UI.__dict__['setUp']
+    cleanup=ui_fixtures.UI.__dict__['cleanup']
+    form=ui_fixtures.UI.__dict__['form']
 
     def loaded_dialog(self):
         xaml=os.path.join(ROOT,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml')
