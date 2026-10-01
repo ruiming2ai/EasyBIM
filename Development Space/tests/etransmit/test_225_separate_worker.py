@@ -52,6 +52,19 @@ class WorkerRuntime(unittest.TestCase):
         self.assertFalse(worker.is_worker_process({}))
         self.assertFalse(worker.has_pending_job({worker.MODE_ENV:'1'}))
 
+    def test_worker_version_mismatch_is_rejected_before_model_access(self):
+        app=Obj(VersionNumber='2026')
+        job=worker._job_payload(self.stage,self.target,[],dict(independent_host=True),app,self.root)
+        self.assertEqual(job['tool_version'],worker.VERSION)
+        job['tool_version']='obsolete-installed-version'
+        job['stage']=os.path.join(self.root,'missing-stage.rvt')
+        with self.assertRaises(worker.WorkerError) as caught:
+            worker._run_job(job,None)
+        self.assertIn('EasyBIM version mismatch',str(caught.exception))
+        self.assertIn('obsolete-installed-version',str(caught.exception))
+        self.assertIn(worker.VERSION,str(caught.exception))
+        with open(self.target,'rb') as stream:self.assertEqual(stream.read(),b'rvt')
+
     def test_parent_worker_job_merges_repaired_rows_without_reopen(self):
         rows=[dict(kind='Image',element_id='10',target=os.path.join(self.root,'PDF','A.pdf'))]
         app=Obj(VersionNumber='2026')
@@ -73,6 +86,49 @@ class WorkerRuntime(unittest.TestCase):
         self.assertTrue(result['worker_repaired'])
         self.assertEqual(result['worker_process_id'],42)
         self.assertEqual(rows[0]['repath'],'API_IMAGE_RELATIVE')
+
+    def assert_rejected_worker_keeps_diagnostics(self, outcome, process=None):
+        rows=[dict(kind='RevitLink',element_id='10',source='Original.rvt')]
+        process=process or FakeProcess()
+        captured=[]
+        def start(executable,job_path):
+            captured.append(job_path)
+            with io.open(job_path,'r',encoding='utf-8') as stream:job=json.loads(stream.read())
+            self.addCleanup(shutil.rmtree,os.path.dirname(job_path),ignore_errors=True)
+            result=dict(status='SUCCEEDED',processing_result=dict(
+                issues=[],host_finalized=True,saved_references_checked=True),
+                rows=[dict(rows[0],repath='API_LOCAL_LINK_RELATIVE')])
+            if outcome=='failure':result.update(status='FAILED',message='Native host SaveAs failed')
+            elif outcome=='incomplete':result['processing_result'].pop('saved_references_checked')
+            worker._write_json(job['result_path'],result)
+            return process
+        with self.assertRaises(worker.WorkerError) as caught:
+            worker.run_separate_revit(
+                Obj(VersionNumber='2026'),self.stage,self.target,rows,
+                dict(repath=True,independent_host=True),process_factory=start,
+                executable='Revit.exe',sleeper=lambda seconds:None,clock=lambda:0)
+        self.assertEqual(len(captured),1)
+        job_dir=os.path.dirname(captured[0])
+        self.assertTrue(os.path.isfile(captured[0]))
+        self.assertTrue(os.path.isfile(os.path.join(job_dir,'result.json')))
+        self.assertNotIn('repath',rows[0],'Rejected results must not mutate the parent reference rows')
+        self.assertTrue(process.disposed)
+        return caught.exception
+
+    def test_failed_worker_preserves_job_result_and_parent_rows(self):
+        error=self.assert_rejected_worker_keeps_diagnostics('failure')
+        self.assertIn('Native host SaveAs failed',str(error))
+
+    def test_success_missing_saved_reference_contract_preserves_diagnostics(self):
+        self.assert_rejected_worker_keeps_diagnostics('incomplete')
+
+    def test_unconfirmed_worker_exit_cannot_be_accepted_as_success(self):
+        class UnstoppableProcess(FakeProcess):
+            def WaitForExit(self,*args):return False
+            def CloseMainWindow(self):return False
+            def Kill(self):raise RuntimeError('process cannot be stopped')
+        error=self.assert_rejected_worker_keeps_diagnostics('success',UnstoppableProcess())
+        self.assertTrue(error.worker_may_be_running)
 
     def test_unattended_dialog_policy_avoids_save_and_prefers_continue(self):
         self.assertEqual(worker._dialog_result_candidates('','Save changes to this project?')[0],7)

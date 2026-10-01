@@ -177,7 +177,7 @@ class IndependentCentralSave(unittest.TestCase):
 
 
 class IndependentRepair(unittest.TestCase):
-    def test_worker_lifecycle_saves_independent_central_and_activates_metadata_after_close(self):
+    def test_worker_lifecycle_materializes_temporary_metadata_and_checks_final_saved_host(self):
         b=Backend(Obj(),Obj(VersionNumber='2024'),'C:\\Package')
         b.guard=lambda path:None
         b.basic=lambda path:dict(version='2024',workshared=True)
@@ -185,9 +185,13 @@ class IndependentRepair(unittest.TestCase):
         doc=Obj(IsWorkshared=True,PathName='C:\\Temp\\stage.rvt',
                 Save=lambda:events.append('save'),
                 Close=lambda value:events.append('close') or True)
-        b.open_copy=lambda stage,discard=False:(events.append('open') or doc)
-        def save_central(document,target):
-            events.append('saveas-central')
+        def open_copy(stage,discard=False):
+            self.assertFalse(discard)
+            events.append(('open',stage))
+            return doc
+        b.open_copy=open_copy
+        def save_central(document,target,clear_transmitted=False):
+            events.append(('saveas-central',clear_transmitted))
             document.PathName=target
             return True
         b._save_as_independent_package_central=save_central
@@ -199,17 +203,36 @@ class IndependentRepair(unittest.TestCase):
             for row in rows:row['repath']='API_IMAGE_RELATIVE'
             return [],True
         b.repath_images=repath_images
-        metadata=[]
-        b.apply_metadata=lambda path,target,rows,relative=True,mark_transmitted=True:(
-            metadata.append((path,target,relative,mark_transmitted)) or True)
+        def apply_metadata(path,target,rows,relative=True,mark_transmitted=True):
+            self.assertTrue(mark_transmitted)
+            events.append(('metadata',path,target,relative))
+            return True
+        b.apply_metadata=apply_metadata
+        b._package_is_transmitted=lambda path:True
+        b._verify_document=lambda document,target,rows,options:(events.append('verify-document') or [])
+        def verify_saved(target,rows,options,expected_workshared=None):
+            self.assertEqual(target,'C:\\Package\\Host.rvt')
+            self.assertTrue(expected_workshared)
+            events.append('verify-saved')
+            return []
+        b.verify_independent_package=verify_saved
         row=dict(id='10',element_id='10',kind='Image',special='image',
                  source='old.pdf',target='C:\\Package\\Links\\PDF\\A.pdf',loaded=True)
         result=b.finish_independent('C:\\Temp\\stage.rvt','C:\\Package\\Host.rvt',
                                     [row],dict(repath=True,cleanup=False,upgrade=False,
-                                               normalize_saved_cache=False))
-        self.assertEqual(events,['open','saveas-central','repath-image','save','close'])
-        self.assertEqual(metadata,[('C:\\Package\\Host.rvt','C:\\Package\\Host.rvt',True,True)])
+                                               normalize_saved_cache=False,independent_host=True))
+        self.assertEqual(events,[
+            ('metadata','C:\\Temp\\stage.rvt','C:\\Package\\Host.rvt',False),
+            ('open','C:\\Temp\\stage.rvt'),('saveas-central',True),
+            'repath-image','save','verify-document','close',
+            ('metadata','C:\\Package\\Host.rvt','C:\\Package\\Host.rvt',True),
+            ('open','C:\\Package\\Host.rvt'),'verify-document',
+            ('saveas-central',True),'close','verify-saved'])
         self.assertTrue(result['independent_package_central'])
+        self.assertTrue(result['host_finalized'])
+        self.assertTrue(result['saved_references_checked'])
+        self.assertFalse(result['verified_in_process'])
+        self.assertEqual(result['verification_status'],'SAVED_REFERENCES_CHECKED')
         self.assertEqual(row['repath'],'API_IMAGE_RELATIVE')
 
 
@@ -256,25 +279,31 @@ class EngineRepairs(unittest.TestCase):
         self.assertEqual(calls,['finish','verify'])
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
-    def test_worker_repaired_host_is_not_reopened_for_verification(self):
+    def test_finalized_worker_host_is_not_reopened_for_verification(self):
         root=tempfile.mkdtemp(prefix='ET_worker_noverify_');self.addCleanup(shutil.rmtree,root)
         host=os.path.join(root,'Host.rvt')
         with open(host,'wb') as out:out.write(b'host')
         calls=[]
         class B(object):
+            independent_host_supported=True
             def scan(self,*args):return dict(references=[],issues=[],is_workshared=False,version='2026')
-            def finish(self,*args):
+            def finish(self,stage,target,rows,options):
+                self.test.assertTrue(options.get('independent_host'))
                 calls.append('finish')
-                return dict(issues=[],verified_in_process=False,worker_repaired=True)
+                return dict(issues=[],verified_in_process=False,worker_repaired=True,
+                            host_finalized=True,saved_references_checked=True,
+                            independent_package_central=False)
             def verify_package(self,*args):
-                calls.append('verify')
-                return []
-        result=e.transmit([host],os.path.join(root,'out'),B())
+                self.test.fail('the parent must trust final saved reference checks')
+        backend=B();backend.test=self
+        result=e.transmit([host],os.path.join(root,'out'),backend)
         self.assertEqual(calls,['finish'])
         self.assertTrue(result['files'][0].get('worker_repaired'))
-        self.assertEqual(result['files'][0].get('model_verification'),'WORKER_SAVE_COMPLETED')
+        self.assertTrue(result['files'][0].get('host_finalized'))
+        self.assertTrue(result['files'][0].get('saved_references_checked'))
+        self.assertEqual(result['files'][0].get('model_verification'),'SAVED_REFERENCES_CHECKED')
 
-    def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
+    def test_legacy_backend_workshared_host_is_never_marked_transmitted(self):
         root=tempfile.mkdtemp(prefix='ET_posttx_');self.addCleanup(shutil.rmtree,root)
         host=os.path.join(root,'Host.rvt')
         with open(host,'wb') as out:out.write(b'host')
@@ -292,8 +321,8 @@ class EngineRepairs(unittest.TestCase):
                 calls.append('verify')
                 return []
         result=e.transmit([host],os.path.join(root,'out'),B())
-        self.assertEqual(calls,['finish','transmit','verify'])
-        self.assertEqual(result['files'][0].get('transmission_status'),'TRANSMITTED')
+        self.assertEqual(calls,['finish'])
+        self.assertIsNone(result['files'][0].get('transmission_status'))
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
     def test_parent_is_processed_after_collected_link(self):

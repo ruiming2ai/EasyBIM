@@ -136,7 +136,7 @@ class AcquisitionIntegration(unittest.TestCase):
         self.payload=compound();self.version='urn:adsk.wipprod:fs.file:vf.H?version=2'
         return Graph('b.p',self.version,dict(hostFile=dict(modelName='H.rvt',itemId='h',versionId=self.version,size=len(self.payload),signedUrl='https://s3.amazonaws.com/h'),linkedFiles=dict(results=[dict(modelName='Arch.rvt',itemId='a',size=len(self.payload),signedUrl='https://s3.amazonaws.com/a')])) )
     def test_host_only_native_graph_collects_architecture_and_preserves_bytes(self):
-        from easybim_etransmit import session
+        from easybim_etransmit import session,worker
         graph=self.graph();downloads=[]
         def download(url,path,size,pulse=None):
             downloads.append(url)
@@ -148,8 +148,31 @@ class AcquisitionIntegration(unittest.TestCase):
             def rows(self,stage,owner=''):
                 return [dict(id='7',element_id='7',kind='RevitLink',source=os.path.join(self.staging_root,'Arch.rvt'),loaded=True)] if owner==key else []
         opts=f.defaults();opts.update(deep=False,repath=False)
-        out=os.path.join(self.root,'out');result=engine.transmit([key],out,B(Obj(),Obj(VersionNumber='2024'),out,registry),opts)
+        calls=[]
+        original_worker=worker.run_separate_revit
+        out=os.path.join(self.root,'out')
+        def finalize(application,stage,target,rows,options,**kwargs):
+            # Acquisition is real; only native ordinary-project serialization
+            # is substituted for this published-graph membership regression.
+            calls.append(dict(options=copy.deepcopy(options),target=target))
+            self.assertTrue(options['independent_host'])
+            self.assertFalse(options['repath'])
+            for row in rows:
+                self.assertTrue(os.path.isfile(row['target']))
+                self.assertTrue(f.within(row['target'],out))
+            shutil.copyfile(stage,target)
+            return dict(issues=[],host_finalized=True,saved_references_checked=True,
+                        verification_status='SAVED_REFERENCES_CHECKED',worker_repaired=True,
+                        independent_package_central=False,verified_in_process=False,
+                        original_central_association_preserved=False)
+        worker.run_separate_revit=finalize
+        self.addCleanup(setattr,worker,'run_separate_revit',original_worker)
+        result=engine.transmit([key],out,B(Obj(),Obj(VersionNumber='2024'),out,registry),opts)
         self.assertEqual(engine.package_counts(result)['files_copied'],2,repr(result['issues']))
+        self.assertEqual(len(calls),1)
+        host=next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertTrue(host['host_finalized'])
+        self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
         self.assertEqual(len(downloads),2)
         self.assertTrue(all(x['source_context']['mode']=='PUBLISHED_VERSION' for x in result['files']))
         for row in result['files']:

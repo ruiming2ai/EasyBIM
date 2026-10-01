@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 import os, sys, unittest, tempfile, shutil
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
-from easybim_etransmit import session as s, engine, files as f
+from easybim_etransmit import session as s, engine, files as f, worker
 from test_payload_acquisition import compound
 
 class Obj(object):
@@ -41,11 +41,53 @@ class HostSafety(unittest.TestCase):
         self.addCleanup(self.r.close)
         self.r.scanner.elements=lambda *a:[]
         self.r.scanner.scan_open=lambda *a:None
+        # Keep acquisition and finalization routing real; substitute only the
+        # separate native Revit process that this Python test cannot launch.
+        self.worker_calls=[]
+        original_worker=worker.run_separate_revit
+        def finalize(application,stage,target,rows,options,**kwargs):
+            self.assertTrue(options.get('independent_host'))
+            self.assertNotEqual(stage,target)
+            self.assertEqual(f.digest(stage),self.r.get(options['_host_source'])['snapshot_sha256'])
+            self.worker_calls.append(dict(stage=stage,target=target,options=dict(options)))
+            shutil.copyfile(stage,target)
+            return dict(issues=[],host_finalized=True,saved_references_checked=True,
+                        verification_status='SAVED_REFERENCES_CHECKED',worker_repaired=True,
+                        verified_in_process=False,independent_package_central=True,
+                        original_central_association_preserved=False)
+        worker.run_separate_revit=finalize
+        self.addCleanup(setattr,worker,'run_separate_revit',original_worker)
     def live(self):return self.r.add_live(self.doc)
     def authorize(self,key):
         fn=getattr(self.r,'authorize_snapshots',None)
         self.assertTrue(callable(fn),'explicit batch authorization is missing')
         fn([key])
+    def assert_retained_original(self,result):
+        host=next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],0,repr(result['issues']))
+        self.assertEqual(host['status'],'NOT_FINALIZED')
+        self.assertFalse(host.get('host_finalized'))
+        self.assertFalse(os.path.exists(host['target']))
+        self.assertFalse(f.within(host['recovery_path'],result['root']))
+        with open(host['recovery_path'],'rb') as inp:self.assertEqual(inp.read(),self.current)
+        self.assertEqual(f.digest(host['recovery_path']),host['current_state_sha256'])
+        self.assertEqual(host['current_state_integrity'],'VERIFIED')
+        self.assertFalse(os.path.exists(os.path.join(result['root'],'_HostState')))
+        self.addCleanup(f.remove_tree_retry,result['recovery_directory'])
+        return host
+    def assert_finalized_host(self,result):
+        host=next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
+        self.assertEqual(host['status'],'COPIED')
+        self.assertTrue(host['host_finalized'])
+        self.assertTrue(host['saved_references_checked'])
+        self.assertTrue(host['independent_package_central'])
+        self.assertEqual(host['model_verification'],'SAVED_REFERENCES_CHECKED')
+        self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
+        self.assertEqual(host['opening_guidance'],'OPEN_NORMALLY_INDEPENDENT_PACKAGE')
+        self.assertFalse(host['original_central_association_preserved'])
+        self.assertEqual(self.worker_calls[-1]['target'],host['target'])
+        return host
     def test_batch_authorization_saves_current_bytes_without_reprompt(self):
         key=self.live();self.authorize(key)
         self.r.confirm_snapshot=lambda *a:self.fail('authorized host must not prompt again')
@@ -88,13 +130,10 @@ class HostSafety(unittest.TestCase):
             def verify_package(inner,*args):self.fail('do not load missing cloud links during host verification')
         out=os.path.join(self.root,'out')
         result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
-        host=result['files'][0]
+        host=self.assert_retained_original(result)
         self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
         self.assertEqual(host['model_verification'],'DEFERRED')
-        self.assertEqual(f.digest(host['target']),host['current_state_sha256'])
-        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
-        self.assertEqual(host['current_state_integrity'],'VERIFIED')
+        self.assertEqual(self.worker_calls,[])
     def test_unavailable_cloud_link_is_reported_not_silently_skipped(self):
         self.doc.IsModelInCloud=True
         self.doc.GetCloudModelPath=lambda:Obj(GetModelGUID=lambda:'host',GetProjectGUID=lambda:'project',Dispose=lambda:None)
@@ -109,7 +148,8 @@ class HostSafety(unittest.TestCase):
         b=s.SessionBackend(self.db,self.app,out,self.r)
         b.finish=lambda *a:self.fail('missing cloud link should not trigger host modifications')
         result=engine.transmit([key],out,b,opts)
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
+        self.assert_retained_original(result)
+        self.assertEqual(self.worker_calls,[])
         self.assertEqual(result['references'][0]['status'],'UNRESOLVED')
         self.assertTrue(any(i['severity']=='error' for i in result['issues']),repr(result['issues']))
     def test_optional_plugin_inspection_happens_after_protected_host_copy(self):
@@ -125,7 +165,9 @@ class HostSafety(unittest.TestCase):
         b=s.SessionBackend(self.db,self.app,out,self.r)
         result=engine.transmit([key],out,b,opts)
         self.assertEqual(seen,[True],repr(result['issues']))
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],1)
+        self.assert_finalized_host(result)
+        self.assertEqual(len(self.worker_calls),1)
+        self.assertFalse(self.worker_calls[0]['options']['repath'])
         self.assertFalse(any(i['severity']=='error' for i in result['issues']))
         self.assertTrue(any(i['code']=='PLUGIN_SOURCE_COVERAGE' for i in result['issues']))
     def test_optional_plugin_inventory_is_cached_but_included_in_each_package(self):
@@ -143,7 +185,9 @@ class HostSafety(unittest.TestCase):
             b=s.SessionBackend(self.db,self.app,out,self.r)
             result=engine.transmit([key],out,b,opts)
             self.assertEqual(engine.package_counts(result)['files_copied'],2,repr(result['issues']))
+            self.assert_finalized_host(result)
         self.assertEqual(calls,[True],'plugin inventory should be read once and reused safely')
+        self.assertEqual(len(self.worker_calls),2)
     def test_new_unsaved_changes_after_snapshot_are_not_hidden_by_cache(self):
         key=self.live();self.authorize(key)
         self.r.snapshot(key)
@@ -162,7 +206,8 @@ class HostSafety(unittest.TestCase):
         self.assertEqual(result['aliases'],[])
         self.assertFalse(os.path.exists(os.path.join(out,'_Refs')))
         self.assertTrue(os.path.exists(os.path.join(out,'Links','PDF','Drawing.pdf')))
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],1)
+        self.assert_retained_original(result)
+        self.assertEqual(self.worker_calls,[])
     def test_authorization_rejects_linked_document(self):
         self.doc.IsLinked=True;key=self.live()
         fn=getattr(self.r,'authorize_snapshots',None)

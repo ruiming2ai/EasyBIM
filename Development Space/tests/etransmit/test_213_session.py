@@ -4,7 +4,7 @@ import copy, json, os, shutil, unittest, zipfile
 import test_212_session as fixtures
 from test_212_cache import P, M, V, W, Obj
 from test_payload_acquisition import compound
-from easybim_etransmit import cache_sources as c, session as s, files as f, engine
+from easybim_etransmit import cache_sources as c, session as s, files as f, engine, worker
 
 N='55555555-5555-4555-8555-555555555555'
 
@@ -38,13 +38,39 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         out=os.path.join(self.root,'out')
         backend=s.SessionBackend(self.db,self.app,out,self.r)
         options=f.defaults();options.update(repath=repath,load_unloaded_files=load,skip_cloud_links=True)
-        backend.finish=lambda *args:[]
-        backend.verify_package=lambda *args:[]
+        backend.verify_package=lambda *args:self.fail('worker-checked host must not reopen in the parent')
+        backend.mark_transmitted_package=lambda *args:self.fail('ordinary finalized host must not be marked transmitted')
         return engine.transmit([key],out,backend,options)
+
+    def assert_finalized_host(self,result):
+        host=next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
+        self.assertEqual(host['status'],'COPIED')
+        self.assertTrue(host['host_finalized'])
+        self.assertTrue(host['saved_references_checked'])
+        self.assertTrue(host['independent_package_central'])
+        self.assertEqual(host['model_verification'],'SAVED_REFERENCES_CHECKED')
+        self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
+        self.assertEqual(host['opening_guidance'],'OPEN_NORMALLY_INDEPENDENT_PACKAGE')
+        self.assertFalse(host['original_central_association_preserved'])
+        return host
+
+    def assert_retained_original(self,result):
+        host=next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],0,repr(result['issues']))
+        self.assertEqual(host['status'],'NOT_FINALIZED')
+        self.assertFalse(host.get('host_finalized'))
+        self.assertFalse(os.path.exists(host['target']))
+        self.assertFalse(f.within(host['recovery_path'],result['root']))
+        self.assertEqual(f.digest(host['recovery_path']),f.digest(self.original))
+        self.assertFalse(os.path.exists(os.path.join(result['root'],'_HostState')))
+        self.addCleanup(f.remove_tree_retry,result['recovery_directory'])
+        return host
 
     def test_anthropology_unloaded_identity_only_link_is_copied(self):
         original=self.put_link();stamp=os.stat(original).st_mtime;digest=f.digest(original)
         result=self.run_export({'Host.rvt':[cloud_row()]})
+        self.assert_finalized_host(result)
         self.assertEqual(engine.package_counts(result)['revit_links_copied'],1,repr(result['issues']))
         link=result['files'][1]
         self.assertEqual(link['source_context']['mode'],'CACHED_CLOUD_REFERENCE')
@@ -60,6 +86,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         result=self.run_export({'Host.rvt':[cloud_row()],
             'Architecture.rvt':[cloud_row(N,'Structure.rvt','2')],
             'Structure.rvt':[cloud_row(W,'Architecture.rvt','3')]})
+        self.assert_finalized_host(result)
         self.assertEqual(len(result['files']),2,repr(result['issues']))
         self.assertEqual(engine.package_counts(result)['revit_links_copied'],1)
         link=result['files'][1]
@@ -73,24 +100,27 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.assertEqual(failure['cloud_identity']['model_guid'],W)
         self.assertEqual(failure['cache_evidence']['attempts'],[])
         self.assertEqual(engine.package_counts(result)['revit_links_copied'],0)
-        self.assertEqual(result['files'][0]['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
-        self.assertEqual(f.digest(result['files'][0]['target']),f.digest(self.original))
+        host=self.assert_retained_original(result)
+        self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
         with open(os.path.join(result['root'],'REPORT.txt')) as inp:report=inp.read()
         self.assertIn('Element 4815243',report)
         self.assertIn('Cache roots:',report)
 
     def test_obsolete_load_option_is_ignored_and_unloaded_state_preserved(self):
         self.put_link();result=self.run_export({'Host.rvt':[cloud_row()]},repath=True)
+        self.assert_finalized_host(result)
         ref=result['references'][0]
         self.assertFalse(ref['loaded']);self.assertFalse(ref['original_loaded'])
         self.assertFalse(ref['package_loaded'])
 
     def test_load_option_off_preserves_unloaded_state(self):
         self.put_link();result=self.run_export({'Host.rvt':[cloud_row()]},load=False,repath=True)
+        self.assert_finalized_host(result)
         self.assertFalse(result['references'][0]['package_loaded'])
 
     def test_repath_off_does_not_request_loading(self):
         self.put_link();result=self.run_export({'Host.rvt':[cloud_row()]},load=True,repath=False)
+        self.assert_finalized_host(result)
         self.assertFalse(result['references'][0]['package_loaded'])
 
     def test_mismatched_link_uses_live_inventory_but_never_scans_nested_plugins(self):
@@ -109,21 +139,22 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.assertEqual([r['source'] for r in result['references']],['Wrong.pdf'])
         self.assertTrue(any(i['code']=='SAVED_CACHE_DIFFERS_FROM_LOADED' for i in result['issues']))
 
-    def test_cancellation_during_processing_restores_single_host(self):
+    def test_cancellation_during_processing_retains_single_original_outside_package(self):
         key=self.r.add_live(self.doc);out=os.path.join(self.root,'cancel')
         backend=s.SessionBackend(self.db,self.app,out,self.r)
-        def finish(stage,target,*args):
+        def finalize(application,stage,target,rows,options,**kwargs):
+            self.assertTrue(options['independent_host'])
             with open(target,'wb') as out:out.write(b'partial processing')
             raise f.Cancelled()
-        backend.finish=finish
+        worker.run_separate_revit=finalize
+        backend.verify_package=lambda *args:self.fail('cancelled host must not be verified')
         result=engine.transmit([key],out,backend,f.defaults())
         self.assertEqual(result['status'],'CANCELLED')
-        self.assertEqual(f.digest(result['files'][0]['target']),f.digest(self.original))
-        self.assertEqual(result['files'][0]['processing_status'],'ROLLED_BACK')
-        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
+        self.assertEqual(self.assert_retained_original(result)['processing_status'],'ROLLED_BACK')
 
     def test_zip_contains_no_hoststate_and_only_one_host_rvt(self):
         result=self.run_export({});archive=os.path.join(self.root,'package.zip')
+        self.assert_finalized_host(result)
         engine.zip_package(result['root'],archive)
         with zipfile.ZipFile(archive) as z:
             self.assertEqual([n for n in z.namelist() if n.lower().endswith('.rvt')],['Host.rvt'])
@@ -132,32 +163,35 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.assertNotIn('saved_state_backup',data['files'][0])
         self.assertEqual(data['counts']['revit_links_requested'],0)
 
-    def test_failed_rollback_retains_original_outside_deliverable(self):
-        self.failed_rollback(False)
+    def test_worker_failure_retains_original_without_restoring_unfinished_target(self):
+        self.finalization_failure(False)
 
-    def test_failed_cancellation_rollback_retains_original_outside_deliverable(self):
-        self.failed_rollback(True)
+    def test_worker_cancellation_retains_original_without_restoring_unfinished_target(self):
+        self.finalization_failure(True)
 
-    def failed_rollback(self,cancelled):
+    def finalization_failure(self,cancelled):
         key=self.r.add_live(self.doc);out=os.path.join(self.root,'rollback-failed')
         backend=s.SessionBackend(self.db,self.app,out,self.r)
-        def finish(stage,target,*args):
+        def finalize(application,stage,target,rows,options,**kwargs):
+            self.assertTrue(options['independent_host'])
             with open(target,'wb') as stream:stream.write(b'failed processing')
             if cancelled:raise f.Cancelled()
             raise RuntimeError('processor failed')
-        backend.finish=finish
-        backend.verify_package=lambda *a:self.fail('failed rollback cannot be verified')
+        worker.run_separate_revit=finalize
+        backend.verify_package=lambda *a:self.fail('unfinished host cannot be verified')
         old=engine.shutil.copyfile
-        def denied(*args):raise IOError('simulated target write failure')
+        restore_attempts=[]
+        def denied(*args):
+            restore_attempts.append(args)
+            raise IOError('simulated target write failure')
         engine.shutil.copyfile=denied
         try:result=engine.transmit([key],out,backend,f.defaults())
         finally:engine.shutil.copyfile=old
-        host=result['files'][0];recovery=host['recovery_path']
-        self.addCleanup(shutil.rmtree,os.path.dirname(recovery))
-        self.assertEqual(host['processing_status'],'ROLLBACK_FAILED')
-        self.assertFalse(f.within(recovery,out))
-        self.assertEqual(f.digest(recovery),f.digest(self.original))
-        self.assertTrue(any(i['code']=='HOST_ROLLBACK_FAILED' for i in result['issues']))
+        host=self.assert_retained_original(result);recovery=host['recovery_path']
+        self.assertEqual(host['processing_status'],'ROLLED_BACK' if cancelled else 'FAILED')
+        self.assertEqual(result['status'],'CANCELLED' if cancelled else 'FAILED')
+        self.assertEqual(restore_attempts,[],'unfinished target must be removed rather than restored into the package')
+        self.assertFalse(any(i['code']=='HOST_ROLLBACK_FAILED' for i in result['issues']))
         with open(os.path.join(out,'REPORT.txt')) as inp:report=inp.read()
         self.assertIn(recovery,report)
 

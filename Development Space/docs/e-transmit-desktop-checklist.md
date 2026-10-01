@@ -4,7 +4,34 @@ Not yet performed. Use non-production models and the same Revit major version
 for the first test. Keep originals outside the output tree. Do not synchronize
 package copies to the original central.
 
-- Update the whole EasyBIM extension, reload/restart, and verify version 2.1.12.
+2.1.25 current acceptance checks (not yet performed):
+
+- Update the whole extension, reload/restart and verify version 2.1.25. Confirm
+  there is no Simple copy and repath checkbox. Repeat with old settings containing
+  both values of `simple_repath`; neither may bypass independent-host finalization.
+- Confirm `ET_INSTALLATION_PROVENANCE` and `manifest.json`'s `runtime_provenance`
+  identify the extension actually loaded by Revit, its module/button paths and
+  available Git commit. Test a ZIP/non-Git installation with an empty commit.
+- Export saved/cache workshared hosts with Repath ON and OFF, Cleanup/Upgrade OFF.
+  Confirm the completed primary host is a central at its own package location,
+  retains worksets and is not marked transmitted. With Repath OFF, original
+  reference paths and load intent must remain. Test a non-workshared host too.
+- With Repath ON, include native CAD/RVT links, PDFs/images and ACC resources.
+  Relocate the whole package and open the finalized host normally without a
+  transmitted/detached prompt. Check Manage Links, unloaded state, PDF page and
+  resolution, linked instance placement, tags and dimensions.
+- Simulate a missing linked RVT, worker/save failure and cancellation. Confirm
+  finalization is blocked, the report says incomplete, and the retained baseline
+  is identified as recovery instead of a finished host. Confirm no source fallback.
+- Repeat opt-in Cleanup/Upgrade and Disable worksets. Check the selected changes
+  affect only copies. An older host without upgrade authorization must not be
+  silently saved in the newer format. `SAVED_REFERENCES_CHECKED` alone is not a
+  desktop Revit-load pass.
+
+Versioned checks below retain their historical behavior; the current checks above
+supersede older raw/transmitted/simple-copy host delivery expectations.
+
+- Update the whole EasyBIM extension, reload/restart, and verify the current version.
   Check light/dark icons and the Links panel ordering; existing buttons still work.
 - With no project open, select a closed RVT. With several projects open, verify
   the active project alone is checked by default. Test unsaved/new/cloud hosts.

@@ -22,6 +22,7 @@ import time
 import traceback
 
 from . import files as f
+from . import VERSION
 
 
 JOB_ENV = 'EASYBIM_ETRANSMIT_WORKER_JOB'
@@ -204,6 +205,7 @@ def _job_payload(stage, target, rows, options, application, job_dir):
     safe_options['worker_mode'] = True
     return dict(
         format=JOB_FORMAT,
+        tool_version=VERSION,
         version=f.text(getattr(application, 'VersionNumber', '') or ''),
         stage=stage,
         target=target,
@@ -265,7 +267,7 @@ def _stop_process(process):
         if process.HasExited:
             return
     except Exception:
-        return
+        pass
     try:
         process.CloseMainWindow()
         process.WaitForExit(3000)
@@ -277,6 +279,13 @@ def _stop_process(process):
             process.WaitForExit(5000)
     except Exception:
         pass
+    try:
+        if process.HasExited:return
+    except Exception:
+        pass
+    error=WorkerError('The separate Revit worker exit could not be confirmed. Keep its package and recovery files until the process exits.')
+    error.worker_may_be_running=True
+    raise error
 
 
 def _merge_rows(original, returned):
@@ -308,6 +317,7 @@ def run_separate_revit(application, stage, target, rows, options,
     timeout = int(timeout_seconds or options.get('worker_timeout_seconds') or
                   DEFAULT_TIMEOUT_SECONDS)
     process = None
+    accepted_success=False
     sleep = sleeper or time.sleep
     now = clock or time.time
     started = now()
@@ -326,8 +336,19 @@ def run_separate_revit(application, stage, target, rows, options,
                 if result.get('status') != 'SUCCEEDED':
                     message = result.get('message') or 'The separate Revit repair failed.'
                     raise WorkerError(message + ' Diagnostics: ' + job_dir)
-                _merge_rows(rows, result.get('rows', []))
                 raw = result.get('processing_result')
+                if options.get('independent_host') and (
+                        not isinstance(raw, dict) or not raw.get('host_finalized')
+                        or not raw.get('saved_references_checked')):
+                    details='; '.join(f.text(i.get('message','')) for i in
+                                     (raw.get('issues') or []) if isinstance(i,dict)) if isinstance(raw,dict) else ''
+                    raise WorkerError('The worker did not confirm an untransmitted, saved package host. '+details+' Diagnostics: ' + job_dir)
+                # A result is written after every document closes. Also require
+                # process exit before allowing the parent to publish or recover.
+                process.WaitForExit(10000)
+                _stop_process(process)
+                _merge_rows(rows, result.get('rows', []))
+                accepted_success=True
                 if isinstance(raw, dict):
                     raw = dict(raw)
                     raw['worker_repaired'] = True
@@ -370,6 +391,7 @@ def run_separate_revit(application, stage, target, rows, options,
             sleep(0.25)
     except Exception:
         # Keep the job/result/status directory on failure for diagnosis.
+        if process is not None:_stop_process(process)
         raise
     finally:
         if process is not None:
@@ -392,7 +414,7 @@ def run_separate_revit(application, stage, target, rows, options,
         try:
             if os.path.isfile(payload['result_path']):
                 result = _read_json(payload['result_path'])
-                if result.get('status') == 'SUCCEEDED':
+                if accepted_success and result.get('status') == 'SUCCEEDED':
                     shutil.rmtree(job_dir)
         except Exception:
             pass
@@ -438,6 +460,8 @@ def _worker_result(job, status, message='', processing_result=None, rows=None):
 def _run_job(job, uiapp):
     if int(job.get('format', 0) or 0) != JOB_FORMAT:
         raise WorkerError('Unsupported e-transmit worker job format.')
+    if job.get('tool_version') and job['tool_version']!=VERSION:
+        raise WorkerError('Worker EasyBIM version mismatch: expected '+f.text(job['tool_version'])+', loaded '+VERSION+'. Check the installed extension path.')
     if uiapp is None:
         raise WorkerError('UIApplication is not available in the worker Revit process.')
     app = uiapp.Application

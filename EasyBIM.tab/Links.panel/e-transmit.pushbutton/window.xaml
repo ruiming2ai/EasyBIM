@@ -51,10 +51,9 @@
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
-            <TextBlock Text="Repath off: no host reopening unless Cleanup or Upgrade is selected. Unloaded links are offered in a separate selection window." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="Unloaded links are offered in a separate selection window. Final host copies are saved as independent models, preserve worksets, and open normally." TextWrapping="Wrap" Foreground="#536273"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
-            <CheckBox x:Name="SimpleRepath" Content="Simple copy and repath (native file links)" IsChecked="True"/>
-            <TextBlock Text="Simple mode keeps the saved host/cache copy and repaths native file links. PDFs/images and ACC resource links may need manual repair. Uncheck for automatic Revit repairs. Cleanup or Upgrade also requires Revit processing." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="Repath changes supported reference paths in the package. Cleanup and Upgrade apply only to package copies. Worksets are preserved unless Disable worksets is selected." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="File Structure Organization">

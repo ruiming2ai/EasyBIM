@@ -48,11 +48,10 @@ class CollectionPolicy(fixtures.SavedCacheSession):
         key=self.r.add_live(self.doc)
         self.r.get(key)['inventory']['references']=[dict(id='1',element_id='1',kind='RevitLink',source=path,loaded=False,td=True)]
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
-        b.requires_final_host_open=lambda *a:False
-        b.finish=lambda *a:[];b.verify_package=lambda *a:[]
         opts=f.defaults();opts.update(repath=True,load_unloaded_files=True)
         result=engine.transmit([key],os.path.join(self.root,'out'),b,opts)
         self.assertFalse(result['references'][0]['package_loaded'])
+        self.assertEqual(result['files'][0]['model_verification'],'SAVED_REFERENCES_CHECKED')
 
 for name in fixtures.SavedCacheSession.__dict__:
     if name.startswith('test_') and name not in CollectionPolicy.__dict__:setattr(CollectionPolicy,name,None)
@@ -63,6 +62,7 @@ class DialogContracts(unittest.TestCase):
         with io.open(os.path.join(root,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml'),encoding='utf-8') as inp:text=inp.read()
         self.assertNotIn('x:Name="DeepScan"',text)
         self.assertNotIn('x:Name="LoadUnloadedFiles"',text)
+        self.assertNotIn('x:Name="SimpleRepath"',text)
         for name in ('Repath','Cleanup','Upgrade'):self.assertIn('x:Name="'+name+'"',text)
 
 
@@ -73,23 +73,31 @@ class CleanupPermission(fixtures.SavedCacheSession):
             self.r.get(key)['inventory']['references']=[dict(id='missing',element_id='1',kind='RevitLink',source=os.path.join(self.root,'Missing.rvt'),loaded=False)]
             b=s.SessionBackend(self.db,self.app,self.root,self.r);calls=[]
             def finish(stage,target,rows,opts):
-                calls.append(dict(opts));return []
+                calls.append(dict(opts))
+                return dict(issues=[],host_finalized=True,saved_references_checked=True,
+                            verification_status='SAVED_REFERENCES_CHECKED',worker_repaired=True,
+                            independent_package_central=True,verified_in_process=False)
             b.finish=finish
             b.verify_package=lambda *a:self.fail('repath off must not open for link verification')
             opts=f.defaults();opts.update(repath=False,cleanup=False,upgrade=False);opts[option]=True
             result=engine.transmit([key],os.path.join(self.root,option),b,opts)
             self.assertEqual(len(calls),1,repr(result['issues']))
             self.assertFalse(calls[0]['repath'])
+            self.assertTrue(calls[0]['independent_host'])
             self.assertEqual(result['files'][0]['processing_status'],'PROCESSED')
-    def test_copy_report_explains_detach_without_claiming_standalone(self):
+            self.assertEqual(result['files'][0]['transmission_status'],'NOT_TRANSMITTED')
+    def test_repath_off_report_explains_normal_independent_host_and_unchanged_references(self):
         key=self.r.add_live(self.doc);opts=f.defaults();opts.update(repath=False)
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
         result=engine.transmit([key],os.path.join(self.root,'report'),b,opts)
         with io.open(os.path.join(result['root'],'START_HERE.txt'),encoding='utf-8') as inp:text=inp.read()
-        self.assertIn('Detach from Central',text)
+        self.assertIn('transmitted status cleared and open normally',text)
+        self.assertIn('Workshared package hosts use their own central path',text)
         self.assertIn('references were not changed',text)
-        self.assertEqual(result['files'][0]['opening_guidance'],'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
-        self.assertNotEqual(result['files'][0]['original_central_association_preserved'],False)
+        self.assertEqual(result['files'][0]['opening_guidance'],'OPEN_NORMALLY_INDEPENDENT_PACKAGE')
+        self.assertEqual(result['files'][0]['transmission_status'],'NOT_TRANSMITTED')
+        self.assertFalse(result['files'][0]['original_central_association_preserved'])
+        self.assertEqual(f.digest(self.original),f.digest(result['files'][0]['target']))
 
 for name in fixtures.SavedCacheSession.__dict__:
     if name.startswith('test_') and name not in CleanupPermission.__dict__:setattr(CleanupPermission,name,None)

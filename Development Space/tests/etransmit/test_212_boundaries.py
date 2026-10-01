@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 import os, sys, unittest
 from test_212_cache import Obj,P,M
 import test_212_session as fixtures
-from easybim_etransmit import session as s, files as f, engine
+from easybim_etransmit import session as s, files as f, engine, worker
 
 class SavedBoundary(fixtures.SavedCacheSession):
     def test_report_does_not_claim_a_working_SaveAs_or_unsaved_snapshot(self):
@@ -38,18 +38,27 @@ class SavedBoundary(fixtures.SavedCacheSession):
         b._bind_saved_links(entry,dict(references=[row]))
         self.assertNotEqual(row['source'],key)
         self.assertEqual(self.r.get(row['source'])['cloud']['model_guid'],'55555555-5555-4555-8555-555555555555')
-    def test_normalization_failure_restores_cached_host_without_extra_baseline(self):
+    def test_normalization_failure_retains_cached_host_outside_package(self):
         key=self.r.add_live(self.doc)
+        def finalize(application,stage,target,rows,options,**kwargs):
+            self.assertTrue(options['independent_host'])
+            self.assertTrue(options['normalize_saved_cache'])
+            with open(target,'wb') as o:o.write(b'bad processing bytes')
+            raise RuntimeError('failed to normalize copied RVT')
+        worker.run_separate_revit=finalize
         class B(s.SessionBackend):
-            def finish(inner,stage,target,*args):
-                with open(target,'wb') as o:o.write(b'bad processing bytes')
-                raise RuntimeError('failed to normalize copied RVT')
             def verify_package(inner,*a):self.fail('failed normalization must not pass verification')
         out=os.path.join(self.root,'normfail')
         result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'FAILED')
-        self.assertEqual(f.digest(host['target']),f.digest(self.original))
+        self.assertEqual(host['status'],'NOT_FINALIZED')
+        self.assertFalse(host.get('host_finalized'))
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],0)
+        self.assertFalse(os.path.exists(host['target']))
+        self.assertFalse(f.within(host['recovery_path'],out))
+        self.assertEqual(f.digest(host['recovery_path']),f.digest(self.original))
+        self.addCleanup(f.remove_tree_retry,result['recovery_directory'])
         self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
 
 for name in fixtures.SavedCacheSession.__dict__:

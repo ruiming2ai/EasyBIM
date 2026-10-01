@@ -55,6 +55,8 @@ def progress_phase(label):
         return 'CANCELLED', PHASE_COLORS['cancelled'], value
     if 'FINALIZING ACC LINKS' in upper:
         return 'FINALIZING ACC LINKS', PHASE_COLORS['verifying'], value
+    if 'SAVING INDEPENDENT PACKAGE HOST' in upper:
+        return 'SAVING INDEPENDENT PACKAGE HOST', PHASE_COLORS['verifying'], value
     if 'VERIFYING FINAL PACKAGE' in upper:
         return 'VERIFYING FINAL PACKAGE', PHASE_COLORS['verifying'], value
     if 'REPATH' in upper or 'CLEANUP' in upper:

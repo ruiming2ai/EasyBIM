@@ -12,24 +12,32 @@ class Backend(RevitBackend):
     def __init__(self,host,refs,output):
         RevitBackend.__init__(self,None,None,output)
         self.host=host;self.refs=refs;self.calls=[]
-    def basic(self,path):return dict(version='2025',workshared=False,central='')
+    def basic(self,path):return dict(version='2025',workshared=True,central=self.host)
     def scan(self,source,stage,options):
         self.calls.append(('scan',source))
-        return dict(references=list(self.refs) if source==self.host else [],issues=[],version='2025')
+        return dict(references=list(self.refs) if source==self.host else [],issues=[],version='2025',is_workshared=True)
     def finish(self,stage,target,rows,options):
         self.calls.append(('finish',target))
-        # Record intended final reference layout. Do not emulate a Revit serialization.
+        # Only the isolated Revit serialization is substituted. The engine must
+        # already have delivered every dependency to its final package path.
+        assert options.get('independent_host')
+        assert target == os.path.join(self.root, 'Host.rvt')
+        assert all(f.file_exists(r['target']) for r in rows if r.get('target'))
         base=options.get('reference_target',target)
         self.paths=[os.path.relpath(r['target'],os.path.dirname(base)) for r in rows if r.get('target')]
+        if options.get('repath'):
+            for row in rows:
+                if row.get('target'):row['verification']='SAVED_REFERENCE_CHECKED'
         with open(stage,'rb') as src,open(target,'wb') as dst:dst.write(src.read()+b'processed')
-        return []
+        return dict(issues=[],host_finalized=True,saved_references_checked=True,
+                    verification_status='SAVED_REFERENCES_CHECKED',worker_repaired=True,
+                    independent_package_central=True,verified_in_process=False)
     def verify_package(self,target,rows,options):
         self.calls.append(('verify',target))
-        for row in rows:
-            if row.get('target'):
-                if not f.file_exists(row['target']):raise IOError('Missing delivered dependency')
-                row['verification']='PATH_AND_LOAD_CHECKED'
-        return []
+        raise AssertionError('The parent must not reopen a worker-finalized host')
+    def mark_transmitted_package(self,*args):
+        self.calls.append(('mark_transmitted',))
+        raise AssertionError('The parent must not mark an independent host transmitted')
 
 class PerformanceTests(unittest.TestCase):
     def setUp(self):
@@ -51,7 +59,12 @@ class PerformanceTests(unittest.TestCase):
     def test_linked_files_are_not_processed_or_reopened_even_with_repath_on(self):
         result,b=self.run_package()
         self.assertEqual(len([c for c in b.calls if c[0]=='finish']),1)
-        self.assertEqual([c[1] for c in b.calls if c[0]=='verify'],[os.path.join(self.out,'Host.rvt')])
+        self.assertEqual([c[1] for c in b.calls if c[0]=='finish'],[os.path.join(self.out,'Host.rvt')])
+        self.assertFalse([c for c in b.calls if c[0] in ('verify','mark_transmitted')])
+        host=next(r for r in result['files'] if r.get('is_primary_host'))
+        self.assertEqual(host['model_verification'],'SAVED_REFERENCES_CHECKED')
+        self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
+        self.assertEqual(host['opening_guidance'],'OPEN_NORMALLY_INDEPENDENT_PACKAGE')
         row=next(r for r in result['files'] if r['source']==self.link)
         self.assertEqual(f.digest(row['target']),f.digest(self.link))
         self.assertEqual(row['processing_status'],'UNCHANGED_DEPENDENCY')
@@ -109,13 +122,24 @@ class PerformanceTests(unittest.TestCase):
         finally:f.copy_file=original
         row=next(r for r in result['files'] if r['source']==self.link)
         self.assertNotEqual(row['status'],'COPIED')
-        self.assertFalse([c for c in b.calls if c[0]=='verify'])
+        self.assertFalse([c for c in b.calls if c[0] in ('finish','verify','mark_transmitted')])
+        host=next(r for r in result['files'] if r.get('is_primary_host'))
+        self.assertEqual(host['status'],'NOT_FINALIZED')
+        self.assertEqual(f.digest(host['recovery_path']),f.digest(self.host))
+        self.assertFalse(f.within(host['recovery_path'],result['root']))
+        self.assertFalse(f.file_exists(host['target']))
         self.assertIn('performance',result)
         self.assertTrue(any(r['status']=='FAILED' for r in result['performance']['operations']))
-    def test_copy_only_does_not_open_revit_and_preserves_bytes(self):
+    def test_repath_off_finalizes_workshared_host_and_preserves_dependency_bytes(self):
+        before=f.digest(self.host)
         result,b=self.run_package(repath=False)
-        self.assertFalse([c for c in b.calls if c[0] in ('finish','verify')])
-        self.assertTrue(all(f.digest(r['source'])==f.digest(r['target']) for r in result['files']))
+        self.assertEqual([c[0] for c in b.calls if c[0]!='scan'],['finish'])
+        host=next(r for r in result['files'] if r.get('is_primary_host'))
+        self.assertEqual(host['model_verification'],'SAVED_REFERENCES_CHECKED')
+        self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
+        self.assertNotEqual(f.digest(host['target']),before)
+        self.assertEqual(f.digest(self.host),before)
+        self.assertTrue(all(f.digest(r['source'])==f.digest(r['target']) for r in result['files'] if not r.get('is_primary_host')))
     def test_rcp_support_files_keep_structure_with_direct_delivery(self):
         rcp=self.put('src/Survey.rcp');scan=self.put('src/Survey Support/sub/A.rcs',b'scan')
         result,b=self.run_package(refs=[dict(id='pc',source=rcp,kind='PointCloud')],repath=False)
@@ -142,7 +166,8 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(result['delivery_strategy'],'SHORT_PATH_PREPARATION')
         row=next(r for r in result['files'] if r['source']==self.link)
         self.assertEqual(row['sha256'],row['packaged_sha256'])
-        self.assertEqual(len([c for c in b.calls if c[0]=='verify']),1)
+        self.assertEqual([c[1] for c in b.calls if c[0]=='finish'],[os.path.join(self.out,'Host.rvt')])
+        self.assertFalse([c for c in b.calls if c[0] in ('verify','mark_transmitted')])
     def test_instrumentation_names_are_reserved_in_flat_layout(self):
         rows=[dict(source='/x/timings.csv',category='other',original_relative='timings.csv')]
         layout.plan(rows,'flat')

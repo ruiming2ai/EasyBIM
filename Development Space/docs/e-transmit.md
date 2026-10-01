@@ -1,16 +1,18 @@
-# EasyBIM e-transmit 2.1.24
+# EasyBIM e-transmit 2.1.25
 
-The current release restores copy-first native CAD/Revit repathing and fixes the
-2.1.23 finalization step that could replace packaged paths with old saved paths.
-See [2.1.24 release notes](e-transmit-2.1.24.md) for the current processing flow and
-validation limits. Earlier workflow details below retain their version context.
+Final host copies are saved as independent models at their package locations,
+with worksets preserved unless **Disable worksets** is selected. The final host
+opens normally and is not marked transmitted. Native reference changes are
+materialized by Revit into the saved model instead of leaving only desired
+TransmissionData paths. Workshared primary hosts are finalized even with Repath,
+Cleanup and Upgrade OFF; Repath OFF keeps original reference paths/load intent.
 
-For the copy-only repath test, leave **Simple copy and repath (native file links)**
-checked (the default), enable **Repath**, and leave **Cleanup/Upgrade OFF**. The
-host/cache copy is repathed through closed-file TransmissionData; unsupported
-PDF/image or true ACC External Resource references are reported for manual repair
-without opening the host in a worker. Uncheck the simple option for full API
-repair. Selecting cleanup or upgrade retains document processing.
+The **Simple copy and repath** checkbox is removed, and its old saved preference
+does not control finalization. Linked PDFs/images and true ACC External Resource
+links use supported Revit API repair when Repath is enabled. Cleanup and Upgrade
+remain opt-in. See [2.1.25 release notes](e-transmit-2.1.25.md) for recovery behavior
+and validation limits. Versioned sections below describe earlier releases;
+their raw/transmitted-copy opening behavior is superseded by 2.1.25.
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
@@ -21,7 +23,7 @@ around Autodesk's add-in and not a claim of identical format coverage.
 
 Intended for Revit 2023 and newer with pyRevit's IronPython engine. No external
 Python packages or extra installer are required. Filesystem and API-shaped tests
-do not establish that company models open in Revit. See `e-transmit-2.1.12.md` for
+do not establish that company models open in Revit. See `e-transmit-2.1.25.md` for
 release validation and use `e-transmit-desktop-checklist.md` for real-model acceptance.
 
 Revit must be running. Source models do not need to be manually opened. The
@@ -31,14 +33,17 @@ also accept closed RVTs. Family documents and linked documents are not offered a
 open host choices. The exported source is always the **saved file/cache**, not unsaved geometry in an
 open model. If a selected open model is modified, e-transmit explicitly asks whether
 to continue without saving, perform a normal in-place Save, or cancel. It never
-substitutes Save As, Synchronize with Central, or Publish.
+substitutes Synchronize with Central or Publish. Save As is offered only in the
+explicit detached-source recovery workflow, where its effect on the open document
+is explained before the choice.
 
 Select a short output location, such as `C:\Transmit`, then Transmit model(s).
 Every run creates a new folder, and existing packages are never overwritten.
 Source files may trigger normal Desktop Connector download-on-read. Cancel is
 checked between operations and during chunked copies. An individual Revit open,
 save, or provider hydration call cannot be interrupted by the Python progress UI.
-Revit remains occupied while the command executes; this is not a separate worker.
+The command remains occupied while collecting files. Final host saving and
+reference repair use the disposable Revit worker on package copies.
 
 ## Revit link collection in 2.1.7
 
@@ -213,9 +218,9 @@ bytes associated with that open Revit document; PacCache is not used.
 ## Repath, upgrade and cleanup
 
 Repath remains an explicit checkbox. With Repath off, reference locations in the
-host are intentionally left unchanged. If Cleanup and Upgrade are also off, no
-additional host opening or opening verification is performed. Recipients may need
-Reload From, and workshared/cache host copies may need Detach from Central.
+host are intentionally left unchanged. Workshared primary hosts still open/save
+in the worker to establish their independent package central and normal opening
+state. Recipients may need Reload From when original references are not accessible.
 
 Unloaded links preserve their original intended load state. There is no global
 "load all unloaded files" switch. The preflight checklist is only permission to
@@ -226,15 +231,15 @@ Packages and ZIPs contain no `_HostState` duplicate. Temporary staging outside t
 deliverable supports rollback on failure or cancellation. Reports separate requested,
 copied and verified Revit links; a copied host alone does not prove portability.
 
-Native file references supported by TransmissionData are repathed in closed package
-copies using relative package paths. Additional image or external-resource operations
-may require opening and saving a package copy. Methods not exposed by the API are
-reported rather than simulated by recreating instances. Point-cloud paths may need
-manual repair.
+Native references supported by TransmissionData are directed to packaged files
+and materialized into saved relative paths during worker finalization. Supported
+image or external-resource references are repaired in that worker too. Methods
+not exposed by the API are reported rather than simulated by recreating instances.
+Point-cloud paths may need manual repair.
 
 Saving an older model in the running Revit upgrades it. Unless Upgrade or Cleanup
-is checked, additional repathing that would require that save is skipped with
-`UPGRADE_CONSENT_REQUIRED`, and the saved model format is retained.
+is checked, a host requiring that save cannot be finalized in the newer format;
+the acquired baseline remains a recovery copy and the run reports incomplete.
 
 Cleanup options are: disable worksets, purge unused definitions, keep all
 sheets/views, keep sheets and placed views, also retain selected view types,
@@ -244,23 +249,31 @@ A view/purge deletion that cascades into a retained view rolls back. Purge is
 available only where the public `Document.GetUnusedElements` API exists.
 Directly collected linked RVTs remain unchanged. Cleanup/upgrade applies only to package models explicitly processed by the host workflow.
 
-Model processing affects package copies only. If it fails, the baseline collected
-output file is restored and the failure is reported. A raw collect-only workshared/
-ACC-cache copy can retain its original central association and therefore require
-**Detach from Central → Preserve Worksets** when opened independently. Never
-synchronize a package copy to the original central.
+Model processing affects package copies only. If independent-host finalization
+fails, the run is incomplete and its collected baseline is retained for recovery;
+it is not reported as a finished host. Missing linked RVTs also block finalization
+to prevent fallback to source/cloud models. Follow the reported recovery path.
+Never synchronize a recovery copy to the original central.
 
 ## Reports and verification
 
 `START_HERE.txt` and `manifest.json` are always written, including partial runs.
 The detailed-report option adds REPORT, files, references and issues CSVs.
 SHA-256 values distinguish copied source snapshots from the final repathed RVTs.
+`runtime_provenance` identifies the loaded e-transmit version, installation root,
+module path, button script path and available local Git HEAD commit. The same
+details appear in the `ET_INSTALLATION_PROVENANCE` trace before export; ZIP or
+non-Git installations leave the commit empty. No Git command or network lookup is
+needed to collect this information.
 CSV formula-leading values are escaped. Reports include project paths and may
 include server resource identifiers; review them before external sharing.
 
 - `COLLECTED`: no detected errors within the implemented scan; **not** an opening test.
 - `NEEDS_REVIEW`: missing files, unverifiable dependencies, manual repathing, or other issues.
 - `CANCELLED` / `FAILED`: partial output; do not issue as a complete package.
+
+`SAVED_REFERENCES_CHECKED` means finalized saved reference metadata was checked;
+it does not certify every linked file will load in a recipient's Revit session.
 
 An optional ZIP contains the preserved hierarchy and reports. No automatic upload
 or external sharing occurs. Always move/copy a test package to a different root,

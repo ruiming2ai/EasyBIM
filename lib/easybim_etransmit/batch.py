@@ -50,6 +50,32 @@ def run_batch(models, root, backend_factory, options=None, extras=None,
     write_index(root, jobs, data)
     return results
 
+
+def unfinished_archive_files(results):
+    """A live worker or retained unfinished target makes archive input unstable."""
+    unfinished=[]
+    for result in results:
+        for record in result.get('files',[]):
+            target=record.get('target')
+            if record.get('worker_exit_unconfirmed') or (
+                    record.get('status')=='NOT_FINALIZED' and target and f.file_exists(target)):
+                unfinished.append(record)
+    return unfinished
+
+
+def skip_unfinished_archive(result, job, path, records, batch_archive=False):
+    key='batch_zip_status' if batch_archive else 'zip_status'
+    code='BATCH_ZIP_SKIPPED_UNFINISHED' if batch_archive else 'MODEL_ZIP_SKIPPED_UNFINISHED'
+    job[key]='SKIPPED_UNFINISHED_HOST'
+    affected='; '.join(f.text(record.get('target') or record.get('source') or '') for record in records)
+    result['issues'].append(engine.issue(code,path,
+        'ZIP skipped because a worker has not confirmed exit or an unfinished model remains on disk. '
+        'Resolve host finalization before creating the archive. Affected files: '+affected,'error'))
+    if result['status']=='COLLECTED':result['status']='NEEDS_REVIEW'
+    job['status']=result['status']
+    engine.write_reports(result)
+
+
 def _run_batch(models, root, backend_factory, options=None, extras=None,
                cancelled=None, pulse=None, model_names=None):
     """Transmit every selected source, without one failed model losing the batch.
@@ -82,29 +108,38 @@ def _run_batch(models, root, backend_factory, options=None, extras=None,
             job.update(engine.package_counts(result))
             if opts.get('zip_per_model') and result['status']!='CANCELLED':
                 path=os.path.join(root,job['name']+'.zip')
-                job['zip_path']=path
-                try:
-                    engine.zip_package(package,path,cancelled)
-                    job['zip_status']='VERIFIED'
-                    job['zip_sha256']=f.digest(path,cancelled)
-                except f.Cancelled:
-                    job['zip_status']='CANCELLED';break
-                except Exception as exc:
-                    job['zip_status']='FAILED'
-                    result['issues'].append(engine.issue('MODEL_ZIP_FAILED',path,exc,'error'))
-                    result['status']='NEEDS_REVIEW' if result['status']=='COLLECTED' else result['status']
-                    job['status']=result['status'];engine.write_reports(result)
+                unfinished=unfinished_archive_files([result])
+                if unfinished:
+                    skip_unfinished_archive(result,job,path,unfinished)
+                else:
+                    job['zip_path']=path
+                    try:
+                        engine.zip_package(package,path,cancelled)
+                        job['zip_status']='VERIFIED'
+                        job['zip_sha256']=f.digest(path,cancelled)
+                    except f.Cancelled:
+                        job['zip_status']='CANCELLED';break
+                    except Exception as exc:
+                        job['zip_status']='FAILED'
+                        result['issues'].append(engine.issue('MODEL_ZIP_FAILED',path,exc,'error'))
+                        result['status']='NEEDS_REVIEW' if result['status']=='COLLECTED' else result['status']
+                        job['status']=result['status'];engine.write_reports(result)
         if opts.get('zip') and results and not (cancelled and cancelled()):
-            # Whole-batch archive remains optional; it is outside the source tree.
-            write_index(root,jobs)
-            try:engine.zip_package(root,root+'.zip',cancelled,[j['zip_path'] for j in jobs if j.get('zip_path')])
-            except f.Cancelled:raise
-            except Exception as exc:
+            unfinished=unfinished_archive_files(results)
+            if unfinished:
                 for result,job in zip(results,jobs):
-                    result['issues'].append(engine.issue('BATCH_ZIP_FAILED',root+'.zip',exc,'error'))
-                    if result['status']=='COLLECTED':result['status']='NEEDS_REVIEW'
-                    job['status']=result['status'];job['batch_zip_status']='FAILED'
-                    engine.write_reports(result)
+                    skip_unfinished_archive(result,job,root+'.zip',unfinished,batch_archive=True)
+            else:
+                # Whole-batch archive remains optional; it is outside the source tree.
+                write_index(root,jobs)
+                try:engine.zip_package(root,root+'.zip',cancelled,[j['zip_path'] for j in jobs if j.get('zip_path')])
+                except f.Cancelled:raise
+                except Exception as exc:
+                    for result,job in zip(results,jobs):
+                        result['issues'].append(engine.issue('BATCH_ZIP_FAILED',root+'.zip',exc,'error'))
+                        if result['status']=='COLLECTED':result['status']='NEEDS_REVIEW'
+                        job['status']=result['status'];job['batch_zip_status']='FAILED'
+                        engine.write_reports(result)
     except f.Cancelled:
         pass
     finally:
@@ -136,8 +171,10 @@ def _write_index_at(root,jobs,output,performance_data=None):
         f.write_csv(os.path.join(output,'batch_timings.csv'),performance_data['operations'],
             ['phase','operation','file','target','start_seconds','seconds','self_seconds','status','bytes','mib_per_second'])
     for job in jobs:
-        lines.append('{0:02d}: {1} | ZIP: {2} | {3}'.format(
-            job['index'],job['status'],job['zip_status'],job.get('name','')+' | '+'; '.join(job['models'])))
+        line='{0:02d}: {1} | ZIP: {2} | {3}'.format(
+            job['index'],job['status'],job['zip_status'],job.get('name','')+' | '+'; '.join(job['models']))
+        if job.get('batch_zip_status'):line+=' | Batch ZIP: '+job['batch_zip_status']
+        lines.append(line)
     # In combined mode the package's own START_HERE must not be overwritten.
     name='BATCH_SUMMARY.txt' if any(j['root']==root for j in jobs) else 'START_HERE.txt'
     with io.open(os.path.join(output,name),'w',encoding='utf-8') as out:out.write('\n'.join(lines))

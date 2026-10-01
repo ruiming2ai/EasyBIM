@@ -57,6 +57,7 @@ def metadata_target_allowed(row):
 
 class Backend(object):
     mark_transmitted_rows_supported = True
+    independent_host_supported = True
 
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
@@ -74,6 +75,7 @@ class Backend(object):
 
     def can_deliver_direct(self, record, rows, options):
         # Metadata-only hosts do not need physical siblings at their working path.
+        if self.requires_final_host_open(record,rows,options):return True
         if options.get('cleanup') or options.get('upgrade'): return False
         if not options.get('repath'): return True
         return self.can_finish_metadata_copy(rows,options)
@@ -92,6 +94,9 @@ class Backend(object):
 
     def requires_final_host_open(self, record, rows, options):
         """Document API repairs wait until dependencies reach final locations."""
+        if record.get('is_primary_host') and options.get('independent_host'):
+            return bool(record.get('is_workshared') or options.get('repath') or
+                        options.get('cleanup') or options.get('upgrade'))
         if not record.get('is_primary_host') or not options.get('repath'): return False
         if self.can_finish_metadata_copy(rows,options):return False
         return any(r.get('target') and not r.get('skip_repath') and
@@ -121,7 +126,8 @@ class Backend(object):
             info = self.DB.BasicFileInfo.Extract(path)
             try:
                 return dict(version=f.text(info.Format), workshared=bool(info.IsWorkshared),
-                            central=f.text(getattr(info, 'CentralPath', '')))
+                            central=f.text(getattr(info, 'CentralPath', '')),
+                            is_central=bool(getattr(info,'IsCentral',False)))
             finally: dispose(info)
         except Exception as exc:
             # A valid CFB metadata stream can still be inspected when the API's
@@ -704,7 +710,8 @@ class Backend(object):
                 ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
                 element=doc.GetElement(ident)
                 if element is None:
-                    if options.get('cleanup'): continue
+                    if options.get('cleanup'):
+                        row['repath']='REMOVED_BY_CLEANUP';continue
                     raise RuntimeError('Original reference element is missing from the packaged model.')
                 if kind=='RevitLink':
                     reference=element.GetExternalFileReference()
@@ -717,6 +724,8 @@ class Backend(object):
                     expected_load=package_load_state(row)
                     if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
                         raise RuntimeError('Packaged Revit link load state does not match the requested state.')
+                    if row.get('repath')=='API_LOCAL_LINK_RELATIVE' and f.text(getattr(reference,'PathType',''))!='Relative':
+                        raise RuntimeError('Packaged Revit link was not stored as a relative reference.')
                 elif kind=='CADLink':
                     reference=self.DB.ExternalFileUtils.GetExternalFileReference(doc,ident)
                     actual_path=None
@@ -727,6 +736,15 @@ class Backend(object):
                         dispose(actual_path)
                 else:
                     actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
+                    if row.get('repath')=='API_IMAGE_RELATIVE':
+                        if f.text(getattr(element,'PathType',''))!='Relative':
+                            raise RuntimeError('Packaged image/PDF was not stored as a relative reference.')
+                        status=f.text(getattr(element,'Status',''))
+                        if status not in ('Loaded','Unloaded'):
+                            raise RuntimeError('Packaged image/PDF did not load successfully: '+status)
+                        expected_load=package_load_state(row)
+                        if expected_load is not None and (status=='Loaded')!=bool(expected_load):
+                            raise RuntimeError('Packaged image/PDF load state does not match the requested state.')
                 if f.canonical(actual)!=f.canonical(row['target']):
                     raise RuntimeError('Packaged reference still points elsewhere: '+actual)
                 row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
@@ -788,7 +806,7 @@ class Backend(object):
                     raise RuntimeError('Revit rejected the packaged PDF/image source: '+row['target'])
                 tx.Start()
                 image.ReloadFrom(opts)
-                if row.get('loaded') is False:
+                if package_load_state(row) is False:
                     image.Unload()
                 if tx.Commit()!=self.DB.TransactionStatus.Committed:
                     raise RuntimeError('PDF/image link reload transaction did not commit.')
@@ -808,7 +826,7 @@ class Backend(object):
                 dispose(tx);dispose(opts)
         return issues,changed
 
-    def _save_as_independent_package_central(self, doc, target):
+    def _save_as_independent_package_central(self, doc, target, clear_transmitted=False):
         """Save the detached/task copy as its own package central first."""
         save=self.DB.SaveAsOptions();ws=None
         try:
@@ -816,6 +834,7 @@ class Backend(object):
             if bool(getattr(doc,'IsWorkshared',False)):
                 ws=self.DB.WorksharingSaveAsOptions()
                 ws.SaveAsCentral=True
+                if clear_transmitted:ws.ClearTransmitted=True
                 save.SetWorksharingOptions(ws)
             performance.call('repath','revit_save_independent_central',target,
                              doc.SaveAs,target,save)
@@ -824,6 +843,8 @@ class Backend(object):
         actual=f.text(getattr(doc,'PathName','') or '')
         if actual and f.canonical(actual)!=f.canonical(target):
             raise RuntimeError('Revit did not switch the repair document to the package path.')
+        if bool(getattr(doc,'IsModified',False)):
+            raise RuntimeError('A save callback modified the package document after SaveAs.')
         return True
 
     def _repath_external_revit_links_relative(self, doc, rows):
@@ -860,12 +881,11 @@ class Backend(object):
         return issues,changed
 
     def finish_independent(self, stage, target, rows, options):
-        """Repair references requiring document APIs in an isolated worker.
+        """Materialize package references and deliver a normal, saved central.
 
-        This is the live-host worker path. The source Revit session is never
-        relocated. The package copy becomes its own local central/project before
-        relative PDF/Revit paths are written. Final desired metadata is activated
-        after the worker document closes.
+        Transmitted metadata is temporary input to a Revit open, never the final
+        deliverable. The second save consumes relative native paths after the
+        package central location has been established.
         """
         self.guard(stage);self.guard(target)
         issues=[]
@@ -874,24 +894,28 @@ class Backend(object):
             if row.get('target'):self.guard(row['target'])
         current=f.text(getattr(self.app,'VersionNumber','') or '')
         if info.get('version') and current and info['version']!=current and not options.get('upgrade'):
-            return [issue('UPGRADE_CONSENT_REQUIRED',target,
-                          'Saved format '+info['version']+' retained. Native package repathing requires Revit '
-                          +current+'; enable Upgrade to authorize it.')]
+            raise RuntimeError('Saved format '+info['version']+' requires an authorized upgrade to Revit '
+                               +current+' before this host can be finalized.')
 
-        special=[r for r in rows if r.get('target') and r.get('special')=='image']
+        if options.get('repath'):
+            self.apply_metadata(stage,target,rows,relative=False)
+        opened_transmitted=self._package_is_transmitted(stage)
+
+        special=[r for r in rows if r.get('target') and not r.get('skip_repath')
+                 and r.get('special')=='image']
         external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
+                  and not r.get('skip_repath')
                   and (not r.get('td') or cache_sources.reference_identity(r))]
         cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink'
+             and not r.get('skip_repath') and not r.get('repath')
              and os.path.splitext(r.get('target',''))[1].lower()=='.dwg']
 
         doc=None
         changed=False
+        discard=bool(options.get('cleanup') and options.get('discard_worksets'))
         try:
-            # Crucially, no TransmissionData.IsTransmitted write occurs before
-            # this open. The worker opens the task-owned source copy detached,
-            # then establishes an independent package central/project identity.
-            doc=self.open_copy(stage,bool(options.get('cleanup') and options.get('discard_worksets')))
-            self._save_as_independent_package_central(doc,target)
+            doc=self.open_copy(stage,discard)
+            self._save_as_independent_package_central(doc,target,opened_transmitted)
 
             if options.get('repath'):
                 revit_issues,revit_changed=self._repath_external_revit_links_relative(doc,external)
@@ -912,21 +936,127 @@ class Backend(object):
             # Save the independent package model after all document-API repairs.
             if changed or options.get('upgrade') or options.get('normalize_saved_cache'):
                 performance.call('repath','revit_save_repaired_central',target,doc.Save)
+                if bool(getattr(doc,'IsModified',False)):
+                    raise RuntimeError('A save callback modified the repaired package document after Save.')
+            if options.get('repath'):
+                api_rows=[r for r in rows if metadata_target_allowed(r) and
+                          f.text(r.get('repath','')).startswith('API_')]
+                problems=self._verify_document(doc,target,api_rows,options) if api_rows else []
+                if problems:
+                    raise RuntimeError('Document reference repairs did not persist at the package path: '+
+                                       '; '.join(f.text(p.get('message','')) for p in problems))
         finally:
             if doc is not None:
                 if not performance.call('repath','revit_close',target,doc.Close,False):
                     raise RuntimeError('Independent package repair document could not be closed.')
 
-        # Activate the final desired paths in the same write, including for
-        # nonworkshared hosts which have no parent worksharing finalization.
+        # Desired paths become real element data only when Revit opens them.
+        # Establishing the package central first gives relative paths a known
+        # base, including for native formats without a document reload API.
         if options.get('repath'):
-            self.apply_metadata(target,target,rows,relative=True)
+            relative_written=self.apply_metadata(target,target,rows,relative=True)
+            if relative_written:
+                relative_transmitted=self._package_is_transmitted(target)
+                if not relative_transmitted:
+                    raise RuntimeError('The relative package references were not activated for materialization.')
+                doc=None
+                try:
+                    doc=self.open_copy(target,False)
+                    repair_rows=[r for r in rows if metadata_target_allowed(r) and
+                                 (r.get('repath')=='TRANSMISSION_DATA' or
+                                  f.text(r.get('repath','')).startswith('API_'))]
+                    problems=self._verify_document(doc,target,repair_rows,options) if repair_rows else []
+                    if problems:
+                        issues.extend(problems)
+                        raise RuntimeError('Final package references did not match their packaged files: '+
+                                           '; '.join(f.text(p.get('message','')) for p in problems))
+                    self._save_as_independent_package_central(doc,target,relative_transmitted)
+                finally:
+                    if doc is not None:
+                        if not performance.call('repath','revit_close_materialized',target,doc.Close,False):
+                            raise RuntimeError('Materialized package document could not be closed.')
+            for row in rows:
+                if not row.get('target') or row.get('skip_repath') or row.get('repath'):continue
+                plugin=row.get('special')=='plugin_spreadsheet'
+                row['repath']='PLUGIN_RECONNECT_REQUIRED' if plugin else 'MANUAL_REPAIR_REQUIRED'
+                issues.append(issue('PLUGIN_RECONNECT_REQUIRED' if plugin else 'REPATH_NOT_AVAILABLE',
+                                    row.get('source',''),
+                                    'File copied, but its reference could not be saved to the packaged location.'))
+
+        self.verify_independent_package(target,rows,options,
+                                        expected_workshared=bool(info.get('workshared') and not discard))
+        errors=[p for p in issues if p.get('severity')=='error']
+        if errors:
+            raise RuntimeError('The package host could not be finalized: '+
+                               '; '.join(f.text(p.get('message','')) for p in errors))
 
         return dict(issues=issues,verified_in_process=False,
-                    independent_package_central=True)
+                    independent_package_central=True,host_finalized=True,
+                    saved_references_checked=True,verification_status='SAVED_REFERENCES_CHECKED')
+
+    def _package_is_transmitted(self, path):
+        model_path=self.mp(path);td=None
+        try:
+            td=self.DB.TransmissionData.ReadTransmissionData(model_path)
+            if td is not None:return bool(td.IsTransmitted)
+            check=getattr(self.DB.TransmissionData,'IsDocumentTransmitted',None)
+            return bool(check(model_path)) if check is not None else False
+        finally:dispose(td);dispose(model_path)
+
+    def verify_independent_package(self, target, rows, options, expected_workshared=None):
+        """Verify real saved references and normal opening state, without writes."""
+        self.guard(target)
+        info=self.basic(target)
+        if expected_workshared is not None and bool(info.get('workshared'))!=bool(expected_workshared):
+            raise RuntimeError('The finalized package changed the host worksharing state.')
+        if info.get('workshared'):
+            if not info.get('is_central') or f.canonical(info.get('central',''))!=f.canonical(target):
+                raise RuntimeError('The exported host is not a saved central at its package location.')
+        if self._package_is_transmitted(target):
+            raise RuntimeError('The finalized package host is still marked transmitted.')
+        if not options.get('repath'):return []
+        model_path=self.mp(target);td=None
+        try:
+            td=self.DB.TransmissionData.ReadTransmissionData(model_path)
+            ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds()) if td is not None else {}
+            for row in rows:
+                if not metadata_target_allowed(row):continue
+                key=f.text(row.get('element_id',row.get('id','')))
+                ident=ids.get(key)
+                if ident is None:
+                    if row.get('repath') in ('TRANSMISSION_DATA','STAGING_ABSOLUTE'):
+                        if options.get('cleanup'):
+                            row['repath']='REMOVED_BY_CLEANUP';continue
+                        raise RuntimeError('A native packaged reference is absent from the saved host: '+key)
+                    if row.get('repath')=='API_CAD_LINK':
+                        # LoadFrom(String) keeps the previous path type. Its
+                        # early absolute-path check cannot prove portability;
+                        # only final native saved metadata can prove Relative.
+                        raise RuntimeError('The packaged CAD reference has no saved metadata to verify its relative path: '+key)
+                    continue
+                ref=ref_path=None
+                try:
+                    ref=td.GetLastSavedReferenceData(ident)
+                    if ref is None:raise RuntimeError('A packaged reference has no saved data: '+key)
+                    if f.text(ref.PathType)!='Relative':
+                        raise RuntimeError('A saved package reference is not relative: '+key)
+                    ref_path=ref.GetPath();value=self.visible(ref_path)
+                    paths=ntpath if f.is_windows(target) else os.path
+                    absolute=paths.join(paths.dirname(target),value)
+                    if f.canonical(absolute)!=f.canonical(row['target']):
+                        raise RuntimeError('Saved reference still points elsewhere: '+absolute)
+                    state=package_load_state(row)
+                    if state is not None and load_intent(f.text(ref.GetLinkedFileStatus()))!=bool(state):
+                        raise RuntimeError('A saved package reference has the wrong load state: '+key)
+                    row['verification']='SAVED_REFERENCE_CHECKED'
+                finally:dispose(ref_path);dispose(ref)
+        finally:dispose(td);dispose(model_path)
+        return []
 
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
+        if options.get('independent_host'):
+            return self.finish_independent(stage,target,rows,options)
         if self.can_finish_metadata_copy(rows,options):
             return self.finish_metadata_copy(stage,target,rows,options)
         if options.get('worker_mode'):

@@ -9,7 +9,7 @@ import re
 import traceback
 from pyrevit import forms, script, DB
 from . import VERSION, files as f
-from . import cleanup, engine, batch, layout, preflight, performance
+from . import cleanup, engine, batch, layout, preflight, performance, provenance
 from .session import Registry, SessionBackend
 
 
@@ -148,6 +148,9 @@ def detached_source_recovery(row, output, feedback=''):
 class Dialog(forms.WPFWindow):
     def __init__(self, uiapp, xaml):
         forms.WPFWindow.__init__(self,xaml)
+        self.runtime_provenance=provenance.collect(
+            button_path=os.path.join(os.path.dirname(os.path.abspath(xaml)),'script.py'),
+            module_path=__file__)
         self.snapshots_authorized=False
         self.uiapp=uiapp; self.result=None; self.models=[]; self.extras=[]; self.view_types=[]
         self.categories=[Choice(label,key) for key,label in f.CATEGORIES]
@@ -162,7 +165,6 @@ class Dialog(forms.WPFWindow):
             with io.open(self.settings,encoding='utf-8') as inp: saved=json.load(inp)
             self.Output.Text=saved.get('output','')
             self.Repath.IsChecked=saved.get('repath',True); self.Reports.IsChecked=saved.get('reports',True)
-            self.SimpleRepath.IsChecked=saved.get('simple_repath',True)
             self.FileStructure.SelectedIndex=[x.Key for x in self.structures].index(layout.mode(saved.get('file_structure')))
             self.Zip.IsChecked=saved.get('zip',False)
             self.ZipPerModel.IsChecked=saved.get('zip_per_model',False)
@@ -271,13 +273,13 @@ class Dialog(forms.WPFWindow):
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
         opts['file_structure']=layout.mode(self.FileStructure.SelectedItem.Key if self.FileStructure.SelectedItem else None)
         opts.update(repath=bool(self.Repath.IsChecked),
-                    simple_repath=bool(getattr(getattr(self,'SimpleRepath',None),'IsChecked',True)),
                     cleanup=bool(self.Cleanup.IsChecked),upgrade=bool(self.Upgrade.IsChecked or self.Cleanup.IsChecked),
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
                     views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=True,
                     reports=bool(self.Reports.IsChecked),zip=bool(self.Zip.IsChecked),zip_per_model=bool(self.ZipPerModel.IsChecked))
         opts['mappings']=[]
         opts['saved_state_only']=True
+        opts['runtime_provenance']=getattr(self,'runtime_provenance',None) or provenance.collect(module_path=__file__)
         if opts['zip_per_model'] or any(x.Mode=='LIVE_DOCUMENT' for x in models):opts['per_model']=True
         root=f.new_run_root(output,datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
         planned=[];planned_names={}
@@ -300,7 +302,7 @@ class Dialog(forms.WPFWindow):
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
         if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True,title='Process package copies / Transmit'): return
         if self.SaveSettings.IsChecked:
-            saved=dict((k,opts[k]) for k in ('repath','simple_repath','file_structure','per_model','reports','zip','zip_per_model'))
+            saved=dict((k,opts[k]) for k in ('repath','file_structure','per_model','reports','zip','zip_per_model'))
             saved['output']=output
             folder=os.path.dirname(self.settings)
             try:
@@ -312,12 +314,20 @@ class Dialog(forms.WPFWindow):
 
 def run(uiapp,xaml):
     trace.write(uiapp,'ET_STEP_01_COMMAND_START')
+    runtime_provenance=provenance.collect(
+        button_path=os.path.join(os.path.dirname(os.path.abspath(xaml)),'script.py'),
+        module_path=__file__)
+    trace.write(uiapp,'ET_INSTALLATION_PROVENANCE',
+                detail=json.dumps(runtime_provenance,sort_keys=True))
     dialog=Dialog(uiapp,xaml);registry=None;results=[];was_cancelled=False;root=None
     try:
         dialog.ShowDialog()
         if not dialog.result:return
         choices,root,opts,extras=dialog.result
+        opts['runtime_provenance']=opts.get('runtime_provenance') or runtime_provenance
         trace.write(uiapp,'ET_STEP_04_DIALOG_ACCEPTED',root)
+        trace.write(uiapp,'ET_INSTALLATION_PROVENANCE',root,
+                    json.dumps(opts['runtime_provenance'],sort_keys=True))
 
         # Batch preflight: collect every user decision before any model package
         # starts. Detached-source recovery already completed for all selected

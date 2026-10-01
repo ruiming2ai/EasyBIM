@@ -40,6 +40,8 @@ def host_processing_allowed(options):
 
 
 def defaults():
+    # Legacy discovery hint only: skip unnecessary source inspection before the
+    # final independent-host save. This is no longer a user processing mode.
     return dict(include=dict((k, True) for k, label in CATEGORIES), deep=True,
                 repath=True, simple_repath=True, load_unloaded_files=False, file_structure='categories', upgrade=False, cleanup=False, discard_worksets=False,
                 purge=False, views='all', view_types=[], per_model=True,

@@ -185,8 +185,11 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
     if f.directory_has_entries(root):
         raise ValueError('Choose a new, empty package folder; existing files are never overwritten.')
     f.ensure_directory(root)
-    result = dict(version=VERSION, status='RUNNING', root=root, models=[], files=[], aliases=[],
+    from . import provenance
+    result = dict(version=VERSION, runtime_provenance=opts.get('runtime_provenance') or provenance.collect(),
+                  status='RUNNING', root=root, models=[], files=[], aliases=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
+    independent_hosts=bool(getattr(backend,'independent_host_supported',False))
     retained_recovery=[]
     # Revit inspection/processing scratch must not live in OneDrive or another
     # synchronized output tree.  Keep it in the local OS temp area and register
@@ -370,31 +373,100 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if isinstance(diagnostic.get(field), f.string_types):
                     for old, new in sorted(stage_paths.items(), key=lambda item: -len(item[0])):
                         diagnostic[field] = diagnostic[field].replace(old, new)
-        # True external/cloud resources cannot be converted by TransmissionData alone.
-        # Defer that unavoidable document open until all package files are in final
-        # locations, then convert, save and verify in the same open document.
+        def retain_unfinished_host(record, original=None, may_be_running=False):
+            """Keep acquired bytes outside the package; never publish an unfinished host."""
+            record['status']='NOT_FINALIZED'
+            record['transmission_status']='NOT_FINALIZED'
+            record['host_finalized']=False
+            record.pop('packaged_sha256',None)
+            recovery=original if original and os.path.isfile(original) else None
+            if recovery is None and record.get('target') and f.file_exists(record['target']):
+                recovery=f.temporary_path(work)
+                try:
+                    f.copy_file(record['target'],recovery,None)
+                except Exception as exc:
+                    recovery=None
+                    add_issue('HOST_RECOVERY_FAILED',record['source'],exc,'error')
+            if recovery:
+                record['recovery_path']=recovery
+                retained_recovery.append(recovery)
+                result['recovery_directory']=work
+                try:
+                    actual=f.digest(recovery)
+                    if actual!=record.get('sha256'):
+                        raise IOError('Recovery host differs from the acquired saved/cache bytes.')
+                    record['recovery_sha256']=actual
+                except Exception as exc:
+                    add_issue('HOST_RECOVERY_VERIFICATION_FAILED',record['source'],exc,'error')
+                if not may_be_running:
+                    try:
+                        if f.file_exists(record['target']):
+                            if os.name=='nt':
+                                from . import longpaths
+                                longpaths.unlink(record['target'])
+                            else:os.remove(record['target'])
+                    except Exception as exc:
+                        add_issue('UNFINISHED_HOST_REMOVAL_FAILED',record['source'],exc,'error')
+            if may_be_running:
+                result['recovery_directory']=work
+                record['worker_exit_unconfirmed']=True
+            for row in edges:
+                if f.canonical(row.get('owner',''))==f.canonical(record['source']):
+                    row['repath']='ROLLED_BACK'
+                    row.pop('verification',None)
+                if f.canonical(row.get('local',''))==f.canonical(record['source']):
+                    row.pop('target',None)
+                    row['status']='NOT_DELIVERED'
+
+        # Primary hosts are finalized only after every delivered reference has
+        # its final package path. The worker persists repairs and clears the
+        # transmitted state before reporting a completed independent host.
         for record in reversed(result['files']):
-            if not record.get('finalize_after_delivery') or record.get('status')!='COPIED': continue
+            normal_host=independent_hosts and record.get('is_primary_host')
+            if record.get('status')!='COPIED':continue
+            if normal_host and (was_cancelled or result['status']=='CANCELLED' or
+                    record.get('processing_status') in ('HOST_PRESERVED_LINKS_UNAVAILABLE',
+                        'SKIPPED_INVENTORY_FAILURE','LAYOUT_FAILED')):
+                record['model_verification']='DEFERRED'
+                retain_unfinished_host(record)
+                continue
+            if not record.get('finalize_after_delivery'):
+                if normal_host:
+                    record['model_verification']='DEFERRED'
+                    add_issue('HOST_FINALIZATION_NOT_COMPLETED',record['source'],
+                              'The acquired host did not reach independent package finalization.','error')
+                    retain_unfinished_host(record)
+                continue
             rows=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source']) and not r.get('skip_repath')]
-            if any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
+            if opts.get('repath') and any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
                 record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
                 record['model_verification']='DEFERRED'
                 add_issue('MODEL_VERIFICATION_DEFERRED',record['source'],
                           'A linked model was not delivered; finalization was deferred to prevent source/cloud fallback.','error')
+                if normal_host:retain_unfinished_host(record)
                 continue
             stage=f.temporary_path(work); backup=f.temporary_path(work)
+            backup_ready=False
             try:
-                notify('FINALIZING ACC LINKS | '+record['source'],0,1)
+                notify('SAVING INDEPENDENT PACKAGE HOST | '+record['source'],0,1)
                 f.copy_file(record['target'],backup,delivery_cancel)
+                backup_ready=True
                 f.copy_file(record['target'],stage,delivery_cancel)
                 final_options=dict(opts);final_options['verify_in_process']=False
+                final_options['independent_host']=normal_host
                 final_options['reference_target']=record['target']
                 final_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
                 final_options['_host_source']=record['source']
                 final_options['_worker_pulse']=notify
                 raw=performance.call('repath','finalize_host_in_separate_revit',record['source'],
                                      backend.finish,stage,record['target'],rows,final_options)
+                if normal_host and (not isinstance(raw,dict) or not raw.get('host_finalized')
+                                    or not raw.get('saved_references_checked')):
+                    raise RuntimeError('Package host finalization was not confirmed by the Revit worker.')
                 problems,verified=normalize_processing_result(raw)
+                if normal_host and any(p.get('severity')=='error' for p in problems):
+                    result['issues'].extend(problems)
+                    raise RuntimeError('Package host repairs failed; the acquired host was retained for recovery.')
                 worker_repaired=bool(isinstance(raw,dict) and raw.get('worker_repaired'))
                 result['issues'].extend(problems)
                 record['verified_in_process']=verified
@@ -402,75 +474,57 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if isinstance(raw,dict):
                     record['metadata_repathed']=bool(raw.get('metadata_repathed'))
                     record['independent_package_central']=bool(raw.get('independent_package_central'))
+                    record['host_finalized']=bool(raw.get('host_finalized'))
+                    record['saved_references_checked']=bool(raw.get('saved_references_checked'))
                     record['worker_suppressed_dialogs']=list(raw.get('worker_suppressed_dialogs') or [])
                     record['worker_suppressed_failures']=list(raw.get('worker_suppressed_failures') or [])
                 record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
                 record['processing_errors']=any(p.get('severity')=='error' for p in problems)
                 record['model_verification']=('FAILED' if any(p.get('severity')=='error' for p in problems)
+                                               else 'SAVED_REFERENCES_CHECKED' if record.get('saved_references_checked')
                                                else 'WORKER_SAVE_COMPLETED' if worker_repaired
                                                else 'OPENED_AND_REFERENCES_CHECKED' if verified else 'DEFERRED')
+                if record.get('host_finalized'):record['transmission_status']='NOT_TRANSMITTED'
                 record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
                 record['verified_signature']=f.signature(record['target'])
             except f.Cancelled:
                 result['status']='CANCELLED';record['processing_status']='ROLLED_BACK';record['model_verification']='DEFERRED'
-                try: shutil.copyfile(backup,record['target'])
-                except Exception as exc:add_issue('HOST_ROLLBACK_FAILED',record['source'],exc,'error')
+                if normal_host:retain_unfinished_host(record,backup if backup_ready else None)
+                elif backup_ready:
+                    try:shutil.copyfile(backup,record['target'])
+                    except Exception as exc:
+                        record['processing_status']='ROLLBACK_FAILED'
+                        record['recovery_path']=backup;retained_recovery.append(backup)
+                        add_issue('HOST_ROLLBACK_FAILED',record['source'],exc,'error')
             except Exception as exc:
                 record['processing_status']='FAILED';record['model_verification']='FAILED'
-                try: shutil.copyfile(backup,record['target'])
-                except Exception as rollback_exc:add_issue('HOST_ROLLBACK_FAILED',record['source'],rollback_exc,'error')
+                if normal_host:
+                    retain_unfinished_host(record,backup if backup_ready else None,
+                                           bool(getattr(exc,'worker_may_be_running',False)))
+                elif backup_ready:
+                    try:shutil.copyfile(backup,record['target'])
+                    except Exception as rollback_exc:
+                        record['processing_status']='ROLLBACK_FAILED'
+                        record['recovery_path']=backup;retained_recovery.append(backup)
+                        add_issue('HOST_ROLLBACK_FAILED',record['source'],rollback_exc,'error')
                 add_issue('MODEL_PROCESSING_FAILED',record['source'],
                           'Final ACC/package processing failed; copied files were retained or restored: '+f.text(exc),'error')
             finally:
                 for path in (stage,backup):
+                    if path in retained_recovery or record.get('worker_exit_unconfirmed'):continue
                     try:
                         if os.path.isfile(path):os.remove(path)
                     except Exception:pass
-
-        # Make final primary workshared hosts behave like eTransmit files without
-        # opening/saving them. The Revit backend preserves existing file-based
-        # reference path/load intent while setting TransmissionData.IsTransmitted.
-        transmitter=getattr(backend,'mark_transmitted_package',None)
-        if transmitter:
-            for record in result['files']:
-                if (record.get('status')!='COPIED' or not record.get('is_primary_host')
-                        or not record.get('is_workshared') or not record.get('target')
-                        or not record['target'].lower().endswith('.rvt')):
-                    continue
-                try:
-                    model_rows=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])]
-                    if (not opts.get('repath') or
-                            record.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW')):
-                        model_rows=[dict(r,target=None) for r in model_rows]
-                    if bool(getattr(backend,'mark_transmitted_rows_supported',False)):
-                        state=performance.call('metadata','mark_host_transmitted',record['source'],
-                                               transmitter,record['target'],model_rows)
-                    else:
-                        state=performance.call('metadata','mark_host_transmitted',record['source'],
-                                               transmitter,record['target'])
-                    if state is True:
-                        record['transmission_status']='TRANSMITTED'
-                        record['pre_transmission_sha256']=record.get('packaged_sha256') or record.get('sha256')
-                        record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
-                        record['verified_signature']=f.signature(record['target'])
-                    elif state is None:
-                        record['transmission_status']='NOT_WORKSHARED'
-                    else:
-                        record['transmission_status']='TRANSMIT_UNAVAILABLE'
-                        add_issue('WORKSHARING_COPY_NOT_TRANSMITTED',record['source'],
-                                  'The packaged workshared host could not be marked transmitted without opening it. '
-                                  'Open this copy with Detach from Central and Preserve Worksets; never synchronize it to the source central.')
-                except Exception as exc:
-                    record['transmission_status']='TRANSMIT_UNAVAILABLE'
-                    add_issue('WORKSHARING_COPY_NOT_TRANSMITTED',record['source'],
-                              'The packaged workshared host could not be marked transmitted without opening it: '+f.text(exc)+
-                              '. Open this copy with Detach from Central and Preserve Worksets; never synchronize it to the source central.')
 
         verifier = getattr(backend, 'verify_package', None)
         for record in reversed(result['files']):
             if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
             if record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE' and not record.get('is_primary_host'):
                 record['model_verification']='FILE_INTEGRITY_ONLY'; continue
+            if record.get('host_finalized'):
+                record['transmission_status']='NOT_TRANSMITTED'
+                record['model_verification']=('FAILED' if record.get('processing_errors') else 'SAVED_REFERENCES_CHECKED')
+                continue
             if record.get('worker_repaired'):
                 # The repair worker already performed LoadFrom/ReloadFrom and a
                 # successful Save/Close in a separate Revit process. Do not
@@ -800,7 +854,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 record['processing_status']='UNCHANGED_DEPENDENCY'
                 record['model_verification']='FILE_INTEGRITY_ONLY'
 
-        if opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
+        if independent_hosts or opts.get('repath') or opts.get('cleanup') or opts.get('upgrade'):
             for record in reversed(result['files']):
                 f.check(cancelled)
                 if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
@@ -822,7 +876,9 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                                if f.canonical(r['owner']) == f.canonical(record['source'])
                                and not r.get('skip_repath')]
                 finalizer=getattr(backend,'requires_final_host_open',None)
-                if record.get('is_primary_host') and finalizer and finalizer(record,model_edges,opts):
+                needs_independent=independent_hosts and record.get('is_primary_host')
+                if record.get('is_primary_host') and (needs_independent or
+                        (finalizer and finalizer(record,model_edges,opts))):
                     record['processing_status']='FINALIZATION_DEFERRED'
                     record['finalize_after_delivery']=True
                     continue
@@ -957,9 +1013,11 @@ def _write_reports_at(result, root):
         workshared=bool(record.get('is_workshared') or context.get('is_workshared'))
         if workshared:
             transmitted=record.get('transmission_status')=='TRANSMITTED'
-            record['opening_guidance']=('OPEN_AS_TRANSMITTED_MODEL' if transmitted
+            record['opening_guidance']=('OPEN_NORMALLY_INDEPENDENT_PACKAGE' if record.get('host_finalized')
+                                        else 'RECOVERY_COPY_NOT_FINALIZED' if record.get('status')=='NOT_FINALIZED'
+                                        else 'OPEN_AS_TRANSMITTED_MODEL' if transmitted
                                         else 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
-            record['original_central_association_preserved']=(True if transmitted else
+            record['original_central_association_preserved']=(False if record.get('host_finalized') else True if transmitted else
                 (bool(record.get('saved_state_sha256') and
                       record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None))
         if record.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED':
@@ -981,7 +1039,15 @@ def _write_reports_at(result, root):
              'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')),
              'Packaged RVTs with native reference metadata checked (no Revit load test): {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='TRANSMISSION_DATA_CHECKED')),
+             'Independent package hosts with final saved references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='SAVED_REFERENCES_CHECKED')),
              'Host RVTs repaired and saved by separate Revit worker: {0}'.format(sum(1 for r in result['files'] if r.get('worker_repaired'))), '', 'HOST MODELS:'] + hosts
+    runtime=result.get('runtime_provenance',{})
+    lines.extend(['','RUNNING TOOL:',
+                  'Version: '+f.text(runtime.get('version',VERSION)),
+                  'Installation: '+f.text(runtime.get('installation_root','')),
+                  'Loaded module: '+f.text(runtime.get('module_path','')),
+                  'Button: '+f.text(runtime.get('button_path','')),
+                  'Git commit: '+f.text(runtime.get('git_commit') or 'Unavailable (non-Git installation)')])
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for record in result['files']:
         if record.get('is_primary_host') and record.get('status')=='COPIED':
@@ -990,18 +1056,18 @@ def _write_reports_at(result, root):
     if not result['options'].get('repath'):
         lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
     lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
-        'When the host report says TRANSMITTED, open the packaged RVT normally. Revit opens detached from its central model because the packaged workshared file is marked transmitted, and may show transmitted-model handling.',
-        'If transmission status is unavailable, use Revit File > Open > Detach from Central, then Preserve Worksets.',
-        'Marking a copy transmitted changes opening/worksharing behavior; it does not repath external links or rewrite ACC external-resource references.',
-        'Do not synchronize package copies to the original central.'])
+        'Completed independent package hosts are saved with transmitted status cleared and open normally.',
+        'Workshared package hosts use their own central path; worksets are preserved unless explicitly discarded.',
+        'Hosts that could not be finalized are recovery copies, not completed transmittals.',
+        'Do not synchronize recovery copies to the original central.'])
     if result.get('recovery_directory'): lines.append('Undelivered/recovery files retained at: '+result['recovery_directory'])
     for record in result['files']:
         if record.get('recovery_path'):
-            lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
+            lines.append('Unmodified acquired host retained outside the package for recovery: '+record['recovery_path'])
         if record.get('worker_repaired'):
-            lines.append('Separate Revit repair worker completed LoadFrom/ReloadFrom and saved the package copy. No verification reopen was performed.')
+            lines.append('Separate Revit worker saved the independent host and checked persisted references and final transmitted status.')
             if record.get('independent_package_central'):
-                lines.append('Repair lifecycle: saved as an independent package central/project first; references were repathed and saved; only then was the closed package marked transmitted.')
+                lines.append('Repair lifecycle: saved as a package central, repaired references, reopened to persist relative native references, and saved with transmitted status cleared.')
             suppressed=len(record.get('worker_suppressed_dialogs') or [])
             warnings=len(record.get('worker_suppressed_failures') or [])
             if suppressed or warnings:

@@ -28,6 +28,20 @@ class SavedCacheSession(unittest.TestCase):
         self.r.cache_roots=[self.cache]
         self.r.scanner.elements=lambda *a:[];self.r.scanner.scan_open=lambda *a:None
         self.addCleanup(self.r.close)
+        # These tests exercise acquisition and original-document protection.
+        # Replace only the isolated native serialization boundary; engine and
+        # Registry still select, validate, copy and deliver real saved bytes.
+        from easybim_etransmit import worker
+        original_worker=worker.run_separate_revit
+        def finish_saved_copy(application,stage,target,rows,options,**kwargs):
+            self.assertTrue(options.get('independent_host'))
+            shutil.copyfile(stage,target)
+            return dict(issues=[],host_finalized=True,saved_references_checked=True,
+                        verification_status='SAVED_REFERENCES_CHECKED',worker_repaired=True,
+                        verified_in_process=False,independent_package_central=True,
+                        original_central_association_preserved=False)
+        worker.run_separate_revit=finish_saved_copy
+        self.addCleanup(setattr,worker,'run_separate_revit',original_worker)
     def test_default_source_uses_readonly_local_cache_no_confirmation_or_save(self):
         self.r.confirm_snapshot=lambda *a:self.fail('cache export must not ask to save')
         key=self.r.add_live(self.doc);before=self.doc.PathName
@@ -113,10 +127,14 @@ class SavedCacheSession(unittest.TestCase):
         out=os.path.join(self.root,'broken-link');b=s.SessionBackend(self.db,self.app,out,self.r)
         b.finish=lambda *a:self.fail('host with missing cloud link must not be modified')
         result=engine.transmit([key],out,b,f.defaults())
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],1,repr(result['issues']))
+        self.assertEqual(engine.package_counts(result)['hosts_copied'],0,repr(result['issues']))
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
-        self.assertEqual(f.digest(host['target']),f.digest(self.original))
+        self.assertEqual(host['status'],'NOT_FINALIZED')
+        self.assertEqual(f.digest(host['recovery_path']),f.digest(self.original))
+        self.assertFalse(f.within(host['recovery_path'],out))
+        self.assertFalse(os.path.isfile(host['target']))
+        if result.get('recovery_directory'):self.addCleanup(f.remove_tree_retry,result['recovery_directory'])
         self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
 
 if __name__=='__main__':unittest.main(verbosity=2)
