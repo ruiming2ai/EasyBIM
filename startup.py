@@ -2,6 +2,21 @@
 """EasyBIM extension startup automation."""
 
 
+# A disposable e-transmit repair Revit must become non-interactive before any
+# model open/save work starts. This runs during application initialization, so
+# DialogBoxShowing/FailuresProcessing are subscribed earlier than the Idling job.
+try:
+    from easybim_etransmit import worker as _etransmit_worker
+    if _etransmit_worker.is_worker_process():
+        try:
+            _worker_app = __revit__
+        except NameError:
+            _worker_app = None
+        _etransmit_worker.install_unattended_handlers(_worker_app)
+except Exception:
+    pass
+
+
 try:
     from easybim import coordination_review_passive
 
