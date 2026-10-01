@@ -90,7 +90,7 @@ class WorkerRuntime(unittest.TestCase):
         worker._SUPPRESSED_DIALOGS[:]=[]
         worker._SUPPRESSED_FAILURES[:]=[]
 
-    def test_live_session_backend_routes_repath_to_worker(self):
+    def test_live_session_backend_routes_image_repath_to_worker(self):
         source='open://host/Host.rvt'
         registry=Obj(get=lambda key:dict(mode='LIVE_DOCUMENT') if key==source else None)
         backend=SessionBackend(None,Obj(VersionNumber='2026'),self.root,registry)
@@ -99,7 +99,7 @@ class WorkerRuntime(unittest.TestCase):
         worker.run_separate_revit=lambda *a,**k:calls.append((a,k)) or dict(
             issues=[],verified_in_process=False,worker_repaired=True)
         try:
-            result=backend.finish(self.stage,self.target,[],
+            result=backend.finish(self.stage,self.target,[dict(special='image',target='A.pdf')],
                                   dict(repath=True,_host_source=source))
         finally:
             worker.run_separate_revit=old

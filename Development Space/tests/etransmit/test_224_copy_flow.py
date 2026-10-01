@@ -1,0 +1,329 @@
+# -*- coding: utf-8 -*-
+"""Copy-first saved/cache repathing, with only Autodesk serialization replaced."""
+from __future__ import unicode_literals
+import copy
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+sys.path.insert(0, os.path.join(ROOT, 'lib'))
+
+from easybim_etransmit import engine, files as f, revit, session, worker
+from test_212_cache import Obj, P, M
+import test_212_session as cache_fixtures
+from test_payload_acquisition import compound
+
+
+class Reference(object):
+    def __init__(self, path, kind, loaded, path_type='Absolute'):
+        self.path = path
+        self.ExternalFileReferenceType = kind
+        self.loaded = loaded
+        self.PathType = path_type
+
+    def GetPath(self): return self.path
+    def GetAbsolutePath(self): return self.path
+    def GetLinkedFileStatus(self): return 'Loaded' if self.loaded else 'Unloaded'
+    def Dispose(self): pass
+
+
+class Transmission(object):
+    def __init__(self, saved, desired=None, transmitted=False):
+        self.saved = saved
+        self.desired = desired or {}
+        self.IsTransmitted = transmitted
+
+    def GetAllExternalFileReferenceIds(self):
+        return [Obj(Value=int(key)) for key in self.saved]
+
+    def GetLastSavedReferenceData(self, ident): return self.saved[revit.eid(ident)]
+    def GetDesiredReferenceData(self, ident): return self.desired.get(revit.eid(ident))
+
+    def SetDesiredReferenceData(self, ident, path, path_type, loaded):
+        key = revit.eid(ident)
+        self.desired[key] = Reference(path, self.saved[key].ExternalFileReferenceType,
+                                      bool(loaded), path_type)
+
+    def Dispose(self): pass
+
+
+class TransmissionFiles(object):
+    """Persist TD in copied bytes so final delivery has independent readback."""
+    marker = b'\nET_TEST_TRANSMISSION_DATA\n'
+
+    def __init__(self, testcase, host_payload, references):
+        self.testcase = testcase
+        self.host_payload = host_payload
+        self.references = references
+        self.reads = []
+        self.writes = []
+
+    def read(self, path):
+        self.reads.append(path)
+        with open(path, 'rb') as stream: payload = stream.read()
+        base, separator, encoded = payload.partition(self.marker)
+        if separator:
+            value = json.loads(encoded.decode('utf-8'))
+            saved = dict((key, Reference(*args)) for key, args in value['saved'].items())
+            desired = dict((key, Reference(*args)) for key, args in value['desired'].items())
+            return Transmission(saved, desired, value['transmitted'])
+        return Transmission(copy.deepcopy(self.references) if base == self.host_payload else {})
+
+    def write(self, path, td):
+        self.testcase.assertTrue(os.path.isfile(path), 'Host must exist before its first TD write')
+        with open(path, 'rb') as stream: before = stream.read()
+        self.writes.append(dict(path=path, before=before, desired=copy.deepcopy(td.desired)))
+        def values(refs):
+            return dict((key, [ref.path, ref.ExternalFileReferenceType,
+                               ref.loaded, ref.PathType]) for key, ref in refs.items())
+        value = dict(saved=values(td.saved), desired=values(td.desired),
+                     transmitted=bool(td.IsTransmitted))
+        with open(path, 'wb') as stream:
+            stream.write(before.partition(self.marker)[0] + self.marker +
+                         json.dumps(value, sort_keys=True).encode('utf-8'))
+
+    def api(self):
+        return Obj(ReadTransmissionData=self.read, WriteTransmissionData=self.write,
+                   IsDocumentTransmitted=lambda path: self.read(path).IsTransmitted)
+
+
+class MetadataCopyFlow(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='ET224_copy_')
+        self.addCleanup(shutil.rmtree, self.root)
+        self.stage = os.path.join(self.root, 'stage.rvt')
+        self.target = os.path.join(self.root, 'package', 'Host.rvt')
+        os.makedirs(os.path.dirname(self.target))
+        self.payload = compound()
+        with open(self.stage, 'wb') as stream: stream.write(self.payload)
+        self.link = os.path.join(self.root, 'package', 'Links', 'Architecture.rvt')
+        self.cad = os.path.join(self.root, 'package', 'CAD', 'Plan.dwg')
+        self.rows = [dict(id='1', element_id='1', kind='RevitLink', td=True,
+                          special='native', loaded=False, target=self.link,
+                          source='N:/Project/Architecture.rvt'),
+                     dict(id='2', element_id='2', kind='CADLink', td=False,
+                          special='external', loaded=None, target=self.cad,
+                          source='N:/Project/Plan.dwg')]
+        self.td = TransmissionFiles(self, self.payload, {
+            '1': Reference(self.rows[0]['source'], 'RevitLink', False),
+            '2': Reference(self.rows[1]['source'], 'CADLink', True)})
+        self.db = Obj(TransmissionData=self.td.api(),
+                      ModelPathUtils=Obj(ConvertUserVisiblePathToModelPath=lambda path: path,
+                                         ConvertModelPathToUserVisiblePath=lambda path: path),
+                      PathType=Obj(Relative='Relative', Absolute='Absolute'))
+        self.backend = revit.Backend(self.db, Obj(VersionNumber='2024'), self.root)
+        self.backend.basic = lambda path: dict(version='2024', workshared=True, central='')
+        self.backend.open_copy = lambda *args: self.fail('Native metadata repath must not open Revit')
+        self.backend.finish_independent = lambda *args: self.fail('Native metadata repath must not SaveAs')
+        self.opts = dict(repath=True, cleanup=False, upgrade=False, normalize_saved_cache=True)
+
+    def test_copy_exists_before_metadata_write_and_stage_is_unchanged(self):
+        result = self.backend.finish(self.stage, self.target, self.rows, self.opts)
+        self.assertTrue(result['metadata_repathed'])
+        self.assertEqual(result['issues'], [])
+        self.assertEqual([write['path'] for write in self.td.writes], [self.target])
+        self.assertEqual(self.td.writes[0]['before'], self.payload)
+        with open(self.stage, 'rb') as stream: self.assertEqual(stream.read(), self.payload)
+        self.assertTrue(all(row['repath'] == 'TRANSMISSION_DATA' for row in self.rows))
+        td = self.td.read(self.target)
+        self.assertEqual(td.desired['1'].PathType, 'Relative')
+        self.assertFalse(td.desired['1'].loaded)
+        self.assertTrue(td.desired['2'].loaded, 'CAD with unknown live load state uses saved TD intent')
+        for row in self.rows:
+            self.assertEqual(f.canonical(f.resolve_source(td.desired[row['id']].path, self.target)),
+                             f.canonical(row['target']))
+
+    def test_worker_mode_also_uses_native_copy_without_document_open(self):
+        result = self.backend.finish(self.stage, self.target, self.rows,
+                                     dict(self.opts, worker_mode=True))
+        self.assertTrue(result['metadata_repathed'])
+        self.assertEqual(self.td.writes[0]['path'], self.target)
+
+    def test_reference_base_is_final_delivery_path(self):
+        final = os.path.join(self.root, 'delivered', 'Host.rvt')
+        result = self.backend.finish(self.stage, self.target, self.rows,
+                                     dict(self.opts, reference_target=final))
+        self.assertTrue(result['metadata_repathed'])
+        td = self.td.read(self.target)
+        for row in self.rows:
+            self.assertEqual(f.canonical(f.resolve_source(td.desired[row['id']].path, final)),
+                             f.canonical(row['target']))
+
+    def test_classifier_accepts_native_cache_cad_and_rejects_document_repairs(self):
+        self.assertTrue(self.backend.can_finish_metadata_copy(self.rows, self.opts))
+        self.assertTrue(self.backend.can_deliver_direct(
+            dict(copy_method='COLLABORATION_CACHE_READ_ONLY'), self.rows, self.opts))
+        excluded = [dict(self.opts, cleanup=True), dict(self.opts, upgrade=True),
+                    dict(self.opts, repath=False)]
+        for options in excluded:
+            self.assertFalse(self.backend.can_finish_metadata_copy(self.rows, options), options)
+        rejected = [dict(id='3', kind='Image', special='image', target=self.cad),
+                    dict(self.rows[0], td=False, special='external'),
+                    dict(self.rows[0], cloud_identity=dict(project_guid=P, model_guid=M, region='US'))]
+        for row in rejected:
+            self.assertFalse(self.backend.can_finish_metadata_copy([row], self.opts), row)
+        for row in rejected:
+            self.assertTrue(self.backend.can_finish_metadata_copy([dict(row, skip_repath=True)], self.opts))
+            row.pop('target')
+            self.assertFalse(self.backend.can_finish_metadata_copy([row], self.opts))
+
+    def test_readback_rejects_wrong_path_and_loaded_state(self):
+        self.backend.finish(self.stage, self.target, self.rows, self.opts)
+        self.assertEqual(self.backend.verify_metadata_package(self.target, self.rows, self.opts), [])
+        for mutation in ('path', 'loaded'):
+            td = self.td.read(self.target)
+            if mutation == 'path': td.desired['1'].path = 'Elsewhere.rvt'
+            else:
+                td.desired['1'].path = os.path.relpath(self.link, os.path.dirname(self.target))
+                td.desired['1'].loaded = True
+            self.td.write(self.target, td)
+            issues = self.backend.verify_metadata_package(self.target, self.rows, self.opts)
+            self.assertEqual(len(issues), 1, repr(issues))
+            self.assertEqual(issues[0]['code'], 'METADATA_VERIFICATION_FAILED')
+            self.assertEqual(issues[0]['severity'], 'error')
+
+    def test_readback_rejects_inactive_or_missing_desired_metadata(self):
+        for mutation in ('inactive', 'missing'):
+            self.backend.finish(self.stage, self.target, self.rows, self.opts)
+            td = self.td.read(self.target)
+            if mutation == 'inactive': td.IsTransmitted = False
+            else: td.desired.pop('1')
+            self.td.write(self.target, td)
+            issues = self.backend.verify_metadata_package(self.target, self.rows, self.opts)
+            self.assertTrue(issues, mutation)
+            self.assertTrue(all(item['code'] == 'METADATA_VERIFICATION_FAILED' and
+                                item['severity'] == 'error' for item in issues), repr(issues))
+
+    def test_readback_rejects_matching_absolute_path(self):
+        self.backend.finish(self.stage, self.target, self.rows, self.opts)
+        td = self.td.read(self.target)
+        td.desired['1'].path = self.link
+        td.desired['1'].PathType = 'Absolute'
+        self.td.write(self.target, td)
+        issues = self.backend.verify_metadata_package(self.target, self.rows, self.opts)
+        self.assertEqual(len(issues), 1, repr(issues))
+        self.assertEqual(issues[0]['code'], 'METADATA_VERIFICATION_FAILED')
+        self.assertEqual(issues[0]['severity'], 'error')
+
+    def test_empty_reference_list_does_not_require_transmission_data(self):
+        shutil.copyfile(self.stage, self.target)
+        self.db.TransmissionData.ReadTransmissionData = lambda path: None
+        self.assertEqual(self.backend.verify_metadata_package(self.target, [], self.opts), [])
+
+    def test_native_metadata_flow_reports_plugin_workbook_reconnect_requirement(self):
+        workbook = os.path.join(os.path.dirname(self.target), 'Schedule.xlsx')
+        with open(workbook, 'wb') as stream: stream.write(b'copied workbook')
+        row = dict(id='3', element_id='3', kind='Spreadsheet',
+                   special='plugin_spreadsheet', target=workbook,
+                   source='N:/Project/Schedule.xlsx')
+        rows = self.rows + [row]
+        result = self.backend.finish(self.stage, self.target, rows, self.opts)
+        self.assertTrue(result['metadata_repathed'])
+        self.assertEqual([item['code'] for item in result['issues']], ['PLUGIN_RECONNECT_REQUIRED'])
+        self.assertEqual(row['repath'], 'PLUGIN_RECONNECT_REQUIRED')
+        self.assertEqual(self.backend.verify_metadata_package(self.target, rows, self.opts), [])
+        with open(workbook, 'rb') as stream: self.assertEqual(stream.read(), b'copied workbook')
+
+    def test_session_keeps_worker_for_cleanup_upgrade_image_and_cloud(self):
+        source = 'open://host/Host.rvt'
+        registry = Obj(get=lambda key: dict(mode='LIVE_DOCUMENT') if key == source else None)
+        backend = session.SessionBackend(self.db, Obj(VersionNumber='2024'), self.root, registry)
+        backend.finish_metadata_copy = lambda *args: self.fail('Document repair used metadata shortcut')
+        calls = []
+        original = worker.run_separate_revit
+        worker.run_separate_revit = lambda *args, **kwargs: calls.append(args) or dict(worker_repaired=True)
+        self.addCleanup(setattr, worker, 'run_separate_revit', original)
+        cases = [(self.rows, dict(self.opts, cleanup=True)),
+                 (self.rows, dict(self.opts, upgrade=True)),
+                 ([dict(id='3', kind='Image', special='image', target=self.cad)], self.opts),
+                 ([dict(self.rows[0], cloud_identity=dict(project_guid=P, model_guid=M))], self.opts)]
+        for rows, options in cases:
+            result = backend.finish(self.stage, self.target, rows, dict(options, _host_source=source))
+            self.assertTrue(result['worker_repaired'])
+        self.assertEqual(len(calls), len(cases))
+
+
+class LiveCacheNativeDelivery(unittest.TestCase):
+    setUp = getattr(cache_fixtures.SavedCacheSession.setUp, '__func__', cache_fixtures.SavedCacheSession.setUp)
+
+    def prepare(self, missing=False):
+        link = os.path.join(self.root, 'Architecture.rvt')
+        cad = os.path.join(self.root, 'Plan.dwg')
+        if not missing:
+            with open(link, 'wb') as stream: stream.write(compound(suffix='link'))
+        with open(cad, 'wb') as stream: stream.write(b'linked CAD')
+        refs = [dict(id='1', element_id='1', kind='RevitLink', source=link,
+                     td=True, special='native', loaded=False),
+                dict(id='2', element_id='2', kind='CADLink', source=cad,
+                     td=False, special='external', loaded=None)]
+        td = TransmissionFiles(self, self.payload, {
+            '1': Reference(link, 'RevitLink', False),
+            '2': Reference(cad, 'CADLink', True)})
+        self.db.TransmissionData = td.api()
+        self.db.ModelPathUtils = Obj(ConvertUserVisiblePathToModelPath=lambda path: path,
+                                    ConvertModelPathToUserVisiblePath=lambda path: path)
+        self.db.PathType = Obj(Relative='Relative', Absolute='Absolute')
+        key = self.r.add_live(self.doc)
+        self.r.get(key)['inventory']['references'] = refs
+        output = os.path.join(self.root, 'out')
+        backend = session.SessionBackend(self.db, self.app, output, self.r)
+        backend.open_copy = lambda *args: self.fail('Live cache native host must not open Revit')
+        backend.verify_package = lambda *args: self.fail('Metadata readback must not use document verification')
+        original = worker.run_separate_revit
+        worker.run_separate_revit = lambda *args, **kwargs: self.fail('Native cache host must not launch worker')
+        self.addCleanup(setattr, worker, 'run_separate_revit', original)
+        before = dict((path, (f.digest(path), os.stat(path).st_mtime))
+                      for path in (self.original, link, cad) if os.path.isfile(path))
+        return key, output, backend, td, before
+
+    def test_live_cache_copies_and_repaths_cad_and_revit_without_worker_or_open(self):
+        key, output, backend, td, before = self.prepare()
+        options = f.defaults()
+        options.update(repath=True, cleanup=False, upgrade=False)
+        result = engine.transmit([key], output, backend, options)
+        host = next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertEqual(host['processing_status'], 'PROCESSED', repr(result['issues']))
+        self.assertTrue(host.get('metadata_repathed'), repr(host))
+        self.assertFalse(host.get('worker_repaired'))
+        self.assertFalse(host.get('opened_in_revit'))
+        self.assertEqual(host['copy_method'], 'COLLABORATION_CACHE_READ_ONLY')
+        self.assertEqual(result['delivery_strategy'], 'DIRECT_DEPENDENCIES')
+        self.assertEqual(engine.package_counts(result)['hosts_copied'], 1)
+        self.assertFalse([item for item in result['issues'] if item['severity'] == 'error'], result['issues'])
+        self.assertEqual(td.writes[0]['before'], self.payload)
+        self.assertEqual(os.path.basename(td.writes[0]['path']), 'Host.rvt')
+        self.assertNotIn(td.writes[0]['path'], before)
+        self.assertEqual(dict((path, (f.digest(path), os.stat(path).st_mtime)) for path in before), before)
+        packaged = td.read(host['target'])
+        for row in result['references']:
+            self.assertEqual(row.get('repath'), 'TRANSMISSION_DATA', repr(row))
+            self.assertIn('CHECKED', row.get('verification', ''), repr(row))
+            desired = packaged.desired[row['id']]
+            self.assertEqual(desired.PathType, 'Relative')
+            self.assertEqual(f.canonical(f.resolve_source(desired.path, host['target'])),
+                             f.canonical(row['target']))
+        self.assertFalse(packaged.desired['1'].loaded)
+        self.assertTrue(packaged.desired['2'].loaded)
+
+    def test_missing_rvt_keeps_copied_cad_reference_unmodified_in_preserved_host(self):
+        key, output, backend, td, before = self.prepare(missing=True)
+        result = engine.transmit([key], output, backend, f.defaults())
+        host = next(row for row in result['files'] if row.get('is_primary_host'))
+        self.assertEqual(host['processing_status'], 'HOST_PRESERVED_LINKS_UNAVAILABLE', repr(result['issues']))
+        self.assertFalse(host.get('metadata_repathed'))
+        cad = next(row for row in result['references'] if row['kind'] == 'CADLink')
+        self.assertTrue(os.path.isfile(cad['target']))
+        self.assertEqual(f.digest(cad['target']), f.digest(cad['source']))
+        packaged = td.read(host['target'])
+        self.assertEqual(packaged.desired['2'].path, cad['source'])
+        self.assertEqual(packaged.desired['2'].PathType, 'Absolute')
+        self.assertNotEqual(f.canonical(packaged.desired['2'].path), f.canonical(cad['target']))
+        self.assertEqual(dict((path, (f.digest(path), os.stat(path).st_mtime)) for path in before), before)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

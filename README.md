@@ -1,6 +1,15 @@
 # PyRevit_EasyBIM
 PyRevit Tools created by Ruiming Liu
 
+## e-transmit 2.1.24
+
+Native CAD/Revit repathing now copies the saved host/cache first and updates its
+closed-file reference metadata, without opening the host or creating a new
+central. Final transmission handling preserves packaged paths and unloaded
+states. PDF/image and ACC External Resource repairs still use the Revit worker.
+See the [2.1.24 notes](Development%20Space/docs/e-transmit-2.1.24.md) for the
+2.1.23 regression and the required desktop acceptance checks.
+
 ## e-transmit 2.1.4
 
 Each host gets an independent package with one **Links** folder. The new **File

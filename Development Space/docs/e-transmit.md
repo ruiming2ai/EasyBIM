@@ -1,4 +1,9 @@
-# EasyBIM e-transmit 2.1.12
+# EasyBIM e-transmit 2.1.24
+
+The current release restores copy-first native CAD/Revit repathing and fixes the
+2.1.23 finalization step that could replace packaged paths with old saved paths.
+See [2.1.24 release notes](e-transmit-2.1.24.md) for the current processing flow and
+validation limits. Earlier workflow details below retain their version context.
 
 **Ribbon: EasyBIM > Links > e-transmit.** Update the entire EasyBIM extension and
 reload pyRevit (restart Revit if a ribbon change is not visible). This is an
