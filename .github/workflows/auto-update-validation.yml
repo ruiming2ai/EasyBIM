@@ -1,32 +1,52 @@
-name: Auto Update validation
+name: Auto Update candidate validation
 on:
   push:
     branches: [codex/auto-update-session-validation-20260930]
 permissions:
   contents: read
 jobs:
-  snapshot:
+  regressions:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Collect exact source and update history
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/easybim-validation"
-          git archive --format=tar.gz ac2370a079af49ebb0d9f5c68c62907f38fa69fa > "$RUNNER_TEMP/easybim-validation/source.tar.gz"
-          git log --all --format=fuller --stat -- '*auto_update*' '*Auto Update*' 'startup.py' 'lib/easybim/idling.py' > "$RUNNER_TEMP/easybim-validation/history.txt"
-          git bundle create "$RUNNER_TEMP/easybim-validation/history.bundle" --all
-      - name: Baseline tests
-        shell: bash
-        run: |
-          python -B -m unittest discover -s 'Development Space/tests' -v > "$RUNNER_TEMP/easybim-validation/baseline.txt" 2>&1
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Apply exact tested candidate
+        run: python .github/apply-auto-update-candidate.py
+      - name: Full regression suite
+        run: python -B -m unittest discover -s 'Development Space/tests' -v
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: easybim-auto-update-validation
-          path: ${{ runner.temp }}/easybim-validation/
-          retention-days: 1
+          persist-credentials: false
+      - name: Apply exact tested candidate
+        run: python .github/apply-auto-update-candidate.py
+      - name: Real IronPython and LibGit2Sharp regressions
+        shell: powershell
+        run: "& './Development Space/tests/run_auto_update_native.ps1'"
+  validated-candidate:
+    needs: [regressions, native-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Preserve concurrent changes and apply tested candidate
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python .github/apply-auto-update-candidate.py
+          git diff --check
+          git add -- lib/easybim/auto_update.py lib/easybim/idling.py 'Development Space/tests/test_auto_update_sessions.py' 'Development Space/tests/native_auto_update_sessions.py' 'Development Space/tests/run_auto_update_native.ps1' 'Development Space/docs/superpowers/specs/2026-05-18-auto-update-design.md' 'EasyBIM.tab/Misc Tools.panel/Auto Update.pushbutton/bundle.yaml'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: restore automatic cross-session EasyBIM refresh (validated candidate)'
+          git push origin "HEAD:$GITHUB_REF_NAME"
+          echo "Validated candidate: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
