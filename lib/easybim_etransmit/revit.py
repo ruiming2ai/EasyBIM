@@ -846,6 +846,8 @@ class Backend(object):
             raise RuntimeError('Revit did not switch the repair document to the package path.')
         if bool(getattr(doc,'IsModified',False)):
             raise RuntimeError('A save callback modified the package document after SaveAs.')
+        if bool(getattr(doc,'IsDetached',False)):
+            raise RuntimeError('The saved package document is still detached; it cannot be delivered as a normal host.')
         return True
 
     def _repath_external_revit_links_relative(self, doc, rows):

@@ -577,6 +577,36 @@ class SessionBackend(Backend):
                         basis='SAVED_REFERENCE_METADATA_PLUS_DETACHED_LIVE_EXTERNAL_REVIT'
                     else:
                         basis='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
+                        saved_ids=set(f.text(r.get('element_id',r.get('id',''))) for r in saved_revit)
+                        live_matches_saved=None
+                        for live in live_rows:
+                            if live.get('kind')!='RevitLink':continue
+                            ident=f.text(live.get('element_id',live.get('id','')))
+                            if ident in saved_ids:continue
+                            value=f.text(live.get('source') or live.get('in_session_path') or '')
+                            external=bool(cache_sources.reference_identity(live) or
+                                          live.get('special')=='external' or '://' in value)
+                            if not external:continue
+                            # TD deliberately omits server-managed references.
+                            # Keep the observed link visible, but do not guess
+                            # its membership in the saved host from unsaved data.
+                            row=copy.deepcopy(live)
+                            if live_matches_saved is None:
+                                live_matches_saved=False
+                                if not entry.get('is_modified') and entry.get('document_version'):
+                                    try:live_matches_saved=(file_version(self.DB,physical)==entry['document_version'])
+                                    except Exception:pass
+                            if live_matches_saved:
+                                row['source_evidence']='MATCHING_SAVED_DOCUMENT_EXTERNAL_RESOURCE'
+                                saved_revit.append(row);saved_ids.add(ident)
+                                continue
+                            row.update(resolution_failed=True,saved_membership_unverified=True,
+                                       source_evidence='LIVE_EXTERNAL_MEMBERSHIP_UNVERIFIED')
+                            saved_revit.append(row);saved_ids.add(ident)
+                            result.setdefault('issues',[]).append(issue(
+                                'SAVED_EXTERNAL_LINK_UNVERIFIED',source+' #'+ident,
+                                'An external Revit link is present in the open model but absent from saved file metadata. '
+                                'Saved membership is unverified; it is reported unresolved, not omitted or replaced by a guessed model.','error'))
                     result['references']=saved_revit+live_non_revit
                     if options.get('include',{}).get('revit',True):
                         self._bind_saved_links(entry,result)
@@ -741,6 +771,7 @@ class SessionBackend(Backend):
         by_id=dict((r.get('element_id'),r) for r in entry.get('inventory',{}).get('references',[]) if r.get('kind')=='RevitLink')
         for row in result.get('references',[]):
             if row.get('kind')!='RevitLink':continue
+            if row.get('saved_membership_unverified'):continue
             if self.registry.owns(row.get('source','')):continue
             identity=cache_sources.reference_identity(row)
             if identity:

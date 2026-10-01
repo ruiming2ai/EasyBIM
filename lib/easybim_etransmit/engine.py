@@ -189,12 +189,15 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
     result = dict(version=VERSION, runtime_provenance=opts.get('runtime_provenance') or provenance.collect(),
                   status='RUNNING', root=root, models=[], files=[], aliases=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
-    # Backend capability is not user consent to launch/require another Revit.
-    # The default saved/cache copy is deliverable without independent SaveAs.
+    # A requested repath must end in real saved references, not a transmitted
+    # delivery that Revit opens detached. Preserve the acquired host on failure
+    # in the default mode, as the 2.1.6 unresolved-link path did.
+    preserve_hosts=bool(opts.get('simple_repath',True) and
+                        not (opts.get('cleanup') or opts.get('upgrade')))
     independent_hosts=(bool(getattr(backend,'independent_host_supported',False)) and
-                       (not opts.get('simple_repath',True) or
-                        bool(opts.get('cleanup') or opts.get('upgrade'))))
-    result['host_delivery_mode']='INDEPENDENT_MODEL' if independent_hosts else 'SAVED_COPY'
+                       (opts.get('repath') or not preserve_hosts))
+    result['host_delivery_mode']=('PRESERVE_SAVED_HOST' if preserve_hosts else
+                                  'INDEPENDENT_MODEL' if independent_hosts else 'SAVED_COPY')
     retained_recovery=[]
     # Revit inspection/processing scratch must not live in OneDrive or another
     # synchronized output tree.  Keep it in the local OS temp area and register
@@ -379,7 +382,40 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     for old, new in sorted(stage_paths.items(), key=lambda item: -len(item[0])):
                         diagnostic[field] = diagnostic[field].replace(old, new)
         def retain_unfinished_host(record, original=None, may_be_running=False):
-            """Keep acquired bytes outside the package; never publish an unfinished host."""
+            """Restore the saved host, or quarantine a still-running worker's output."""
+            if preserve_hosts and not may_be_running:
+                baseline=original if original and f.file_exists(original) else record.get('target')
+                try:
+                    if not baseline or f.digest(baseline)!=record.get('sha256'):
+                        raise IOError('The original acquired host is unavailable or changed.')
+                    if f.canonical(baseline)!=f.canonical(record['target']):
+                        # Only this job's target can be replaced, only after the
+                        # worker has stopped, and only from a verified baseline.
+                        if not f.within(record['target'],root):
+                            raise ValueError('Host rollback outside package refused.')
+                        if f.file_exists(record['target']):
+                            if os.name=='nt':
+                                from . import longpaths
+                                longpaths.no_reparse(record['target']);longpaths.unlink(record['target'])
+                            else:os.remove(record['target'])
+                        restored=f.copy_file(baseline,record['target'],None)
+                        if restored['sha256']!=record['sha256']:
+                            raise IOError('Restored host does not match the acquired bytes.')
+                    record.update(status='COPIED',host_finalized=False,saved_references_checked=False,
+                                  metadata_repathed=False,worker_repaired=False,verified_in_process=False,
+                                  independent_package_central=False,host_unchanged=True,
+                                  transmission_status='SOURCE_STATE_PRESERVED',
+                                  packaged_sha256=record['sha256'],
+                                  verified_signature=f.signature(record['target']))
+                    for row in edges:
+                        if f.canonical(row.get('owner',''))==f.canonical(record['source']):
+                            row['repath']='NOT_APPLIED_HOST_UNCHANGED'
+                            row.pop('verification',None)
+                    add_issue('HOST_COPY_PRESERVED',record['source'],
+                              'The original saved host is in the package unchanged. No detached/transmitted host was substituted; requested reference repairs were not applied.')
+                    return
+                except Exception as restore_exc:
+                    add_issue('HOST_ROLLBACK_FAILED',record['source'],restore_exc,'error')
             record['status']='NOT_FINALIZED'
             record['transmission_status']='NOT_FINALIZED'
             record['host_finalized']=False
@@ -468,6 +504,10 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if normal_host and (not isinstance(raw,dict) or not raw.get('host_finalized')
                                     or not raw.get('saved_references_checked')):
                     raise RuntimeError('Package host finalization was not confirmed by the Revit worker.')
+                if preserve_hosts and normal_host:
+                    check_transmitted=getattr(backend,'_package_is_transmitted',None)
+                    if check_transmitted is not None and check_transmitted(record['target']):
+                        raise RuntimeError('Repaired host is still transmitted; restore the original saved host.')
                 problems,verified=normalize_processing_result(raw)
                 if normal_host and any(p.get('severity')=='error' for p in problems):
                     result['issues'].extend(problems)
@@ -1023,15 +1063,21 @@ def _write_reports_at(result, root):
     for record in result['files']:
         context=record.get('source_context',{})
         workshared=bool(record.get('is_workshared') or context.get('is_workshared'))
+        unchanged=bool(record.get('is_primary_host') and record.get('status')=='COPIED' and
+                       not record.get('host_finalized') and record.get('packaged_sha256') and
+                       record.get('packaged_sha256')==record.get('sha256'))
+        if unchanged:
+            record['host_unchanged']=True
+            record['transmission_status']='SOURCE_STATE_PRESERVED'
         if workshared:
             transmitted=record.get('transmission_status')=='TRANSMITTED'
             record['opening_guidance']=('OPEN_NORMALLY_INDEPENDENT_PACKAGE' if record.get('host_finalized')
                                         else 'RECOVERY_COPY_NOT_FINALIZED' if record.get('status')=='NOT_FINALIZED'
+                                        else 'SOURCE_OPENING_STATE_PRESERVED' if unchanged
                                         else 'OPEN_AS_TRANSMITTED_MODEL' if transmitted
-                                        else 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
+                                        else 'OPENING_STATE_UNVERIFIED')
             record['original_central_association_preserved']=(False if record.get('host_finalized') else True if transmitted else
-                (bool(record.get('saved_state_sha256') and
-                      record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None))
+                (True if unchanged else None))
         if record.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED':
             record['verification_open_mode']='DETACH_IF_WORKSHARED'
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
@@ -1067,7 +1113,14 @@ def _write_reports_at(result, root):
                          ' | '+f.text(record.get('relative','')))
     if not result['options'].get('repath'):
         lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
-    if result.get('host_delivery_mode')=='SAVED_COPY':
+    if result.get('host_delivery_mode')=='PRESERVE_SAVED_HOST':
+        lines.extend(['', 'HOST OPENING STATE:',
+            'Unchanged hosts preserve the source opening/worksharing state; EasyBIM did not detach or mark them transmitted.',
+            'An unchanged host is not a repathed or independently saved model. Its original reference paths and central association remain.',
+            'Successfully repaired hosts are saved normally with transmitted status cleared; worksets remain unless explicitly discarded.',
+            'A failed/deferred repair retains the unchanged host and reports unapplied references. Never synchronize an unchanged copy to the original central.',
+            'A source already marked transmitted retains that state when copied unchanged; it is not claimed to be normalized.'])
+    elif result.get('host_delivery_mode')=='SAVED_COPY':
         lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
             'Copy-first: saved host/cache copies are delivered, not independent models saved by Revit.',
             'Open workshared copies with Detach from Central; never synchronize to the original central.',

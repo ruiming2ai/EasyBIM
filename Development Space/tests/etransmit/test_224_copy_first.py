@@ -330,7 +330,7 @@ class CopyFirstPackageUI(unittest.TestCase):
     def test_dialog_help_distinguishes_copy_first_from_independent_saving(self):
         xaml=os.path.join(ROOT,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml')
         labels=' '.join(node.get('Text','') for node in ET.parse(xaml).getroot().iter()).lower()
-        for phrase in ('copy-first','detach from central','separate revit process','independent saving'):
+        for phrase in ('unchanged','normally saved host','not delivered in a detached or transmitted state','independent-model completion'):
             self.assertIn(phrase,labels)
         self.assertFalse(self.loaded_dialog().DiscardWorksets.IsChecked)
 

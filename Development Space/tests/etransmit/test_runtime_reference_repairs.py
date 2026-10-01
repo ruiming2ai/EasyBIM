@@ -322,7 +322,7 @@ class EngineRepairs(unittest.TestCase):
                 return []
         result=e.transmit([host],os.path.join(root,'out'),B())
         self.assertEqual(calls,['finish'])
-        self.assertIsNone(result['files'][0].get('transmission_status'))
+        self.assertEqual(result['files'][0].get('transmission_status'),'SOURCE_STATE_PRESERVED')
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
     def test_parent_is_processed_after_collected_link(self):

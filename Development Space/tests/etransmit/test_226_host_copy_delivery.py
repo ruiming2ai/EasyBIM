@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""A copied host is deliverable without an independent-model Revit worker.
+"""Acquired hosts remain deliverable when normal Revit repair cannot finish.
 
 The production acquisition, engine, filesystem, and metadata repath run here.
 Only Autodesk's TransmissionData serialization is substituted; these are not
@@ -41,7 +41,7 @@ class HostCopyDelivery(unittest.TestCase):
         host = next(row for row in result['files'] if row.get('is_primary_host'))
         return result, host
 
-    def assert_copy_delivered(self, result, host, case):
+    def assert_copy_delivered(self, result, host, case, worker_attempted=False):
         key, output, backend, td, before, calls = case
         self.assertTrue(os.path.isfile(host['target']),
                         'A copied host disappeared from its package: ' + repr(result['issues']))
@@ -49,7 +49,7 @@ class HostCopyDelivery(unittest.TestCase):
         self.assertEqual(host['status'], 'COPIED')
         self.assertEqual(engine.package_counts(result)['hosts_copied'], 1)
         self.assertFalse(host.get('host_finalized'), 'Copying must not claim independent serialization')
-        self.assertEqual(calls, [], 'Default copy-first delivery must not depend on a Revit worker')
+        self.assertEqual(calls, [True] if worker_attempted else [])
         self.assertEqual(dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in before), before)
 
     def test_repath_off_delivers_cache_bytes_without_worker(self):
@@ -59,38 +59,30 @@ class HostCopyDelivery(unittest.TestCase):
         self.assert_copy_delivered(result, host, case)
         self.assertEqual(f.digest(host['target']), f.digest(self.original))
         self.assertEqual(case[3].writes, [])
-        self.assertEqual(host['opening_guidance'], 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
+        self.assertEqual(host['opening_guidance'], 'SOURCE_OPENING_STATE_PRESERVED')
 
-    def test_default_repath_delivers_host_and_persists_native_paths(self):
+    def test_default_repath_worker_failure_retains_host_without_transmission_changes(self):
         case = self.setup_case()
         result, host = self.run_case(case, f.defaults())
-        self.assert_copy_delivered(result, host, case)
-        self.assertTrue(host.get('metadata_repathed'))
-        self.assertEqual(host['model_verification'], 'TRANSMISSION_DATA_CHECKED')
-        packaged = case[3].read(host['target'])
-        self.assertTrue(packaged.IsTransmitted)
-        self.assertEqual(host.get('transmission_status'), 'TRANSMITTED')
-        self.assertEqual(host['opening_guidance'], 'OPEN_AS_TRANSMITTED_MODEL')
-        for row in result['references']:
-            self.assertEqual(row.get('repath'), 'TRANSMISSION_DATA')
-            self.assertEqual(f.canonical(f.resolve_source(packaged.desired[row['id']].path, host['target'])),
-                             f.canonical(row['target']))
-        self.assertFalse(packaged.desired['1'].loaded)
-        self.assertTrue(packaged.desired['2'].loaded)
+        self.assert_copy_delivered(result, host, case, worker_attempted=True)
+        self.assertFalse(host.get('metadata_repathed'))
+        self.assertEqual(f.digest(host['target']), f.digest(self.original))
+        self.assertFalse(case[3].read(host['target']).IsTransmitted)
+        self.assertEqual(host.get('transmission_status'), 'SOURCE_STATE_PRESERVED')
+        self.assertEqual(host['opening_guidance'], 'SOURCE_OPENING_STATE_PRESERVED')
 
-    def test_missing_rvt_does_not_remove_host_or_block_native_cad_repath(self):
+    def test_missing_rvt_keeps_host_and_cad_file_but_does_not_mark_host_transmitted(self):
         case = self.setup_case(missing=True)
         result, host = self.run_case(case, f.defaults())
         self.assert_copy_delivered(result, host, case)
         cad = next(row for row in result['references'] if row['kind'] == 'CADLink')
         missing = next(row for row in result['references'] if row['kind'] == 'RevitLink')
-        self.assertEqual(cad.get('repath'), 'TRANSMISSION_DATA')
+        self.assertEqual(cad.get('repath'), 'NOT_APPLIED_HOST_UNCHANGED')
         self.assertTrue(os.path.isfile(cad['target']))
         self.assertFalse(missing.get('target'))
         self.assertTrue(any(row['severity'] == 'error' for row in result['issues']))
-        packaged = case[3].read(host['target'])
-        self.assertNotIn('1', packaged.desired, 'Never invent a target for a missing link')
-        self.assertIn('2', packaged.desired)
+        self.assertEqual(f.digest(host['target']), f.digest(self.original))
+        self.assertFalse(case[3].read(host['target']).IsTransmitted)
 
     def test_metadata_write_failure_restores_host_in_package(self):
         case = self.setup_case()
@@ -98,8 +90,12 @@ class HostCopyDelivery(unittest.TestCase):
             with open(path, 'wb') as stream: stream.write(b'interrupted metadata write')
             raise IOError('Injected metadata failure')
         self.db.TransmissionData.WriteTransmissionData = broken_write
+        def repair(app, stage, target, rows, options, **kwargs):
+            case[5].append(True)
+            case[2].apply_metadata(target,target,rows)
+        worker.run_separate_revit=repair
         result, host = self.run_case(case, f.defaults())
-        self.assert_copy_delivered(result, host, case)
+        self.assert_copy_delivered(result, host, case, worker_attempted=True)
         self.assertEqual(f.digest(host['target']), f.digest(self.original))
         self.assertTrue(any(row['code'] == 'MODEL_PROCESSING_FAILED' for row in result['issues']))
         self.assertNotIn(host.get('model_verification'), ('TRANSMISSION_DATA_CHECKED', 'SAVED_REFERENCES_CHECKED'))
@@ -110,9 +106,9 @@ class HostCopyDelivery(unittest.TestCase):
         result, host = self.run_case(case, options)
         with io.open(os.path.join(case[1], 'START_HERE.txt'), encoding='utf-8') as stream:
             report = stream.read()
-        self.assertIn('Copy-first', report)
-        self.assertIn('Detach from Central', report)
-        self.assertIn('not independent', report)
+        self.assertIn('Unchanged hosts preserve', report)
+        self.assertNotIn('Open workshared copies with Detach from Central', report)
+        self.assertIn('not a repathed or independently saved model', report)
 
     def test_archive_contains_the_copied_host(self):
         case = self.setup_case()
@@ -125,17 +121,17 @@ class HostCopyDelivery(unittest.TestCase):
             self.assertIsNone(archive.testzip())
             self.assertEqual(archive.read('Host.rvt'), self.payload)
 
-    def test_pdf_manual_repair_does_not_start_worker_or_remove_host(self):
+    def test_pdf_repair_failure_keeps_host_and_copied_pdf(self):
         case = self.setup_case()
         pdf = os.path.join(self.root, 'Drawing.pdf')
         with open(pdf, 'wb') as stream: stream.write(b'%PDF-fixture')
         self.r.get(case[0])['inventory']['references'].append(dict(
             id='3', element_id='3', kind='Image', special='image', source=pdf, td=False))
         result, host = self.run_case(case, f.defaults())
-        self.assert_copy_delivered(result, host, case)
+        self.assert_copy_delivered(result, host, case, worker_attempted=True)
         ref = next(row for row in result['references'] if row['id'] == '3')
         self.assertTrue(os.path.isfile(ref['target']))
-        self.assertEqual(ref.get('repath'), 'MANUAL_REPAIR_REQUIRED')
+        self.assertEqual(ref.get('repath'), 'NOT_APPLIED_HOST_UNCHANGED')
 
     def test_cleanup_still_requires_explicit_revit_processing(self):
         case = self.setup_case()

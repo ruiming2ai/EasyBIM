@@ -51,10 +51,10 @@
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
-            <TextBlock Text="Unloaded links are offered in a separate selection window. Copy-first mode delivers saved host/cache files without requiring another Revit process." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="Unloaded links are offered in a separate selection window. Repath off copies saved host/cache bytes unchanged. Repath on uses Revit to persist supported repairs in a normally saved host." TextWrapping="Wrap" Foreground="#536273"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
-            <CheckBox x:Name="SimpleRepath" Content="Copy-first: keep the saved host/cache copy; repath native file links only" IsChecked="True"/>
-            <TextBlock Text="Copy-first does not detach or save a new independent model. PDFs/images and ACC resource links may need manual repair. Open workshared copies with Detach from Central; never sync them to the original. Uncheck for full repairs and independent saving in a separate Revit process. Cleanup or Upgrade also requires Revit processing." TextWrapping="Wrap" Foreground="#536273"/>
+            <CheckBox x:Name="SimpleRepath" Content="Keep the original host if repairs fail (recommended)" IsChecked="True"/>
+            <TextBlock Text="Repaired hosts are saved normally, not delivered in a detached or transmitted state. With this option checked, unavailable links or failed repairs retain the original saved host unchanged and report unapplied repairs. Never synchronize an unchanged copy to the original central. Uncheck to require independent-model completion. Cleanup or Upgrade also requires Revit processing." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="File Structure Organization">
