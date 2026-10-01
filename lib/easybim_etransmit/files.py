@@ -41,7 +41,7 @@ def host_processing_allowed(options):
 
 def defaults():
     return dict(include=dict((k, True) for k, label in CATEGORIES), deep=True,
-                repath=True, load_unloaded_files=False, file_structure='categories', upgrade=False, cleanup=False, discard_worksets=False,
+                repath=True, simple_repath=True, load_unloaded_files=False, file_structure='categories', upgrade=False, cleanup=False, discard_worksets=False,
                 purge=False, views='all', view_types=[], per_model=True,
                 reports=True, zip=False, mappings=[])
 

@@ -82,6 +82,8 @@ class Backend(object):
         """Native references can be repathed on the saved/cache bytes alone."""
         if not options.get('repath') or options.get('cleanup') or options.get('upgrade'):
             return False
+        if options.get('simple_repath'):
+            return True
         return not any(not r.get('skip_repath') and
                        (r.get('special')=='image' or
                         (r.get('kind')=='RevitLink' and
@@ -91,6 +93,7 @@ class Backend(object):
     def requires_final_host_open(self, record, rows, options):
         """Document API repairs wait until dependencies reach final locations."""
         if not record.get('is_primary_host') or not options.get('repath'): return False
+        if self.can_finish_metadata_copy(rows,options):return False
         return any(r.get('target') and not r.get('skip_repath') and
                    (r.get('special')=='image' or (r.get('kind')=='RevitLink' and
                    (not r.get('td') or cache_sources.reference_identity(r)))) for r in rows)
@@ -237,7 +240,8 @@ class Backend(object):
         base=info.get('central') if info.get('workshared') and f.absolute(info.get('central', '')) else source
         try: result['references']=self.rows(stage, base)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
-        if not f.host_processing_allowed(options) or not options.get('deep',True):
+        simple_only=options.get('simple_repath') and not (options.get('cleanup') or options.get('upgrade'))
+        if simple_only or not f.host_processing_allowed(options) or not options.get('deep',True):
             result['issues'].append(issue('METADATA_ONLY_SCAN',source,
                                          'Image/PDF, cloud, point-cloud and some other dependencies can be absent from saved reference metadata.'))
             return result
@@ -645,8 +649,8 @@ class Backend(object):
             if not row.get('repath'):
                 row['repath']='MANUAL_REPAIR_REQUIRED'
                 issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),
-                                    'File copied, but its reference is absent from saved TransmissionData. '
-                                    'Repair it in the packaged model.'))
+                                    'File copied, but this reference cannot be changed through saved TransmissionData. '
+                                    'Repair it in the packaged model, or disable Simple copy and repath to use Revit document repairs.'))
         return dict(issues=issues,verified_in_process=False,metadata_repathed=True)
 
     def verify_metadata_package(self, target, rows, options):
