@@ -15,6 +15,9 @@ encoded = ''.join((root / ('.github/etransmit228-parts/%d.txt' % i)).read_text(e
 patch = gzip.decompress(base64.b64decode(encoded, validate=True))
 if hashlib.sha256(patch).hexdigest() != meta['patch_sha256']:
     raise SystemExit('Reviewed patch checksum mismatch.')
+compat_patch = (root / '.github/etransmit228-archive-fixture.patch').read_bytes().replace(b'\r\n', b'\n')
+if hashlib.sha256(compat_patch).hexdigest() != meta['compat_patch_sha256']:
+    raise SystemExit('Archive fixture patch checksum mismatch.')
 subprocess.check_call(['git', 'config', 'core.autocrlf', 'false'])
 subprocess.check_call(['git', 'config', 'core.eol', 'lf'])
 subprocess.check_call(['git', 'checkout', '--detach', meta['base']])
@@ -34,6 +37,10 @@ patch_path = work / 'etransmit228-reviewed.patch'
 patch_path.write_bytes(patch)
 subprocess.check_call(['git', 'apply', '--check', str(patch_path)])
 subprocess.check_call(['git', 'apply', str(patch_path)])
+compat_path = work / 'etransmit228-archive-fixture.patch'
+compat_path.write_bytes(compat_patch)
+subprocess.check_call(['git', 'apply', '--check', str(compat_path)])
+subprocess.check_call(['git', 'apply', str(compat_path)])
 for name, expected in meta['sha256'].items():
     if hashlib.sha256(Path(name).read_bytes()).hexdigest() != expected:
         raise SystemExit('Reviewed source mismatch: ' + name)
