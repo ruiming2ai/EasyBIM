@@ -155,6 +155,27 @@ class References(unittest.TestCase):
         self.assertEqual(options.Path,row['target'])
         self.assertEqual(captured,[(row['target'],True,'Link')])
 
+class IndependentCentralSave(unittest.TestCase):
+    def test_workshared_repair_copy_is_saved_as_new_package_central(self):
+        calls=[]
+        class SaveOptions(Obj):
+            def SetWorksharingOptions(self,ws):self.ws=ws
+            def Dispose(self):pass
+        class WorksharingOptions(Obj):
+            def Dispose(self):pass
+        db=Obj(SaveAsOptions=lambda:SaveOptions(),
+               WorksharingSaveAsOptions=lambda:WorksharingOptions())
+        b=Backend(db,Obj(VersionNumber='2026'),'C:\\Package')
+        b.guard=lambda path:None
+        doc=Obj(IsWorkshared=True,PathName='C:\\Temp\\stage.rvt')
+        def save_as(path,options):
+            calls.append((path,options.ws.SaveAsCentral))
+            doc.PathName=path
+        doc.SaveAs=save_as
+        self.assertTrue(b._save_as_independent_package_central(doc,'C:\\Package\\Host.rvt'))
+        self.assertEqual(calls,[('C:\\Package\\Host.rvt',True)])
+
+
 class IndependentRepair(unittest.TestCase):
     def test_worker_lifecycle_saves_independent_central_before_repath_and_transmits_later(self):
         b=Backend(Obj(),Obj(VersionNumber='2024'),'C:\\Package')
