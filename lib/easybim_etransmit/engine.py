@@ -399,6 +399,10 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 result['issues'].extend(problems)
                 record['verified_in_process']=verified
                 record['worker_repaired']=worker_repaired
+                if isinstance(raw,dict):
+                    record['independent_package_central']=bool(raw.get('independent_package_central'))
+                    record['worker_suppressed_dialogs']=list(raw.get('worker_suppressed_dialogs') or [])
+                    record['worker_suppressed_failures']=list(raw.get('worker_suppressed_failures') or [])
                 record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
                 record['model_verification']=('FAILED' if any(p.get('severity')=='error' for p in problems)
                                                else 'WORKER_SAVE_COMPLETED' if worker_repaired
@@ -817,6 +821,10 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     result['issues'].extend(processing_issues)
                     record['verified_in_process']=verified_in_process
                     record['worker_repaired']=worker_repaired
+                    if isinstance(raw_processing,dict):
+                        record['independent_package_central']=bool(raw_processing.get('independent_package_central'))
+                        record['worker_suppressed_dialogs']=list(raw_processing.get('worker_suppressed_dialogs') or [])
+                        record['worker_suppressed_failures']=list(raw_processing.get('worker_suppressed_failures') or [])
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
                     record['verified_signature'] = f.signature(target)
@@ -962,6 +970,12 @@ def _write_reports_at(result, root):
             lines.append('Processing rollback failed. Unmodified copy retained outside the package: '+record['recovery_path'])
         if record.get('worker_repaired'):
             lines.append('Separate Revit repair worker completed LoadFrom/ReloadFrom and saved the package copy. No verification reopen was performed.')
+            if record.get('independent_package_central'):
+                lines.append('Repair lifecycle: saved as an independent package central/project first; references were repathed and saved; only then was the closed package marked transmitted.')
+            suppressed=len(record.get('worker_suppressed_dialogs') or [])
+            warnings=len(record.get('worker_suppressed_failures') or [])
+            if suppressed or warnings:
+                lines.append('Unattended worker UI suppressed: {0} dialog(s), {1} failure/warning item(s).'.format(suppressed,warnings))
         context=record.get('source_context',{})
         if context:
             lines.append('Source mode: '+context.get('mode','')+' | State: '+context.get('state_basis',''))
