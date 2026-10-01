@@ -1,0 +1,26 @@
+--- a/Development Space/tests/etransmit/test_227_normal_host_preservation.py
++++ b/Development Space/tests/etransmit/test_227_normal_host_preservation.py
+@@ -17,10 +17,10 @@
+ 
+ 
+ class NormalHostPreservation(unittest.TestCase):
+-    setUp = fixtures.HostCopyDelivery.setUp
+-    prepare = fixtures.HostCopyDelivery.prepare
+-    setup_case = fixtures.HostCopyDelivery.setup_case
+-    run_case = fixtures.HostCopyDelivery.run_case
++    setUp = fixtures.HostCopyDelivery.__dict__['setUp']
++    prepare = fixtures.HostCopyDelivery.__dict__['prepare']
++    setup_case = fixtures.HostCopyDelivery.__dict__['setup_case']
++    run_case = fixtures.HostCopyDelivery.__dict__['run_case']
+ 
+     def assert_original(self, result, host, case):
+         self.assertEqual(host['status'], 'COPIED', repr(result['issues']))
+@@ -127,7 +127,7 @@
+ 
+ 
+ class ExternalLinkInventory(unittest.TestCase):
+-    setUp = fixtures.HostCopyDelivery.setUp
++    setUp = fixtures.HostCopyDelivery.__dict__['setUp']
+ 
+     def test_modified_local_host_does_not_drop_live_external_link_or_treat_it_as_saved(self):
+         local=os.path.join(self.root,'Local.rvt')

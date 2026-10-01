@@ -15,6 +15,10 @@ patch = gzip.decompress(base64.b64decode(encoded, validate=True))
 if hashlib.sha256(patch).hexdigest() != meta['patch_sha256']:
     raise SystemExit('Patch checksum mismatch.')
 
+test_patch=(root / '.github/etransmit227-tests.patch').read_bytes().replace(b'\r\n',b'\n')
+if hashlib.sha256(test_patch).hexdigest()!=meta['test_patch_sha256']:
+    raise SystemExit('Test compatibility patch checksum mismatch.')
+
 # This script runs only in an isolated ephemeral CI checkout, never in a user installation.
 if os.environ.get('GITHUB_ACTIONS') != 'true':
     raise SystemExit('Disposable GitHub Actions checkout required.')
@@ -37,6 +41,10 @@ patch_path = work / 'etransmit227-reviewed.patch'
 patch_path.write_bytes(patch)
 subprocess.check_call(['git', 'apply', '--check', str(patch_path)])
 subprocess.check_call(['git', 'apply', str(patch_path)])
+test_patch_path=work / 'etransmit227-tests.patch'
+test_patch_path.write_bytes(test_patch)
+subprocess.check_call(['git','apply','--check',str(test_patch_path)])
+subprocess.check_call(['git','apply',str(test_patch_path)])
 for name, expected in meta['sha256'].items():
     actual = hashlib.sha256(Path(name).read_bytes()).hexdigest()
     if actual != expected:
