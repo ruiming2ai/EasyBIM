@@ -1,0 +1,130 @@
+name: Verify e-transmit 2.1.26 host-copy repair
+on:
+  push:
+    branches: [codex/etransmit-host-copy-226-build]
+permissions:
+  contents: read
+jobs:
+  portable:
+    name: Copy delivery and regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply checksum-verified repair to pinned main
+        run: python .github/etransmit226_apply.py
+      - name: Run e-transmit suite (not Revit integration)
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests/etransmit' -v 2>&1 | tee "$RUNNER_TEMP/etransmit-tests.log"
+      - name: Run complete root test suite
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests' -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/root-tests.log"
+      - name: Archive verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etransmit226-${{ matrix.os }}
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/etransmit-tests.log
+            ${{ runner.temp }}/root-tests.log
+            ${{ runner.temp }}/etransmit226-source-hashes.json
+  ironpython:
+    name: Real Windows IronPython 2.7 (no Revit)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply checksum-verified repair to pinned main
+        run: python .github/etransmit226_apply.py
+      - name: Verify shipped native helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          dotnet build 'Development Space/native/EasyBIM.FileIO/EasyBIM.FileIO.csproj' -c Release -o "$env:RUNNER_TEMP/ETNative"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $built=(Get-FileHash "$env:RUNNER_TEMP/ETNative/EasyBIM.FileIO.dll" -Algorithm SHA256).Hash
+          $shipped=(Get-FileHash 'lib/easybim_etransmit/native/EasyBIM.FileIO.dll' -Algorithm SHA256).Hash
+          if ($built -ne $shipped) { throw 'Native helper does not match its source.' }
+      - name: Get pinned official IronPython
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip=Join-Path $env:RUNNER_TEMP 'IronPython.2.7.12.zip'
+          $folder=Join-Path $env:RUNNER_TEMP 'IronPython-2.7.12'
+          Invoke-WebRequest 'https://github.com/IronLanguages/ironpython2/releases/download/ipy-2.7.12/IronPython.2.7.12.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $folder
+          $ipy=Get-ChildItem -LiteralPath $folder -Recurse -Filter ipy.exe | Where-Object { $_.FullName -match 'net45' } | Select-Object -First 1
+          if (-not $ipy) { throw 'Official runtime has no net45 ipy.exe.' }
+          "IPY_EXE=$($ipy.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run production copy and compatibility tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $log=Join-Path $env:RUNNER_TEMP 'ironpython-tests.log'
+          $names=@('test_runtime_copy.py','test_runtime_progress.py','test_source_automation.py','test_payload_acquisition.py','test_runtime_longpaths.py','test_runtime_reference_repairs.py','test_209_regressions.py')
+          $names += Get-ChildItem 'Development Space/tests/etransmit' -File | Where-Object { $_.Name -match '^test_2[12].*\.py$' } | Sort-Object Name | ForEach-Object { $_.Name }
+          foreach ($name in $names) {
+            "TEST $name" | Tee-Object -FilePath $log -Append
+            & $env:IPY_EXE (Join-Path 'Development Space/tests/etransmit' $name) 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Archive compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etransmit226-ironpython
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/ironpython-tests.log
+            ${{ runner.temp }}/etransmit226-source-hashes.json
+  candidate:
+    name: Publish clean candidate only after all tests
+    needs: [portable, ironpython]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reapply exact tested repair
+        run: python .github/etransmit226_apply.py
+      - name: Publish candidate without temporary workflow files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'EasyBIM repair'
+          git config user.email '142599989+ruiming2ai@users.noreply.github.com'
+          tree=$(git write-tree)
+          sha=$(git commit-tree "$tree" -p 4a8714b1f3e211448e914d05514b5149f07d4d24 -m 'Fix e-transmit 2.1.26 host copy delivery' -m 'Restore default copy-first host/cache delivery without requiring an independent Revit worker. Repath available native CAD references despite unavailable RVTs; retain the acquired host on metadata failure. Preserve explicit full-repair, cleanup and upgrade verification. Add 11 delivery regressions, mode-specific existing tests, and accurate opening guidance. Auto Update unchanged. Portable Linux/Windows and real IronPython checks passed; actual Revit opening remains a desktop acceptance test.')
+          git push origin "$sha:refs/heads/codex/etransmit-host-copy-226"
+          echo "Candidate commit: $sha" >> "$GITHUB_STEP_SUMMARY"
+          echo "Candidate tree: $tree" >> "$GITHUB_STEP_SUMMARY"
