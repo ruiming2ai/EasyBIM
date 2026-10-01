@@ -63,6 +63,39 @@ class References(unittest.TestCase):
         self.assertEqual(issues,[])
         self.assertEqual(row.get('verification'),'PATH_CHECKED')
 
+    def test_pdf_repair_opens_absolute_packaged_file_but_requests_relative_storage(self):
+        self.b.guard=lambda path:None
+        self.db.ElementId=lambda value:value
+        self.db.ImageTypeSource=Obj(Link='Link')
+        self.db.TransactionStatus=Obj(Committed='Committed',Started='Started')
+        captured=[]
+        class Options(Obj):
+            def IsValid(self,doc):return True
+        self.db.ImageTypeOptions=lambda path,relative,source:(
+            captured.append((path,relative,source)) or
+            Options(Path=path,Dispose=lambda:None))
+        tx=Obj(Start=lambda:None,Commit=lambda:'Committed',GetStatus=lambda:'Committed',
+               RollBack=lambda:None,Dispose=lambda:None)
+        self.db.Transaction=lambda doc,name:tx
+        reloaded=[]
+        image=Obj(ReloadFrom=lambda opts:reloaded.append(opts.Path),Unload=lambda:None)
+        old_system=sys.modules.get('System')
+        sys.modules['System']=Obj(Int64=int,Int32=int)
+        row=dict(element_id='30',id='30',kind='Image',special='image',
+                 source='old.pdf',target='C:\\Package\\Links\\PDF\\A.pdf',
+                 page=1,resolution=600,loaded=True)
+        try:
+            issues,changed=self.b.repath_images(Obj(GetElement=lambda ident:image),[row])
+        finally:
+            if old_system is None:sys.modules.pop('System',None)
+            else:sys.modules['System']=old_system
+        self.assertEqual(issues,[])
+        self.assertTrue(changed)
+        self.assertEqual(captured,[(row['target'],True,'Link')])
+        self.assertEqual(reloaded,[row['target']])
+        self.assertEqual(row['repath'],'API_IMAGE_RELATIVE')
+        self.assertEqual(row['repath_source'],'PACKAGED_ABSOLUTE_FILE')
+
     def test_cad_link_repair_uses_packaged_target(self):
         calls=[]
         result=Obj(LoadResult='LinkLoaded',Dispose=lambda:None)
