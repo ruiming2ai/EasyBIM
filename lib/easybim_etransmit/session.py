@@ -518,6 +518,8 @@ class SessionBackend(Backend):
         document open, so it can perform LoadFrom/ReloadFrom and SaveAs safely.
         """
         source=f.text(options.get('_host_source','') or '')
+        if self.can_finish_metadata_copy(rows,options):
+            return self.finish_metadata_copy(stage,target,rows,options)
         if self._requires_separate_worker(source,options):
             from . import worker
             return worker.run_separate_revit(

@@ -107,13 +107,14 @@ class APIBoundary(unittest.TestCase):
     def test_workshared_without_td_warns_about_original_central(self):
         self.db.TransmissionData.ReadTransmissionData=lambda p:None
         self.backend.basic=lambda p:dict(version='2026',workshared=True,central='source.rvt')
-        issues=self.backend.finish(self.stage,self.target,[],f.defaults())
+        issues=self.backend.finish(self.stage,self.target,[],f.defaults())['issues']
         self.assertTrue(any(i['code']=='WORKSHARING_COPY_NOT_DETACHED' for i in issues))
     def test_no_implicit_upgrade_for_image_repath(self):
         self.backend.basic=lambda p:dict(version='2023',workshared=False,central='')
         self.backend.open_copy=lambda *a: self.fail('Must not open for saving without upgrade consent')
         rows=[dict(id='200',target=str(self.root/'page.pdf'),source='page.pdf',special='image',loaded=True)]
-        issues=self.backend.finish(self.stage,self.target,rows,f.defaults())
+        options=f.defaults();options['simple_repath']=False
+        issues=self.backend.finish(self.stage,self.target,rows,options)
         self.assertTrue(any(i['code']=='UPGRADE_CONSENT_REQUIRED' for i in issues))
         self.assertEqual(Path(self.target).read_bytes(),b'original')
 

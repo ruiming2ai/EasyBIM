@@ -117,7 +117,7 @@ class ReportRepathAcquisition(unittest.TestCase):
         output = os.path.join(self.root, 'out')
         backend = RecordingRevitBoundary(self.db, self.app, output, self.r)
         opts = f.defaults()
-        opts.update(repath=True, cleanup=False, upgrade=False)
+        opts.update(repath=True, simple_repath=False, cleanup=False, upgrade=False)
         self.before = dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in self.sources)
         result = engine.transmit([host], output, backend, opts)
         return result, backend

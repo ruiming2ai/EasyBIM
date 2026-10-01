@@ -177,7 +177,7 @@ class IndependentCentralSave(unittest.TestCase):
 
 
 class IndependentRepair(unittest.TestCase):
-    def test_worker_lifecycle_saves_independent_central_before_repath_and_transmits_later(self):
+    def test_worker_lifecycle_saves_independent_central_and_activates_metadata_after_close(self):
         b=Backend(Obj(),Obj(VersionNumber='2024'),'C:\\Package')
         b.guard=lambda path:None
         b.basic=lambda path:dict(version='2024',workshared=True)
@@ -208,7 +208,7 @@ class IndependentRepair(unittest.TestCase):
                                     [row],dict(repath=True,cleanup=False,upgrade=False,
                                                normalize_saved_cache=False))
         self.assertEqual(events,['open','saveas-central','repath-image','save','close'])
-        self.assertEqual(metadata,[('C:\\Package\\Host.rvt','C:\\Package\\Host.rvt',True,False)])
+        self.assertEqual(metadata,[('C:\\Package\\Host.rvt','C:\\Package\\Host.rvt',True,True)])
         self.assertTrue(result['independent_package_central'])
         self.assertEqual(row['repath'],'API_IMAGE_RELATIVE')
 

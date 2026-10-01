@@ -190,3 +190,27 @@ an unperformed check into a pass.
   Detach from Central → Preserve Worksets.
 - Confirm directly collected linked RVTs are byte-preserved by this feature; only the
   primary host gets the new transmitted marking.
+
+
+2.1.24 copy-first / final-repath checks (not yet performed):
+
+- Verify version 2.1.24. Export a saved/cache host containing file-based RVT and
+  linked CAD references with **Simple copy and repath (native file links)** checked,
+  Repath ON and Cleanup/Upgrade OFF. Confirm the option defaults ON and host
+  processing uses closed-file TransmissionData with no worker host open, SaveAs,
+  or new-central creation. Test both workshared and non-workshared hosts.
+- Check final desired paths and requested load states after transmission marking;
+  they must point to the delivered files. Relocate the complete package, open the
+  copied host, and confirm Manage Links resolves CAD/RVT links and retains unloaded
+  intent. Handle transmitted/detached prompts without contacting the source central.
+- Repeat with linked PDFs/images and a true ACC External Resource link. Confirm
+  simple mode still avoids a worker and reports manual repair for references not
+  available through TransmissionData. Uncheck the simple option and repeat to test
+  full API repair: final marking must retain packaged relative targets, PDF
+  page/resolution settings and converted link placement/annotations must survive.
+- Force a repair failure or skipped reference. Confirm final metadata overlay does
+  not turn that row into a success; successful `API_LOCAL_LINK_RELATIVE` conversion
+  must remain recognized. `TRANSMISSION_DATA_CHECKED` alone is not a Revit-load pass.
+- Repeat collect-only and opt-in Cleanup/Upgrade. Verify saved/cache edition
+  selection remains exact, originals are unchanged, and document processing occurs
+  for those selected operations even if the simple-mode preference was enabled.

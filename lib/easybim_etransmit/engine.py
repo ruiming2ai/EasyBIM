@@ -400,10 +400,12 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 record['verified_in_process']=verified
                 record['worker_repaired']=worker_repaired
                 if isinstance(raw,dict):
+                    record['metadata_repathed']=bool(raw.get('metadata_repathed'))
                     record['independent_package_central']=bool(raw.get('independent_package_central'))
                     record['worker_suppressed_dialogs']=list(raw.get('worker_suppressed_dialogs') or [])
                     record['worker_suppressed_failures']=list(raw.get('worker_suppressed_failures') or [])
                 record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
+                record['processing_errors']=any(p.get('severity')=='error' for p in problems)
                 record['model_verification']=('FAILED' if any(p.get('severity')=='error' for p in problems)
                                                else 'WORKER_SAVE_COMPLETED' if worker_repaired
                                                else 'OPENED_AND_REFERENCES_CHECKED' if verified else 'DEFERRED')
@@ -437,6 +439,9 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     continue
                 try:
                     model_rows=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])]
+                    if (not opts.get('repath') or
+                            record.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW')):
+                        model_rows=[dict(r,target=None) for r in model_rows]
                     if bool(getattr(backend,'mark_transmitted_rows_supported',False)):
                         state=performance.call('metadata','mark_host_transmitted',record['source'],
                                                transmitter,record['target'],model_rows)
@@ -470,7 +475,29 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 # The repair worker already performed LoadFrom/ReloadFrom and a
                 # successful Save/Close in a separate Revit process. Do not
                 # reopen the package merely to compare paths.
-                record['model_verification']='WORKER_SAVE_COMPLETED'; continue
+                if record.get('processing_errors'):
+                    record['model_verification']='FAILED'
+                elif record.get('model_verification')!='FAILED':
+                    record['model_verification']='WORKER_SAVE_COMPLETED'
+                continue
+            if record.get('metadata_repathed'):
+                # Read back the final file's desired metadata. This does not
+                # open Revit or establish whether the referenced geometry loads.
+                rows=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source'])]
+                if result['status']=='CANCELLED' or (cancelled and cancelled()):
+                    record['model_verification']='DEFERRED';continue
+                try:
+                    check=getattr(backend,'verify_metadata_package',None)
+                    problems=check(record['target'],rows,opts) if check else []
+                    result['issues'].extend(problems)
+                    record['model_verification']=('FAILED' if record.get('processing_errors') or any(p.get('severity')=='error' for p in problems)
+                                                  else 'TRANSMISSION_DATA_CHECKED' if check else 'METADATA_WRITTEN')
+                except f.Cancelled:
+                    result['status']='CANCELLED';record['model_verification']='DEFERRED'
+                except Exception as exc:
+                    record['model_verification']='FAILED'
+                    add_issue('METADATA_VERIFICATION_FAILED',record['source'],exc,'error')
+                continue
             if record.get('verified_in_process') and record.get('transmission_status')!='TRANSMITTED':
                 record['model_verification']='OPENED_AND_REFERENCES_CHECKED'; continue
             if not opts.get('repath') or not verifier:
@@ -822,10 +849,12 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     record['verified_in_process']=verified_in_process
                     record['worker_repaired']=worker_repaired
                     if isinstance(raw_processing,dict):
+                        record['metadata_repathed']=bool(raw_processing.get('metadata_repathed'))
                         record['independent_package_central']=bool(raw_processing.get('independent_package_central'))
                         record['worker_suppressed_dialogs']=list(raw_processing.get('worker_suppressed_dialogs') or [])
                         record['worker_suppressed_failures']=list(raw_processing.get('worker_suppressed_failures') or [])
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
+                    record['processing_errors']=any(p.get('severity')=='error' for p in processing_issues)
                     record['packaged_sha256'] = f.digest(target, cancelled)
                     record['verified_signature'] = f.signature(target)
                 except f.Cancelled:
@@ -951,6 +980,7 @@ def _write_reports_at(result, root):
              'Revit link discovery: '+result['link_discovery_status'],
              'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')),
+             'Packaged RVTs with native reference metadata checked (no Revit load test): {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='TRANSMISSION_DATA_CHECKED')),
              'Host RVTs repaired and saved by separate Revit worker: {0}'.format(sum(1 for r in result['files'] if r.get('worker_repaired'))), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for record in result['files']:

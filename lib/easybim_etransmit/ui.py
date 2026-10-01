@@ -162,6 +162,7 @@ class Dialog(forms.WPFWindow):
             with io.open(self.settings,encoding='utf-8') as inp: saved=json.load(inp)
             self.Output.Text=saved.get('output','')
             self.Repath.IsChecked=saved.get('repath',True); self.Reports.IsChecked=saved.get('reports',True)
+            self.SimpleRepath.IsChecked=saved.get('simple_repath',True)
             self.FileStructure.SelectedIndex=[x.Key for x in self.structures].index(layout.mode(saved.get('file_structure')))
             self.Zip.IsChecked=saved.get('zip',False)
             self.ZipPerModel.IsChecked=saved.get('zip_per_model',False)
@@ -270,6 +271,7 @@ class Dialog(forms.WPFWindow):
         opts=f.defaults(); opts['include']=dict((x.Key,bool(x.Checked)) for x in self.categories)
         opts['file_structure']=layout.mode(self.FileStructure.SelectedItem.Key if self.FileStructure.SelectedItem else None)
         opts.update(repath=bool(self.Repath.IsChecked),
+                    simple_repath=bool(getattr(getattr(self,'SimpleRepath',None),'IsChecked',True)),
                     cleanup=bool(self.Cleanup.IsChecked),upgrade=bool(self.Upgrade.IsChecked or self.Cleanup.IsChecked),
                     discard_worksets=bool(self.DiscardWorksets.IsChecked),purge=bool(self.Purge.IsChecked),
                     views=self.ViewMode.SelectedItem.Key,view_types=self.view_types,per_model=True,
@@ -298,7 +300,7 @@ class Dialog(forms.WPFWindow):
         if opts['cleanup']: notes.append('Cleanup may delete views/definitions or discard worksets IN COPIES ONLY. Retain your original models.')
         if notes and not forms.alert('\n\n'.join(notes)+'\n\nContinue?',yes=True,no=True,title='Process package copies / Transmit'): return
         if self.SaveSettings.IsChecked:
-            saved=dict((k,opts[k]) for k in ('repath','file_structure','per_model','reports','zip','zip_per_model'))
+            saved=dict((k,opts[k]) for k in ('repath','simple_repath','file_structure','per_model','reports','zip','zip_per_model'))
             saved['output']=output
             folder=os.path.dirname(self.settings)
             try:
