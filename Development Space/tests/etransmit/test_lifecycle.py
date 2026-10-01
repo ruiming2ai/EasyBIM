@@ -55,7 +55,7 @@ class Lifecycle(unittest.TestCase):
             issues=self.backend.finish(self.stage,self.target,[self.row],f.defaults())
         self.assertEqual(self.closed,[False]);self.assertEqual(self.saved,[self.target,self.target])
         self.assertEqual([x['Relative'] for x in self.reloads],[True])
-        self.assertEqual(self.reloads[0]['Path'],'details.pdf')
+        self.assertEqual(self.reloads[0]['Path'],self.image_path)
         self.assertTrue(all(x['Resolution']==240 and x['PageNumber']==3 for x in self.reloads))
         self.assertEqual(self.row['repath'],'API_IMAGE_RELATIVE');self.assertEqual(issues,[])
     def test_one_image_failure_does_not_roll_back_other_image_repaths(self):

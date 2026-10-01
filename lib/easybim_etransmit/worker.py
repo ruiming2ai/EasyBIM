@@ -30,10 +30,136 @@ JOB_FORMAT = 1
 DEFAULT_TIMEOUT_SECONDS = 7200
 _WORKER_RUNNING = [False]
 _WORKER_DONE = [False]
+_DIALOG_HANDLER = [None]
+_DIALOG_SOURCE = [None]
+_FAILURE_HANDLER = [None]
+_FAILURE_SOURCE = [None]
+_SUPPRESSED_DIALOGS = []
+_SUPPRESSED_FAILURES = []
 
 
 class WorkerError(RuntimeError):
     pass
+
+
+def _dialog_result_candidates(dialog_id='', message=''):
+    """Prefer a non-blocking, non-save response for worker-only dialogs."""
+    value=(f.text(dialog_id or '')+' '+f.text(message or '')).lower()
+    # Never let the disposable worker save an unexpected document or sync.
+    if any(word in value for word in ('save changes','synchronize','sync with central',
+                                       'relinquish','overwrite source')):
+        return [7,2,1,8,1001]  # IDNO, IDCANCEL, IDOK, IDCLOSE, first command.
+    # For upgrade/transmitted/missing-reference warnings the useful action is
+    # normally the first command or OK/Yes.
+    if any(word in value for word in ('upgrade','transmitted','missing','not found',
+                                       'unloaded','continue','open anyway')):
+        return [1001,1,6,8,7,2]
+    # Generic worker dialogs: dismiss rather than waiting forever. Revit
+    # validates whether a code is legal for that concrete dialog.
+    return [1,1001,6,7,8,2,5]
+
+
+def _on_dialog_box_showing(sender, args):
+    del sender
+    dialog_id=f.text(getattr(args,'DialogId','') or '')
+    message=f.text(getattr(args,'Message','') or '')
+    accepted=None
+    for code in _dialog_result_candidates(dialog_id,message):
+        try:
+            if bool(args.OverrideResult(int(code))):
+                accepted=int(code)
+                break
+        except Exception:
+            continue
+    _SUPPRESSED_DIALOGS.append(dict(dialog_id=dialog_id,message=message,
+                                    result_code=accepted,
+                                    dismissed=accepted is not None,
+                                    time=time.time()))
+
+
+def _on_failures_processing(sender, args):
+    del sender
+    try:
+        from Autodesk.Revit.DB import FailureSeverity, FailureProcessingResult
+        accessor=args.GetFailuresAccessor()
+        has_error=False
+        for failure in list(accessor.GetFailureMessages()):
+            try:
+                severity=failure.GetSeverity()
+                description=f.text(failure.GetDescriptionText() or '')
+            except Exception:
+                severity=None;description=''
+            if severity==FailureSeverity.Warning:
+                try:
+                    accessor.DeleteWarning(failure)
+                    _SUPPRESSED_FAILURES.append(dict(severity='Warning',
+                                                     message=description,
+                                                     action='DELETED'))
+                except Exception:
+                    pass
+            else:
+                has_error=True
+                _SUPPRESSED_FAILURES.append(dict(severity=f.text(severity),
+                                                 message=description,
+                                                 action='ROLLBACK'))
+        if has_error:
+            try:accessor.SetClearAfterRollback(True)
+            except Exception:pass
+            args.SetProcessingResult(FailureProcessingResult.ProceedWithRollBack)
+        else:
+            args.SetProcessingResult(FailureProcessingResult.Continue)
+    except Exception:
+        # Never let the suppression handler itself become a worker blocker.
+        pass
+
+
+def install_unattended_handlers(application):
+    """Install non-interactive dialog/failure handling in the worker process."""
+    if not is_worker_process() or application is None:
+        return False
+    try:
+        from System import EventHandler
+    except Exception:
+        EventHandler=None
+
+    dialog_source=None
+    for candidate in (application,getattr(application,'uiapp',None)):
+        if candidate is None:continue
+        try:
+            getattr(candidate,'DialogBoxShowing')
+            dialog_source=candidate;break
+        except Exception:
+            pass
+    if dialog_source is not None and _DIALOG_HANDLER[0] is None:
+        try:
+            from Autodesk.Revit.UI.Events import DialogBoxShowingEventArgs
+            handler=(EventHandler[DialogBoxShowingEventArgs](_on_dialog_box_showing)
+                     if EventHandler is not None else _on_dialog_box_showing)
+            dialog_source.DialogBoxShowing += handler
+            _DIALOG_HANDLER[0]=handler;_DIALOG_SOURCE[0]=dialog_source
+        except Exception:
+            pass
+
+    failure_source=None
+    candidates=[getattr(application,'ControlledApplication',None),
+                getattr(application,'Application',None)]
+    for candidate in candidates:
+        if candidate is None:continue
+        try:
+            getattr(candidate,'FailuresProcessing')
+            failure_source=candidate;break
+        except Exception:
+            pass
+    if failure_source is not None and _FAILURE_HANDLER[0] is None:
+        try:
+            from Autodesk.Revit.DB.Events import FailuresProcessingEventArgs
+            handler=(EventHandler[FailuresProcessingEventArgs](_on_failures_processing)
+                     if EventHandler is not None else _on_failures_processing)
+            failure_source.FailuresProcessing += handler
+            _FAILURE_HANDLER[0]=handler;_FAILURE_SOURCE[0]=failure_source
+        except Exception:
+            pass
+    return _DIALOG_HANDLER[0] is not None or _FAILURE_HANDLER[0] is not None
 
 
 def _write_json(path, value):
@@ -206,10 +332,14 @@ def run_separate_revit(application, stage, target, rows, options,
                     raw = dict(raw)
                     raw['worker_repaired'] = True
                     raw['worker_process_id'] = result.get('process_id')
+                    raw['worker_suppressed_dialogs'] = list(result.get('suppressed_dialogs') or [])
+                    raw['worker_suppressed_failures'] = list(result.get('suppressed_failures') or [])
                     return raw
                 return dict(issues=list(raw or []), verified_in_process=False,
                             worker_repaired=True,
-                            worker_process_id=result.get('process_id'))
+                            worker_process_id=result.get('process_id'),
+                            worker_suppressed_dialogs=list(result.get('suppressed_dialogs') or []),
+                            worker_suppressed_failures=list(result.get('suppressed_failures') or []))
 
             if os.path.isfile(payload['status_path']):
                 try:
@@ -294,6 +424,8 @@ def _request_exit(uiapp):
 def _worker_result(job, status, message='', processing_result=None, rows=None):
     value = dict(status=status, message=f.text(message or ''),
                  processing_result=processing_result, rows=list(rows or []),
+                 suppressed_dialogs=list(_SUPPRESSED_DIALOGS),
+                 suppressed_failures=list(_SUPPRESSED_FAILURES),
                  completed_at=time.time())
     try:
         from System.Diagnostics import Process
@@ -355,6 +487,10 @@ def run_pending(sender=None):
     # interactive enough to open a document.
     if uiapp is None:
         return True
+
+    install_unattended_handlers(uiapp)
+    _SUPPRESSED_DIALOGS[:] = []
+    _SUPPRESSED_FAILURES[:] = []
 
     _WORKER_RUNNING[0] = True
     try:
