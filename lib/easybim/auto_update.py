@@ -14,6 +14,10 @@ AUTO_UPDATE_GUARD_ENVVAR = "EASYBIM_AUTO_UPDATE_RAN"
 AUTO_UPDATE_PENDING_ENVVAR = "EASYBIM_AUTO_UPDATE_PENDING"
 AUTO_UPDATE_LOADED_ENVVAR = "EASYBIM_AUTO_UPDATE_LOADED"
 AUTO_UPDATE_RUNNING_ENVVAR = "EASYBIM_AUTO_UPDATE_RUNNING"
+AUTO_UPDATE_REFRESH_FAILED_ENVVAR = "EASYBIM_AUTO_UPDATE_REFRESH_FAILED"
+AUTO_UPDATE_RETRY_ENVVAR = "EASYBIM_AUTO_UPDATE_RETRY_AT"
+SESSION_CHECK_SECONDS = 10.0
+_SESSION_CHECK_AT = [0.0]
 AUTO_UPDATE_MUTEX_NAME = "Global\\EasyBIMAutoUpdate"
 TITLE = "Auto Update"
 STATUS_NO_OP = "no_op"
@@ -97,7 +101,10 @@ def record_loaded_revision():
         _log("Could not record the loaded EasyBIM revision: {}".format(_safe_text(error)))
     except Exception:
         _log("Could not record the loaded EasyBIM revision.")
-    return _set_envvar(AUTO_UPDATE_LOADED_ENVVAR, state)
+    saved = _set_envvar(AUTO_UPDATE_LOADED_ENVVAR, state)
+    if saved and state is not None:
+        _set_envvar(AUTO_UPDATE_REFRESH_FAILED_ENVVAR, None)
+    return saved
 
 
 def queue_startup_auto_update():
@@ -113,6 +120,9 @@ def queue_startup_auto_update():
 def has_pending_startup_auto_update():
     if _PENDING_RESOLVED[0]:
         return False
+    retry_at = _get_envvar(AUTO_UPDATE_RETRY_ENVVAR, 0.0)
+    if _is_waiting(retry_at):
+        return False
     pending = bool(_get_envvar(AUTO_UPDATE_PENDING_ENVVAR, False))
     if not pending:
         _PENDING_RESOLVED[0] = True
@@ -120,6 +130,7 @@ def has_pending_startup_auto_update():
 
 
 def _consume_pending_startup():
+    _set_envvar(AUTO_UPDATE_RETRY_ENVVAR, None)
     _set_envvar(AUTO_UPDATE_PENDING_ENVVAR, None)
     _PENDING_RESOLVED[0] = True
 
@@ -129,7 +140,98 @@ def run_pending_startup_auto_update():
     if should_skip_startup(get_startup_guard_state()):
         return None
     mark_startup_attempted()
-    return run_startup_auto_update()
+    result = run_startup_auto_update()
+    if result["status"] == STATUS_SKIPPED_LOCKED:
+        # Waiting for another process is not an update attempt. Keep the
+        # startup job alive, but never spin against its mutex on every tick.
+        _set_envvar(AUTO_UPDATE_GUARD_ENVVAR, {"attempted": False, "attempted_at": 0.0})
+        _set_envvar(AUTO_UPDATE_RETRY_ENVVAR, time.time() + SESSION_CHECK_SECONDS)
+        if _set_envvar(AUTO_UPDATE_PENDING_ENVVAR, True):
+            _PENDING_RESOLVED[0] = False
+    return result
+
+
+def _is_waiting(deadline):
+    # Also recover if the system clock moved backwards; do not wait hours.
+    try:
+        return 0 < float(deadline or 0) - time.time() <= SESSION_CHECK_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+def has_pending_session_refresh():
+    """Cheap, throttled local HEAD check, independent of the startup guard.
+
+    All Revit versions sharing this checkout can observe an update installed
+    by any other session (including pyRevit's built-in Update). No network,
+    working-tree scan, file watcher, background thread or new event delegate.
+    """
+    if _is_waiting(_SESSION_CHECK_AT[0]):
+        return False
+    _SESSION_CHECK_AT[0] = time.time() + SESSION_CHECK_SECONDS
+    if _get_envvar(AUTO_UPDATE_RUNNING_ENVVAR, False):
+        return False
+    loaded = _get_envvar(AUTO_UPDATE_LOADED_ENVVAR, None)
+    if not isinstance(loaded, dict) or not loaded.get("repo_key") or not loaded.get("head"):
+        return False
+    info = None
+    try:
+        info = _get_git().get_repo(loaded["repo_key"])
+        current = {"repo_key": _get_repo_key(info), "head": _head_hash(info)}
+        return (current["repo_key"] == loaded["repo_key"]
+                and current["head"] != loaded["head"]
+                and current != _get_envvar(AUTO_UPDATE_REFRESH_FAILED_ENVVAR, None))
+    except Exception:
+        # A writer may be replacing Git metadata; retry on a later idle pass.
+        return False
+    finally:
+        _dispose_repo(info)
+
+
+def run_pending_session_refresh():
+    """Verify installed files and reload this process without fetching."""
+    result = _run_easybim_update(trigger="session")
+    if result["reload_status"] == "failed":
+        # Do not repeatedly tear down a session for the same failing revision.
+        # A different disk revision or an explicit manual update can try again.
+        _set_envvar(AUTO_UPDATE_REFRESH_FAILED_ENVVAR,
+                    {"repo_key": result["repo_key"], "head": result["after_head"]})
+    return result
+
+
+def _dispose_repo(info):
+    # Polling must not accumulate native repository handles all day.
+    try:
+        info.repo.Dispose()
+    except Exception:
+        pass
+
+
+def _verify_local_checkout(result):
+    loaded = _get_envvar(AUTO_UPDATE_LOADED_ENVVAR, None)
+    if not isinstance(loaded, dict) or not loaded.get("repo_key") or not loaded.get("head"):
+        raise _UpdateError(STATUS_SESSION_UNKNOWN, "This session's loaded EasyBIM revision is unknown.")
+    info = None
+    try:
+        info = _get_git().get_repo(loaded["repo_key"])
+        current = _inspect_repo(info)
+        if (current["repo_key"] != loaded["repo_key"] or not _is_same_or_ancestor(
+                current["repo_key"], _normalize_dir(_get_extension_root()))):
+            raise _UpdateError(STATUS_VERIFICATION_FAILED, "The installed EasyBIM repository changed.")
+        result.update(current)
+        result["before_head"] = loaded["head"]
+        if current["after_head"] != current["upstream_head"]:
+            ahead, behind = _branch_divergence(info)
+            if behind != 0 or ahead == 0 or not _history_matches_published_files(info, behind):
+                raise _UpdateError(STATUS_LOCAL_CHANGES,
+                                   "Installed EasyBIM files do not match the cached published revision. "
+                                   "Automatic session refresh left them unchanged.")
+            result["history_ahead"] = ahead
+        # This verifies the installed checkout, NOT today's GitHub version.
+        result["verified"] = True
+        result["verification_source"] = "local_checkout"
+    finally:
+        _dispose_repo(info)
 
 
 def run_startup_auto_update():
@@ -143,7 +245,7 @@ def run_manual_auto_update():
 def _result(trigger, updated_repos=None, status=STATUS_NO_OP):
     return {"status": status, "trigger": trigger,
             "updated_repos": list(updated_repos or []),
-            "verified": False, "reload_status": "not_needed",
+            "verified": False, "verification_source": "", "reload_status": "not_needed",
             "repo_key": "", "branch": "", "upstream": "",
             "before_head": "", "after_head": "", "upstream_head": "",
             "history_ahead": 0, "message": ""}
@@ -172,7 +274,10 @@ def _run_easybim_update(trigger, updater=None):
                             "Could not acquire the EasyBIM update lock. Nothing was updated.")
         try:
             try:
-                _verify_and_update(result, updater or _get_native_updater())
+                if trigger == "session":
+                    _verify_local_checkout(result)
+                else:
+                    _verify_and_update(result, updater or _get_native_updater())
             except _UpdateError as error:
                 result["status"] = error.status
                 result["message"] = _safe_text(error)
@@ -181,9 +286,14 @@ def _run_easybim_update(trigger, updater=None):
                 result["message"] = (
                     "Could not read EasyBIM repository information using this pyRevit installation. "
                     "The installed version could not be verified.")
+            if trigger == "session" and result["verified"]:
+                # No modal dialog on this path. Retain the writer mutex until
+                # reload finishes so another EasyBIM pull cannot replace files
+                # while this process is loading them.
+                return _finish_verified_update(result)
         finally:
             _release_startup_lock(update_lock)
-        # Do not retain the cross-process lock across dialogs or a reload.
+        # Startup/manual paths release the lock before their dialogs and reload.
         if not result["verified"]:
             if result["updated_repos"]:
                 result["message"] += "\n\nFiles changed during the pull, but the result could not be verified."
@@ -270,6 +380,7 @@ def _verify_and_update(result, updater):
                                "Check the repository for an incomplete pull or conflicts.")
         result["history_ahead"] = ahead
     result["verified"] = True
+    result["verification_source"] = "remote"
 
 
 def _branch_divergence(info):
@@ -367,7 +478,11 @@ def _finish_verified_update(result):
     installed = bool(result["updated_repos"])
     # A pull that changed files also proves a reload is required, even if this
     # is the first update from a session started before tracking was introduced.
-    needs_reload = installed or (known and loaded["head"] != result["after_head"])
+    # A concurrent writer can invalidate the baseline during a fresh launch.
+    # After a successful remote verification, load a known clean version once
+    # instead of leaving that new session stuck behind a manual-only warning.
+    recover_startup = result["trigger"] == "startup" and loaded is None
+    needs_reload = installed or recover_startup or (known and loaded["head"] != result["after_head"])
     if not needs_reload:
         if not known:
             result["reload_status"] = "unknown"
@@ -380,6 +495,8 @@ def _finish_verified_update(result):
             result["message"] = (
                 "EasyBIM's files match the latest published version, and this Revit session has that version loaded. "
                 "Extra local Git history was preserved.")
+        if result["trigger"] == "session":
+            result["message"] = "This Revit session already loaded the installed EasyBIM revision."
         _report(result)
         return result
     try:
@@ -400,6 +517,10 @@ def _finish_verified_update(result):
     result["message"] = ("EasyBIM installed changes. pyRevit is reloading." if installed else
                          "EasyBIM's latest files are already installed, but this Revit session has an older version loaded. "
                          "pyRevit is reloading.")
+    if recover_startup and not installed:
+        result["message"] = "pyRevit is loading the verified EasyBIM files to establish this session's revision."
+    if result["trigger"] == "session":
+        result["message"] = "EasyBIM's installed files changed. pyRevit is reloading this session."
     _report(result)
     try:
         reload_pyrevit()

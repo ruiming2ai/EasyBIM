@@ -1,0 +1,41 @@
+name: EasyBIM Auto Update tests
+on:
+  push:
+    branches: [main, codex/auto-update-session-validation-20260930]
+    paths:
+      - 'lib/easybim/auto_update.py'
+      - 'lib/easybim/idling.py'
+      - 'startup.py'
+      - 'Development Space/tests/**'
+      - '.github/workflows/auto-update-tests.yml'
+  pull_request:
+    paths:
+      - 'lib/easybim/auto_update.py'
+      - 'lib/easybim/idling.py'
+      - 'startup.py'
+      - 'Development Space/tests/**'
+      - '.github/workflows/auto-update-tests.yml'
+permissions:
+  contents: read
+jobs:
+  regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -B -m unittest discover -s 'Development Space/tests' -v
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Real IronPython and LibGit2Sharp session regressions
+        shell: powershell
+        run: "& './Development Space/tests/run_auto_update_native.ps1'"

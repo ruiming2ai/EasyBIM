@@ -1,6 +1,6 @@
 # EasyBIM Auto Update Design
 
-Original date: 2026-05-18. Revised: 2026-09-25.
+Original date: 2026-05-18. Revised: 2026-09-30.
 
 ## Contract
 
@@ -73,7 +73,9 @@ and commit in `EASYBIM_AUTO_UPDATE_LOADED`, using pyRevit's process-local envvar
 This is a local read with no network work. Unknown or dirty files invalidate the
 baseline instead of preserving an old claim about what was loaded.
 
-The once-per-process attempted guard remains independent of that baseline. The
+The once-per-process attempted guard remains independent of that baseline.
+A busy mutex does not consume the startup attempt: the pending job is requeued
+with a ten-second backoff, rather than requiring a manual click. The
 first Idling tick consumes the pending flag and runs the update. The Idling
 dispatcher detaches around the operation because reloading can replace its engine.
 A delegate registered by the new startup is preserved; the old runtime restores
@@ -85,12 +87,47 @@ A verified checkout reloads when its commit differs from this process's baseline
 or when the current pull installed changes. The latter can establish a baseline
 in a session started before revision tracking existed. Otherwise, a missing or
 mismatched repository baseline reports that the files are verified but session
-freshness is unknown; the user reloads pyRevit or restarts Revit once.
+freshness is unknown on a manual request. A fresh startup with a missing baseline
+instead performs one guarded reload after successful remote verification: another
+process may have been updating the checkout while startup tried to record it.
 
 A successful reload must confirm the expected baseline through extension startup.
 A throwing reload, unavailable reload API, or missing confirmation is reported as
 incomplete application of verified files. Restore the previous baseline on a
 failed reload so later checks do not silently treat the old session as current.
+
+## Automatic refresh of already-open sessions
+
+The existing single Idling dispatcher checks the installed EasyBIM HEAD at most
+once per ten seconds, even after its startup check has completed. Unchanged
+revisions require no network, working-tree scan, reload or delegate replacement.
+All native repository handles opened by this polling path are disposed.
+
+When another session (or the built-in updater) advances the shared checkout, the
+receiving process acquires the same named mutex, checks the working tree, and
+verifies the installed HEAD against the **cached** upstream history/tree. This
+is local-installation verification, not a claim that GitHub was just checked.
+It never fetches, pulls, resets or modifies files. Dirty, detached, untracked,
+unreadable, incomplete or privately modified checkouts are left alone. Harmless
+merge history remains supported. Busy receivers retry on a later idle pass.
+
+A verified change triggers a quiet reload on Revit's Idling thread, without a
+confirmation dialog. The writer mutex remains held through this local reload;
+the startup/manual paths still release it before their existing dialogs. The
+process-local reentry guard remains active. Detaching before reload and keeping
+the delegate installed by the new engine avoids duplicate or dead callbacks.
+Disposable e-transmit worker processes remain excluded by the existing dispatcher.
+
+A reload failure preserves the old baseline and suppresses automatic retries for
+that same target revision, avoiding a reload loop. A different revision, explicit
+manual update, or successful reload can retry. Successful baseline recording
+clears the failed-revision marker.
+
+This applies to Revit versions/sessions sharing the **same installation on disk**.
+It does not broadcast to independent clones or other computers. A minimized/busy
+Revit session refreshes when it next receives Idling; ten seconds is a throttle,
+not a real-time delivery guarantee. Sessions still executing the pre-fix code
+need one reload or restart to install the observer before future updates propagate.
 
 ## Interfaces and messages
 
@@ -98,10 +135,14 @@ Existing public entry points remain `run_startup_auto_update()`,
 `run_manual_auto_update()`, and the startup queue/guard helpers. Results preserve
 `status`, `trigger`, and `updated_repos`, and add `verified`, `reload_status`,
 `repo_key`, `branch`, `upstream`, `before_head`, `after_head`, `upstream_head`,
-`history_ahead`, and `message` for explicit verification and reload outcomes.
+`history_ahead`, `verification_source`, and `message` for explicit verification and reload outcomes.
 `history_ahead` counts extra commits retained in a verified checkout; the manual
 current-version message explains that matching published files are installed
 and the extra history was preserved.
+
+`verification_source` distinguishes a remote fetch from a local checkout check.
+The dispatcher also uses `has_pending_session_refresh()` and
+`run_pending_session_refresh()` after the startup job has finished.
 
 Manual results distinguish:
 
@@ -131,6 +172,14 @@ LibGit2Sharp 0.31.0 assemblies to check clean/dirty worktrees and the startup
 record/queue/fetch path against a disposable local upstream.
 History smoke checks also exercise actual native merge commits, consecutive
 updates, and protection of committed file edits with those assemblies.
+
+`test_auto_update_sessions.py` drives the real dispatcher with API-shaped host
+fixtures: cross-session refresh, offline operation, contention/backoff, startup
+baseline recovery, repeated revisions, safe reload lifecycle, cleanup, and local
+edit protection. `run_auto_update_native.ps1` runs the current source in Windows
+IronPython 2.7.12 with LibGit2Sharp 0.31.0, exercising real local remotes, merges,
+status calls, a competing-thread named mutex, and independent session state.
+Only Revit/pyRevit session services are substituted in that native test.
 
 Live acceptance remains a separate check in Revit 2024 and an available newer
 version: one commit behind, already current, two sessions sharing a checkout,
