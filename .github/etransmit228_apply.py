@@ -16,6 +16,7 @@ patch = gzip.decompress(base64.b64decode(encoded, validate=True))
 if hashlib.sha256(patch).hexdigest() != meta['patch_sha256']:
     raise SystemExit('Reviewed patch checksum mismatch.')
 subprocess.check_call(['git', 'config', 'core.autocrlf', 'false'])
+subprocess.check_call(['git', 'config', 'core.eol', 'lf'])
 subprocess.check_call(['git', 'checkout', '--detach', meta['base']])
 paths = sorted(meta['sha256'])
 for name in paths:
