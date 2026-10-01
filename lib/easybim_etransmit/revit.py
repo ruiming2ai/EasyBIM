@@ -42,6 +42,19 @@ def package_load_state(row):
     return row.get('package_loaded',row.get('loaded'))
 
 
+def metadata_target_allowed(row):
+    if not row.get('target') or row.get('skip_repath'):
+        return False
+    if row.get('repath') in ('FAILED','ROLLED_BACK','ROLLBACK_FAILED',
+                            'REMOVED_BY_CLEANUP','MANUAL_REPAIR_REQUIRED',
+                            'PLUGIN_RECONNECT_REQUIRED'):
+        return False
+    if (cache_sources.reference_identity(row) or
+            (row.get('special')=='external' and not row.get('td') and row.get('kind')=='RevitLink')):
+        return row.get('repath') in ('API_LOCAL_LINK','API_LOCAL_LINK_RELATIVE')
+    return True
+
+
 class Backend(object):
     mark_transmitted_rows_supported = True
 
@@ -62,17 +75,25 @@ class Backend(object):
     def can_deliver_direct(self, record, rows, options):
         # Metadata-only hosts do not need physical siblings at their working path.
         if options.get('cleanup') or options.get('upgrade'): return False
-        if record.get('copy_method') == 'COLLABORATION_CACHE_READ_ONLY': return False
         if not options.get('repath'): return True
-        return not any(r.get('special') == 'image' or
-                       (r.get('kind') == 'RevitLink' and
-                        (not r.get('td') or cache_sources.reference_identity(r))) for r in rows)
+        return self.can_finish_metadata_copy(rows,options)
+
+    def can_finish_metadata_copy(self, rows, options):
+        """Native references can be repathed on the saved/cache bytes alone."""
+        if not options.get('repath') or options.get('cleanup') or options.get('upgrade'):
+            return False
+        return not any(not r.get('skip_repath') and
+                       (r.get('special')=='image' or
+                        (r.get('kind')=='RevitLink' and
+                         (not r.get('td') or cache_sources.reference_identity(r))))
+                       for r in rows)
 
     def requires_final_host_open(self, record, rows, options):
-        """True cloud/external Revit links need one final document API conversion."""
+        """Document API repairs wait until dependencies reach final locations."""
         if not record.get('is_primary_host') or not options.get('repath'): return False
-        return any(r.get('target') and r.get('kind')=='RevitLink' and
-                   (not r.get('td') or cache_sources.reference_identity(r)) for r in rows)
+        return any(r.get('target') and not r.get('skip_repath') and
+                   (r.get('special')=='image' or (r.get('kind')=='RevitLink' and
+                   (not r.get('td') or cache_sources.reference_identity(r)))) for r in rows)
 
     def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
         self.guard(target)
@@ -492,12 +513,15 @@ class Backend(object):
             return None
         model_path=self.mp(path);td=None
         intended={}
+        packaged={}
         for row in rows or []:
-            if row.get('kind')!='RevitLink':
-                continue
+            key=f.text(row.get('element_id',row.get('id','')))
+            if metadata_target_allowed(row):
+                self.guard(row['target'])
+                packaged[key]=row
             state=package_load_state(row)
             if state is not None:
-                intended[f.text(row.get('element_id',row.get('id','')))]=bool(state)
+                intended[key]=bool(state)
         try:
             td=self.DB.TransmissionData.ReadTransmissionData(model_path)
             if td is None:return False
@@ -509,14 +533,22 @@ class Backend(object):
                     ref=td.GetDesiredReferenceData(ident) if already else None
                     if ref is None:ref=td.GetLastSavedReferenceData(ident)
                     if ref is None:continue
-                    ref_path=ref.GetPath()
                     status_text=f.text(ref.GetLinkedFileStatus())
                     ident_key=(f.text(ident) if isinstance(ident,f.string_types) else eid(ident))
                     should_load=intended.get(ident_key)
                     if should_load is None:
                         should_load=load_intent(status_text)
                     if should_load is None:should_load=(status_text!='Unloaded')
-                    td.SetDesiredReferenceData(ident,ref_path,ref.PathType,bool(should_load))
+                    row=packaged.get(ident_key)
+                    if row is not None:
+                        # Desired data may have been written while IsTransmitted
+                        # was false. Never replace the packaged target with the
+                        # older saved path during the final transmit step.
+                        ref_path=self.mp(relative_path(row['target'],os.path.dirname(path)))
+                        path_type=self.DB.PathType.Relative
+                    else:
+                        ref_path=ref.GetPath();path_type=ref.PathType
+                    td.SetDesiredReferenceData(ident,ref_path,path_type,bool(should_load))
                 finally:
                     dispose(ref_path);dispose(ref)
             td.IsTransmitted=True
@@ -571,24 +603,88 @@ class Backend(object):
         try:
             ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds())
             for row in rows:
-                ident_key=row.get('element_id',row['id'])
-                if not row.get('target') or ident_key not in ids: continue
+                ident_key=f.text(row.get('element_id',row.get('id','')))
+                if not metadata_target_allowed(row) or ident_key not in ids: continue
                 # Cloud references need the resource-server conversion first,
                 # even if a native API representation also supplied a TD id.
-                if cache_sources.reference_identity(row) and row.get('repath')!='API_LOCAL_LINK':continue
                 desired_load=self._transmission_load_state(td,ids[ident_key],row)
                 if desired_load is None:
                     continue
                 value=relative_path(row['target'],os.path.dirname(target)) if relative else row['target']
                 typ=self.DB.PathType.Relative if relative else self.DB.PathType.Absolute
                 td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(desired_load))
-                if row.get('kind')=='RevitLink' and package_load_state(row) is None:
+                if package_load_state(row) is None:
                     row['package_loaded']=bool(desired_load)
-                row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
+                if not f.text(row.get('repath','')).startswith('API_'):
+                    row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
             td.IsTransmitted=bool(mark_transmitted)
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
             return True
         finally: dispose(td)
+
+    def finish_metadata_copy(self, stage, target, rows, options):
+        """Copy saved bytes first; write native paths without a Revit host open."""
+        self.guard(stage);self.guard(target)
+        reference_target=options.get('reference_target') or target
+        self.guard(reference_target)
+        if f.canonical(stage)!=f.canonical(target):
+            shutil.copyfile(stage,target)
+        transmitted=self.apply_metadata(target,reference_target,rows,relative=True)
+        issues=[]
+        if not transmitted and self.basic(target).get('workshared'):
+            issues.append(issue('WORKSHARING_COPY_NOT_DETACHED',target,
+                                'Saved/cache bytes were copied, but transmission metadata is unavailable. '
+                                'Open the package copy with Detach from Central.','error'))
+        for row in rows:
+            if not row.get('target') or row.get('skip_repath'):continue
+            if row.get('special')=='plugin_spreadsheet':
+                row['repath']='PLUGIN_RECONNECT_REQUIRED'
+                issues.append(issue('PLUGIN_RECONNECT_REQUIRED',row.get('source',''),
+                                    'Workbook copied without executing Excel. The owning plugin must reconnect its private association.'))
+                continue
+            if not row.get('repath'):
+                row['repath']='MANUAL_REPAIR_REQUIRED'
+                issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),
+                                    'File copied, but its reference is absent from saved TransmissionData. '
+                                    'Repair it in the packaged model.'))
+        return dict(issues=issues,verified_in_process=False,metadata_repathed=True)
+
+    def verify_metadata_package(self, target, rows, options):
+        """Check persisted desired paths without claiming a Revit load test."""
+        self.guard(target)
+        issues=[];model_path=self.mp(target);td=None
+        try:
+            td=self.DB.TransmissionData.ReadTransmissionData(model_path)
+            if not any(metadata_target_allowed(r) for r in rows):return []
+            if td is None or not bool(td.IsTransmitted):
+                return [issue('METADATA_VERIFICATION_FAILED',target,
+                              'Packaged reference metadata is missing or inactive.','error')]
+            ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds())
+            for row in rows:
+                f.check(self.cancelled)
+                if not metadata_target_allowed(row):continue
+                ref=ref_path=None
+                try:
+                    ident=ids.get(f.text(row.get('element_id',row.get('id',''))))
+                    ref=td.GetDesiredReferenceData(ident) if ident is not None else None
+                    if ref is None:raise RuntimeError('Packaged desired reference data is missing.')
+                    ref_path=ref.GetPath();value=self.visible(ref_path)
+                    if f.text(ref.PathType)!='Relative':
+                        raise RuntimeError('Packaged desired reference path is not relative.')
+                    paths=ntpath if f.is_windows(target) else os.path
+                    value=paths.join(paths.dirname(target),value)
+                    if f.canonical(value)!=f.canonical(row['target']):
+                        raise RuntimeError('Desired reference still points elsewhere: '+value)
+                    state=package_load_state(row)
+                    if state is not None and load_intent(f.text(ref.GetLinkedFileStatus()))!=bool(state):
+                        raise RuntimeError('Desired reference load state differs from the requested state.')
+                    row['verification']='TRANSMISSION_DATA_CHECKED'
+                except f.Cancelled:raise
+                except Exception as exc:
+                    issues.append(issue('METADATA_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
+                finally:dispose(ref_path);dispose(ref)
+        finally:dispose(td);dispose(model_path)
+        return issues
 
     def _verify_document(self, doc, target, rows, options):
         issues=[]
@@ -760,12 +856,12 @@ class Backend(object):
         return issues,changed
 
     def finish_independent(self, stage, target, rows, options):
-        """Save a new package identity first, then repath, then close untransmitted.
+        """Repair references requiring document APIs in an isolated worker.
 
         This is the live-host worker path. The source Revit session is never
         relocated. The package copy becomes its own local central/project before
-        relative PDF/Revit paths are written. The parent marks the closed file
-        transmitted only after this function returns.
+        relative PDF/Revit paths are written. Final desired metadata is activated
+        after the worker document closes.
         """
         self.guard(stage);self.guard(target)
         issues=[]
@@ -817,17 +913,18 @@ class Backend(object):
                 if not performance.call('repath','revit_close',target,doc.Close,False):
                     raise RuntimeError('Independent package repair document could not be closed.')
 
-        # Closed-file reference metadata is normalized only after the SaveAs and
-        # document repairs. Keep IsTransmitted false here; the parent performs
-        # that final step after the worker is completely done.
+        # Activate the final desired paths in the same write, including for
+        # nonworkshared hosts which have no parent worksharing finalization.
         if options.get('repath'):
-            self.apply_metadata(target,target,rows,relative=True,mark_transmitted=False)
+            self.apply_metadata(target,target,rows,relative=True)
 
         return dict(issues=issues,verified_in_process=False,
                     independent_package_central=True)
 
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
+        if self.can_finish_metadata_copy(rows,options):
+            return self.finish_metadata_copy(stage,target,rows,options)
         if options.get('worker_mode'):
             return self.finish_independent(stage,target,rows,options)
         self.guard(stage); self.guard(target)
