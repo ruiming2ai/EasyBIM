@@ -296,7 +296,7 @@ class EngineRepairs(unittest.TestCase):
             def verify_package(self,*args):
                 self.test.fail('the parent must trust final saved reference checks')
         backend=B();backend.test=self
-        result=e.transmit([host],os.path.join(root,'out'),backend)
+        result=e.transmit([host],os.path.join(root,'out'),backend,dict(f.defaults(),simple_repath=False))
         self.assertEqual(calls,['finish'])
         self.assertTrue(result['files'][0].get('worker_repaired'))
         self.assertTrue(result['files'][0].get('host_finalized'))

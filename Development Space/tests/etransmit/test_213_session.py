@@ -37,7 +37,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.saved_scans(rows)
         out=os.path.join(self.root,'out')
         backend=s.SessionBackend(self.db,self.app,out,self.r)
-        options=f.defaults();options.update(repath=repath,load_unloaded_files=load,skip_cloud_links=True)
+        options=dict(f.defaults(), simple_repath=False);options.update(repath=repath,load_unloaded_files=load,skip_cloud_links=True)
         backend.verify_package=lambda *args:self.fail('worker-checked host must not reopen in the parent')
         backend.mark_transmitted_package=lambda *args:self.fail('ordinary finalized host must not be marked transmitted')
         return engine.transmit([key],out,backend,options)
@@ -134,8 +134,8 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
         self.r.snapshot(key)
         self.saved_scans({'Host.rvt':[dict(id='saved',source='Right.pdf',kind='Image')]})
         backend=s.SessionBackend(self.db,self.app,self.root,self.r)
-        self.assertIsNone(backend.inventory_after_copy(key,f.defaults()))
-        result=backend.scan(key,'unused',f.defaults())
+        self.assertIsNone(backend.inventory_after_copy(key,dict(f.defaults(), simple_repath=False)))
+        result=backend.scan(key,'unused',dict(f.defaults(), simple_repath=False))
         self.assertEqual([r['source'] for r in result['references']],['Wrong.pdf'])
         self.assertTrue(any(i['code']=='SAVED_CACHE_DIFFERS_FROM_LOADED' for i in result['issues']))
 
@@ -148,7 +148,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
             raise f.Cancelled()
         worker.run_separate_revit=finalize
         backend.verify_package=lambda *args:self.fail('cancelled host must not be verified')
-        result=engine.transmit([key],out,backend,f.defaults())
+        result=engine.transmit([key],out,backend,dict(f.defaults(), simple_repath=False))
         self.assertEqual(result['status'],'CANCELLED')
         self.assertEqual(self.assert_retained_original(result)['processing_status'],'ROLLED_BACK')
 
@@ -185,7 +185,7 @@ class SavedCloudLinks(fixtures.SavedCacheSession):
             restore_attempts.append(args)
             raise IOError('simulated target write failure')
         engine.shutil.copyfile=denied
-        try:result=engine.transmit([key],out,backend,f.defaults())
+        try:result=engine.transmit([key],out,backend,dict(f.defaults(), simple_repath=False))
         finally:engine.shutil.copyfile=old
         host=self.assert_retained_original(result);recovery=host['recovery_path']
         self.assertEqual(host['processing_status'],'ROLLED_BACK' if cancelled else 'FAILED')

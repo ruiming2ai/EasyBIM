@@ -19,7 +19,7 @@ class ExtraHostChecks(fixtures.HostSafety):
         class B(s.SessionBackend):
             def verify_package(inner,*args):self.fail('failed processing must not be opened')
         out=os.path.join(self.root,'out')
-        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
+        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),dict(f.defaults(), simple_repath=False))
         rec=self.assert_retained_original(result)
         self.assertEqual(rec['processing_status'],'FAILED')
         self.assertTrue(any(i['code']=='MODEL_PROCESSING_FAILED' for i in result['issues']))

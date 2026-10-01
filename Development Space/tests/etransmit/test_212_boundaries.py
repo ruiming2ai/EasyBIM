@@ -49,7 +49,7 @@ class SavedBoundary(fixtures.SavedCacheSession):
         class B(s.SessionBackend):
             def verify_package(inner,*a):self.fail('failed normalization must not pass verification')
         out=os.path.join(self.root,'normfail')
-        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
+        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),dict(f.defaults(), simple_repath=False))
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'FAILED')
         self.assertEqual(host['status'],'NOT_FINALIZED')

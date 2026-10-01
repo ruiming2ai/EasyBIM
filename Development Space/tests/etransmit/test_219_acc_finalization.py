@@ -41,7 +41,7 @@ class EngineSingleOpen(unittest.TestCase):
         with open(self.link,'wb') as out:out.write(compound(suffix='link'))
         self.out=os.path.join(self.root,'out')
     def test_acc_host_finalizes_after_delivery_and_skips_second_verification_open(self):
-        b=EngineFinalizationBackend(self.host,self.link,self.out);opts=f.defaults();opts['repath']=True;result=engine.transmit([self.host],self.out,b,opts)
+        b=EngineFinalizationBackend(self.host,self.link,self.out);opts=dict(f.defaults(), simple_repath=False);opts['repath']=True;result=engine.transmit([self.host],self.out,b,opts)
         self.assertEqual([c[0] for c in b.calls],['finish']);self.assertFalse(b.calls[0][2]);self.assertTrue(b.assert_final);host=next(r for r in result['files'] if r.get('is_primary_host'));self.assertEqual(host['model_verification'],'SAVED_REFERENCES_CHECKED');self.assertTrue(host.get('worker_repaired'));self.assertFalse(host.get('verified_in_process'))
         self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
         self.assertEqual(host['opening_guidance'],'OPEN_NORMALLY_INDEPENDENT_PACKAGE')

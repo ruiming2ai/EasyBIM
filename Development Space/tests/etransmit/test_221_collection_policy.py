@@ -48,7 +48,7 @@ class CollectionPolicy(fixtures.SavedCacheSession):
         key=self.r.add_live(self.doc)
         self.r.get(key)['inventory']['references']=[dict(id='1',element_id='1',kind='RevitLink',source=path,loaded=False,td=True)]
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
-        opts=f.defaults();opts.update(repath=True,load_unloaded_files=True)
+        opts=dict(f.defaults(), simple_repath=False);opts.update(repath=True,load_unloaded_files=True)
         result=engine.transmit([key],os.path.join(self.root,'out'),b,opts)
         self.assertFalse(result['references'][0]['package_loaded'])
         self.assertEqual(result['files'][0]['model_verification'],'SAVED_REFERENCES_CHECKED')
@@ -62,7 +62,7 @@ class DialogContracts(unittest.TestCase):
         with io.open(os.path.join(root,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml'),encoding='utf-8') as inp:text=inp.read()
         self.assertNotIn('x:Name="DeepScan"',text)
         self.assertNotIn('x:Name="LoadUnloadedFiles"',text)
-        self.assertNotIn('x:Name="SimpleRepath"',text)
+        self.assertIn('x:Name="SimpleRepath"',text)
         for name in ('Repath','Cleanup','Upgrade'):self.assertIn('x:Name="'+name+'"',text)
 
 
@@ -87,7 +87,7 @@ class CleanupPermission(fixtures.SavedCacheSession):
             self.assertEqual(result['files'][0]['processing_status'],'PROCESSED')
             self.assertEqual(result['files'][0]['transmission_status'],'NOT_TRANSMITTED')
     def test_repath_off_report_explains_normal_independent_host_and_unchanged_references(self):
-        key=self.r.add_live(self.doc);opts=f.defaults();opts.update(repath=False)
+        key=self.r.add_live(self.doc);opts=dict(f.defaults(), simple_repath=False);opts.update(repath=False)
         b=s.SessionBackend(self.db,self.app,self.root,self.r)
         result=engine.transmit([key],os.path.join(self.root,'report'),b,opts)
         with io.open(os.path.join(result['root'],'START_HERE.txt'),encoding='utf-8') as inp:text=inp.read()

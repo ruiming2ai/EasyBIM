@@ -99,7 +99,7 @@ class EngineIndependentDelivery(unittest.TestCase):
                             independent_package_central=True,verified_in_process=False)
             def mark_transmitted_package(self,*args): parent.fail('primary hosts must remain ordinary independent models')
             def verify_package(self,*args): parent.fail('finalized hosts must not be opened again by the parent')
-        self.backend=Backend();self.opts=f.defaults();self.opts.update(repath=False,cleanup=False,upgrade=False,per_model=False)
+        self.backend=Backend();self.opts=dict(f.defaults(), simple_repath=False);self.opts.update(repath=False,cleanup=False,upgrade=False,per_model=False)
 
     def test_collect_only_finalizes_primary_host_and_reports_normal_independent_opening(self):
         result=engine.transmit([self.src],self.out,self.backend,self.opts)

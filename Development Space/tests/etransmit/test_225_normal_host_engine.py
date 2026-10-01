@@ -102,7 +102,7 @@ class NormalHostDelivery(unittest.TestCase):
         backend = FinalizingBoundary(self, self.host,
                                       self.references if references is None else references,
                                       self.output, outcome, workshared)
-        options = f.defaults()
+        options = dict(f.defaults(), simple_repath=False)
         options.update(repath=repath, cleanup=False, upgrade=False)
         result = engine.transmit([self.host], self.output, backend, options, cancelled=cancelled, pulse=pulse)
         recovery = result.get('recovery_directory')

@@ -189,7 +189,12 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
     result = dict(version=VERSION, runtime_provenance=opts.get('runtime_provenance') or provenance.collect(),
                   status='RUNNING', root=root, models=[], files=[], aliases=[],
                   references=[], issues=[], options=opts, requested_models=list(models))
-    independent_hosts=bool(getattr(backend,'independent_host_supported',False))
+    # Backend capability is not user consent to launch/require another Revit.
+    # The default saved/cache copy is deliverable without independent SaveAs.
+    independent_hosts=(bool(getattr(backend,'independent_host_supported',False)) and
+                       (not opts.get('simple_repath',True) or
+                        bool(opts.get('cleanup') or opts.get('upgrade'))))
+    result['host_delivery_mode']='INDEPENDENT_MODEL' if independent_hosts else 'SAVED_COPY'
     retained_recovery=[]
     # Revit inspection/processing scratch must not live in OneDrive or another
     # synchronized output tree.  Keep it in the local OS temp area and register
@@ -862,19 +867,24 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
+                model_edges = [r for r in edges
+                               if f.canonical(r['owner']) == f.canonical(record['source'])
+                               and not r.get('skip_repath')]
+                metadata_only=(not independent_hosts and
+                               bool(getattr(backend,'can_finish_metadata_copy',lambda *args:False)(model_edges,opts)))
                 if record.get('is_primary_host') and opts.get('repath'):
-                    missing=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])
-                             and (r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target')]
-                    if missing:
+                    missing=[r for r in model_edges
+                             if (r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target')]
+                    if missing and metadata_only:
+                        add_issue('HOST_COPIED_WITH_MISSING_LINKS',record['source'],
+                                  'Host copy is retained. Available native references are repathed without opening Revit; missing links still require repair.')
+                    if missing and not metadata_only:
                         record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
                         record['model_verification']='DEFERRED'
                         add_issue('HOST_PRESERVED_WITHOUT_LINK_REPATH',record['source'],
                                   'The collected host is retained unchanged. Repath/cleanup and link-opening verification were deferred because linked RVT files are not packaged.')
                         continue
                 target = record['target']
-                model_edges = [r for r in edges
-                               if f.canonical(r['owner']) == f.canonical(record['source'])
-                               and not r.get('skip_repath')]
                 finalizer=getattr(backend,'requires_final_host_open',None)
                 needs_independent=independent_hosts and record.get('is_primary_host')
                 if record.get('is_primary_host') and (needs_independent or
@@ -906,6 +916,8 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     record['worker_repaired']=worker_repaired
                     if isinstance(raw_processing,dict):
                         record['metadata_repathed']=bool(raw_processing.get('metadata_repathed'))
+                        if raw_processing.get('transmission_status'):
+                            record['transmission_status']=raw_processing['transmission_status']
                         record['independent_package_central']=bool(raw_processing.get('independent_package_central'))
                         record['worker_suppressed_dialogs']=list(raw_processing.get('worker_suppressed_dialogs') or [])
                         record['worker_suppressed_failures']=list(raw_processing.get('worker_suppressed_failures') or [])
@@ -1055,11 +1067,18 @@ def _write_reports_at(result, root):
                          ' | '+f.text(record.get('relative','')))
     if not result['options'].get('repath'):
         lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
-    lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
-        'Completed independent package hosts are saved with transmitted status cleared and open normally.',
-        'Workshared package hosts use their own central path; worksets are preserved unless explicitly discarded.',
-        'Hosts that could not be finalized are recovery copies, not completed transmittals.',
-        'Do not synchronize recovery copies to the original central.'])
+    if result.get('host_delivery_mode')=='SAVED_COPY':
+        lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
+            'Copy-first: saved host/cache copies are delivered, not independent models saved by Revit.',
+            'Open workshared copies with Detach from Central; never synchronize to the original central.',
+            'Native repathing uses transmitted metadata. Metadata checks are not Revit open/load tests.',
+            'Review missing links and manual repairs before sharing or using the package.'])
+    else:
+        lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
+            'Completed independent package hosts are saved with transmitted status cleared and open normally.',
+            'Workshared package hosts use their own central path; worksets are preserved unless explicitly discarded.',
+            'Hosts that could not be finalized are recovery copies, not completed transmittals.',
+            'Do not synchronize recovery copies to the original central.'])
     if result.get('recovery_directory'): lines.append('Undelivered/recovery files retained at: '+result['recovery_directory'])
     for record in result['files']:
         if record.get('recovery_path'):

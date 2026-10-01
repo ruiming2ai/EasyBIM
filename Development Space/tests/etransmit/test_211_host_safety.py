@@ -129,7 +129,7 @@ class HostSafety(unittest.TestCase):
             def finish(inner,*args):self.fail('do not reopen/repath a live host with unresolved RVTs')
             def verify_package(inner,*args):self.fail('do not load missing cloud links during host verification')
         out=os.path.join(self.root,'out')
-        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
+        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),dict(f.defaults(), simple_repath=False))
         host=self.assert_retained_original(result)
         self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')
         self.assertEqual(host['model_verification'],'DEFERRED')
@@ -144,7 +144,7 @@ class HostSafety(unittest.TestCase):
         childkey=self.r.add_live(child)
         self.r.get(key)['inventory']['references'].append(dict(id='2',element_id='2',source=childkey,
             kind='RevitLink',special='external',td=False,loaded=True))
-        out=os.path.join(self.root,'cloudout');opts=f.defaults();opts['skip_cloud_links']=True
+        out=os.path.join(self.root,'cloudout');opts=dict(f.defaults(), simple_repath=False);opts['skip_cloud_links']=True
         b=s.SessionBackend(self.db,self.app,out,self.r)
         b.finish=lambda *a:self.fail('missing cloud link should not trigger host modifications')
         result=engine.transmit([key],out,b,opts)
@@ -161,7 +161,7 @@ class HostSafety(unittest.TestCase):
             raise RuntimeError('optional vendor schema failure')
         self.r.scanner.scan_plugins=plugins
         key=self.live();self.authorize(key)
-        out=os.path.join(self.root,'pluginout');opts=f.defaults();opts['repath']=False
+        out=os.path.join(self.root,'pluginout');opts=dict(f.defaults(), simple_repath=False);opts['repath']=False
         b=s.SessionBackend(self.db,self.app,out,self.r)
         result=engine.transmit([key],out,b,opts)
         self.assertEqual(seen,[True],repr(result['issues']))
@@ -179,7 +179,7 @@ class HostSafety(unittest.TestCase):
             result['references'].append(dict(id='plugin:1',element_id='1',source=workbook,
                 kind='PluginSpreadsheet',special='plugin_spreadsheet',category='spreadsheets',td=False))
         self.r.scanner.scan_plugins=plugins
-        key=self.live();self.authorize(key);opts=f.defaults();opts['repath']=False
+        key=self.live();self.authorize(key);opts=dict(f.defaults(), simple_repath=False);opts['repath']=False
         for number in (1,2):
             out=os.path.join(self.root,'plugin-package-'+str(number))
             b=s.SessionBackend(self.db,self.app,out,self.r)
@@ -201,7 +201,7 @@ class HostSafety(unittest.TestCase):
         self.r.get(key)['inventory']['references'].extend([
             dict(id='1',element_id='1',source='Autodesk Docs://Project/Missing.rvt',kind='RevitLink',td=False),
             dict(id='2',element_id='2',source=pdf,kind='Image',special='image',td=False)])
-        out=os.path.join(self.root,'deferred-alias');opts=f.defaults();opts['skip_cloud_links']=True
+        out=os.path.join(self.root,'deferred-alias');opts=dict(f.defaults(), simple_repath=False);opts['skip_cloud_links']=True
         result=engine.transmit([key],out,s.SessionBackend(self.db,self.app,out,self.r),opts)
         self.assertEqual(result['aliases'],[])
         self.assertFalse(os.path.exists(os.path.join(out,'_Refs')))

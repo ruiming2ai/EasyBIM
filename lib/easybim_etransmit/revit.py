@@ -657,7 +657,8 @@ class Backend(object):
                 issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),
                                     'File copied, but this reference cannot be changed through saved TransmissionData. '
                                     'Repair it in the packaged model, or disable Simple copy and repath to use Revit document repairs.'))
-        return dict(issues=issues,verified_in_process=False,metadata_repathed=True)
+        return dict(issues=issues,verified_in_process=False,metadata_repathed=True,
+                    transmission_status='TRANSMITTED' if transmitted else 'NOT_MARKED')
 
     def verify_metadata_package(self, target, rows, options):
         """Check persisted desired paths without claiming a Revit load test."""

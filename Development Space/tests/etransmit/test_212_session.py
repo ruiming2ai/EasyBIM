@@ -126,7 +126,7 @@ class SavedCacheSession(unittest.TestCase):
         self.r.get(key)['inventory']['references'].append(dict(id='1',element_id='1',kind='RevitLink',source='Autodesk Docs://Project/Missing.rvt',td=False))
         out=os.path.join(self.root,'broken-link');b=s.SessionBackend(self.db,self.app,out,self.r)
         b.finish=lambda *a:self.fail('host with missing cloud link must not be modified')
-        result=engine.transmit([key],out,b,f.defaults())
+        result=engine.transmit([key],out,b,dict(f.defaults(), simple_repath=False))
         self.assertEqual(engine.package_counts(result)['hosts_copied'],0,repr(result['issues']))
         host=result['files'][0]
         self.assertEqual(host['processing_status'],'HOST_PRESERVED_LINKS_UNAVAILABLE')

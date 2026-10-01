@@ -52,7 +52,7 @@ class PerformanceTests(unittest.TestCase):
     def run_package(self,mode='categories',refs=None,repath=True,backend=None):
         refs=refs if refs is not None else [dict(id='1',element_id='1',kind='RevitLink',source=self.link,td=True,loaded=True,special='native')]
         b=backend or Backend(self.host,refs,self.out)
-        opts=f.defaults();opts.update(repath=repath,file_structure=mode)
+        opts=dict(f.defaults(), simple_repath=False);opts.update(repath=repath,file_structure=mode)
         result=engine.transmit([self.host],self.out,b,opts)
         if result.get('recovery_directory'):self.addCleanup(f.remove_tree_retry,result['recovery_directory'])
         return result,b
@@ -148,7 +148,7 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(rows[scan].get('delivery_method'),'DIRECT_VERIFIED_COPY')
     def test_batch_preserves_package_profile_and_records_zip_separately(self):
         from easybim_etransmit import batch
-        options=f.defaults();options.update(repath=False,zip_per_model=True)
+        options=dict(f.defaults(), simple_repath=False);options.update(repath=False,zip_per_model=True)
         results=batch.run_batch([self.host],self.out,lambda out,source:Backend(source,[],out),options)
         result=results[0]
         self.assertTrue(result['performance'].get('finalized'))

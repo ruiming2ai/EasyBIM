@@ -51,9 +51,10 @@
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
-            <TextBlock Text="Unloaded links are offered in a separate selection window. Final host copies are saved as independent models, preserve worksets, and open normally." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="Unloaded links are offered in a separate selection window. Copy-first mode delivers saved host/cache files without requiring another Revit process." TextWrapping="Wrap" Foreground="#536273"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
-            <TextBlock Text="Repath changes supported reference paths in the package. Cleanup and Upgrade apply only to package copies. Worksets are preserved unless Disable worksets is selected." TextWrapping="Wrap" Foreground="#536273"/>
+            <CheckBox x:Name="SimpleRepath" Content="Copy-first: keep the saved host/cache copy; repath native file links only" IsChecked="True"/>
+            <TextBlock Text="Copy-first does not detach or save a new independent model. PDFs/images and ACC resource links may need manual repair. Open workshared copies with Detach from Central; never sync them to the original. Uncheck for full repairs and independent saving in a separate Revit process. Cleanup or Upgrade also requires Revit processing." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="File Structure Organization">

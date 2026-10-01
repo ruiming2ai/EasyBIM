@@ -262,7 +262,7 @@ class CopyFirstTransmission(unittest.TestCase):
             self.assertEqual(saved,[(self.target,True),(self.target,True)])
 
 
-class IndependentPackageUI(unittest.TestCase):
+class CopyFirstPackageUI(unittest.TestCase):
     # Copy functions, not Python 2 methods bound to the original fixture class.
     setUp=ui_fixtures.UI.__dict__['setUp']
     cleanup=ui_fixtures.UI.__dict__['cleanup']
@@ -291,31 +291,31 @@ class IndependentPackageUI(unittest.TestCase):
             if old_appdata is None:os.environ.pop('APPDATA',None)
             else:os.environ['APPDATA']=old_appdata
 
-    def test_simple_repath_is_internal_and_absent_from_actual_dialog(self):
+    def test_copy_first_is_enabled_in_actual_dialog_by_default(self):
         self.assertTrue(f.defaults()['simple_repath'])
-        self.assertFalse(hasattr(self.loaded_dialog(),'SimpleRepath'))
+        self.assertTrue(self.loaded_dialog().SimpleRepath.IsChecked)
         dialog=self.form()
         dialog.transmit_click(None,None)
         self.assertTrue(dialog.result[2]['simple_repath'])
 
-    def test_old_simple_repath_preferences_are_ignored_and_not_saved(self):
+    def test_copy_first_preferences_are_applied_and_saved(self):
         settings=os.path.join(self.root,'EasyBIM','e-transmit','settings.json')
         os.makedirs(os.path.dirname(settings))
         for enabled in (False,True):
             with io.open(settings,'w',encoding='utf-8') as out:
                 out.write(json.dumps(dict(simple_repath=enabled,repath=True)))
             loaded=self.loaded_dialog()
-            self.assertFalse(hasattr(loaded,'SimpleRepath'))
+            self.assertEqual(loaded.SimpleRepath.IsChecked,enabled)
             self.assertTrue(loaded.Repath.IsChecked)
             dialog=self.form()
-            # A stale integration control must not revive the old choice.
+            # Both modes remain explicit choices and must round-trip.
             dialog.SimpleRepath=Obj(IsChecked=enabled)
             dialog.SaveSettings.IsChecked=True
             dialog.settings=settings
             dialog.transmit_click(None,None)
-            self.assertTrue(dialog.result[2]['simple_repath'])
+            self.assertEqual(dialog.result[2]['simple_repath'],enabled)
             with io.open(settings,encoding='utf-8') as inp:saved=json.load(inp)
-            self.assertNotIn('simple_repath',saved)
+            self.assertEqual(saved['simple_repath'],enabled)
             self.assertTrue(saved['repath'])
 
     def test_older_preferences_missing_option_preserve_repath_choice(self):
@@ -324,13 +324,13 @@ class IndependentPackageUI(unittest.TestCase):
         with io.open(settings,'w',encoding='utf-8') as out:
             out.write(json.dumps(dict(repath=False,file_structure='categories')))
         dialog=self.loaded_dialog()
-        self.assertFalse(hasattr(dialog,'SimpleRepath'))
+        self.assertTrue(dialog.SimpleRepath.IsChecked)
         self.assertFalse(dialog.Repath.IsChecked)
 
-    def test_dialog_help_describes_normal_independent_hosts_with_worksets(self):
+    def test_dialog_help_distinguishes_copy_first_from_independent_saving(self):
         xaml=os.path.join(ROOT,'EasyBIM.tab','Links.panel','e-transmit.pushbutton','window.xaml')
         labels=' '.join(node.get('Text','') for node in ET.parse(xaml).getroot().iter()).lower()
-        for phrase in ('independent models','preserve worksets','open normally'):
+        for phrase in ('copy-first','detach from central','separate revit process','independent saving'):
             self.assertIn(phrase,labels)
         self.assertFalse(self.loaded_dialog().DiscardWorksets.IsChecked)
 

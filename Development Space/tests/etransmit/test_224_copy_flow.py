@@ -382,7 +382,7 @@ class LiveCacheNativeDelivery(unittest.TestCase):
 
     def test_live_cache_finalizes_native_references_in_worker_and_preserves_source_session(self):
         key, output, backend, td, before = self.prepare()
-        options = f.defaults()
+        options = dict(f.defaults(), simple_repath=False)
         options.update(repath=True, cleanup=False, upgrade=False)
         result = engine.transmit([key], output, backend, options)
         host = next(row for row in result['files'] if row.get('is_primary_host'))
@@ -417,7 +417,7 @@ class LiveCacheNativeDelivery(unittest.TestCase):
 
     def test_missing_rvt_keeps_copied_cad_reference_unmodified_in_preserved_host(self):
         key, output, backend, td, before = self.prepare(missing=True)
-        result = engine.transmit([key], output, backend, f.defaults())
+        result = engine.transmit([key], output, backend, dict(f.defaults(), simple_repath=False))
         host = next(row for row in result['files'] if row.get('is_primary_host'))
         self.assertEqual(host['processing_status'], 'HOST_PRESERVED_LINKS_UNAVAILABLE', repr(result['issues']))
         self.assertEqual(host['status'], 'NOT_FINALIZED')

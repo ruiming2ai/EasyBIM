@@ -147,7 +147,7 @@ class AcquisitionIntegration(unittest.TestCase):
             def basic(self,path):return dict(version='2024',workshared=False,central='')
             def rows(self,stage,owner=''):
                 return [dict(id='7',element_id='7',kind='RevitLink',source=os.path.join(self.staging_root,'Arch.rvt'),loaded=True)] if owner==key else []
-        opts=f.defaults();opts.update(deep=False,repath=False)
+        opts=dict(f.defaults(), simple_repath=False);opts.update(deep=False,repath=False)
         calls=[]
         original_worker=worker.run_separate_revit
         out=os.path.join(self.root,'out')

@@ -60,7 +60,7 @@ class ContextTests(unittest.TestCase):
         def pulse(*args):
             self.state.calls += 1
             return self.state.uiapp.MainWindowHandle
-        result = e.transmit([self.host], self.output, self.backend, pulse=pulse)
+        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False), pulse=pulse)
         self.assertEqual(e.package_counts(result)['files_copied'], 3, repr(result['issues']))
         problems = [x for x in result['issues'] if x['code'] == 'PROGRESS_UI_FAILED']
         self.assertEqual(len(problems), 1)
@@ -72,7 +72,7 @@ class ContextTests(unittest.TestCase):
 
     def test_real_missing_file_still_reports_error_and_trace(self):
         self.backend.scan = lambda *a: dict(references=[dict(id='9', kind='RevitLink', source=os.path.join(self.root,'Missing.rvt'))], issues=[])
-        result = e.transmit([self.host], self.output, self.backend)
+        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False))
         errors = [i for i in result['issues'] if i['code'] == 'COLLECTION_FAILED']
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]['operation'], 'copy_file')
@@ -91,14 +91,14 @@ class ContextTests(unittest.TestCase):
         def pulse(label, copied, total):
             if copied:
                 raise AttributeError('UI redraw failed')
-        result = e.transmit([self.host], self.output, self.backend, pulse=pulse)
+        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False), pulse=pulse)
         self.assertEqual(e.package_counts(result)['files_copied'], 3)
         self.assertEqual(len([i for i in result['issues'] if i['code'] == 'PROGRESS_UI_FAILED']), 1)
 
     def test_cancel_from_progress_is_not_swallowed(self):
         def pulse(*args):
             raise f.Cancelled('cancel button')
-        result = e.transmit([self.host], self.output, self.backend, pulse=pulse)
+        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False), pulse=pulse)
         self.assertEqual(result['status'], 'CANCELLED')
         self.assertFalse(any(x['code'] == 'PROGRESS_UI_FAILED' for x in result['issues']))
 
@@ -131,7 +131,7 @@ class ContextTests(unittest.TestCase):
             ui.progress_ui._PANEL_INSTANCE=panel
             ui.progress_ui.open_panel=lambda:(opens.append(True),panel.reset(),panel)[-1]
             ui.progress_ui.close_panel=lambda:closes.append(True)
-            options = f.defaults(); options['per_model'] = False
+            options = dict(f.defaults(), simple_repath=False); options['per_model'] = False
             ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
             ui.SessionBackend = lambda *a: self.backend
             ui.run(Obj(Application=Obj()), 'unused.xaml')
@@ -162,7 +162,7 @@ class ContextTests(unittest.TestCase):
             return dict(references=[dict(id='99', source=scratch)], issues=[])
         self.backend.set_staging_root = set_staging
         self.backend.scan = scan
-        result = e.transmit([self.host], self.output, self.backend)
+        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False))
         self.assertEqual(e.package_counts(result)['files_copied'], 0)
         self.assertTrue(any(x['code'] == 'STAGING_REFERENCE_UNRESOLVED' for x in result['issues']))
         self.assertFalse(any(x['relative'].endswith('/Arch.rvt') for x in result['files']))
