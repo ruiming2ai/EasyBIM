@@ -74,6 +74,11 @@ HANDLER_ENVVAR = "EASYBIM_IDLING_HANDLER"
 #: mirror while never firing again.  ``install()`` resets it.
 TICKED_ENVVAR = "EASYBIM_IDLING_TICKED"
 
+#: Coalesced one-shot Tab Color work. Event hooks only set this small state;
+#: the existing raw Idling delegate performs the expensive view scan after
+#: Revit has finished materializing its document tabs.
+TAB_COLOR_REFRESH_ENVVAR = "EASYBIM_TAB_COLOR_REFRESH"
+
 _HANDLER = None
 _HANDLER_UIAPP = None
 
@@ -238,6 +243,107 @@ def _run_startup_jobs(sender):
         messages.process_startup_jobs(sender)
 
 
+def request_tab_color_refresh(reason="event", force=False, verify=False):
+    """Queue one deferred Tab Color reconciliation.
+
+    Multiple DocumentOpened/ViewActivated/DocumentClosed events collapse into
+    one pending Idling pass. The verify flag asks for exactly one follow-up
+    forced repaint on the next Idling tick. It is used only after model opening,
+    where Revit can materialize the visual tab one UI cycle after the DB view.
+    """
+    state = _get_envvar(TAB_COLOR_REFRESH_ENVVAR, None)
+    if not isinstance(state, dict):
+        state = {}
+    state["pending"] = True
+    state["force"] = bool(state.get("force", False) or force)
+    try:
+        remaining = int(state.get("verify_remaining", 0) or 0)
+    except Exception:
+        remaining = 0
+    if verify and remaining < 1:
+        remaining = 1
+    state["verify_remaining"] = remaining
+
+    reasons = state.get("reasons", [])
+    if not isinstance(reasons, list):
+        reasons = []
+    reason = str(reason or "event")
+    if reason not in reasons:
+        reasons.append(reason)
+    # Diagnostics only; never let a long session grow this envvar forever.
+    state["reasons"] = reasons[-6:]
+    _set_envvar(TAB_COLOR_REFRESH_ENVVAR, state)
+    return True
+
+
+def _run_tab_color_refresh(sender):
+    """Drain one queued Tab Color update; otherwise cost one envvar read."""
+    state = _get_envvar(TAB_COLOR_REFRESH_ENVVAR, None)
+    if not isinstance(state, dict) or not state.get("pending"):
+        return
+
+    # Clear pending before work so an event raised during reconciliation can
+    # enqueue a fresh request instead of being mistaken for this one.
+    state["pending"] = False
+    _set_envvar(TAB_COLOR_REFRESH_ENVVAR, state)
+
+    from viewtabcolors import config as tabcolor_config
+    from viewtabcolors import runtime as tabcolor_runtime
+
+    if not tabcolor_config.load_profile().get("enabled", False):
+        _set_envvar(TAB_COLOR_REFRESH_ENVVAR, None)
+        return
+
+    uiapp = sender
+    try:
+        if not hasattr(uiapp, "ActiveUIDocument") and HOST_APP is not None:
+            live_uiapp = getattr(HOST_APP, "uiapp", None)
+            if live_uiapp is not None:
+                uiapp = live_uiapp
+    except Exception:
+        pass
+
+    status = tabcolor_runtime.apply(
+        uiapp,
+        force=bool(state.get("force", False)),
+    )
+
+    # Preserve any new request that arrived while apply() was running.
+    latest = _get_envvar(TAB_COLOR_REFRESH_ENVVAR, None)
+    if not isinstance(latest, dict):
+        latest = {}
+
+    try:
+        remaining = int(state.get("verify_remaining", 0) or 0)
+    except Exception:
+        remaining = 0
+
+    # A post-open verification is intentionally one-shot. Force the second
+    # pass so an already-known DB view still repaints if AvalonDock creates
+    # its visual tab just after the first reconciliation.
+    if remaining > 0 and status.get("state") != "error":
+        had_new_request = bool(latest.get("pending"))
+        latest["pending"] = True
+        latest["force"] = True
+        try:
+            latest_remaining = int(latest.get("verify_remaining", 0) or 0)
+        except Exception:
+            latest_remaining = 0
+        if not had_new_request:
+            latest_remaining = 0
+        latest["verify_remaining"] = max(latest_remaining, remaining - 1)
+        reasons = latest.get("reasons", [])
+        if not isinstance(reasons, list):
+            reasons = []
+        if "post-open-verify" not in reasons:
+            reasons.append("post-open-verify")
+        latest["reasons"] = reasons[-6:]
+
+    if latest.get("pending"):
+        _set_envvar(TAB_COLOR_REFRESH_ENVVAR, latest)
+    else:
+        _set_envvar(TAB_COLOR_REFRESH_ENVVAR, None)
+
 def _run_auto_update(sender):
     """Run the deferred startup auto-update, detached from Idling first.
 
@@ -318,6 +424,7 @@ def _run_consumers(sender):
     _guarded("TempPhaseCloseRecovery", _run_temp_phase_close, sender)
     _guarded("MyRibbonApply", _run_my_ribbon_apply, sender)
     _guarded("MyRibbonWatch", _run_my_ribbon_watch, sender)
+    _guarded("TabColorRefresh", _run_tab_color_refresh, sender)
     _guarded("StartupAutoUpdate", _run_auto_update, sender)
 
 

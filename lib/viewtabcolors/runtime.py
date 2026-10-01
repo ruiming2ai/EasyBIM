@@ -204,7 +204,22 @@ def collect_entries(uiapp, profile, extra_views=None):
         event_views = extra_by_document.get(document_key, [])
         document_views.extend(event_views)
 
+        # GetOpenUIViews can lag Revit's document/tab materialization during
+        # DocumentOpened and when several projects each have only one tab.
+        # Document.ActiveView is cheap and represents the document's last
+        # active DB.View. Always include it; identity de-duplication below
+        # prevents double entries when GetOpenUIViews already returned it.
+        document_active_view = None
+        try:
+            document_active_view = document.ActiveView
+            if document_active_view is not None:
+                document_views.append(document_active_view)
+        except Exception:
+            document_active_view = None
+
         host_candidates = list(event_views)
+        if not host_candidates and document_active_view is not None:
+            host_candidates.append(document_active_view)
         if not host_candidates:
             try:
                 active_uidocument = uiapp.ActiveUIDocument

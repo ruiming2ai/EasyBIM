@@ -55,24 +55,23 @@ except Exception:
 
 run_start_message_on_file_open(doc=doc)
 
-# Tab Color integration. Independent of the existing file-open workflow.
+# Tab Color integration. DocumentOpened is intentionally too early to do the
+# full scan: the new Revit/AvalonDock tab may not exist yet. Queue one deferred
+# pass plus one one-shot verification on the following Idling ticks.
 try:
     from viewtabcolors import config as _tabcolor_config
-    from viewtabcolors import runtime as _tabcolor_runtime
+    from easybim import idling as _tabcolor_idling
 
     if _tabcolor_config.load_profile().get("enabled", False):
-        try:
-            _tabcolor_event_args = __eventargs__
-        except Exception:
-            try:
-                _tabcolor_event_args = EXEC_PARAMS.event_args
-            except Exception:
-                _tabcolor_event_args = None
-        _tabcolor_runtime.apply_from_event(__revit__, _tabcolor_event_args)
+        _tabcolor_idling.request_tab_color_refresh(
+            reason="doc-opened",
+            force=True,
+            verify=True,
+        )
 except Exception as _tabcolor_ex:
     try:
         _tabcolor_config.log(
-            "EasyBIM doc-opened hook failed: {0}".format(_tabcolor_ex)
+            "EasyBIM doc-opened queue failed: {0}".format(_tabcolor_ex)
         )
     except Exception:
         pass

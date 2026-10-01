@@ -43,17 +43,22 @@ if temp_phase_close is not None:
         except Exception:
             pass
 
-# Tab Color integration. Independent of the existing document-close workflow.
+# Tab Color integration. Closing a model changes the open-tab topology; defer
+# the reconciliation to Idling just like document/view opening.
 try:
     from viewtabcolors import config as _tabcolor_config
-    from viewtabcolors import runtime as _tabcolor_runtime
+    from easybim import idling as _tabcolor_idling
 
     if _tabcolor_config.load_profile().get("enabled", False):
-        _tabcolor_runtime.apply(__revit__, force=True)
+        _tabcolor_idling.request_tab_color_refresh(
+            reason="doc-closed",
+            force=False,
+            verify=False,
+        )
 except Exception as _tabcolor_ex:
     try:
         _tabcolor_config.log(
-            "EasyBIM doc-closed hook failed: {0}".format(_tabcolor_ex)
+            "EasyBIM doc-closed queue failed: {0}".format(_tabcolor_ex)
         )
     except Exception:
         pass

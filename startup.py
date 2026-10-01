@@ -146,20 +146,27 @@ try:
 except Exception:
     pass
 
-# Tab Color integration. Keep this isolated from existing EasyBIM startup tools.
+# Tab Color integration. Application startup is not a reliable moment to
+# enumerate visual document tabs. Queue the first reconciliation and let the
+# existing Idling delegate run it once a live UIApplication/UI is available.
 try:
     from viewtabcolors import config as _tabcolor_config
     from viewtabcolors import runtime as _tabcolor_runtime
+    from easybim import idling as _tabcolor_idling
 
     _tabcolor_profile = _tabcolor_config.load_profile()
     if _tabcolor_profile.get("enabled", False):
-        _tabcolor_runtime.apply(__revit__, force=True)
+        _tabcolor_idling.request_tab_color_refresh(
+            reason="startup",
+            force=True,
+            verify=False,
+        )
     else:
         _tabcolor_runtime.restore_previous(__revit__)
 except Exception as _tabcolor_ex:
     try:
         _tabcolor_config.log(
-            "EasyBIM startup failed: {0}".format(_tabcolor_ex)
+            "EasyBIM Tab Color startup queue failed: {0}".format(_tabcolor_ex)
         )
     except Exception:
         pass
