@@ -74,6 +74,22 @@ class WorkerRuntime(unittest.TestCase):
         self.assertEqual(result['worker_process_id'],42)
         self.assertEqual(rows[0]['repath'],'API_IMAGE_RELATIVE')
 
+    def test_unattended_dialog_policy_avoids_save_and_prefers_continue(self):
+        self.assertEqual(worker._dialog_result_candidates('','Save changes to this project?')[0],7)
+        self.assertEqual(worker._dialog_result_candidates('TaskDialog_Upgrade','Upgrade model and continue?')[0],1001)
+        generic=worker._dialog_result_candidates('TaskDialog_Test','Unexpected warning')
+        self.assertIn(1,generic)
+        self.assertIn(2,generic)
+
+    def test_worker_result_records_suppressed_ui_for_report(self):
+        worker._SUPPRESSED_DIALOGS[:]=[dict(dialog_id='x',result_code=1,dismissed=True)]
+        worker._SUPPRESSED_FAILURES[:]=[dict(severity='Warning',action='DELETED')]
+        result=worker._worker_result({},'SUCCEEDED',processing_result={},rows=[])
+        self.assertEqual(len(result['suppressed_dialogs']),1)
+        self.assertEqual(len(result['suppressed_failures']),1)
+        worker._SUPPRESSED_DIALOGS[:]=[]
+        worker._SUPPRESSED_FAILURES[:]=[]
+
     def test_live_session_backend_routes_repath_to_worker(self):
         source='open://host/Host.rvt'
         registry=Obj(get=lambda key:dict(mode='LIVE_DOCUMENT') if key==source else None)
