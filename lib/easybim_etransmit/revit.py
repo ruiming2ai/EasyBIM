@@ -461,12 +461,17 @@ class Backend(object):
             finally: dispose(col)
 
     def image_options(self, row, relative, model_path=None):
+        """Build options from the real packaged file, not a guessed relative file.
+
+        Revit accepts an absolute local source together with
+        useRelativePath=True. That lets ReloadFrom validate/open the actual file
+        while Revit computes the stored relative path from the already-saved
+        package model/central location. This is materially safer for workshared
+        hosts than handing ReloadFrom a precomputed relative string.
+        """
+        del model_path
         self.guard(row['target'])
-        path=row['target']
-        if relative and model_path:
-            pm=ntpath if f.is_windows(model_path) else os.path
-            path=relative_path(path,pm.dirname(model_path))
-        opts=self.DB.ImageTypeOptions(path,relative,self.DB.ImageTypeSource.Link)
+        opts=self.DB.ImageTypeOptions(row['target'],bool(relative),self.DB.ImageTypeSource.Link)
         try:
             if row['target'].lower().endswith('.pdf'): opts.PageNumber=row['page']
             opts.Resolution=row['resolution']
@@ -557,7 +562,7 @@ class Backend(object):
             dispose(ref)
 
 
-    def apply_metadata(self, path, target, rows, relative=True):
+    def apply_metadata(self, path, target, rows, relative=True, mark_transmitted=True):
         self.guard(path); self.guard(target)
         for row in rows:
             if row.get('target'): self.guard(row['target'])
@@ -580,7 +585,7 @@ class Backend(object):
                 if row.get('kind')=='RevitLink' and package_load_state(row) is None:
                     row['package_loaded']=bool(desired_load)
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
-            td.IsTransmitted=True
+            td.IsTransmitted=bool(mark_transmitted)
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
             return True
         finally: dispose(td)
@@ -656,8 +661,175 @@ class Backend(object):
                 dispose(result)
         return issues
 
+    def repath_images(self, doc, rows):
+        """Reload linked PDFs/images from the packaged absolute file.
+
+        Revit receives the absolute source for validation, but
+        ImageTypeOptions(useRelativePath=True) tells it to persist a relative
+        path against the new package central/project location.
+        """
+        from System import Int64, Int32
+        issues=[]
+        changed=False
+        for row in rows:
+            f.check(self.cancelled)
+            tx=self.DB.Transaction(doc,'e-transmit: package image/PDF link')
+            opts=None
+            try:
+                number=int(row['element_id'])
+                ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                image=doc.GetElement(ident)
+                if image is None:
+                    row['repath']='REMOVED_BY_CLEANUP'
+                    continue
+                opts=self.image_options(row,True,getattr(doc,'PathName',''))
+                validator=getattr(opts,'IsValid',None)
+                if validator is not None and not bool(validator(doc)):
+                    raise RuntimeError('Revit rejected the packaged PDF/image source: '+row['target'])
+                tx.Start()
+                image.ReloadFrom(opts)
+                if row.get('loaded') is False:
+                    image.Unload()
+                if tx.Commit()!=self.DB.TransactionStatus.Committed:
+                    raise RuntimeError('PDF/image link reload transaction did not commit.')
+                row['repath']='API_IMAGE_RELATIVE'
+                row['repath_source']='PACKAGED_ABSOLUTE_FILE'
+                changed=True
+            except f.Cancelled:
+                raise
+            except Exception as exc:
+                try:
+                    if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
+                except Exception:
+                    pass
+                row['repath']='FAILED'
+                issues.append(issue('IMAGE_REPATH_FAILED',row.get('source',''),exc,'error'))
+            finally:
+                dispose(tx);dispose(opts)
+        return issues,changed
+
+    def _save_as_independent_package_central(self, doc, target):
+        """Save the detached/task copy as its own package central first."""
+        save=self.DB.SaveAsOptions();ws=None
+        try:
+            save.OverwriteExistingFile=True;save.MaximumBackups=1
+            if bool(getattr(doc,'IsWorkshared',False)):
+                ws=self.DB.WorksharingSaveAsOptions()
+                ws.SaveAsCentral=True
+                save.SetWorksharingOptions(ws)
+            performance.call('repath','revit_save_independent_central',target,
+                             doc.SaveAs,target,save)
+        finally:
+            dispose(ws);dispose(save)
+        actual=f.text(getattr(doc,'PathName','') or '')
+        if actual and f.canonical(actual)!=f.canonical(target):
+            raise RuntimeError('Revit did not switch the repair document to the package path.')
+        return True
+
+    def _repath_external_revit_links_relative(self, doc, rows):
+        from System import Int64, Int32
+        issues=[]
+        changed=False
+        for row in rows:
+            f.check(self.cancelled)
+            resource=result=model_path=None
+            try:
+                number=int(row['element_id'])
+                ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                link=doc.GetElement(ident)
+                if link is None:
+                    raise RuntimeError('Revit link type is missing from the package model.')
+                model_path=self.mp(row['target'])
+                resource=self.DB.ExternalResourceReference.CreateLocalResource(
+                    doc,self.DB.ExternalResourceTypes.BuiltInExternalResourceTypes.RevitLink,
+                    model_path,self.DB.PathType.Relative)
+                result=link.LoadFrom(resource,None)
+                if f.text(result.LoadResult) not in ('LinkLoaded','LinkAlreadyLoaded'):
+                    raise RuntimeError('Packaged Revit link reload failed: '+f.text(result.LoadResult))
+                if package_load_state(row) is False:
+                    link.Unload(None)
+                row['repath']='API_LOCAL_LINK_RELATIVE'
+                changed=True
+            except f.Cancelled:
+                raise
+            except Exception as exc:
+                row['repath']='FAILED'
+                issues.append(issue('REVIT_LINK_REPATH_FAILED',row.get('source',''),exc,'error'))
+            finally:
+                dispose(result);dispose(resource);dispose(model_path)
+        return issues,changed
+
+    def finish_independent(self, stage, target, rows, options):
+        """Save a new package identity first, then repath, then close untransmitted.
+
+        This is the live-host worker path. The source Revit session is never
+        relocated. The package copy becomes its own local central/project before
+        relative PDF/Revit paths are written. The parent marks the closed file
+        transmitted only after this function returns.
+        """
+        self.guard(stage);self.guard(target)
+        issues=[]
+        info=self.basic(stage)
+        for row in rows:
+            if row.get('target'):self.guard(row['target'])
+        current=f.text(getattr(self.app,'VersionNumber','') or '')
+        if info.get('version') and current and info['version']!=current and not options.get('upgrade'):
+            return [issue('UPGRADE_CONSENT_REQUIRED',target,
+                          'Saved format '+info['version']+' retained. Native package repathing requires Revit '
+                          +current+'; enable Upgrade to authorize it.')]
+
+        special=[r for r in rows if r.get('target') and r.get('special')=='image']
+        external=[r for r in rows if r.get('target') and r.get('kind')=='RevitLink'
+                  and (not r.get('td') or cache_sources.reference_identity(r))]
+        cad=[r for r in rows if r.get('target') and r.get('kind')=='CADLink'
+             and os.path.splitext(r.get('target',''))[1].lower()=='.dwg']
+
+        doc=None
+        changed=False
+        try:
+            # Crucially, no TransmissionData.IsTransmitted write occurs before
+            # this open. The worker opens the task-owned source copy detached,
+            # then establishes an independent package central/project identity.
+            doc=self.open_copy(stage,bool(options.get('cleanup') and options.get('discard_worksets')))
+            self._save_as_independent_package_central(doc,target)
+
+            if options.get('repath'):
+                revit_issues,revit_changed=self._repath_external_revit_links_relative(doc,external)
+                issues.extend(revit_issues);changed=changed or revit_changed
+
+                cad_issues=self.repath_cad_links(doc,cad)
+                issues.extend(cad_issues)
+                changed=changed or any(r.get('repath')=='API_CAD_LINK' for r in cad)
+
+                image_issues,image_changed=self.repath_images(doc,special)
+                issues.extend(image_issues);changed=changed or image_changed
+
+            if options.get('cleanup'):
+                from .cleanup import run
+                run(doc,self.DB,options,self.cancelled)
+                changed=True
+
+            # Save the independent package model after all document-API repairs.
+            if changed or options.get('upgrade') or options.get('normalize_saved_cache'):
+                performance.call('repath','revit_save_repaired_central',target,doc.Save)
+        finally:
+            if doc is not None:
+                if not performance.call('repath','revit_close',target,doc.Close,False):
+                    raise RuntimeError('Independent package repair document could not be closed.')
+
+        # Closed-file reference metadata is normalized only after the SaveAs and
+        # document repairs. Keep IsTransmitted false here; the parent performs
+        # that final step after the worker is completely done.
+        if options.get('repath'):
+            self.apply_metadata(target,target,rows,relative=True,mark_transmitted=False)
+
+        return dict(issues=issues,verified_in_process=False,
+                    independent_package_central=True)
+
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
+        if options.get('worker_mode'):
+            return self.finish_independent(stage,target,rows,options)
         self.guard(stage); self.guard(target)
         issues=[]
         info=self.basic(stage)
