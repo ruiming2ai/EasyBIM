@@ -11,5 +11,7 @@ tooltip: >-
   are left alone. Use pyRevit's own Update button to refresh everything
   else.
 
-  Also runs automatically once per Revit session at startup.
+  Also checks automatically at startup. Other open Revit sessions sharing
+  this installation automatically reload changed EasyBIM files when idle;
+  no separate Auto Update click is needed in each session.
 author: Ruiming Liu

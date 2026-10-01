@@ -345,21 +345,29 @@ def _run_tab_color_refresh(sender):
         _set_envvar(TAB_COLOR_REFRESH_ENVVAR, None)
 
 def _run_auto_update(sender):
-    """Run the deferred startup auto-update, detached from Idling first.
+    """Run startup updating or an installed-file refresh, detached first.
 
     The update can end in ``sessionmgr.reload_pyrevit()``, which disposes the
     script engine that owns this delegate.  Revit would keep the delegate
     subscribed and invoke a dead object on every later tick, so the
     subscription is dropped before the update runs and restored afterwards if
     no replacement was installed. ``startup.py`` re-installs on the way back up
-    after a real reload. The update is one-shot per session (envvar flag plus
-    a process mutex), so a tick lost to the detach costs nothing.
+    after a real reload. Remote checks are startup/manual work; the independent
+    throttled local check keeps already-open sessions current without fetching.
     """
-    if auto_update is None or not auto_update.has_pending_startup_auto_update():
+    if auto_update is None:
         return
+    if auto_update.has_pending_startup_auto_update():
+        run_update = auto_update.run_pending_startup_auto_update
+    else:
+        # Tolerate an old module during the one-time upgrade into this version.
+        pending_refresh = getattr(auto_update, "has_pending_session_refresh", None)
+        if not callable(pending_refresh) or not pending_refresh():
+            return
+        run_update = auto_update.run_pending_session_refresh
     uninstall()
     try:
-        auto_update.run_pending_startup_auto_update()
+        run_update()
     finally:
         # A successful reload has installed a delegate from the new engine.
         # Reinstalling here would detach it and resurrect this old runtime.
