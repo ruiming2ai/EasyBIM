@@ -1,0 +1,135 @@
+name: Verify e-transmit 2.1.28 available-reference repair
+on:
+  push:
+    branches: [codex/etransmit-partial-repath-228-build]
+permissions:
+  contents: read
+jobs:
+  portable:
+    name: Regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply exact reviewed repair
+        run: python .github/etransmit228_apply.py
+      - name: Run e-transmit tests (not native Revit)
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests/etransmit' -v 2>&1 | tee "$RUNNER_TEMP/etransmit-tests.log"
+      - name: Run entire root suite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests' -v 2>&1 | tee "$RUNNER_TEMP/root-tests.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etransmit228-${{ matrix.os }}
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/etransmit-tests.log
+            ${{ runner.temp }}/root-tests.log
+            ${{ runner.temp }}/etransmit228-source-hashes.json
+  ironpython:
+    name: Windows IronPython 2.7 (no Revit)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply exact reviewed repair
+        run: python .github/etransmit228_apply.py
+      - name: Verify native helper matches shipped bytes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          dotnet build 'Development Space/native/EasyBIM.FileIO/EasyBIM.FileIO.csproj' -c Release -o "$env:RUNNER_TEMP/ETNative"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $built=(Get-FileHash "$env:RUNNER_TEMP/ETNative/EasyBIM.FileIO.dll" -Algorithm SHA256).Hash
+          $shipped=(Get-FileHash 'lib/easybim_etransmit/native/EasyBIM.FileIO.dll' -Algorithm SHA256).Hash
+          if ($built -ne $shipped) { throw 'Native helper does not match its source.' }
+      - name: Get official pinned IronPython
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip=Join-Path $env:RUNNER_TEMP 'IronPython.2.7.12.zip'
+          $folder=Join-Path $env:RUNNER_TEMP 'IronPython-2.7.12'
+          Invoke-WebRequest 'https://github.com/IronLanguages/ironpython2/releases/download/ipy-2.7.12/IronPython.2.7.12.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $folder
+          $ipy=Get-ChildItem -LiteralPath $folder -Recurse -Filter ipy.exe | Where-Object { $_.FullName -match 'net45' } | Select-Object -First 1
+          if (-not $ipy) { throw 'Official runtime has no net45 ipy.exe.' }
+          "IPY_EXE=$($ipy.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run copy and API compatibility tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $log=Join-Path $env:RUNNER_TEMP 'ironpython-tests.log'
+          $names=@('test_runtime_copy.py','test_runtime_progress.py','test_source_automation.py','test_payload_acquisition.py','test_runtime_longpaths.py','test_runtime_reference_repairs.py','test_209_regressions.py')
+          $names += Get-ChildItem 'Development Space/tests/etransmit' -File | Where-Object { $_.Name -match '^test_2[12].*\.py$' } | Sort-Object Name | ForEach-Object { $_.Name }
+          foreach ($name in $names) {
+            "TEST $name" | Tee-Object -FilePath $log -Append
+            & $env:IPY_EXE (Join-Path 'Development Space/tests/etransmit' $name) 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etransmit228-ironpython
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/ironpython-tests.log
+            ${{ runner.temp }}/etransmit228-source-hashes.json
+  publish:
+    name: Publish clean candidate after all checks
+    needs: [portable, ironpython]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reproduce exact tested repair
+        run: python .github/etransmit228_apply.py
+      - name: Publish candidate without temporary CI files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'EasyBIM repair'
+          git config user.email '142599989+ruiming2ai@users.noreply.github.com'
+          git commit -m 'Fix e-transmit 2.1.28 available-reference repathing' -m 'Do not let unavailable RVTs veto delivered PDF/image/CAD repairs. Isolate and persist missing RVTs unloaded in scratch, save a normal host, and reopen without Detach to verify actual saved paths. Retain checksum-verified original-host fallback and live-worker quarantine. Add 13 regressions plus reporting. Source handling and Auto Update unchanged. Portable and IronPython tests passed; native Revit acceptance is still required.'
+          git push origin HEAD:refs/heads/codex/etransmit-partial-repath-228
+          git log -1 --format='%H %T' | tee "$RUNNER_TEMP/etransmit228-candidate.txt"
+          git archive --format=zip --prefix=EasyBIM.extension/ HEAD -o "$RUNNER_TEMP/EasyBIM-2.1.28-full-source.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etransmit228-candidate
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/etransmit228-candidate.txt
+            ${{ runner.temp }}/etransmit228-source-hashes.json
+            ${{ runner.temp }}/EasyBIM-2.1.28-full-source.zip
