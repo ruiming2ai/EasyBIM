@@ -1,0 +1,32 @@
+name: Auto Update validation
+on:
+  push:
+    branches: [codex/auto-update-session-validation-20260930]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Collect exact source and update history
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/easybim-validation"
+          git archive --format=tar.gz ac2370a079af49ebb0d9f5c68c62907f38fa69fa > "$RUNNER_TEMP/easybim-validation/source.tar.gz"
+          git log --all --format=fuller --stat -- '*auto_update*' '*Auto Update*' 'startup.py' 'lib/easybim/idling.py' > "$RUNNER_TEMP/easybim-validation/history.txt"
+          git bundle create "$RUNNER_TEMP/easybim-validation/history.bundle" --all
+      - name: Baseline tests
+        shell: bash
+        run: |
+          python -B -m unittest discover -s 'Development Space/tests' -v > "$RUNNER_TEMP/easybim-validation/baseline.txt" 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easybim-auto-update-validation
+          path: ${{ runner.temp }}/easybim-validation/
+          retention-days: 1
