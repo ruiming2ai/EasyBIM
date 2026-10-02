@@ -17,7 +17,7 @@ if hashlib.sha256(raw).hexdigest()!=EXPECTED:raise SystemExit('Reviewed payload 
 files=json.loads(raw)
 subprocess.check_call(['git','config','core.autocrlf','false'])
 subprocess.check_call(['git','config','core.eol','lf'])
-subprocess.check_call(['git','checkout','--detach',BASE])
+subprocess.check_call(['git','checkout','--force','--detach',BASE])
 allowed=('EasyBIM.tab/Test.panel/','lib/easybim_etransmit_tests/','Development Space/tests/etransmit_lab/')
 for name,item in files.items():
     p=Path(name)
