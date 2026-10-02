@@ -1,0 +1,10 @@
+title: Test
+tooltip: Isolated e-transmit experiments. Production tools are unchanged.
+layout:
+  - e-transmit A Save Guard (test)
+  - e-transmit B Save Events (test)
+  - e-transmit C Save Sequence (test)
+  - e-transmit D CAD Routing (test)
+  - e-transmit E CAD Duplicates (test)
+  - e-transmit F Saved Inventory (test)
+  - e-transmit G Recovery Evidence (test)

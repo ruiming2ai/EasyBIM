@@ -1,0 +1,36 @@
+{
+  "commit": "675b8067b51e29b84f150a99b4105592ed33daa9",
+  "files": {
+    "revit.py": "6ee7209f165e534216bafd55d5e2a3f037e7992182a5a3b264a91cd546b6e840",
+    "cloud_picker.py": "91e51d40f43d57f9124aa3cf8a0a96ce62ed6d49e792e6b212c8cf9e41e1209b",
+    "unloaded_links.xaml": "bea8b51ba9c99c6f9239590c8b17448a652446ba4074c30dc5cff2124ec0ed57",
+    "session.py": "6497bdb872d47d122a1acf953b697322151888b40b1c44ab9beb775edca666b1",
+    "oauth.py": "7fc4fa1dcbb3303db70849e1b72e0d006b6573eadece758184d1a9898aa52f15",
+    "longpaths.py": "6ce97fb295dc726ee50d59058db54239de3f5fbf938ceb7e3ba4f763c16eaaf6",
+    "pathnames.py": "3827b1f4fdae826bb52357bf63811154f5f7e25073b7ec27ba48e041f90e17b0",
+    "cloud_sources.py": "57b259ddb7514ce72b0886bf2c70887be7a34cc4e9825ae29a62d3cf109bf957",
+    "batch.py": "c4ca9df64d3d242e6358c1a59d30a99bd9493b012f5f9cbd12036d5a5973dae3",
+    "model_payload.py": "f9a26fee5ae69b99fd0eb186aef9a6ff89fcac66b4142393040adc9bec8fa322",
+    "source_tracker.py": "6d642d5cb089eb5554219b613656c7f0303ce3f11f159f9e1aab1c7146425359",
+    "provenance.py": "50dba98a801ea04dca97d91cf201060aeaa8a5d2856764494d28b86a699fd0f4",
+    "files.py": "80c5ba0dcf67963b644b9df0ca00e09381cb51eac25b7341fa0de8528f95b78d",
+    "cache_sources.py": "7e727750e2f4c76e85f7afbe2f483478551d8e524d6d5a02d77882ec6ab66b9e",
+    "layout.py": "c4094749587cd311af639872e186b3e618c08bdd3ec084aff91ae075504ccfe6",
+    "performance.py": "6a924dbc026c91dc3eb78cfb7c35b091a12223374763b22716776ff602e18c34",
+    "cleanup.py": "1749e84578d73d6c5ad3916c11e810abf47062bcb3e4315e5c620ca11a39b146",
+    "engine.py": "4989b88e19bdd559ccb6ddad3c5f36911920adab81c7089223ac7d03058c8ccf",
+    "trace.py": "204d2a453520d3d605e93e392d5092ec64fddc5a40cae1771c0cae56be0c9610",
+    "preflight.py": "e425cba1b974dad1e4e9aa85f5ca4c995eeee4358b16c42036c78e5276e623a7",
+    "plugin_sources.py": "ab33f21f254498cc7e45b6a67eef92dda142965b5c5c195a5a06ac9196dfd8ce",
+    "aps.py": "cb4220b8d12e643d94d4aa07e7664fc6e84f4a34b8fb467476fd2d5ce9200a61",
+    "worker.py": "600410ccdabf0d443678908f2f7fd2b652f297fb78da11aeed23d109be7238ba",
+    "ui.py": "1078a725dfee6fce101d3df58a951c277d25965996df84fd5e497c78ae44ca6b",
+    "__init__.py": "38dc55801a4c5743a0e52eefa212692058cb9d83ab06e75c6e7770d11f87a6ad",
+    "native/EasyBIM.FileIO.dll": "bf358101dbd99ff9c2a42bdcef108b320ad9b0fbb4460d86394b730bfeee9968",
+    "native/README.md": "ba49688555284867e5ba88f07eaf038328d483610e20fa3348a34a9189bffd4c"
+  },
+  "private_changes": [
+    "base/ui.py: separate settings path",
+    "base/worker.py: lab job dispatch and persistent evidence"
+  ]
+}

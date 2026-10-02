@@ -1,0 +1,800 @@
+# -*- coding: utf-8 -*-
+"""Per-command live documents and explicit published-cloud sources.
+
+Document handles never enter a manifest. Discovery never opens, saves, reloads,
+closes or modifies the user's document. A primary-document SaveAs requires a
+runtime callback granting consent; the standard UI now uses saved-state-only
+cache acquisition instead and never invokes that legacy SaveAs path.
+"""
+from __future__ import unicode_literals
+import copy
+import os
+import ntpath
+import tempfile
+import uuid
+import time
+from . import files as f, model_payload, cache_sources, performance
+from .revit import Backend, eid, dispose
+from .engine import issue
+from .cloud_sources import identifier, validate_name
+
+
+class SourceError(ValueError):
+    def __init__(self,code,message):
+        ValueError.__init__(self,message);self.code=code
+
+
+def doc_version(doc):
+    value=None
+    try:
+        value=doc.GetDocumentVersion(doc)  # Static Revit API requires the Document argument.
+        return dict(guid=f.text(value.VersionGUID).lower(),saves=int(value.NumberOfSaves))
+    except Exception:return None
+    finally:dispose(value)
+
+
+def cloud_identity(doc):
+    path=None
+    try:
+        if not bool(getattr(doc,'IsModelInCloud',False)):return {}
+        path=doc.GetCloudModelPath()
+        return dict(model_guid=f.text(path.GetModelGUID()).lower(),
+                    project_guid=f.text(path.GetProjectGUID()).lower(),
+                    region=f.text(getattr(path,'Region','')))
+    except Exception:return {}
+    finally:dispose(path)
+
+
+def file_version(DB,path):
+    info=version=None
+    try:
+        info=DB.BasicFileInfo.Extract(path);version=info.GetDocumentVersion()
+        return dict(guid=f.text(version.VersionGUID).lower(),saves=int(version.NumberOfSaves))
+    finally:dispose(version);dispose(info)
+
+
+def merge_detached_revit_rows(saved_rows, live_rows):
+    """Merge saved TD rows with live-only cloud/server Revit references.
+
+    TransmissionData remains authoritative for ordinary file Revit links.
+    During explicit detached-file recovery, live external-resource rows may be
+    the only representation of ACC/server-managed links, so preserve those and
+    enrich matching saved rows with cloud identity metadata.
+    """
+    merged=[copy.deepcopy(row) for row in saved_rows]
+    by_id=dict((f.text(row.get('element_id',row.get('id',''))),row) for row in merged)
+    for live in live_rows:
+        if live.get('kind')!='RevitLink':
+            continue
+        ident=f.text(live.get('element_id',live.get('id','')))
+        identity=cache_sources.reference_identity(live)
+        source=f.text(live.get('source') or live.get('in_session_path') or '')
+        external=bool(identity or live.get('special')=='external' or '://' in source)
+        saved=by_id.get(ident)
+        if saved is not None:
+            if identity:
+                saved['cloud_identity']=dict(identity)
+            # For detached hosts, the live document is the user's authoritative
+            # load-state context. The saved RVT supplies bytes/paths, but its
+            # persisted TransmissionData load flag can be stale relative to the
+            # model the user is actually transmitting from.
+            if live.get('loaded') is not None:
+                saved['loaded']=bool(live.get('loaded'))
+                saved['live_loaded_state']=bool(live.get('loaded'))
+            if live.get('original_loaded') is not None:
+                saved['original_loaded']=bool(live.get('original_loaded'))
+            for field in ('resource_information','in_session_path','server',
+                          'resource_version','link_name'):
+                if live.get(field) and not saved.get(field):
+                    saved[field]=copy.deepcopy(live[field])
+            continue
+        if not external:
+            continue
+        row=copy.deepcopy(live)
+        row.setdefault('source_evidence','DETACHED_LIVE_EXTERNAL_RESOURCE')
+        merged.append(row)
+        by_id[ident]=row
+    return merged
+
+
+class Registry(object):
+    def __init__(self,DB,application,recovery_root,cancelled=None,collect_plugins=True,
+                 saved_state_only=True,cache_roots=None):
+        self.DB=DB;self.app=application;self.recovery_root=recovery_root;self.cancelled=cancelled
+        self.entries={};self._documents=[];self.graphs={};self.clients={};self._temp=None
+        self.confirm_snapshot=None;self.collect_plugins=collect_plugins
+        self.saved_state_only=bool(saved_state_only)
+        self.cache_roots=cache_roots
+        self._cache_store=None
+        self._authorized_snapshots=set()
+        self.scanner=Backend(DB,application,recovery_root,cancelled)
+    def get(self,key):return self.entries.get(key)
+    def owns(self,key):return key in self.entries
+    def add_cached_reference(self,row):
+        """Register an identified saved link without requiring a live Document."""
+        identity=cache_sources.reference_identity(row)
+        if not identity:return None
+        for key,entry in self.entries.items():
+            if entry['mode']=='CACHED_CLOUD_REFERENCE' and cache_sources.same_identity(identity,entry.get('cloud',{})):
+                return key
+        name=f.text(row.get('link_name') or '')
+        if not name:
+            for field in ('configured_source','in_session_path','saved_path','source'):
+                value=f.text(row.get(field) or '')
+                if value.lower().endswith('.rvt'):
+                    name=value.replace('\\','/').rsplit('/',1)[-1];break
+        if name and not name.lower().endswith('.rvt'):name+='.rvt'
+        try:name=validate_name(name)
+        except ValueError:
+            raise SourceError('CACHE_LINK_NAME_UNAVAILABLE','Identified ACC link has no valid model filename; element '+f.text(row.get('element_id',''))+'.')
+        key='cache://'+identifier(identity['region']+'/'+identity['project_guid']+'/'+identity['model_guid'])+'/'+name
+        self.entries[key]=dict(source=key,mode='CACHED_CLOUD_REFERENCE',name=name,
+            cloud=identity,document_version=None,is_linked=True,is_modified=False,
+            original_path=f.text(row.get('source') or row.get('in_session_path') or ''),
+            state_basis='SAVED_CLOUD_REFERENCE',children=[],snapshot_path=None)
+        return key
+    def add_live(self,doc,configured_source=None,inspect=True):
+        if performance.current(): return self._add_live(doc,configured_source,inspect)
+        with performance.Collector() as discovery:
+            key=self._add_live(doc,configured_source,inspect)
+        self.entries[key]['discovery_performance']=discovery.snapshot()
+        return key
+
+    def _add_live(self,doc,configured_source=None,inspect=True):
+        for old,key in self._documents:
+            if old is doc or old==doc:return key
+        original=f.text(configured_source or getattr(doc,'PathName','') or '')
+        name=ntpath.basename(original) if f.absolute(original) and not f.cache_source(original) else f.text(doc.Title)
+        if not name.lower().endswith('.rvt'):name+='.rvt'
+        if any(c in name for c in '<>:"/\\|?*'):
+            raise SourceError('INVALID_OPEN_MODEL_NAME','The open document title is not a valid RVT filename.')
+        key='open://'+uuid.uuid4().hex+'/'+name
+        entry=dict(source=key,mode='LIVE_DOCUMENT',document=doc,name=name,original_path=original,
+                   cloud=cloud_identity(doc),document_version=doc_version(doc),
+                   state_basis='LIVE_INVENTORY_ONLY',children=[],snapshot_path=None,is_linked=bool(getattr(doc,'IsLinked',False)),
+                   is_workshared=bool(getattr(doc,'IsWorkshared',False)),
+                   is_modified=bool(getattr(doc,'IsModified',False)))
+        self.entries[key]=entry;self._documents.append((doc,key))
+        result=dict(references=[],issues=[],version=f.text(getattr(self.app,'VersionNumber','')),
+                    opened_in_revit=True,inspection_status='LIVE_DOCUMENT',source_mode='LIVE_DOCUMENT')
+        entry['inventory']=result
+        central=''
+        if getattr(doc,'IsWorkshared',False) and not getattr(doc,'IsModelInCloud',False):
+            try:central=self.scanner.visible(doc.GetWorksharingCentralModelPath())
+            except Exception:pass
+        info=dict(central=central,workshared=bool(getattr(doc,'IsWorkshared',False)))
+        entry['plugin_base']=central or original;entry['plugins_scanned']=False
+        if not inspect:
+            result['inspection_status']='LINK_IDENTITY_ONLY'
+            return key
+        try:
+            self.scanner.scan_open(doc,original or key,info,result)
+        except f.Cancelled:raise
+        except ImportError:
+            # An installation missing an owned module must not silently claim
+            # spreadsheet coverage. General reference inventory still survives.
+            result['issues'].append(issue('PLUGIN_SOURCE_COVERAGE',key,'Plugin discovery module unavailable.'))
+        except Exception as exc:
+            result['issues'].append(issue('LIVE_INVENTORY_FAILED',key,exc,'error'))
+            result['open_failed']=True
+        # Unloaded links have no GetLinkDocument(). Their link type still carries
+        # a real name and external-resource identity; never require loading for naming.
+        from .preflight import enrich_link_types
+        enrich_link_types(self,entry)
+        try:
+            for instance in self.scanner.elements(doc,'RevitLinkInstance'):
+                f.check(self.cancelled)
+                child=instance.GetLinkDocument()
+                if child is None:continue
+                type_id=eid(instance.GetTypeId())
+                matches=[r for r in result['references'] if r.get('element_id')==type_id and r.get('kind')=='RevitLink']
+                configured=matches[0].get('source','') if matches else ''
+                childkey=self.add_live(child,configured,inspect=not self.saved_state_only)
+                if childkey not in entry['children']:entry['children'].append(childkey)
+                if not matches:
+                    row=dict(id=type_id,element_id=type_id,kind='RevitLink',special='external',td=False,loaded=True)
+                    result['references'].append(row);matches=[row]
+                for row in matches:
+                    row['configured_source']=row.get('source','')
+                    child_entry=self.entries[childkey]
+                    saved_source=f.text(row.get('configured_source') or child_entry.get('original_path',''))
+                    if (not child_entry.get('cloud') and f.absolute(saved_source)
+                            and not f.cache_source(saved_source) and not f.is_desktop_connector_path(saved_source)):
+                        # A loaded local link already exposes the saved file we need.
+                        # Keep that source path instead of converting it to an open://
+                        # document identity that would trigger snapshot/revision logic.
+                        row['source']=saved_source
+                        row['source_evidence']='LIVE_LINK_SAVED_FILE_PATH'
+                        row['loaded_document_key']=childkey
+                    else:
+                        # Cloud/server-managed links still use their proven document
+                        # identity so cache acquisition can locate the correct model.
+                        row['source']=childkey
+                        row['source_evidence']='LIVE_LINK_DOCUMENT_IDENTITY'
+                        row['cloud_identity']=dict(child_entry.get('cloud') or {})
+        except f.Cancelled:raise
+        except Exception as exc:
+            result['issues'].append(issue('LIVE_LINK_TRAVERSAL_FAILED',key,exc,'error'))
+        return key
+    def capture_reloaded_link(self,choice):
+        """Capture selected linked saved bytes before its original unload is restored."""
+        entry=self.entries[choice.owner];doc=entry['document'];child=None
+        rows=[r for r in entry['inventory']['references']
+              if r.get('kind')=='RevitLink' and r.get('element_id')==choice.element_id]
+        for instance in self.scanner.elements(doc,'RevitLinkInstance'):
+            if eid(instance.GetTypeId())==choice.element_id:
+                child=instance.GetLinkDocument()
+                if child is not None:break
+        if child is None:
+            raise SourceError('RELOADED_LINK_DOCUMENT_UNAVAILABLE','Reloaded link exposes no placed linked document. No unrelated file was substituted.')
+        expected=cache_sources.reference_identity(rows[0]) if rows else None
+        actual=cloud_identity(child)
+        if expected and not cache_sources.same_identity(expected,actual):
+            raise SourceError('RELOADED_LINK_IDENTITY_MISMATCH','Reloaded cloud identity differs from the selected reference.')
+        key=self.add_live(child,inspect=False)
+        self.snapshot(key)
+        for row in rows:
+            row['configured_source']=row.get('source','')
+            row['source']=key
+            row['source_evidence']='EXPLICIT_TEMPORARY_RELOAD_SAVED_SOURCE'
+            row['loaded']=False
+            row['original_loaded']=False
+            row['local_unload_override']=choice.local_override
+            row.pop('resolution_failed',None)
+            if actual:row['cloud_identity']=actual
+        return key
+
+    def add_graph(self,graph,client):
+        self.graphs[graph.key]=graph;self.clients[graph.key]=client
+        for item in graph.entries:
+            self.entries[item['source']]=dict(source=item['source'],mode='PUBLISHED_VERSION',
+                name=item['modelName'],graph=graph,item=item,state_basis='EXPLICIT_PUBLISHED_VERSION')
+        return graph.host['source']
+    def bind_graph(self,live_key,graph,client):
+        """A live document may use this graph ONLY for revision-checked links."""
+        expected=self.entries[live_key].get('cloud',{}).get('model_guid','')
+        if not expected:
+            raise SourceError('CLOUD_HOST_IDENTITY_UNAVAILABLE','This open host does not expose a cloud model GUID. Use explicit published-version mode instead of binding by filename.')
+        metadata=client.version(graph.project,graph.version)
+        actual=f.text(metadata.get('attributes',{}).get('extension',{}).get('data',{}).get('modelGuid','')).lower().strip('{}')
+        if actual!=expected.lower().strip('{}'):
+            raise SourceError('CLOUD_HOST_IDENTITY_MISMATCH','The selected published host is not the cloud model currently open. No download graph was bound.')
+        self.add_graph(graph,client)
+        seen=set();pending=[live_key]
+        while pending:
+            key=pending.pop()
+            if key in seen:continue
+            seen.add(key);entry=self.entries[key];entry['bound_graph']=graph.key
+            pending.extend(entry.get('children',[]))
+    def public(self,key):
+        entry=self.entries[key]
+        fields=('source','mode','name','original_path','cloud','document_version','state_basis',
+                'snapshot_path','working_document_path_after','bound_graph','snapshot_attempt_path',
+                'snapshot_sha256','snapshot_validation','snapshot_error','snapshot_error_type',
+                'snapshot_started_at','snapshot_completed_at','saved_document_version',
+                'working_location_changed','snapshot_authorization','is_modified','cache_metadata',
+                'cache_evidence','unsaved_edits_excluded','saved_state_only','inventory_basis',
+                'preflight_events','is_workshared','detached_recovery')
+        result=dict((k,entry[k]) for k in fields if k in entry)
+        if entry['mode']=='PUBLISHED_VERSION':
+            result.update(project_id=entry['graph'].project,host_version_id=entry['graph'].version,
+                          item_id=entry['item']['itemId'],version_id=entry['item'].get('versionId'),
+                          publish_status=entry['item'].get('publishStatus'))
+        return result
+    def relative(self,key):
+        entry=self.entries[key]
+        if entry['mode']=='PUBLISHED_VERSION':return entry['graph'].relative(entry['item'])
+        if not entry.get('is_linked',False):return entry['name']
+        original=entry.get('original_path','')
+        if f.absolute(original) and not f.cache_source(original):return f.mirror_path(original)
+        return 'Sources/Open_Models/'+identifier(key)+'/'+entry['name']
+    def authorize_snapshots(self,keys):
+        """Authorize ONLY the selected primary documents for this command.
+
+        UI calls this after the up-front save confirmation, before the batch.
+        Authorization is not saved in settings or inferred from an old report.
+        """
+        keys=list(keys)
+        for key in keys:
+            entry=self.entries.get(key)
+            if not entry or entry.get('mode')!='LIVE_DOCUMENT' or entry.get('is_linked'):
+                raise SourceError('INVALID_SNAPSHOT_AUTHORIZATION','Only selected open primary documents can be authorized for host SaveAs.')
+        self._authorized_snapshots.update(keys)
+    @performance.timed('acquisition', 'saved_snapshot', file_index=1)
+    def snapshot(self,key,pulse=None):
+        if self.saved_state_only:
+            return self._snapshot_saved_state(key,pulse)
+        return self._snapshot_live_state(key)
+
+    def _snapshot_saved_state(self,key,pulse=None):
+        """Copy a saved edition, NEVER save or relocate the open Document."""
+        entry=self.entries[key];doc=entry.get('document')
+        if entry.get('snapshot_path'):
+            path=entry['snapshot_path']
+            if f.digest(path,self.cancelled)!=entry['snapshot_sha256']:
+                raise SourceError('CACHE_SNAPSHOT_CHANGED','The retained saved-state snapshot changed. It will not be reused.')
+            return path
+        before=doc_version(doc) if doc is not None else None
+        if before!=entry.get('document_version'):
+            raise SourceError('OPEN_DOCUMENT_VERSION_CHANGED','The open document revision changed after discovery. Start a fresh transmittal; no save was attempted.')
+        entry['saved_state_only']=True
+        entry['is_modified']=bool(getattr(doc,'IsModified',False))
+        entry['unsaved_edits_excluded']=True
+        if self._cache_store is None:
+            self._cache_store=cache_sources.Store(self.DB,self.app,
+                os.path.join(self.temp_root(),'cache'),roots=self.cache_roots,cancelled=self.cancelled)
+        original=f.text(getattr(doc,'PathName','') or '')
+        try:
+            if entry.get('cloud') or bool(getattr(doc,'IsModelInCloud',False)):
+                captured=self._cache_store.capture(entry,pulse)
+                path=captured['path'];metadata=captured['metadata']
+                entry['cache_metadata']=metadata
+                entry['cache_evidence']=metadata.get('cache_evidence',{})
+                entry['state_basis']='VERIFIED_LOCAL_CACHE_SAVED_STATE'
+            else:
+                physical=entry.get('original_path','')
+                # A detached model has no PathName. Session/journal source
+                # tracking can only supplement it when the saved revision can
+                # be checked; it must not become a display-name file search.
+                tracked=False
+                if not f.absolute(physical):
+                    from . import source_tracker
+                    physical=source_tracker.source_for_document(doc,application=self.app)
+                    tracked=True
+                if not f.absolute(physical) or f.cache_source(physical) or f.is_desktop_connector_path(physical):
+                    raise SourceError('SAVED_HOST_SOURCE_UNAVAILABLE','No exact saved local RVT was identified. No Save/SaveAs or published-version fallback was attempted.')
+                folder=os.path.join(self.temp_root(),'saved-'+identifier(key))
+                if not os.path.isdir(folder):os.makedirs(folder)
+                path=os.path.join(folder,'snapshot.rvt')
+                metadata=f.copy_file(physical,path,self.cancelled,pulse)
+                if model_payload.probe(path).get('container')!='CFB':
+                    raise SourceError('SAVED_HOST_NOT_NATIVE','The local source is not a native RVT.')
+                expected=cache_sources.version(before)
+                try:
+                    info=self._cache_store.read_info(path)
+                    actual=cache_sources.version(info.get('version'))
+                except Exception:
+                    # The collection contract is the identified saved file, not
+                    # equality with the revision currently loaded in memory.
+                    actual=None
+                metadata.update(cache_document_version=actual,loaded_document_version=expected,
+                                copy_method='VERIFIED_LOCAL_FILE',
+                                revision_check='SAVED_FILE_COPIED',
+                                unsaved_edits_excluded=entry['is_modified'])
+                entry['state_basis']='VERIFIED_LOCAL_FILE_SAVED_STATE'
+                entry['cache_metadata']=metadata
+            if before!=doc_version(doc) or original!=f.text(getattr(doc,'PathName','') or ''):
+                raise SourceError('OPEN_DOCUMENT_VERSION_CHANGED','The open document changed during acquisition. No output was accepted and no save was attempted.')
+            entry['snapshot_path']=path
+            entry['snapshot_sha256']=metadata['sha256']
+            entry['saved_document_version']=metadata['cache_document_version']
+            entry['snapshot_validation']='NATIVE_RVT_METADATA_AND_COPY_VERIFIED'
+            entry['working_document_path_after']=original;entry['working_location_changed']=False
+            entry['snapshot_completed_at']=time.time()
+            return path
+        except cache_sources.CacheError as exc:
+            entry['cache_evidence']=exc.evidence
+            raise SourceError(exc.code,f.text(exc))
+
+    def _snapshot_live_state(self,key):
+        entry=self.entries[key];doc=entry['document']
+        if bool(getattr(doc,'IsLinked',False)):
+            raise SourceError('LINK_DOCUMENT_READ_ONLY','A loaded linked document cannot be saved; acquire its exact original revision instead.')
+        if entry.get('snapshot_path'):
+            saved_version=entry.get('saved_document_version');current_version=doc_version(doc)
+            if bool(getattr(doc,'IsModified',False)) or (saved_version and current_version and saved_version!=current_version):
+                raise SourceError('HOST_SNAPSHOT_STALE','The open document changed after the captured snapshot. The old snapshot was retained but not reused as current state.')
+            path=entry['snapshot_path']
+            if not f.file_exists(path) or f.digest(path,self.cancelled)!=entry.get('snapshot_sha256'):
+                raise SourceError('HOST_SNAPSHOT_CHANGED','The retained current-state snapshot changed after capture. It was not replaced by an older or published host.')
+            return path
+        if entry.get('snapshot_error'):
+            raise SourceError('HOST_SNAPSHOT_FAILED',entry['snapshot_error'])
+        f.check(self.cancelled)
+        if getattr(doc,'IsReadOnly',False) or getattr(doc,'IsModifiable',False):
+            raise SourceError('HOST_SNAPSHOT_UNAVAILABLE','Finish the current edit/transaction before saving a host copy; read-only documents cannot be serialized.')
+        # Always serialize the Document. Even a matching saved DocumentVersion
+        # is not used as an implicit substitute for the requested live state.
+        target=os.path.join(self.recovery_root,identifier(key),entry['name'])
+        if key not in self._authorized_snapshots:
+            if not self.confirm_snapshot or not self.confirm_snapshot(doc,target):
+                raise SourceError('HOST_SNAPSHOT_DECLINED','Current-state host snapshot was not authorized. No older or published host was substituted.')
+            entry['snapshot_authorization']='PER_DOCUMENT_CONFIRMATION'
+        else:entry['snapshot_authorization']='UPFRONT_BATCH_CONFIRMATION'
+        f.validate_destination_path(target)
+        if f.file_exists(target):
+            raise SourceError('HOST_SNAPSHOT_DESTINATION_EXISTS','A working snapshot already exists at the new destination; it will not be overwritten.')
+        folder=os.path.dirname(target)
+        if not os.path.isdir(folder):os.makedirs(folder)
+        save=ws=None
+        entry['snapshot_attempt_path']=target
+        entry['snapshot_started_at']=time.time()
+        before=f.text(getattr(doc,'PathName','') or '')
+        try:
+            save=self.DB.SaveAsOptions()
+            save.OverwriteExistingFile=False;save.MaximumBackups=1
+            if getattr(doc,'IsWorkshared',False):
+                ws=self.DB.WorksharingSaveAsOptions();ws.SaveAsCentral=True;save.SetWorksharingOptions(ws)
+            # No Rename flag: it was removed from Revit and did not preserve
+            # in-memory identity. Never save back to the old path to "restore" it.
+            doc.SaveAs(target,save)
+            entry['working_document_path_after']=f.text(getattr(doc,'PathName','') or '')
+            entry['working_location_changed']=f.canonical(before)!=f.canonical(entry['working_document_path_after'])
+            info=model_payload.probe(target)
+            if info.get('container')!='CFB':
+                raise ValueError('SaveAs did not produce a native RVT file.')
+            # Check that this Revit API can read the emitted native file. An API
+            # save is not allowed to silently deliver an archive/login page.
+            native=self.DB.BasicFileInfo.Extract(target)
+            try:
+                version=f.text(native.Format)
+                if version!=f.text(self.app.VersionNumber):
+                    raise ValueError('Saved host format does not match the running Revit version.')
+            finally:dispose(native)
+            if bool(getattr(doc,'IsModified',False)):
+                raise ValueError('A save-event callback modified the open document after SaveAs. The retained copy may not include those subsequent changes.')
+            entry['saved_document_version']=doc_version(doc)
+            entry['snapshot_sha256']=f.digest(target,self.cancelled)
+            entry['snapshot_validation']='NATIVE_RVT_METADATA_READABLE'
+            entry['snapshot_path']=target;entry['state_basis']='CURRENT_DOCUMENT_SAVEAS'
+            entry['snapshot_completed_at']=time.time()
+        except f.Cancelled:
+            entry['snapshot_error']='Current-state snapshot operation was cancelled; any working file has been retained.'
+            raise
+        except Exception as exc:
+            # Keep target even when a post-save add-in failed: it can be the
+            # user's new working file. Do not auto-retry a state-changing SaveAs.
+            entry['working_document_path_after']=f.text(getattr(doc,'PathName','') or '')
+            entry['working_location_changed']=f.canonical(before)!=f.canonical(entry['working_document_path_after'])
+            entry['snapshot_error_type']=type(exc).__name__
+            entry['snapshot_error']='Current-state SaveAs/validation failed: '+f.text(exc)+'. Any working file remains at '+target
+            raise SourceError('HOST_SNAPSHOT_FAILED',entry['snapshot_error'])
+        finally:dispose(ws);dispose(save)
+        return target
+    def temp_root(self):
+        if not self._temp:self._temp=tempfile.mkdtemp(prefix='ET_Sources_')
+        return self._temp
+    def cloud_file(self,key,pulse=None):
+        entry=self.entries[key]
+        if entry.get('download_path'):return entry['download_path']
+        graph=entry['graph'];client=self.clients[graph.key];item=entry['item']
+        if client is None:raise SourceError('CLOUD_SIGN_IN_REQUIRED','Sign in to the registered Autodesk app to acquire this published version.')
+        if time.time()-graph.fetched_at>45*60:
+            graph.refresh_urls(client.linked_files(graph.project,graph.version))
+        folder=os.path.join(self.temp_root(),identifier(key))
+        if not os.path.isdir(folder):os.makedirs(folder)
+        path=os.path.join(folder,entry['name'])
+        client.download(item['signedUrl'],path,item['size'],pulse)
+        payload=model_payload.prepare(path,os.path.join(folder,'native'),expected_name=entry['name'],cancelled=self.cancelled)
+        if payload.get('host_member'):
+            raise SourceError('CLOUD_PAYLOAD_UNEXPECTED','The version-specific RCM download returned a composite instead of one native RVT.')
+        entry['download_path']=payload['path'];return payload['path']
+    def match_live_cloud(self,key):
+        entry=self.entries[key];model_guid=entry.get('cloud',{}).get('model_guid')
+        graph=self.graphs.get(entry.get('bound_graph'))
+        if not graph or not model_guid:return None
+        client=self.clients[graph.key];matches=[]
+        for item in graph.entries:
+            if 'model_guid' not in item:
+                if item.get('versionId'):metadata=client.version(graph.project,item['versionId'])
+                else:metadata=client.item_tip(graph.project,item['itemId'])
+                item['model_guid']=f.text(metadata.get('attributes',{}).get('extension',{}).get('data',{}).get('modelGuid','')).lower()
+            if item['model_guid']==model_guid:matches.append(item)
+        if len(matches)>1:raise SourceError('CLOUD_IDENTITY_AMBIGUOUS','The chosen published graph contains multiple items for the loaded cloud model identity.')
+        return matches[0]['source'] if matches else None
+    def close(self):
+        self._documents[:]=[];self.entries.clear();self.graphs.clear();self.clients.clear();self._authorized_snapshots.clear()
+        if self._temp:f.remove_tree_retry(self._temp);self._temp=None
+
+
+class SessionBackend(Backend):
+    def __init__(self,DB,application,package_root,registry,cancelled=None):
+        Backend.__init__(self,DB,application,package_root,cancelled);self.registry=registry
+    def open_copy(self,path,discard=False,**kwargs):
+        document=Backend.open_copy(self,path,discard,**kwargs)
+        # Do not close a returned original here: even an unexpected Revit result
+        # must not let a caller's processing/finally block touch a working model.
+        for original, key in self.registry._documents:
+            if document is original or document==original:
+                raise SourceError('ORIGINAL_DOCUMENT_GUARD',
+                    'Revit returned a working document for an export-copy open. No SaveAs, repath or Close was performed on it.')
+        if bool(getattr(document,'IsLinked',False)):
+            raise SourceError('ORIGINAL_DOCUMENT_GUARD','A linked working document cannot be processed as an export copy.')
+        return document
+
+    def _requires_separate_worker(self, source, options):
+        if options.get('independent_host'):
+            return True
+        entry=self.registry.get(source) if source else None
+        if not entry or entry.get('mode')!='LIVE_DOCUMENT':
+            return False
+        return bool(options.get('repath') or options.get('cleanup') or
+                    options.get('upgrade') or options.get('normalize_saved_cache'))
+
+    def finish(self, stage, target, rows, options):
+        """Repair live-host package copies in a second Revit process.
+
+        Opening a detached/local/cloud copy of a workshared model in the same
+        Revit process as its working source can raise
+        CannotOpenBothCentralAndLocalException. The worker process has no source
+        document open, so it can perform LoadFrom/ReloadFrom and SaveAs safely.
+        """
+        source=f.text(options.get('_host_source','') or '')
+        if options.get('independent_host'):
+            from . import worker
+            return worker.run_separate_revit(
+                self.app,stage,target,rows,options,
+                cancelled=self.cancelled,
+                pulse=options.get('_worker_pulse'))
+        if self.can_finish_metadata_copy(rows,options):
+            return self.finish_metadata_copy(stage,target,rows,options)
+        if self._requires_separate_worker(source,options):
+            from . import worker
+            return worker.run_separate_revit(
+                self.app,stage,target,rows,options,
+                cancelled=self.cancelled,
+                pulse=options.get('_worker_pulse'))
+        return Backend.finish(self,stage,target,rows,options)
+
+    def is_virtual_source(self,source):return self.registry.owns(source)
+    def source_context(self,source):return self.registry.public(source) if self.registry.owns(source) else {}
+    def source_relative(self,source):return self.registry.relative(source) if self.registry.owns(source) else f.mirror_path(source)
+    def additional_sources(self,source):
+        entry=self.registry.get(source)
+        if entry and entry['mode']=='PUBLISHED_VERSION' and entry['item'].get('is_host'):
+            return [r['source'] for r in entry['graph'].entries if r['source']!=source]
+        return []
+    def skip_dependency(self,source,owner,options):
+        # 2.1.13 fixed policy: there is no global "skip cloud" mode. Verified
+        # saved/cache sources are collected; unavailable sources are reported by
+        # acquisition instead of being silently skipped.
+        return False
+    @performance.timed('discovery', 'host_reference_inventory', file_index=1)
+    def inventory_before_copy(self,source,options):
+        entry=self.registry.get(source)
+        if entry and entry['mode']=='LIVE_DOCUMENT' and not entry.get('cloud'):
+            # Local open hosts already expose non-RVT resources. For Revit links,
+            # prefer the saved host's TransmissionData so unsaved link changes do
+            # not change the collected dependency set. This is metadata-only and
+            # does not open a temporary Revit document.
+            result=copy.deepcopy(entry['inventory'])
+            result['source_mode']='LIVE_DOCUMENT'
+            result['opened_in_revit']=False
+            result['is_workshared']=entry.get('is_workshared',False)
+            physical=f.text(entry.get('original_path') or '')
+            try:
+                if f.absolute(physical) and not f.cache_source(physical) and not f.is_desktop_connector_path(physical):
+                    saved=self.rows(physical,entry.get('plugin_base') or physical)
+                    saved_revit=[row for row in saved if row.get('kind')=='RevitLink']
+                    live_rows=list(result.get('references',[]))
+                    live_non_revit=[row for row in live_rows if row.get('kind')!='RevitLink']
+                    if entry.get('detached_recovery'):
+                        # True ACC/server Revit resources can be absent from
+                        # TransmissionData. For every detached host, the live
+                        # document remains the discovery context so those placed
+                        # external links and captured cache revisions survive.
+                        saved_revit=merge_detached_revit_rows(saved_revit,live_rows)
+                        basis='SAVED_REFERENCE_METADATA_PLUS_DETACHED_LIVE_EXTERNAL_REVIT'
+                    else:
+                        basis='SAVED_REFERENCE_METADATA_PLUS_LIVE_NON_RVT'
+                        saved_ids=set(f.text(r.get('element_id',r.get('id',''))) for r in saved_revit)
+                        live_matches_saved=None
+                        for live in live_rows:
+                            if live.get('kind')!='RevitLink':continue
+                            ident=f.text(live.get('element_id',live.get('id','')))
+                            if ident in saved_ids:continue
+                            value=f.text(live.get('source') or live.get('in_session_path') or '')
+                            external=bool(cache_sources.reference_identity(live) or
+                                          live.get('special')=='external' or '://' in value)
+                            if not external:continue
+                            # TD deliberately omits server-managed references.
+                            # Keep the observed link visible, but do not guess
+                            # its membership in the saved host from unsaved data.
+                            row=copy.deepcopy(live)
+                            if live_matches_saved is None:
+                                live_matches_saved=False
+                                if not entry.get('is_modified') and entry.get('document_version'):
+                                    try:live_matches_saved=(file_version(self.DB,physical)==entry['document_version'])
+                                    except Exception:pass
+                            if live_matches_saved:
+                                row['source_evidence']='MATCHING_SAVED_DOCUMENT_EXTERNAL_RESOURCE'
+                                saved_revit.append(row);saved_ids.add(ident)
+                                continue
+                            row.update(resolution_failed=True,saved_membership_unverified=True,
+                                       source_evidence='LIVE_EXTERNAL_MEMBERSHIP_UNVERIFIED')
+                            saved_revit.append(row);saved_ids.add(ident)
+                            result.setdefault('issues',[]).append(issue(
+                                'SAVED_EXTERNAL_LINK_UNVERIFIED',source+' #'+ident,
+                                'An external Revit link is present in the open model but absent from saved file metadata. '
+                                'Saved membership is unverified; it is reported unresolved, not omitted or replaced by a guessed model.','error'))
+                    result['references']=saved_revit+live_non_revit
+                    if options.get('include',{}).get('revit',True):
+                        self._bind_saved_links(entry,result)
+                    result['inspection_status']=basis
+                    entry['inventory_basis']=basis
+                    return result
+            except Exception as exc:
+                result.setdefault('issues',[]).append(issue(
+                    'SAVED_REFERENCE_SCAN_FAILED',physical,
+                    'Saved Revit-link metadata could not be read; using the already exposed live reference list: '+f.text(exc)))
+            result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            return result
+        if entry and entry['mode']=='LIVE_DOCUMENT':
+            result=copy.deepcopy(entry['inventory'])
+            result['opened_in_revit']=False
+            result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            result['source_mode']='LIVE_INVENTORY_SAVED_FILE_COPY'
+            result['is_workshared']=entry.get('is_workshared',False)
+            entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            if options.get('include',{}).get('revit',True):self._bind_saved_links(entry,result)
+            if entry.get('is_modified'):
+                result.setdefault('issues',[]).append(issue('UNSAVED_EDITS_EXCLUDED',source,
+                    'Dependency locations came from the open model; exported RVT bytes are the saved file/cache. Unsaved edits are not exported.','info'))
+            return result
+        if self.registry.saved_state_only:
+            return None
+        return copy.deepcopy(entry['inventory']) if entry and entry['mode']=='LIVE_DOCUMENT' else None
+    def inventory_after_copy(self,source,options):
+        # Optional vendor inspection cannot prevent the initial host copy.
+        entry=self.registry.get(source)
+        if not entry or entry.get('is_linked') or entry['mode']!='LIVE_DOCUMENT' or not self.registry.collect_plugins or (self.registry.saved_state_only and not self._can_use_live_inventory(entry)):
+            return None
+        if entry.get('plugins_scanned'):
+            return copy.deepcopy(entry.get('plugin_inventory'))
+        result=dict(references=[],issues=[],plugin_coverage=[])
+        entry['plugins_scanned']=True
+        try:
+            self.registry.scanner.scan_plugins(entry['document'],entry.get('plugin_base',''),result)
+        except f.Cancelled:raise
+        except Exception as exc:
+            result['issues'].append(issue('PLUGIN_SOURCE_COVERAGE',source,
+                'Optional workbook discovery did not complete ('+type(exc).__name__+'). Host snapshot was already retained.'))
+        entry['plugin_inventory']=copy.deepcopy(result)
+        return result
+    def resolve_acquired_source(self,source,owner=''):
+        if self.registry.owns(source):return source
+        entry=self.registry.get(owner)
+        if self.registry.saved_state_only and entry and entry['mode'] in ('LIVE_DOCUMENT','CACHED_CLOUD_REFERENCE'):
+            value=f.text(source or '')
+            if value.lower().endswith('.rvt') and (f.is_desktop_connector_path(value) or '://' in value):
+                raise SourceError('CACHE_LINK_IDENTITY_UNRESOLVED','This cloud link was not matched to an identified loaded document/cache. No published model was downloaded instead.')
+        if entry and entry['mode']=='PUBLISHED_VERSION':
+            if f.absolute(source) and self.staging_root and f.within(source,self.staging_root):
+                member=entry['graph'].match_staged_name(ntpath.basename(source))
+                if member:return member['source']
+                raise SourceError('CLOUD_LINK_OMITTED','The referenced RVT is absent from the selected published host download inventory. Check link permissions and published-version identity; no same-named replacement was chosen.')
+        return Backend.resolve_acquired_source(self,source,owner)
+    def acquired_identity(self,source,metadata):
+        """Merge only the same proven saved edition, never equal unrelated bytes."""
+        from . import layout
+        entry=self.registry.get(source)
+        if not entry:return f.canonical(source)
+        if entry['mode']=='PUBLISHED_VERSION':
+            item=entry['item']
+            return 'published:'+f.text(entry['graph'].project)+'/'+item['itemId']+'/'+f.text(item.get('versionId',''))
+        cloud=cache_sources.reference_identity(dict(cloud_identity=entry.get('cloud') or {}))
+        if cloud and entry.get('saved_document_version'):
+            import json
+            return 'cache:'+json.dumps(cloud,sort_keys=True)+'/'+json.dumps(entry['saved_document_version'],sort_keys=True)
+        original=entry.get('original_path','')
+        if self.registry.saved_state_only and f.absolute(original) and not f.cache_source(original):
+            return f.canonical(original)
+        return source
+    def acquire_file(self,source,target,owner='',cancelled=None,pulse=None):
+        entry=self.registry.get(source)
+        if not entry:return Backend.acquire_file(self,source,target,owner,cancelled,pulse)
+        self.guard(target)
+        if entry['mode']=='PUBLISHED_VERSION':
+            physical=self.registry.cloud_file(source,pulse)
+            meta=f.copy_file(physical,target,cancelled,pulse)
+            meta.update(source_stability='AUTHENTICATED_SNAPSHOT',copy_method='APS_SIGNED_DOWNLOAD',
+                        source_context=self.registry.public(source))
+            return meta
+        if self.registry.saved_state_only:
+            physical=self.registry.snapshot(source,pulse)
+            meta=f.copy_file(physical,target,cancelled,pulse)
+            expected=entry['snapshot_sha256']
+            if meta.get('sha256')!=expected:
+                raise SourceError('CACHE_SNAPSHOT_COPY_MISMATCH','The package copy did not match the validated saved-state snapshot.')
+            if entry.get('is_linked'):
+                entry['inventory_basis']='DIRECT_LINK_COPY'
+            else:
+                meta.update(saved_state_sha256=expected,saved_state_integrity='VERIFIED')
+            meta.update(copy_method=entry['cache_metadata']['copy_method'],source_stability='SESSION_SNAPSHOT',
+                        source_context=self.registry.public(source))
+            return meta
+        if entry.get('is_linked',False):
+            expected=entry.get('document_version')
+            if not expected:raise SourceError('LIVE_LINK_VERSION_UNVERIFIED','Loaded link revision was not exposed; refusing an unverified substitute.')
+            cloud_key=self.registry.match_live_cloud(source)
+            if cloud_key:physical=self.registry.cloud_file(cloud_key,pulse)
+            else:
+                physical=f.resolve_source(entry.get('original_path',''))
+                if not physical or f.cache_source(physical):
+                    raise SourceError('LIVE_CLOUD_LINK_UNRESOLVED','Loaded link identity was captured, but no exact readable revision was available. Associate a published host version through Autodesk sign-in; downloads must match the loaded link revision.')
+            # Materialize first, then validate the actual downloaded native RVT.
+            meta=self.payloads.copy(physical,target,owner,cancelled,pulse)
+            try:
+                actual=file_version(self.DB,target)
+                if expected!=actual:raise SourceError('LIVE_LINK_VERSION_MISMATCH','The acquired linked RVT is not the edition loaded by the open host. No version was silently substituted.')
+            except Exception:
+                if f.file_exists(target):os.remove(target)
+                raise
+            entry['state_basis']='LOADED_LINK_REVISION_CHECKED'
+        else:
+            physical=self.registry.snapshot(source)
+            meta=self.payloads.copy(physical,target,owner,cancelled,pulse)
+            expected=entry['snapshot_sha256']
+            if meta.get('sha256')!=expected:
+                raise SourceError('HOST_SNAPSHOT_COPY_MISMATCH','The host copy did not match the captured current state; the retained working snapshot was not changed.')
+            meta.update(current_state_sha256=expected,
+                        current_state_integrity='VERIFIED')
+        meta.update(source_stability='SESSION_SNAPSHOT',source_context=self.registry.public(source))
+        return meta
+    def _can_use_live_inventory(self,entry):
+        return entry.get('document') is not None
+
+    def scan(self,source,stage,options):
+        entry=self.registry.get(source)
+        if self.registry.saved_state_only and entry and entry['mode'] in ('LIVE_DOCUMENT','CACHED_CLOUD_REFERENCE'):
+            if self._can_use_live_inventory(entry):
+                result=copy.deepcopy(entry['inventory'])
+                result['opened_in_revit']=False
+                result['inspection_status']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+                entry['inventory_basis']='LIVE_DOCUMENT_REFERENCE_INVENTORY'
+            else:
+                # Unsaved reference additions/deletions are not authoritative
+                # for the exported saved file. Inspect only its disposable copy.
+                result=Backend.scan(self,source,stage,options)
+                entry['inventory_basis']='SAVED_SNAPSHOT_INSPECTION'
+                if entry.get('is_modified'):
+                    result['issues'].append(issue('UNSAVED_EDITS_EXCLUDED',source,
+                        'The exported host is the locally saved file/cache, not the unsaved open state. No Save, Sync or Publish was performed.'))
+            if options.get('include',{}).get('revit',True):self._bind_saved_links(entry,result)
+            metadata=entry.get('cache_metadata',{})
+            revision=metadata.get('revision_check','')
+            if revision in ('SAVED_CACHE_DIFFERS_FROM_LOADED','SAVED_CACHE_NO_LOADED_REVISION'):
+                result['issues'].append(issue(revision,source,
+                    'Exported saved cache revision '+f.text(metadata.get('cache_document_version'))+
+                    '; loaded revision '+f.text(metadata.get('loaded_document_version'))+
+                    '. Dependency locations came from the available inventory; no revision-matching reopen was requested.',
+                    'warning' if revision=='SAVED_CACHE_DIFFERS_FROM_LOADED' else 'info'))
+            result['source_mode']='SAVED_LOCAL_STATE'
+            return result
+        before=self.inventory_before_copy(source,options)
+        if before is not None:return before
+        return Backend.scan(self,source,stage,options)
+
+    def _bind_saved_links(self,entry,result):
+        # Bind snapshot references only with persisted cloud identity evidence.
+        by_id=dict((r.get('element_id'),r) for r in entry.get('inventory',{}).get('references',[]) if r.get('kind')=='RevitLink')
+        for row in result.get('references',[]):
+            if row.get('kind')!='RevitLink':continue
+            if row.get('saved_membership_unverified'):continue
+            if self.registry.owns(row.get('source','')):continue
+            identity=cache_sources.reference_identity(row)
+            if identity:
+                row['cloud_identity']=identity
+                try:
+                    old=by_id.get(row.get('element_id'),{})
+                    child=self.registry.get(old.get('source',''))
+                    key=(old['source'] if child and cache_sources.same_identity(identity,child.get('cloud',{}))
+                         else self.registry.add_cached_reference(row))
+                except SourceError as exc:
+                    diagnostic=issue(exc.code,entry.get('source',''),exc,'error')
+                    diagnostic.update(element_id=row.get('element_id'),cloud_identity=identity)
+                    result.setdefault('issues',[]).append(diagnostic)
+                    row['resolution_failed']=True
+                    continue
+                row['configured_source']=row.get('source','')
+                row['source']=key;row['source_evidence']='SAVED_CLOUD_IDENTITY_CACHE_SOURCE'
+                continue
+            old=by_id.get(row.get('element_id'),{})
+            child=self.registry.get(old.get('source',''))
+            if not child:continue
+            proven=(not child.get('cloud') and f.absolute(row.get('source','')) and
+                    f.canonical(row['source'])==f.canonical(child.get('original_path','')))
+            if proven:
+                row['configured_source']=row.get('source','')
+                row['source']=old['source'];row['source_evidence']='SAVED_LINK_IDENTITY_MATCHED_TO_LOADED_DOCUMENT'
