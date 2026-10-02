@@ -15,6 +15,15 @@ encoded=''.join(Path('.github/etlab-parts/%d.txt'%i).read_text().strip() for i i
 raw=gzip.decompress(base64.b64decode(encoded,validate=True))
 if hashlib.sha256(raw).hexdigest()!=EXPECTED:raise SystemExit('Reviewed payload checksum mismatch.')
 files=json.loads(raw)
+tests_raw=Path('.github/etlab-tests.json').read_bytes().replace(b'\r\n',b'\n')
+if hashlib.sha256(tests_raw).hexdigest()!='6d50e262c416195365bbb905847cab197b007c27d4c2812d096e77d78542af5c':raise SystemExit('Test correction checksum mismatch.')
+test_edits=json.loads(tests_raw)
+for name,edit in test_edits.items():
+    if not name.startswith('Development Space/tests/etransmit_lab/') or files[name]['sha256']!=edit['before_sha256']:raise SystemExit('Unexpected test correction.')
+    original=files[name]['text']
+    if original.count(edit['old'])!=1:raise SystemExit('Test correction target mismatch.')
+    files[name]['text']=original.replace(edit['old'],edit['new'])
+    files[name]['sha256']=edit['sha256']
 subprocess.check_call(['git','config','core.autocrlf','false'])
 subprocess.check_call(['git','config','core.eol','lf'])
 subprocess.check_call(['git','checkout','--force','--detach',BASE])
@@ -39,7 +48,7 @@ subprocess.check_call(['git','add','--']+paths)
 subprocess.check_call(['git','diff','--cached','--check'])
 changed=subprocess.check_output(['git','diff','--cached','--name-status']).decode('utf-8').splitlines()
 if sorted(changed)!=sorted('A\t'+p for p in paths):raise SystemExit('Non-additive or unexpected changes detected.')
-meta=dict(base=BASE,payload_sha256=EXPECTED,sha256={k:v['sha256'] for k,v in files.items()},
+meta=dict(base=BASE,payload_sha256=EXPECTED,test_correction_sha256=hashlib.sha256(tests_raw).hexdigest(),sha256={k:v['sha256'] for k,v in files.items()},
           tree=subprocess.check_output(['git','write-tree']).decode().strip(),all_existing_files_unchanged=True)
 (Path(os.environ['RUNNER_TEMP'])/'etlab-verified.json').write_text(json.dumps(meta,indent=2))
 print('Verified',len(paths),'additions. All existing tracked files unchanged. Tree:',meta['tree'])

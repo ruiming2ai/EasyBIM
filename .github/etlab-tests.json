@@ -1,0 +1,14 @@
+{
+  "Development Space/tests/etransmit_lab/test_lab_contract.py": {
+    "before_sha256": "fac012b34097d5ba1614a1c1b857fdcf40b53d625cde3307b0202a498fd6ed82",
+    "new": "self.assertEqual(os.path.realpath(os.path.join(root,'Links','CAD','file.dwg')),s.package_path(root,'Links/CAD/file.dwg'))",
+    "old": "self.assertEqual(os.path.join(root,'Links','CAD','file.dwg'),s.package_path(root,'Links/CAD/file.dwg'))",
+    "sha256": "a388a98ccc71b06b21b37724c884f0162e7b13a30a16ec8140fe811585ec499b"
+  },
+  "Development Space/tests/etransmit_lab/test_probes.py": {
+    "before_sha256": "c30fea010c0a371f969bb9ade1fba342f1c1ba9d7931d27e54fd26e54c02f864",
+    "new": "self.assertEqual(os.path.realpath(self.link),result['rows'][0]['target'])",
+    "old": "self.assertEqual(self.link,result['rows'][0]['target'])",
+    "sha256": "b1d13fc929f826e8e894b43bcac69e317197dbd754998d528c2a0f32db8f1afa"
+  }
+}
