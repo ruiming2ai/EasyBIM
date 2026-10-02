@@ -65,7 +65,7 @@ class RevitSingleOpen(unittest.TestCase):
         def resource(doc,kind,path,path_type):return Obj(doc=doc,path=path,path_type=path_type)
         db=Obj(ElementId=lambda i:Obj(Value=i),SaveAsOptions=lambda:Obj(),ExternalResourceReference=Obj(CreateLocalResource=resource),ExternalResourceTypes=Obj(BuiltInExternalResourceTypes=Obj(RevitLink='RVT')),PathType=Obj(Absolute='Absolute',Relative='Relative'),RevitLinkType=Obj(IsLoaded=lambda d,i:self.loaded),TransmissionData=Obj(ReadTransmissionData=lambda path:self.td if path==self.target else None))
         self.b=revit.Backend(db,Obj(VersionNumber='2025'),self.root);self.b.basic=lambda p:dict(version='2025',workshared=False);self.b.mp=lambda p:p;self.b.visible=lambda p:p
-        def open_copy(path,*a):self.opened+=1;return self.doc
+        def open_copy(path,*a,**kwargs):self.opened+=1;return self.doc
         def apply_metadata(path,target,rows,relative=True):
             self.metadata_calls.append((path,relative))
             if path==self.target and relative:
@@ -75,7 +75,7 @@ class RevitSingleOpen(unittest.TestCase):
         self.b.open_copy=open_copy;self.b.apply_metadata=apply_metadata;self.row=cloud_row();self.row.update(id='42',element_id='42',target=self.link_path,package_loaded=True,loaded=True,td=False)
     def test_finish_materializes_relative_local_resource_and_checks_saved_host_without_parent_open(self):
         result=self.b.finish(self.stage,self.target,[self.row],dict(repath=True,independent_host=True,verify_in_process=False))
-        self.assertEqual(self.opened,2)
+        self.assertEqual(self.opened,3)
         self.assertFalse(result['verified_in_process'])
         self.assertTrue(result['host_finalized'])
         self.assertTrue(result['saved_references_checked'])
@@ -84,7 +84,7 @@ class RevitSingleOpen(unittest.TestCase):
         self.assertEqual([r.path_type for r in self.loads],['Relative'])
         self.assertEqual(self.row['repath'],'API_LOCAL_LINK_RELATIVE')
         self.assertEqual(self.row['verification'],'SAVED_REFERENCE_CHECKED')
-        self.assertEqual(self.closed,[False,False])
+        self.assertEqual(self.closed,[False,False,False])
         self.assertFalse(self.td.IsTransmitted)
         self.assertEqual([s[0] for s in self.saves],['SaveAs','Save','SaveAs'])
 if __name__=='__main__':unittest.main(verbosity=2)

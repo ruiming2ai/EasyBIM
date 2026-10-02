@@ -490,8 +490,8 @@ class Registry(object):
 class SessionBackend(Backend):
     def __init__(self,DB,application,package_root,registry,cancelled=None):
         Backend.__init__(self,DB,application,package_root,cancelled);self.registry=registry
-    def open_copy(self,path,discard=False):
-        document=Backend.open_copy(self,path,discard)
+    def open_copy(self,path,discard=False,**kwargs):
+        document=Backend.open_copy(self,path,discard,**kwargs)
         # Do not close a returned original here: even an unexpected Revit result
         # must not let a caller's processing/finally block touch a working model.
         for original, key in self.registry._documents:

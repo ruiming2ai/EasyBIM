@@ -150,7 +150,7 @@ class IndependentHostAPI(unittest.TestCase):
             else:sys.modules['System']=old_system
         self.addCleanup(restore_system)
 
-    def test_two_opens_materialize_relative_native_paths_before_clearing_transmitted(self):
+    def test_materialization_and_normal_reopen_preserve_relative_native_paths(self):
         result=self.backend.finish(self.stage,self.target,self.rows,self.options)
         output=self.runtime.read(self.target)
         self.assertTrue(output['workshared']);self.assertTrue(output['is_central'])
@@ -158,11 +158,12 @@ class IndependentHostAPI(unittest.TestCase):
         self.assertFalse(output['transmitted']);self.assertEqual(output['desired'],{})
         self.assertEqual(output['saved']['1'],[os.path.join('Links','Architecture.rvt'),'Relative',False])
         self.assertEqual(output['saved']['2'],[os.path.join('CAD','site.dxf'),'Relative',True])
-        self.assertEqual([event[1] for event in self.runtime.events if event[0]=='open'],[self.stage,self.target])
-        self.assertEqual([event[2] for event in self.runtime.events if event[0]=='open'],['Preserve','Preserve'])
+        self.assertEqual([event[1] for event in self.runtime.events if event[0]=='open'],[self.stage,self.target,self.target])
+        self.assertEqual([event[2] for event in self.runtime.events if event[0]=='open'],['Preserve','Preserve',None])
         self.assertEqual([event[2] for event in self.runtime.events if event[0]=='saveas'],[True,True])
         self.assertEqual([event[3] for event in self.runtime.events if event[0]=='metadata'],[['Absolute','Absolute'],['Relative','Relative']])
-        self.assertEqual(self.runtime.events[-2][0],'saveas');self.assertEqual(self.runtime.events[-1][0],'close')
+        self.assertEqual(self.runtime.events[-2][0],'open');self.assertEqual(self.runtime.events[-1][0],'close')
+        self.assertTrue(result['normal_open_verified'])
         self.assertTrue(result['host_finalized']);self.assertTrue(result['saved_references_checked'])
         self.assertEqual([row['verification'] for row in self.rows],['SAVED_REFERENCE_CHECKED']*2)
         self.assertEqual(self.runtime.read(self.stage)['saved'],self.model['saved'])
@@ -234,7 +235,7 @@ class IndependentHostAPI(unittest.TestCase):
                                    dict(self.options,cleanup=True,discard_worksets=True))
         self.assertFalse(self.runtime.read(self.target)['workshared'])
         self.assertFalse(self.runtime.read(self.target)['transmitted'])
-        self.assertEqual([event[2] for event in self.runtime.events if event[0]=='open'],['Discard',None])
+        self.assertEqual([event[2] for event in self.runtime.events if event[0]=='open'],['Discard',None,None])
         self.assertTrue(result['host_finalized'])
 
     def test_api_only_image_without_td_is_checked_after_save(self):
@@ -249,8 +250,8 @@ class IndependentHostAPI(unittest.TestCase):
             return [],True
         self.backend.repath_images=repair
         result=self.backend.finish(self.stage,self.target,[row],self.options)
-        self.assertEqual(row['verification'],'PATH_CHECKED')
-        self.assertEqual([event[0] for event in self.runtime.events],['open','saveas','save','close'])
+        self.assertEqual(row['verification'],'SAVED_REFERENCE_CHECKED')
+        self.assertEqual([event[0] for event in self.runtime.events],['open','saveas','save','close','open','close'])
         self.assertTrue(result['saved_references_checked'])
 
     def test_api_only_image_reported_successful_at_wrong_path_is_rejected(self):

@@ -36,11 +36,11 @@ class NormalHostPreservation(unittest.TestCase):
             self.assertFalse(row.get('verification'))
         self.assertEqual(dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in case[4]), case[4])
 
-    def test_missing_link_matches_216_unchanged_host_not_226_transmitted_copy(self):
+    def test_failed_partial_worker_retains_unchanged_nontransmitted_host(self):
         case = self.setup_case(missing=True)
         result, host = self.run_case(case, f.defaults())
         self.assert_original(result, host, case)
-        self.assertEqual(case[5], [])
+        self.assertEqual(case[5], [True])
         cad = next(r for r in result['references'] if r['kind']=='CADLink')
         self.assertTrue(os.path.isfile(cad['target']))
         self.assertEqual(case[3].writes, [], 'No metadata write on the preserved host')

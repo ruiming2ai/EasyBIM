@@ -74,7 +74,7 @@ class HostCopyDelivery(unittest.TestCase):
     def test_missing_rvt_keeps_host_and_cad_file_but_does_not_mark_host_transmitted(self):
         case = self.setup_case(missing=True)
         result, host = self.run_case(case, f.defaults())
-        self.assert_copy_delivered(result, host, case)
+        self.assert_copy_delivered(result, host, case, worker_attempted=True)
         cad = next(row for row in result['references'] if row['kind'] == 'CADLink')
         missing = next(row for row in result['references'] if row['kind'] == 'RevitLink')
         self.assertEqual(cad.get('repath'), 'NOT_APPLIED_HOST_UNCHANGED')
@@ -118,8 +118,15 @@ class HostCopyDelivery(unittest.TestCase):
         target = case[1] + '.zip'
         engine.zip_package(case[1], target)
         with zipfile.ZipFile(target) as archive:
-            self.assertIsNone(archive.testzip())
-            self.assertEqual(archive.read('Host.rvt'), self.payload)
+            self.assertIn('Host.rvt', archive.namelist())
+            # Python 2 ZipFile.read() leaves its member stream to GC. Explicit
+            # closure is required before Windows/IronPython fixture cleanup.
+            # Reading every member to EOF still validates every member CRC.
+            for member in archive.infolist():
+                with archive.open(member) as stream:
+                    data = stream.read()
+                if member.filename == 'Host.rvt':
+                    self.assertEqual(data, self.payload)
 
     def test_pdf_repair_failure_keeps_host_and_copied_pdf(self):
         case = self.setup_case()

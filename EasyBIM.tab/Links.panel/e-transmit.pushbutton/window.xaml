@@ -54,7 +54,7 @@
             <TextBlock Text="Unloaded links are offered in a separate selection window. Repath off copies saved host/cache bytes unchanged. Repath on uses Revit to persist supported repairs in a normally saved host." TextWrapping="Wrap" Foreground="#536273"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
             <CheckBox x:Name="SimpleRepath" Content="Keep the original host if repairs fail (recommended)" IsChecked="True"/>
-            <TextBlock Text="Repaired hosts are saved normally, not delivered in a detached or transmitted state. With this option checked, unavailable links or failed repairs retain the original saved host unchanged and report unapplied repairs. Never synchronize an unchanged copy to the original central. Uncheck to require independent-model completion. Cleanup or Upgrade also requires Revit processing." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="Repaired hosts are saved normally, not delivered in a detached or transmitted state. With this option checked, unavailable RVTs are retained unloaded while available PDF/image/CAD references are repaired. Failed repair/save or verification restores the original saved host and reports unapplied repairs. Never synchronize an unchanged copy to the original central. Uncheck to require independent-model completion. Cleanup or Upgrade also requires Revit processing." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="File Structure Organization">

@@ -58,6 +58,7 @@ def metadata_target_allowed(row):
 class Backend(object):
     mark_transmitted_rows_supported = True
     independent_host_supported = True
+    partial_repath_supported = True
 
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
@@ -200,7 +201,7 @@ class Backend(object):
         finally: dispose(collector)
 
     @performance.timed(None, 'revit_open', file_index=1)
-    def open_copy(self, path, discard=False):
+    def open_copy(self, path, discard=False, close_worksets=False, detach=True):
         self.guard(path)
         info=self.basic(path)
         current = f.text(getattr(self.app, 'VersionNumber', ''))
@@ -210,9 +211,12 @@ class Backend(object):
         worksets=None
         try:
             if info['workshared']:
-                opts.DetachFromCentralOption=(self.DB.DetachFromCentralOption.DetachAndDiscardWorksets
-                                              if discard else self.DB.DetachFromCentralOption.DetachAndPreserveWorksets)
-                worksets=self.DB.WorksetConfiguration(self.DB.WorksetConfigurationOption.OpenAllWorksets)
+                if detach:
+                    opts.DetachFromCentralOption=(self.DB.DetachFromCentralOption.DetachAndDiscardWorksets
+                                                  if discard else self.DB.DetachFromCentralOption.DetachAndPreserveWorksets)
+                worksets=self.DB.WorksetConfiguration(
+                    self.DB.WorksetConfigurationOption.CloseAllWorksets if close_worksets else
+                    self.DB.WorksetConfigurationOption.OpenAllWorksets)
                 opts.SetOpenWorksetsConfiguration(worksets)
             return self.app.OpenDocumentFile(self.mp(path),opts)
         finally:
@@ -705,6 +709,7 @@ class Backend(object):
             kind=row.get('kind')
             if kind not in ('RevitLink','CADLink') and row.get('special')!='image': continue
             row.pop('verification',None)
+            row.pop('verified_saved_path',None)
             f.check(self.cancelled)
             try:
                 number=int(row['element_id'])
@@ -748,6 +753,13 @@ class Backend(object):
                             raise RuntimeError('Packaged image/PDF load state does not match the requested state.')
                 if f.canonical(actual)!=f.canonical(row['target']):
                     raise RuntimeError('Packaged reference still points elsewhere: '+actual)
+                saved_path=None
+                if kind in ('RevitLink','CADLink'):
+                    try:
+                        saved_path=reference.GetPath()
+                        row['verified_saved_path']=self.visible(saved_path)
+                    finally:dispose(saved_path)
+                else:row['verified_saved_path']=f.text(element.Path)
                 row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
             except Exception as exc:
                 issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
@@ -883,6 +895,124 @@ class Backend(object):
                 dispose(result);dispose(resource);dispose(model_path)
         return issues,changed
 
+    def _prepare_partial_repath(self, stage, rows):
+        """Persist unavailable RVTs as unloaded in scratch, never in the source.
+
+        Closed worksets prevent external/cloud links loading during this first
+        open. Unload(None) then persists a real global unload (not just a closed
+        workset or a user's local override). The ordinary repair opens all
+        worksets again and only reloads references with delivered targets.
+        """
+        self.guard(stage)
+        missing=[r for r in rows if r.get('kind')=='RevitLink' and
+                 not r.get('target') and not r.get('skip_repath')]
+        info=self.basic(stage)
+        if not info.get('workshared') and any(not r.get('td') or
+                cache_sources.reference_identity(r) for r in missing):
+            raise RuntimeError('Unavailable external Revit links cannot be isolated before opening '
+                               'this non-workshared host. Original host retained; no links were guessed.')
+        model_path=self.mp(stage);td=None
+        try:
+            td=self.DB.TransmissionData.ReadTransmissionData(model_path)
+            wrote=False
+            if td is not None:
+                for ident in td.GetAllExternalFileReferenceIds():
+                    ref=None;ref_path=None
+                    try:
+                        ref=td.GetDesiredReferenceData(ident) if td.IsTransmitted else None
+                        if ref is None:ref=td.GetLastSavedReferenceData(ident)
+                        if ref is None or f.text(ref.ExternalFileReferenceType)!='RevitLink':continue
+                        ref_path=ref.GetPath()
+                        td.SetDesiredReferenceData(ident,ref_path,ref.PathType,False)
+                        wrote=True
+                    finally:dispose(ref_path);dispose(ref)
+                if wrote:
+                    td.IsTransmitted=True
+                    self.DB.TransmissionData.WriteTransmissionData(model_path,td)
+        finally:dispose(td);dispose(model_path)
+        opened_transmitted=self._package_is_transmitted(stage)
+        available=set(f.text(r.get('element_id',r.get('id',''))) for r in rows
+                      if r.get('kind')=='RevitLink' and r.get('target') and not r.get('skip_repath'))
+        unloaded=[];issues=[];doc=None
+        try:
+            doc=self.open_copy(stage,close_worksets=True)
+            links=dict((eid(link.Id),link) for link in self.elements(doc,'RevitLinkType')
+                       if not bool(getattr(link,'IsNestedLink',False)))
+            for key,link in links.items():
+                if key in available:continue
+                f.check(self.cancelled)
+                # Do not save shared coordinates back to any source link.
+                # IsLoaded=False in a closed workset does not establish a persisted
+                # unload. An explicit global Unloaded status does; avoid an
+                # unnecessary cloud-server operation in that already-safe case.
+                if f.text(link.GetLinkedFileStatus())!='Unloaded':
+                    link.Unload(None)
+                if bool(self.DB.RevitLinkType.IsLoaded(doc,link.Id)):
+                    raise RuntimeError('An unavailable Revit link remained loaded: '+key)
+                unloaded.append(key)
+                issues.append(issue('UNAVAILABLE_RVT_LEFT_UNLOADED',stage+' #'+key,
+                    'No packaged RVT is available. The reference is retained unloaded; '
+                    'available PDF/image/CAD references are repaired independently.'))
+            for row in missing:
+                key=f.text(row.get('element_id',row.get('id','')))
+                row['requested_package_loaded']=package_load_state(row)
+                row['saved_membership_verification']='PRESENT' if key in links else 'NOT_PRESENT'
+                row['repath']='NOT_REPATHED_UNAVAILABLE' if key in links else 'NOT_PRESENT_IN_SAVED_HOST'
+                if key in links:row['package_loaded']=False
+                else:
+                    issues.append(issue('REFERENCE_NOT_IN_SAVED_HOST',stage+' #'+key,
+                        'The live-session Revit link is absent from the saved host. No replacement link was created.'))
+            self._save_as_independent_package_central(doc,stage,opened_transmitted)
+        finally:
+            if doc is not None and not doc.Close(False):
+                raise RuntimeError('Partial-repath preparation document could not be closed.')
+        return unloaded,issues
+
+    def _verify_unavailable_links(self, doc, rows, unloaded_ids, mark_verified=False):
+        if unloaded_ids:
+            from System import Int64,Int32
+        for key in unloaded_ids:
+            number=int(key)
+            ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+            element=doc.GetElement(ident)
+            if (element is None or bool(self.DB.RevitLinkType.IsLoaded(doc,ident)) or
+                    f.text(element.GetLinkedFileStatus())!='Unloaded'):
+                raise RuntimeError('An unavailable Revit reference is not persistently unloaded on reopen: '+key)
+        if mark_verified:
+            for row in rows:
+                key=f.text(row.get('element_id',row.get('id','')))
+                if key in unloaded_ids:row['verification']='UNAVAILABLE_LINK_UNLOADED_CHECKED'
+                elif row.get('saved_membership_verification')=='NOT_PRESENT':
+                    row['verification']='NOT_PRESENT_IN_SAVED_HOST'
+
+    def _verify_normal_reopen(self, target, rows, options, unloaded_ids):
+        """Read the final saved file, with no detach flag and no further saves."""
+        doc=None
+        try:
+            doc=self.open_copy(target,detach=False)
+            if bool(getattr(doc,'IsDetached',False)):
+                raise RuntimeError('The final saved host still opens detached.')
+            if f.canonical(f.text(getattr(doc,'PathName','')))!=f.canonical(target):
+                raise RuntimeError('Final verification did not open the package host.')
+            if bool(getattr(doc,'IsModified',False)):
+                raise RuntimeError('The package changed during its final read-only verification open.')
+            checked=[r for r in rows if metadata_target_allowed(r) and
+                     (r.get('repath')=='TRANSMISSION_DATA' or
+                      f.text(r.get('repath','')).startswith('API_'))]
+            problems=self._verify_document(doc,target,checked,options)
+            if problems:
+                raise RuntimeError('Saved reference paths failed normal reopen: '+
+                                   '; '.join(f.text(p.get('message','')) for p in problems))
+            for row in checked:
+                if row.get('verification') in ('PATH_CHECKED','PATH_AND_LOAD_CHECKED'):
+                    row['verification']='SAVED_REFERENCE_CHECKED'
+                    # Actual saved path was read by _verify_document, not inferred from the target.
+            self._verify_unavailable_links(doc,rows,unloaded_ids,mark_verified=True)
+        finally:
+            if doc is not None and not doc.Close(False):
+                raise RuntimeError('Normal package verification document could not be closed.')
+        return True
+
     def finish_independent(self, stage, target, rows, options):
         """Materialize package references and deliver a normal, saved central.
 
@@ -900,6 +1030,11 @@ class Backend(object):
             raise RuntimeError('Saved format '+info['version']+' requires an authorized upgrade to Revit '
                                +current+' before this host can be finalized.')
 
+        unloaded_ids=[]
+        if options.get('allow_partial_repath') and options.get('repath') and any(
+                r.get('kind')=='RevitLink' and not r.get('target') and not r.get('skip_repath') for r in rows):
+            unloaded_ids,partial_issues=self._prepare_partial_repath(stage,rows)
+            issues.extend(partial_issues)
         if options.get('repath'):
             self.apply_metadata(stage,target,rows,relative=False)
         opened_transmitted=self._package_is_transmitted(stage)
@@ -918,6 +1053,7 @@ class Backend(object):
         discard=bool(options.get('cleanup') and options.get('discard_worksets'))
         try:
             doc=self.open_copy(stage,discard)
+            self._verify_unavailable_links(doc,rows,unloaded_ids)
             self._save_as_independent_package_central(doc,target,opened_transmitted)
 
             if options.get('repath'):
@@ -965,6 +1101,7 @@ class Backend(object):
                 doc=None
                 try:
                     doc=self.open_copy(target,False)
+                    self._verify_unavailable_links(doc,rows,unloaded_ids)
                     repair_rows=[r for r in rows if metadata_target_allowed(r) and
                                  (r.get('repath')=='TRANSMISSION_DATA' or
                                   f.text(r.get('repath','')).startswith('API_'))]
@@ -993,7 +1130,12 @@ class Backend(object):
             raise RuntimeError('The package host could not be finalized: '+
                                '; '.join(f.text(p.get('message','')) for p in errors))
 
+        normal_open_verified=False
+        if options.get('repath'):
+            normal_open_verified=self._verify_normal_reopen(target,rows,options,unloaded_ids)
         return dict(issues=issues,verified_in_process=False,
+                    normal_open_verified=normal_open_verified,
+                    unavailable_links_checked=bool(normal_open_verified),
                     independent_package_central=True,host_finalized=True,
                     saved_references_checked=True,verification_status='SAVED_REFERENCES_CHECKED')
 
@@ -1052,6 +1194,7 @@ class Backend(object):
                     if state is not None and load_intent(f.text(ref.GetLinkedFileStatus()))!=bool(state):
                         raise RuntimeError('A saved package reference has the wrong load state: '+key)
                     row['verification']='SAVED_REFERENCE_CHECKED'
+                    row['verified_saved_path']=value
                 finally:dispose(ref_path);dispose(ref)
         finally:dispose(td);dispose(model_path)
         return []

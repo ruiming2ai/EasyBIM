@@ -44,7 +44,7 @@ class References(unittest.TestCase):
         self.assertEqual(row['resource_information']['Path'],actual)
     def test_final_verification_checks_cad_link_path(self):
         target='C:\\Out\\CAD\\site.dwg'
-        ref=Obj(GetAbsolutePath=lambda:target)
+        ref=Obj(GetAbsolutePath=lambda:target,GetPath=lambda:target)
         element=Obj()
         self.db.ExternalFileUtils=Obj(
             GetAllExternalFileReferences=lambda d:[],
@@ -185,7 +185,7 @@ class IndependentRepair(unittest.TestCase):
         doc=Obj(IsWorkshared=True,PathName='C:\\Temp\\stage.rvt',
                 Save=lambda:events.append('save'),
                 Close=lambda value:events.append('close') or True)
-        def open_copy(stage,discard=False):
+        def open_copy(stage,discard=False,**kwargs):
             self.assertFalse(discard)
             events.append(('open',stage))
             return doc
@@ -227,7 +227,8 @@ class IndependentRepair(unittest.TestCase):
             'repath-image','save','verify-document','close',
             ('metadata','C:\\Package\\Host.rvt','C:\\Package\\Host.rvt',True),
             ('open','C:\\Package\\Host.rvt'),'verify-document',
-            ('saveas-central',True),'close','verify-saved'])
+            ('saveas-central',True),'close','verify-saved',
+            ('open','C:\\Package\\Host.rvt'),'verify-document','close'])
         self.assertTrue(result['independent_package_central'])
         self.assertTrue(result['host_finalized'])
         self.assertTrue(result['saved_references_checked'])

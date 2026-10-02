@@ -184,17 +184,18 @@ class CopyFirstTransmission(unittest.TestCase):
         def reference(document,ident):
             value,path_type,status=document.references[str(ident.Value)]
             absolute=os.path.join(self.root,value) if path_type=='Relative' else value
-            return Obj(GetAbsolutePath=lambda:absolute)
+            return Obj(GetAbsolutePath=lambda:absolute,GetPath=lambda:value)
         self.db.ExternalFileUtils=Obj(GetExternalFileReference=reference)
         self.db.RevitLinkType=Obj(IsLoaded=lambda doc,ident:
                     doc.references[str(ident.Value)][2]=='Loaded')
-        def open_copy(path,discard):
+        def open_copy(path,discard=False,**kwargs):
             opened.append(path)
             references=dict(self.store.last)
             if self.store.transmitted:
                 references.update(dict((key,(value[0],value[1],
                     'Loaded' if value[2] else 'Unloaded')) for key,value in self.store.desired.items()))
-            doc=Obj(references=references,Save=lambda:saved.append(('save',False)),
+            doc=Obj(PathName=path,IsDetached=False,IsModified=False,
+                    references=references,Save=lambda:saved.append(('save',False)),
                     Close=lambda save:closed.append(save) or True)
             def get_element(ident):
                 return Obj(GetExternalFileReference=lambda:reference(doc,ident),
@@ -257,8 +258,8 @@ class CopyFirstTransmission(unittest.TestCase):
             self.assertEqual(self.store.last['2'],(self.relative_link,'Relative','Unloaded'))
             self.assertEqual(rows[0]['verification'],'SAVED_REFERENCE_CHECKED')
             self.assertEqual(rows[1]['verification'],'SAVED_REFERENCE_CHECKED')
-            self.assertEqual(opened,[self.stage,self.target])
-            self.assertEqual(closed,[False,False])
+            self.assertEqual(opened,[self.stage,self.target,self.target])
+            self.assertEqual(closed,[False,False,False])
             self.assertEqual(saved,[(self.target,True),(self.target,True)])
 
 

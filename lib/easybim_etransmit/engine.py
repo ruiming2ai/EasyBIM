@@ -196,6 +196,8 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         not (opts.get('cleanup') or opts.get('upgrade')))
     independent_hosts=(bool(getattr(backend,'independent_host_supported',False)) and
                        (opts.get('repath') or not preserve_hosts))
+    partial_repath=bool(preserve_hosts and independent_hosts and opts.get('repath') and
+                        getattr(backend,'partial_repath_supported',False))
     result['host_delivery_mode']=('PRESERVE_SAVED_HOST' if preserve_hosts else
                                   'INDEPENDENT_MODEL' if independent_hosts else 'SAVED_COPY')
     retained_recovery=[]
@@ -402,6 +404,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         if restored['sha256']!=record['sha256']:
                             raise IOError('Restored host does not match the acquired bytes.')
                     record.update(status='COPIED',host_finalized=False,saved_references_checked=False,
+                                  normal_open_verified=False,unavailable_links_checked=False,
                                   metadata_repathed=False,worker_repaired=False,verified_in_process=False,
                                   independent_package_central=False,host_unchanged=True,
                                   transmission_status='SOURCE_STATE_PRESERVED',
@@ -411,6 +414,10 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         if f.canonical(row.get('owner',''))==f.canonical(record['source']):
                             row['repath']='NOT_APPLIED_HOST_UNCHANGED'
                             row.pop('verification',None)
+                            row.pop('verified_saved_path',None)
+                            row.pop('saved_membership_verification',None)
+                            if 'requested_package_loaded' in row:
+                                row['package_loaded']=row.pop('requested_package_loaded')
                     add_issue('HOST_COPY_PRESERVED',record['source'],
                               'The original saved host is in the package unchanged. No detached/transmitted host was substituted; requested reference repairs were not applied.')
                     return
@@ -455,6 +462,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if f.canonical(row.get('owner',''))==f.canonical(record['source']):
                     row['repath']='ROLLED_BACK'
                     row.pop('verification',None)
+                    row.pop('verified_saved_path',None)
                 if f.canonical(row.get('local',''))==f.canonical(record['source']):
                     row.pop('target',None)
                     row['status']='NOT_DELIVERED'
@@ -479,7 +487,9 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     retain_unfinished_host(record)
                 continue
             rows=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source']) and not r.get('skip_repath')]
-            if opts.get('repath') and any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
+            missing_rvts=[r for r in rows if (r.get('kind')=='RevitLink' or r.get('category')=='revit')
+                          and not r.get('target')]
+            if opts.get('repath') and missing_rvts and not partial_repath:
                 record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
                 record['model_verification']='DEFERRED'
                 add_issue('MODEL_VERIFICATION_DEFERRED',record['source'],
@@ -495,6 +505,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 f.copy_file(record['target'],stage,delivery_cancel)
                 final_options=dict(opts);final_options['verify_in_process']=False
                 final_options['independent_host']=normal_host
+                final_options['allow_partial_repath']=partial_repath
                 final_options['reference_target']=record['target']
                 final_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
                 final_options['_host_source']=record['source']
@@ -504,6 +515,9 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if normal_host and (not isinstance(raw,dict) or not raw.get('host_finalized')
                                     or not raw.get('saved_references_checked')):
                     raise RuntimeError('Package host finalization was not confirmed by the Revit worker.')
+                if partial_repath and missing_rvts and (not raw.get('normal_open_verified') or
+                                                        not raw.get('unavailable_links_checked')):
+                    raise RuntimeError('Partial repairs lack normal-open and unavailable-link verification.')
                 if preserve_hosts and normal_host:
                     check_transmitted=getattr(backend,'_package_is_transmitted',None)
                     if check_transmitted is not None and check_transmitted(record['target']):
@@ -521,6 +535,8 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     record['independent_package_central']=bool(raw.get('independent_package_central'))
                     record['host_finalized']=bool(raw.get('host_finalized'))
                     record['saved_references_checked']=bool(raw.get('saved_references_checked'))
+                    record['normal_open_verified']=bool(raw.get('normal_open_verified'))
+                    record['unavailable_links_checked']=bool(raw.get('unavailable_links_checked'))
                     record['worker_suppressed_dialogs']=list(raw.get('worker_suppressed_dialogs') or [])
                     record['worker_suppressed_failures']=list(raw.get('worker_suppressed_failures') or [])
                 record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
@@ -918,7 +934,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                     if missing and metadata_only:
                         add_issue('HOST_COPIED_WITH_MISSING_LINKS',record['source'],
                                   'Host copy is retained. Available native references are repathed without opening Revit; missing links still require repair.')
-                    if missing and not metadata_only:
+                    if missing and not metadata_only and not partial_repath:
                         record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
                         record['model_verification']='DEFERRED'
                         add_issue('HOST_PRESERVED_WITHOUT_LINK_REPATH',record['source'],
@@ -1178,6 +1194,14 @@ def _write_reports_at(result, root):
             ref.get('status',''),ref.get('original_loaded',ref.get('loaded')),ref.get('package_loaded',ref.get('loaded'))))
         lines.append('  ACC identity: '+f.text(ref.get('cloud_identity') or context.get('cloud') or ref.get('resource_information',{})))
         lines.extend('  '+line for line in cache_diagnostic_lines(evidence))
+    lines += ['', 'REFERENCE REPATH RESULTS:']
+    for ref in result.get('references',[]):
+        if ref.get('status') in ('UNCONFIGURED','OPTIONAL_MISSING'):continue
+        lines.append('Element {0} | {1} | {2} | {3}'.format(
+            ref.get('element_id','?'),ref.get('kind',''),
+            ref.get('repath','NOT_APPLIED'),ref.get('verification','NOT_VERIFIED')))
+        if ref.get('target'):lines.append('  Packaged file: '+ref['target'])
+        if ref.get('verified_saved_path'):lines.append('  Saved path: '+ref['verified_saved_path'])
     lines += ['', 'Keep the complete package together, including its Links folder. Filenames have not been changed.',
               'Use the copied models only. Do not synchronize to the original central models.',
               'Use the packaged-RVT verification count above to distinguish copied files from models actually reopened and checked in Revit.',
@@ -1201,7 +1225,7 @@ def _write_reports_at(result, root):
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
                     ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','verification_open_mode','transmission_status','opening_guidance','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','pre_transmission_sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
-                    ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
+                    ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','verified_saved_path','saved_membership_verification','requested_package_loaded','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])
         diagnostics = [i for i in result['issues'] if i.get('traceback')]
         cache_details = []

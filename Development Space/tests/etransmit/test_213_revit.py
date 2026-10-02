@@ -57,7 +57,7 @@ class PackageRevitOperations(unittest.TestCase):
             self.loads.append(resource)
             return Obj(LoadResult='LinkLoaded')
         self.link=Obj(IsFromLocalPath=False,LoadFrom=load,Unload=lambda x:self.unloads.append(True),
-            GetExternalFileReference=lambda:Obj(GetAbsolutePath=lambda:self.link_path))
+            GetExternalFileReference=lambda:Obj(GetAbsolutePath=lambda:self.link_path,GetPath=lambda:self.link_path))
         def save(path,options):
             self.saves.append(path)
             with open(path,'wb') as out:out.write(b'processed copy')
