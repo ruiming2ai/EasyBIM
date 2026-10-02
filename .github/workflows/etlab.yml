@@ -1,0 +1,126 @@
+name: Verify additive e-transmit Test lab
+on:
+  push:
+    branches: [codex/etransmit-test-lab-build]
+permissions:
+  contents: read
+jobs:
+  portable:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify exact additive source
+        run: python .github/etlab_apply.py
+      - name: Run experiment tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests/etransmit_lab' -v 2>&1 | tee "$RUNNER_TEMP/lab-tests.log"
+      - name: Run unchanged e-transmit regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests/etransmit' -v 2>&1 | tee "$RUNNER_TEMP/etransmit-tests.log"
+      - name: Run root suite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s 'Development Space/tests' -v 2>&1 | tee "$RUNNER_TEMP/root-tests.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etlab-${{ matrix.os }}
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/etlab-verified.json
+            ${{ runner.temp }}/*tests.log
+  ironpython:
+    name: Windows IronPython 2.7 (not Revit)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify exact additive source
+        run: python .github/etlab_apply.py
+      - name: Get official IronPython
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip=Join-Path $env:RUNNER_TEMP 'IronPython.2.7.12.zip'
+          $folder=Join-Path $env:RUNNER_TEMP 'IronPython-2.7.12'
+          Invoke-WebRequest 'https://github.com/IronLanguages/ironpython2/releases/download/ipy-2.7.12/IronPython.2.7.12.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $folder
+          $ipy=Get-ChildItem -LiteralPath $folder -Recurse -Filter ipy.exe | Where-Object { $_.FullName -match 'net45' } | Select-Object -First 1
+          if (-not $ipy) { throw 'Official runtime not found.' }
+          "IPY_EXE=$($ipy.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run real runtime and .NET event tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          & $env:IPY_EXE -m unittest discover -s 'Development Space/tests/etransmit_lab' -v 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/ironpython-tests.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etlab-ironpython
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/etlab-verified.json
+            ${{ runner.temp }}/ironpython-tests.log
+  publish:
+    name: Publish additive candidate after tests
+    needs: [portable, ironpython]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reconstruct exact tested additions
+        run: python .github/etlab_apply.py
+      - name: Commit only test buttons and private lab
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'EasyBIM experiment lab'
+          git config user.email '142599989+ruiming2ai@users.noreply.github.com'
+          git commit -m 'Add seven isolated e-transmit experiment buttons under Test' -m 'Additive only: frozen private 2.1.28 baseline, eleven diagnostic arms, copied button assets, preserved failure evidence and source checksums. Production e-transmit, Typeless, hooks and Auto Update unchanged. Portable and Windows IronPython fixture checks; native Revit desktop testing still required.'
+          git push origin HEAD:refs/heads/codex/etransmit-test-lab
+          git log -1 --format='%H %T' > "$RUNNER_TEMP/etlab-candidate.txt"
+          git diff-tree --no-commit-id --name-status -r HEAD > "$RUNNER_TEMP/etlab-additions.txt"
+          git archive --format=zip --prefix=EasyBIM.extension/ HEAD 'EasyBIM.tab/Test.panel' 'lib/easybim_etransmit_tests' 'Development Space/tests/etransmit_lab' 'Development Space/docs/e-transmit-test-lab.md' -o "$RUNNER_TEMP/EasyBIM-e-transmit-Test-Lab.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etlab-candidate
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/etlab-verified.json
+            ${{ runner.temp }}/etlab-candidate.txt
+            ${{ runner.temp }}/etlab-additions.txt
+            ${{ runner.temp }}/EasyBIM-e-transmit-Test-Lab.zip

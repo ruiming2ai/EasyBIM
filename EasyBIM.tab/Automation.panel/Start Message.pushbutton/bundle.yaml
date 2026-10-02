@@ -1,6 +1,0 @@
-title: Automation
-tooltip: >-
-  Enable or disable the Workset picker and Coordination Review at project open.
-  Preferences are remembered for you across projects and Revit restarts.
-author: Ruiming Liu
-context: zero-doc
