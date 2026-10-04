@@ -73,7 +73,7 @@ def execute(job,uiapp):
                 # a narrow question without copying every RVT/point-cloud again.
                 selected=set(f.text(x) for x in options.get('selected_ids',[]))
                 for row in arm_rows:
-                    needed=(scenario=='G' or (scenario=='C' and row.get('kind')=='CADLink') or
+                    needed=(scenario in ('G','H') or (scenario=='C' and row.get('kind')=='CADLink') or
                             (scenario in ('D','E') and f.text(row.get('element_id')) in selected))
                     if not needed:row.pop('target',None)
                 stage,target,rows=copy_arm(source_root,host,arm_rows,trial_root)
@@ -112,6 +112,6 @@ def execute(job,uiapp):
         lines.extend(['','Read TEST_REPORT.json, Trials/<arm>/RESULT.json and Diagnostics/events.jsonl.',
                       'Dirty flags are evidence, not proof of a callback or a valid repair.',
                       'A failed/not-normal candidate remains diagnostic only. No source/central synchronization.',
-                      'Tests A-F use closed-workset save probes; G reproduces the full baseline lifecycle.',
+                      'Tests A-F use diagnostic probes; G reproduces the full baseline lifecycle; H tests the focused historical repair sequence.',
                       'B observes installed add-ins; it does not disable them or create a clean profile.'])
         with io.open(os.path.join(root,'TEST_REPORT.txt'),'w',encoding='utf-8') as out:out.write('\n'.join(lines))
