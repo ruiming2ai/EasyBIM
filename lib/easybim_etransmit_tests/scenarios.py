@@ -13,6 +13,7 @@ SCENARIOS = {
  'D': dict(title='e-transmit D CAD Routing (test)',question='Does a selected CAD type persist its package path through each API overload?',trials=('cad_string','cad_local_relative')),
  'E': dict(title='e-transmit E CAD Duplicates (test)',question='Do duplicate CAD types collide at one target versus per-type copies?',trials=('shared_target','per_type_target')),
  'F': dict(title='e-transmit F Saved Inventory (test)',question='Do live/report references match actual elements and paths in the saved copy?',trials=('saved_inventory',)),
+ 'H': dict(title='e-transmit H Saved Copy Repath (test)',question='Can the corrected task-copy open reach one CAD repair and verify its saved path on normal reopening?',trials=('saved_copy_cad',)),
  'G': dict(title='e-transmit G Recovery Evidence (test)',question='At which stage does the full baseline fail, and what candidate did rollback hide?',trials=('baseline_with_evidence',)),
 }
 

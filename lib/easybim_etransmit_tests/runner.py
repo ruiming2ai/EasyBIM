@@ -65,8 +65,12 @@ def execute(job,uiapp):
         # SAME saved host and the same already-collected file targets.
         for trial in scenarios.trials(scenario):
             trial_root=os.path.join(root,'Trials',trial)
-            backend=ProbeBackend(DB,uiapp.Application,trial_root,evidence)
+            if scenario=='H':
+                from .saved_copy import SavedCopyBackend,run_saved_copy
+                backend=SavedCopyBackend(DB,uiapp.Application,trial_root,evidence)
+            else:backend=ProbeBackend(DB,uiapp.Application,trial_root,evidence)
             result=dict(trial=trial,status='STARTED',root=trial_root)
+            rows=[]
             try:
                 arm_rows=copy.deepcopy(job.get('rows',[]))
                 # Only G needs the complete dependency set. Other tests isolate
@@ -74,15 +78,17 @@ def execute(job,uiapp):
                 selected=set(f.text(x) for x in options.get('selected_ids',[]))
                 for row in arm_rows:
                     needed=(scenario=='G' or (scenario=='C' and row.get('kind')=='CADLink') or
-                            (scenario in ('D','E') and f.text(row.get('element_id')) in selected))
+                            (scenario in ('D','E','H') and f.text(row.get('element_id')) in selected))
                     if not needed:row.pop('target',None)
                 stage,target,rows=copy_arm(source_root,host,arm_rows,trial_root)
                 if f.digest(stage)!=original_hash:raise RuntimeError('Trial input checksum mismatch.')
                 backend.set_staging_root(os.path.join(trial_root,'Working'))
                 write_json(os.path.join(trial_root,'INPUT_REFERENCES.json'),rows)
                 evidence.write('trial_start',trial=trial,input_sha256=original_hash)
-                result.update(run_trial(backend,stage,target,rows,trial,options))
+                if scenario=='H':result.update(run_saved_copy(backend,stage,target,rows,options))
+                else:result.update(run_trial(backend,stage,target,rows,trial,options))
             except Exception as exc:
+                if scenario=='H':result['rows']=rows
                 result.update(status='FAILED',failed_stage=evidence.phase,message=f.text(exc),traceback=traceback.format_exc())
                 evidence.write('trial_failed',trial=trial,message=f.text(exc),traceback=traceback.format_exc())
             finally:
@@ -97,18 +103,31 @@ def execute(job,uiapp):
         summary['input_unchanged']=f.digest(host)==original_hash
         if not summary['input_unchanged']:raise RuntimeError('Original test input changed unexpectedly.')
         summary['status']='EXPERIMENTS_COMPLETED' if len(summary['trial_results'])==len(scenarios.trials(scenario)) else 'EXPERIMENTS_INCOMPLETE'
+        if scenario=='H':
+            summary['status']=summary['trial_results'][0]['status'] if summary['trial_results'] else 'TEST_NOT_RUN'
+            summary['scope']='One selected DWG only. Other references were not repathed.'
         return summary
     finally:
         evidence.close()
         summary['input_unchanged']=f.digest(host)==original_hash
         write_json(os.path.join(root,'TEST_REPORT.json'),summary)
         lines=[summary['title'],summary['question'],'','EXPERIMENT ONLY - NOT A PRODUCTION TRANSMITTAL',
+               'Result: '+summary.get('status','RUNNING_OR_INTERRUPTED'),
                'Original saved input unchanged: '+str(summary['input_unchanged']),
                'Base production code: '+BASE_COMMIT,
                '']
         for item in summary['trial_results']:
             lines.extend([item['trial']+': '+item['status'],'  Stage: '+item.get('failed_stage','completed'),
                           '  '+item.get('message','')])
+        if scenario=='H':
+            lines.append('H tests one CAD only; all user worksets open. Other links may load but are not repaired.')
+            for item in summary['trial_results']:
+                if item.get('candidate_path'):lines.append('Candidate: '+item['candidate_path'])
+                for row in item.get('rows',[]):
+                    if row.get('after_reopen'):
+                        lines.extend(['Expected CAD: '+f.text(row.get('target','')),
+                                      'Reopened CAD: '+f.text(row['after_reopen'].get('absolute','UNAVAILABLE')),
+                                      'Saved reference verified: '+str(row.get('saved_reference_verified',False))])
         lines.extend(['','Read TEST_REPORT.json, Trials/<arm>/RESULT.json and Diagnostics/events.jsonl.',
                       'Dirty flags are evidence, not proof of a callback or a valid repair.',
                       'A failed/not-normal candidate remains diagnostic only. No source/central synchronization.',

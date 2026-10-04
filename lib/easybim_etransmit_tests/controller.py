@@ -118,10 +118,11 @@ def collect(uiapp,xaml,scenario):
 def select_ids(package,scenario):
     from pyrevit import forms
     cad=[r for r in package['rows'] if r.get('kind')=='CADLink' and r.get('target') and r['target'].lower().endswith('.dwg')]
-    if scenario=='D':
+    if scenario in ('D','H'):
+        if scenario=='H':cad=[r for r in cad if r.get('loaded') is not False and r.get('original_loaded') is not False]
         choices={f.text(r['element_id'])+' | '+os.path.basename(r['target']):r for r in cad}
         if not choices:raise ValueError('No collected linked DWG is available for this experiment.')
-        picked=forms.SelectFromList.show(sorted(choices),title='Select one CAD type for both routing arms',multiselect=False)
+        picked=forms.SelectFromList.show(sorted(choices),title='Select one CAD type for H' if scenario=='H' else 'Select one CAD type for both routing arms',multiselect=False)
         return None if picked is None else [f.text(choices[picked]['element_id'])]
     if scenario=='E':
         groups=scenarios.duplicate_groups(cad)
