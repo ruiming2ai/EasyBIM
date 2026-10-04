@@ -6,7 +6,7 @@ import os
 import tempfile
 
 
-DEFAULTS = {"workset_enabled": True, "coordination_review_enabled": True}
+DEFAULTS = {"workset_enabled": True, "coordination_review_enabled": False}
 
 
 def settings_path():
@@ -18,7 +18,7 @@ def settings_path():
 
 
 def load_settings(path=None):
-    """Return (settings, error); missing files retain existing enabled behavior."""
+    """Return (settings, error); missing files use the opt-in Coordination Review default."""
     result = dict(DEFAULTS)
     path = path or settings_path()
     if not path or not os.path.isfile(path):
