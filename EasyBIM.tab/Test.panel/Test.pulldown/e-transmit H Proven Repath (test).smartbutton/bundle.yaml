@@ -1,0 +1,12 @@
+title: "e-transmit H Proven Repath (test)"
+tooltip: >-
+  Focused experiment for the repath blocker. Uses a guarded copy of the saved
+  host, tolerates the observed post-SaveAs dirty state only inside the test,
+  repaths supported RVT/CAD/PDF/image references, saves, closes without saving
+  later callback dirtiness, and accepts success only after a normal reopen
+  proves the package paths. Production e-transmit and Typeless are unchanged.
+author: Ruiming Liu
+context: zero-doc
+min_revit_version: 2023
+engine:
+  clean: true
