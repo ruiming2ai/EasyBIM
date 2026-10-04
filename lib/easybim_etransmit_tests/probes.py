@@ -25,11 +25,19 @@ class ProbeBackend(Backend):
         # returned task doc, never a linked doc or an existing open document.
         if bool(getattr(doc,'IsLinked',False)):
             raise RuntimeError('A linked read-only document was returned; refusing to use it.')
-        if actual:
-            self.guard(actual)
+        # Revit can report a filename-only PathName for a detached working copy.
+        # That value is observational, not a write destination. Track the task
+        # document first so every rejection path can still close it safely.
         self.owned_documents.append(doc)
         self.evidence.track(doc)
         self.evidence.snapshot(doc,'after open')
+        if actual and '://' in actual:
+            raise RuntimeError('A task copy unexpectedly resolved to a source/cloud document: '+actual)
+        if actual and (os.path.isabs(actual) or ntpath.isabs(actual)):
+            self.guard(actual)
+        elif actual:
+            self.evidence.write('non_absolute_task_pathname',path=actual,
+                                note='Observed only; all writes still use guarded absolute trial targets.')
         return doc
     def _save_as_independent_package_central(self,doc,target,clear_transmitted=False):
         self.phase('baseline_SaveAs',target=target)
@@ -233,6 +241,88 @@ def run_trial(backend,stage,target,rows,trial,options):
         raw=backend.finish_independent(stage,target,rows,baseline)
         result.update(status='BASELINE_COMPLETED_TEST_ONLY',processing_result=raw,rows=rows)
         return result
+    if trial=='proven_repath':
+        supported=[r for r in rows if r.get('target') and not r.get('skip_repath') and
+                   ((r.get('kind')=='RevitLink') or
+                    (r.get('kind')=='CADLink' and os.path.splitext(r.get('target',''))[1].lower()=='.dwg') or
+                    r.get('special')=='image')]
+        if not supported:
+            result['status']='NOT_APPLICABLE_NO_SUPPORTED_REFERENCES'
+            return result
+        initial_dirty=False;final_dirty=False;reopen_dirty=False;failures=[]
+        try:
+            doc=backend.open_copy(stage,close_worksets=False)
+            backend.observed_save_as(doc,target,backend._package_is_transmitted(stage),strict=False)
+            initial_dirty=bool(getattr(doc,'IsModified',False))
+            backend.dirty_seen=backend.dirty_seen or initial_dirty
+
+            revit_rows=[r for r in supported if r.get('kind')=='RevitLink']
+            if revit_rows:
+                revit_issues,_=backend._repath_external_revit_links_relative(doc,revit_rows)
+                failures.extend(f.text(x.get('message','')) for x in revit_issues)
+
+            cad_rows=[r for r in supported if r.get('kind')=='CADLink']
+            seen_targets={}
+            for row in cad_rows:
+                key=scenarios.key_path(row['target'])
+                if key in seen_targets:
+                    folder=os.path.join(os.path.dirname(target),'Links','CAD','Type-'+f.text(row['element_id']))
+                    f.ensure_directory(folder)
+                    destination=os.path.join(folder,ntpath.basename(row['target']))
+                    backend.guard(destination)
+                    f.copy_file(row['target'],destination)
+                    row['target']=destination
+                    key=scenarios.key_path(destination)
+                seen_targets[key]=f.text(row['element_id'])
+                try:
+                    backend.cad_repair(doc,row,relative=True)
+                except Exception as exc:
+                    row['repath']='FAILED';row['error']=f.text(exc);failures.append(f.text(exc))
+                    backend.evidence.write('cad_error',element_id=row['element_id'],message=f.text(exc))
+
+            image_rows=[r for r in supported if r.get('special')=='image']
+            if image_rows:
+                image_issues,_=backend.repath_images(doc,image_rows)
+                failures.extend(f.text(x.get('message','')) for x in image_issues)
+
+            backend.phase('save_repaired_candidate',target=target)
+            backend.evidence.snapshot(doc,'before repaired Save')
+            doc.Save()
+            final_dirty=bool(getattr(doc,'IsModified',False))
+            backend.dirty_seen=backend.dirty_seen or final_dirty
+            backend.evidence.snapshot(doc,'after repaired Save')
+            backend.close_document(doc);doc=None
+
+            backend.verify_independent_package(target,[],{'repath':False})
+            if backend._package_is_transmitted(target):
+                raise RuntimeError('Final test candidate remains transmitted.')
+            doc=backend.open_copy(target,detach=False,close_worksets=True)
+            if bool(getattr(doc,'IsDetached',False)):
+                raise RuntimeError('Final test candidate reopens detached.')
+            reopen_dirty=bool(getattr(doc,'IsModified',False))
+            backend.dirty_seen=backend.dirty_seen or reopen_dirty
+
+            checked=[];all_match=True
+            for row in supported:
+                observed=backend.actual_reference(doc,row)
+                match=bool(observed.get('present') and
+                           scenarios.key_path(observed.get('absolute'))==scenarios.key_path(row['target']))
+                row['after_reopen']=observed;row['path_matches_after_reopen']=match
+                all_match=all_match and match
+                checked.append(dict(element_id=row.get('element_id'),kind=row.get('kind'),
+                                    expected=row.get('target'),observed=observed,match=match))
+                backend.evidence.write('reference_after_normal_reopen',
+                    element_id=row.get('element_id'),expected=row.get('target'),observed=observed,match=match)
+
+            status='REPATH_VERIFIED_TEST_ONLY' if all_match and not failures else 'REPATH_PARTIAL_TEST_ONLY'
+            result.update(status=status,normal_open_verified=True,initial_save_dirty=initial_dirty,
+                          final_save_dirty=final_dirty,reopen_dirty=reopen_dirty,
+                          dirty_callback_evidence=bool(initial_dirty or final_dirty or reopen_dirty),
+                          errors=failures,rows=supported,checked=checked)
+            return result
+        finally:
+            if doc is not None and doc in backend.owned_documents:
+                backend.close_document(doc)
     cad=[r for r in rows if r.get('kind')=='CADLink' and r.get('target') and r['target'].lower().endswith('.dwg')]
     if trial in ('cad_string','cad_local_relative','shared_target','per_type_target'):
         selected=scenarios.select_rows(cad,options.get('selected_ids',[]))
