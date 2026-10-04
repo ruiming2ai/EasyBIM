@@ -1,0 +1,20 @@
+name: Verify e-transmit H experiment
+
+on:
+  push:
+    branches:
+      - codex/etransmit-h-proven-repath
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run e-transmit lab tests
+        shell: pwsh
+        run: python -m unittest discover -s "Development Space/tests/etransmit_lab" -p "test_*.py"
