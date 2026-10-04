@@ -1,0 +1,112 @@
+name: Verify isolated H saved-copy test
+on:
+  push:
+    branches: [codex/et-h-build-20261004]
+permissions:
+  contents: read
+jobs:
+  portable:
+    name: H and e-transmit fixtures (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify and reconstruct reviewed source
+        run: python .github/et_h_apply.py
+      - name: H and A-G regression tests (not Revit)
+        shell: bash
+        run: python -m unittest discover -s 'Development Space/tests/etransmit_lab' -v 2>&1 | tee "$RUNNER_TEMP/H-lab.log"
+      - name: Unchanged production e-transmit regressions
+        shell: bash
+        run: python -m unittest discover -s 'Development Space/tests/etransmit' -v 2>&1 | tee "$RUNNER_TEMP/H-production.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: H-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/H-verified.json
+            ${{ runner.temp }}/H-*.log
+          retention-days: 7
+  ironpython:
+    name: Real Windows IronPython 2.7 (not Revit)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify and reconstruct reviewed source
+        run: python .github/et_h_apply.py
+      - name: Download official pinned IronPython
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip=Join-Path $env:RUNNER_TEMP 'IronPython.zip'
+          $folder=Join-Path $env:RUNNER_TEMP 'IronPython'
+          Invoke-WebRequest 'https://github.com/IronLanguages/ironpython2/releases/download/ipy-2.7.12/IronPython.2.7.12.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $folder
+          $ipy=Get-ChildItem $folder -Recurse -Filter ipy.exe | Where-Object { $_.FullName -match 'net45' } | Select-Object -First 1
+          if (-not $ipy) { throw 'Official IronPython runtime not found.' }
+          "IPY_EXE=$($ipy.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run all lab fixtures and real .NET event binding
+        shell: pwsh
+        run: |
+          & $env:IPY_EXE -m unittest discover -s 'Development Space/tests/etransmit_lab' -v *> "$env:RUNNER_TEMP/H-ironpython.log"
+          $result=$LASTEXITCODE
+          Get-Content "$env:RUNNER_TEMP/H-ironpython.log"
+          exit $result
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: H-ironpython
+          path: |
+            ${{ runner.temp }}/H-verified.json
+            ${{ runner.temp }}/H-ironpython.log
+          retention-days: 7
+  candidate:
+    name: Publish tested candidate only (not main)
+    needs: [portable, ironpython]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reconstruct the identical tested delta
+        run: python .github/et_h_apply.py
+      - name: Commit test button and lab routing only
+        shell: bash
+        run: |
+          git config user.name 'EasyBIM test development'
+          git config user.email '142599989+ruiming2ai@users.noreply.github.com'
+          git commit -m 'Add isolated H Saved Copy Repath test button' -m 'Address the reproduced filename-only detached working-document PathName rejection in an H-only backend. Register newly returned task documents before validation; reject existing/linked/read-only documents and retain strict absolute input/output guards and failure cleanup.' -m 'Add one selected-DWG trial: original reference identity check, independent SaveAs, close without saving pending edits, normal reopen, direct CAD LoadFrom, one repair Save and final normal reopen path/load verification. Preserve worksharing and reject transmitted or original-central-associated output. Report dirty/absolute-path uncertainty separately from repath failure; no production-success claim.' -m 'Extend only Test dropdown and test-lab routing. Production e-transmit 2.1.28, Typeless, Auto Update, startup hooks, existing A-G probes and current icon/preferences remain unchanged. Add 33 H regressions and operator guide. Linux/Windows fixture and real IronPython checks passed; native Revit desktop execution remains unverified.'
+          git rev-parse HEAD | tee "$RUNNER_TEMP/H-candidate.txt"
+          git push origin "HEAD:refs/heads/codex/et-h-verified-${GITHUB_RUN_ID}"
+          git show --stat --oneline HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: H-tested-candidate
+          path: |
+            ${{ runner.temp }}/H-candidate.txt
+            ${{ runner.temp }}/H-verified.json
+          retention-days: 7
