@@ -13,13 +13,13 @@ sys.path.insert(0,os.path.join(ROOT,'lib'))
 class LabContract(unittest.TestCase):
     def module(self):
         path=os.path.join(ROOT,'lib','easybim_etransmit_tests','scenarios.py')
-        self.assertTrue(os.path.isfile(path),'Seven-scenario lab implementation is absent')
+        self.assertTrue(os.path.isfile(path),'Eight-scenario lab implementation is absent')
         from easybim_etransmit_tests import scenarios
         return scenarios
-    def test_exactly_seven_groups_with_meaningful_distinct_trials(self):
+    def test_exactly_eight_groups_with_meaningful_distinct_trials(self):
         s=self.module()
-        self.assertEqual(list('ABCDEFG'),sorted(s.SCENARIOS))
-        self.assertEqual(7,len(set(x['title'] for x in s.SCENARIOS.values())))
+        self.assertEqual(list('ABCDEFGH'),sorted(s.SCENARIOS))
+        self.assertEqual(8,len(set(x['title'] for x in s.SCENARIOS.values())))
         for key in sorted(s.SCENARIOS):
             self.assertTrue(s.SCENARIOS[key]['title'].endswith('(test)'))
             self.assertTrue(s.SCENARIOS[key]['question'])
@@ -49,11 +49,11 @@ class LabContract(unittest.TestCase):
         self.assertEqual('PATHS_MATCH_REVIEW_DIRTY_STATE',result)
         self.assertNotEqual('VERIFIED',s.assess(False,True,True,False,[]))
         self.assertEqual('VERIFIED_TEST_ONLY',s.assess(True,True,True,False,[]))
-    def test_seven_buttons_in_test_pulldown_and_bootstrap_noop(self):
+    def test_eight_buttons_in_test_pulldown_and_bootstrap_noop(self):
         s=self.module()
         parent=os.path.join(ROOT,'EasyBIM.tab','Test.panel','Test.pulldown')
         paths=[p for p in os.listdir(parent) if p.endswith('.smartbutton')]
-        self.assertEqual(7,len(paths))
+        self.assertEqual(8,len(paths))
         from easybim_etransmit_tests import bootstrap
         self.assertFalse(bootstrap.install(None,env={}))
         self.assertFalse(bootstrap.install(None,env={'EASYBIM_ETRANSMIT_WORKER_MODE':'1'}))
