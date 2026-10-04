@@ -247,4 +247,32 @@ class Probes(unittest.TestCase):
         self.assertIn('No add-ins were disabled',census[0]['isolation'])
         self.assertTrue(result['input_unchanged'])
 
+
+    def test_open_copy_accepts_filename_only_detached_path_and_tracks_it_for_cleanup(self):
+        original=self.app.OpenDocumentFile
+        def opening(path,options):
+            doc=original(path,options)
+            doc.PathName='input_detached.rvt'
+            doc.IsDetached=True
+            return doc
+        self.app.OpenDocumentFile=opening
+        doc=self.backend.open_copy(self.stage)
+        self.assertIn(doc,self.backend.owned_documents)
+        self.backend.cleanup_documents()
+        self.assertEqual([],self.backend.owned_documents)
+
+    def test_proven_repath_trial_continues_past_dirty_save_and_verifies_cad_after_normal_reopen(self):
+        self.runtime.modified_after_save=True
+        result=run_trial(self.backend,self.stage,self.target,[copy.deepcopy(self.rows[0])],'proven_repath',{})
+        self.assertEqual('REPATH_VERIFIED_TEST_ONLY',result['status'])
+        self.assertTrue(result['initial_save_dirty'])
+        self.assertTrue(result['normal_open_verified'])
+        self.assertTrue(result['rows'][0]['path_matches_after_reopen'])
+        self.assertEqual('Relative',result['rows'][0]['after_reopen']['path_type'])
+        self.assertEqual('N:/old/a.dwg',self.runtime.read(self.stage)['saved']['1'][0])
+
+    def test_scenario_h_is_one_focused_proven_repath_trial(self):
+        from easybim_etransmit_tests import scenarios
+        self.assertEqual(('proven_repath',),scenarios.trials('H'))
+
 if __name__=='__main__':unittest.main()
