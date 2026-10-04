@@ -1,0 +1,53 @@
+name: Temporary Actions storage cleanup
+on:
+  push:
+    branches: [chatgpt-actions-cleanup-20261004]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove old workflow artifacts and rebuildable caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d '48 hours ago' +%s)
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Deleting workflow artifacts older than 48 hours; preserving newer artifacts."
+          pages=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100")
+          echo "$pages" | jq -c '[.[].artifacts[]]' > /tmp/artifacts.json
+          before_count=$(jq 'length' /tmp/artifacts.json)
+          before_bytes=$(jq '[.[].size_in_bytes] | add // 0' /tmp/artifacts.json)
+          deleted_artifacts=0
+          deleted_artifact_bytes=0
+          while IFS=$'\t' read -r id created size name; do
+            ts=$(date -u -d "$created" +%s)
+            if [ "$ts" -lt "$cutoff" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+              deleted_artifacts=$((deleted_artifacts+1))
+              deleted_artifact_bytes=$((deleted_artifact_bytes+size))
+              echo "Deleted artifact $id ($name) $size bytes"
+            fi
+          done < <(jq -r '.[] | [.id,.created_at,.size_in_bytes,.name] | @tsv' /tmp/artifacts.json)
+
+          echo "Deleting Actions caches; caches are rebuildable and contain no source history."
+          cache_pages=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100")
+          echo "$cache_pages" | jq -c '[.[].actions_caches[]]' > /tmp/caches.json
+          cache_count=$(jq 'length' /tmp/caches.json)
+          cache_bytes=$(jq '[.[].size_in_bytes] | add // 0' /tmp/caches.json)
+          while read -r id; do
+            [ -z "$id" ] && continue
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id"
+            echo "Deleted cache $id"
+          done < <(jq -r '.[].id' /tmp/caches.json)
+
+          echo "ARTIFACTS_BEFORE=$before_count"
+          echo "ARTIFACT_BYTES_BEFORE=$before_bytes"
+          echo "ARTIFACTS_DELETED=$deleted_artifacts"
+          echo "ARTIFACT_BYTES_DELETED=$deleted_artifact_bytes"
+          echo "CACHES_DELETED=$cache_count"
+          echo "CACHE_BYTES_DELETED=$cache_bytes"
