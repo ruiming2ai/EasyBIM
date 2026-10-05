@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """EasyBIM's single Revit Idling subscription.
 
-Revit raises Idling continuously, and pyRevit runs a hook *script* on every
+Revit raises Idling when its UI is idle, and pyRevit runs a hook *script* on every
 dispatch - `File.Exists`, a shebang probe, a full file read, an IronPython
 compile, a fresh scope and a ``ScriptRuntime`` per event, with no compiled-code
 cache anywhere in the runtime.  One .NET delegate installed at startup replaces
@@ -436,6 +436,32 @@ def _run_consumers(sender):
     _guarded("StartupAutoUpdate", _run_auto_update, sender)
 
 
+def _ensure_update_wakeup(sender):
+    if etransmit_worker is not None and etransmit_worker.is_worker_process():
+        return
+    from easybim import update_wakeup
+    update_wakeup.ensure_installed(sender, _on_update_wakeup)
+
+
+def _on_update_wakeup(sender):
+    """ExternalEvent entry: refresh only, never run unrelated startup modals."""
+    if _IN_PASS[0]:
+        return
+    if etransmit_worker is not None and etransmit_worker.is_worker_process():
+        return
+    try:
+        uidoc = getattr(sender, "ActiveUIDocument", None)
+        if uidoc is not None and getattr(uidoc.Document, "IsModifiable", False):
+            return
+    except Exception:
+        return
+    _IN_PASS[0] = True
+    try:
+        _guarded("AutoUpdateWakeup", _run_auto_update, sender)
+    finally:
+        _IN_PASS[0] = False
+
+
 def _on_idling(sender, args):
     del args
     # Cheap guard, deliberately outside the try: a re-entrant tick must cost
@@ -448,6 +474,7 @@ def _on_idling(sender, args):
             # Proof of life for ensure_installed; once per install.
             _TICK_MARKED[0] = True
             _set_envvar(TICKED_ENVVAR, True)
+        _guarded("AutoUpdateWakeupInstall", _ensure_update_wakeup, sender)
         _run_consumers(sender)
     finally:
         _IN_PASS[0] = False
@@ -503,6 +530,15 @@ def install(uiapp=None):
     _TICK_MARKED[0] = False
     _set_envvar(TICKED_ENVVAR, False)
     _log("Idling delegate installed.")
+    # Replace the previous engine's timer even if its mirror still looks live.
+    # Creation is retried from natural Idling if startup is too early on a host.
+    try:
+        from easybim import update_wakeup
+        update_wakeup.uninstall()
+        if etransmit_worker is None or not etransmit_worker.is_worker_process():
+            update_wakeup.install(source, _on_update_wakeup)
+    except Exception:
+        pass
     return True
 
 
@@ -510,6 +546,11 @@ def uninstall():
     """Detach via module globals and via the envvar mirror; both are safe."""
     global _HANDLER, _HANDLER_UIAPP
 
+    try:
+        from easybim import update_wakeup
+        update_wakeup.uninstall()
+    except Exception:
+        pass
     _detach(_HANDLER_UIAPP, _HANDLER)
     _detach_stale()
     _HANDLER = None

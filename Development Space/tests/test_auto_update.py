@@ -226,7 +226,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(B, self.updater.returned.last_commit_hash)
         self.assertTrue(all(path.startswith(EXT_ROOT) for path in self.git.opened))
         self.reload.assert_called_once()
-        self.assertEqual(["release", "message", "reload"], self.events)
+        self.assertEqual(["release", "message", "reload", "release"], self.events)
 
     def test_broken_global_enumerators_cannot_hide_successful_update(self):
         self.disk.remote_head = B
@@ -275,12 +275,14 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(2, len(self.updater.fetched))
         self.assertEqual(2, self.messages.call_count)
 
-    def test_missing_loaded_marker_does_not_claim_current_session(self):
+    def test_missing_loaded_marker_is_verified_and_reloaded_not_assumed_current(self):
         self.store.pop(self.module.AUTO_UPDATE_LOADED_ENVVAR)
         result = self._run()
-        self._assert_failed(result, self.module.STATUS_SESSION_UNKNOWN)
+        self.assertEqual(self.module.STATUS_RELOADED, result["status"])
         self.assertTrue(result["verified"])
-        self.assertEqual("unknown", result["reload_status"])
+        self.assertEqual("reloaded", result["reload_status"])
+        self.reload.assert_called_once()
+        self.assertEqual(A, self.store[self.module.AUTO_UPDATE_LOADED_ENVVAR]["head"])
 
     def test_marker_from_another_repository_does_not_prove_loaded_version(self):
         self.store[self.module.AUTO_UPDATE_LOADED_ENVVAR] = {"repo_key": "/other", "head": A}
@@ -609,7 +611,7 @@ class UpdateTests(unittest.TestCase):
         self.disk.remote_head = B
         result = self._run(startup=True)
         self.assertEqual(self.module.STATUS_UPDATED, result["status"])
-        self.assertEqual(["release", "message", "reload"], self.events)
+        self.assertEqual(["release", "message", "reload", "release"], self.events)
         self.assertTrue(self.module.should_skip_startup(self.module.get_startup_guard_state()))
 
     def test_fresh_startup_records_revision_then_fetches_and_updates(self):

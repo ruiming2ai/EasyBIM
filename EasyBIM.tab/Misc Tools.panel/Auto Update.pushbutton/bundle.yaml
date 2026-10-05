@@ -12,6 +12,9 @@ tooltip: >-
   else.
 
   Also checks automatically at startup. Other open Revit sessions sharing
-  this installation automatically reload changed EasyBIM files when idle;
-  no separate Auto Update click is needed in each session.
+  this installation check every 10 seconds and request a safe Revit API
+  cycle to reload changed files, even without mouse activity. Busy commands
+  and dialogs defer the reload. Separate installation folders are independent.
+  No separate Auto Update click is needed in each session after this updater
+  has been loaded. Transient reload failures receive limited automatic retries.
 author: Ruiming Liu

@@ -63,3 +63,11 @@ $scope.SetVariable('fixture_dir', $fixture)
 $scope.SetVariable('module_path', (Join-Path $sourceRoot 'lib/easybim/auto_update.py'))
 $scope.SetVariable('revisions', $revisions)
 $engine.ExecuteFile((Join-Path $PSScriptRoot 'native_auto_update_sessions.py'), $scope) | Out-Null
+
+# A deliberately fake API shape tests the IronPython managed-interface bridge
+# and timer threading without pretending that Autodesk Revit is installed.
+$testApi = Join-Path $probeRoot 'EasyBIM.TestHost.dll'
+Add-Type -Path (Join-Path $PSScriptRoot 'fixtures/UpdateWakeupHost.cs') -OutputAssembly $testApi
+$scope.SetVariable('test_api_dll', $testApi)
+$scope.SetVariable('wakeup_module_path', (Join-Path $sourceRoot 'lib/easybim/update_wakeup.py'))
+$engine.ExecuteFile((Join-Path $PSScriptRoot 'native_update_wakeup.py'), $scope) | Out-Null

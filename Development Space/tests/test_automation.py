@@ -48,7 +48,7 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual((defaults, ""), self.automation_settings.load_settings())
         self.path.write_text('{"workset_enabled": false, "coordination_review_enabled": "false"}')
         settings, error = self.automation_settings.load_settings()
-        self.assertEqual({"workset_enabled": False, "coordination_review_enabled": True}, settings)
+        self.assertEqual({"workset_enabled": False, "coordination_review_enabled": False}, settings)
         self.assertTrue(error)
         self.path.write_text("broken json")
         settings, error = self.automation_settings.load_settings()

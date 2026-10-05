@@ -59,6 +59,11 @@ class FakeUiapp(object):
 class StartupJobStageOrderingTests(unittest.TestCase):
     def setUp(self):
         self.messages = _load_messages()
+        # Stage-order tests intentionally opt into both automations.
+        patcher = mock.patch.object(self.messages.automation_settings, "load_settings",
+            return_value=({"workset_enabled": True, "coordination_review_enabled": True}, ""))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.doc = FakeDocument()
         self.uiapp = FakeUiapp(self.doc)
 
@@ -200,6 +205,11 @@ class EmptyReportDiagnosisTests(unittest.TestCase):
 
     def setUp(self):
         self.messages = _load_messages()
+        # Stage-order tests intentionally opt into both automations.
+        patcher = mock.patch.object(self.messages.automation_settings, "load_settings",
+            return_value=({"workset_enabled": True, "coordination_review_enabled": True}, ""))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.doc = FakeDocument()
 
     def _empty_report(self, **capture):
@@ -487,6 +497,11 @@ class LiveUiappForReportTests(unittest.TestCase):
 
     def setUp(self):
         self.messages = _load_messages()
+        # Stage-order tests intentionally opt into both automations.
+        patcher = mock.patch.object(self.messages.automation_settings, "load_settings",
+            return_value=({"workset_enabled": True, "coordination_review_enabled": True}, ""))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.doc = FakeDocument()
         self.uiapp = FakeUiapp(self.doc)
         self.messages._LIVE_UIAPP = None

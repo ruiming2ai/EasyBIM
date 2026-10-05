@@ -5,6 +5,7 @@ on:
     paths:
       - 'lib/easybim/auto_update.py'
       - 'lib/easybim/idling.py'
+      - 'lib/easybim/update_wakeup.py'
       - 'startup.py'
       - 'Development Space/tests/**'
       - '.github/workflows/auto-update-tests.yml'
@@ -12,6 +13,7 @@ on:
     paths:
       - 'lib/easybim/auto_update.py'
       - 'lib/easybim/idling.py'
+      - 'lib/easybim/update_wakeup.py'
       - 'startup.py'
       - 'Development Space/tests/**'
       - '.github/workflows/auto-update-tests.yml'
