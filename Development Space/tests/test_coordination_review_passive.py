@@ -1,6 +1,9 @@
 import importlib.util
 import pathlib
 import unittest
+import sys
+import types
+from unittest import mock
 
 
 MODULE_PATH = (
@@ -232,6 +235,13 @@ class RegistrationTests(unittest.TestCase):
         self.module = _load_module()
         self.app = FakeApplication()
         self.module._revit_application = lambda uiapp=None: self.app
+        # These tests exercise an explicitly enabled listener, not the default.
+        settings = types.SimpleNamespace(is_enabled=lambda key: True)
+        package = types.ModuleType("easybim")
+        package.automation_settings = settings
+        patcher = mock.patch.dict(sys.modules, {"easybim": package})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_register_attaches_exactly_one_handler(self):
         self.assertTrue(self.module.register_passive_detector(source="startup"))

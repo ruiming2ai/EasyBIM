@@ -919,10 +919,32 @@ authentication, and repository errors are reported separately.
 Each Revit session records the EasyBIM commit it loaded. Auto Update reloads
 pyRevit only when that session needs the verified files, including when another
 Revit instance already installed them. Every manual click reports its result,
-with the branch and commit identifiers when available. If files are verified but
-the loaded version is unknown, reload pyRevit or restart Revit once to establish
-the baseline. A failed reload reports that the files are verified but applying
-them still requires attention.
+with the branch and commit identifiers when available. An unknown loaded version
+is not treated as current: after this checkout is verified clean and published,
+one successful reload establishes the baseline. A failed reload retains the old
+marker, so installed files are never confused with code loaded in memory.
+
+Open Revit sessions **sharing the same installation folder** observe the local
+revision every 10 seconds, independently of the startup check. A process-scoped
+.NET timer only raises a Revit ExternalEvent; Git checks and reloads execute on
+Revit's API thread, never the timer thread. This does not require mouse activity
+in the receiving session. Busy commands, model transactions and modal dialogs
+must finish before Revit can service the request. Receiving sessions do not
+fetch or open update popups. Separate installation folders remain independent.
+
+A transient receiving-session reload failure is retried after 60 and 120 seconds,
+with at most three attempts per revision to avoid a reload loop. An explicit
+manual update, a different installed revision or a restart can retry after that.
+Reload replaces the old timer/event, and application closing stops it. Natural
+Idling remains the fallback when the host cannot create the external event.
+Both native Git handles and update mutexes are released on failure paths. Manual
+confirmation dialogs do not hold the writer lock: the updater reacquires it and
+rechecks the checkout before loading any files.
+
+For the first installation of this repair, an already-open Revit process still
+running an older/broken updater may need one pyRevit reload or Revit restart.
+It cannot execute the new observer until that code has been loaded. Later shared
+checkout updates do not require a separate Auto Update click in each session.
 
 The same check runs automatically once per Revit session on the first idle tick.
 Network work is deferred until then; it can still occupy the UI while it runs.

@@ -269,13 +269,18 @@ class SessionUpdateTests(unittest.TestCase):
         self.assertEqual([], self.git.opened)
         self.reload.assert_not_called()
 
-    def test_unknown_baseline_cannot_authorize_periodic_reload(self):
+    def test_unknown_baseline_requires_clean_checkout_before_periodic_reload(self):
         self._finish_startup()
         self.store[self.module.AUTO_UPDATE_LOADED_ENVVAR] = None
         self._other_session_installs()
+        self.disk.dirty = True
         self.idling._on_idling(self.uiapp, None)
-        self.assertEqual([], self.git.opened)
+        self.assertTrue(self.git.opened)
         self.reload.assert_not_called()
+        self.disk.dirty = False
+        self.now += 11
+        self.idling._on_idling(self.uiapp, None)
+        self.reload.assert_called_once()
 
     def test_receiver_rejects_detached_or_untracked_checkout(self):
         self._finish_startup()
