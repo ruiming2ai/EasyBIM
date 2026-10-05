@@ -1,0 +1,11 @@
+title: E-Transmit 2.1.8 (test)
+tooltip: >-
+  Click-only legacy comparison using an isolated frozen copy of EasyBIM
+  e-transmit 2.1.8 from commit ff0a1ef676aa655250b7606b16f355dbff391a89.
+  This is a normal pushbutton and does not run when Revit or pyRevit starts.
+  Production E-Transmit is separate.
+author: Ruiming Liu
+context: zero-doc
+min_revit_version: 2023
+engine:
+  clean: true

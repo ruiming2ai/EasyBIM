@@ -1,11 +1,4 @@
 title: Test
-tooltip: Isolated e-transmit experiments. Production tools are unchanged.
+tooltip: Isolated test tools. Nothing in this dropdown runs at Revit or pyRevit startup.
 layout:
-  - e-transmit A Save Guard (test)
-  - e-transmit B Save Events (test)
-  - e-transmit C Save Sequence (test)
-  - e-transmit D CAD Routing (test)
-  - e-transmit E CAD Duplicates (test)
-  - e-transmit F Saved Inventory (test)
-  - e-transmit G Recovery Evidence (test)
-  - e-transmit H Saved Copy Repath (test)
+  - E-Transmit 2.1.8 (test)

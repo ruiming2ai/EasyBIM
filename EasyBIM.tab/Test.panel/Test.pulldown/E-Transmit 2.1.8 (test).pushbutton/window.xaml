@@ -11,11 +11,11 @@
     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
       <TextBlock Text="e-transmit" FontSize="25" FontWeight="SemiBold"/>
       <TextBlock x:Name="VersionLabel" Foreground="#536273"/>
-      <TextBlock Text="Open models: saved local/cache state only. Unsaved edits are excluded unless you explicitly choose detached-model Save As recovery. Saving and temporary link reloads require your choice. No Sync or Publish."
+      <TextBlock Text="Open models: saved local/cache state only. Unsaved edits are excluded. No Save, SaveAs, Sync, Publish or working-location change."
                  TextWrapping="Wrap" Margin="0,7,0,0"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom">
-      <TextBlock Text="ACC live models must be opened first through Revit Home → Autodesk Docs. EasyBIM uses the live cloud model currently loaded by Revit and does not substitute a published ACC version."
+      <TextBlock Text="ACC links use an exact loaded revision when available, otherwise one unambiguous saved cache edition of the same model. Reports identify revision differences. Published downloads remain a separate choice."
                  TextWrapping="Wrap" Foreground="#536273" Margin="0,7,0,7"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Content="Transmit saved copies" Click="transmit_click" MinWidth="165" IsDefault="True"/>
@@ -37,9 +37,12 @@
             <WrapPanel>
               <Button Content="Browse models..." Click="browse_models"/>
               <Button Content="Browse folder..." Click="browse_model_folder"/>
+              <Button Content="Use saved copy for selected row..." Click="replace_source"/>
               <Button Content="Remove selected" Click="remove_model"/>
+              <Button Content="Add ACC published model..." Click="add_cloud_model"/>
+              <Button Content="Associate ACC download for open row..." Click="associate_cloud_graph"/>
             </WrapPanel>
-            <TextBlock Text="The active project is checked by default. For live ACC cloud-workshared models, open the model first in native Revit Home → Autodesk Docs, then select the open row here. Open rows use saved local/cache state; unsaved edits are excluded unless detached-model recovery explicitly saves the current state. Browse selects saved local RVTs." TextWrapping="Wrap" Foreground="#536273"/>
+            <TextBlock Text="The active project is checked by default. Open rows copy saved local/cache files; modified hosts are inspected from their saved copy, excluding unsaved reference edits. Browse selects saved files. Published ACC mode remains a separate explicit choice." TextWrapping="Wrap" Foreground="#536273"/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="2  Destination and collection">
@@ -51,8 +54,12 @@
               <CheckBox x:Name="ZipPerModel" Content="Create a separate ZIP for each model"/>
               <CheckBox x:Name="Zip" Content="Also ZIP the entire batch"/>
             </WrapPanel>
-            <TextBlock Text="Repath off: no host reopening unless Cleanup or Upgrade is selected. Unloaded links are offered in a separate selection window." TextWrapping="Wrap" Foreground="#536273"/>
+            <CheckBox x:Name="SkipCloudLinks" Content="Skip unresolved cloud downloads (verified local caches are still collected)" IsChecked="True"/>
+            <CheckBox x:Name="DeepScan" Content="Deep inspection of saved copies (needed for modified open hosts)" IsChecked="True"/>
             <CheckBox x:Name="Repath" Content="Repath supported references in package copies; report manual repairs" IsChecked="True"/>
+            <CheckBox x:Name="LoadUnloadedFiles" Content="Load Unloaded Files" IsChecked="True"
+                      IsEnabled="{Binding IsChecked, ElementName=Repath}"
+                      ToolTip="Load successfully copied Revit links in exported models, including links previously unloaded. Uncheck to preserve their saved load states. Working models are unchanged."/>
           </StackPanel>
         </GroupBox>
         <GroupBox Header="File Structure Organization">
@@ -72,7 +79,16 @@
             <ListBox x:Name="Extras" Height="70"/>
           </StackPanel>
         </GroupBox>
-        <GroupBox Header="4  Upgrade and cleanup — package copies only">
+        <GroupBox Header="4  Optional Autodesk sign-in / exact source mappings">
+          <StackPanel>
+            <Button Content="APS setup / Sign in..." Click="sign_in_cloud" HorizontalAlignment="Left"/>
+            <TextBlock x:Name="AuthStatus" Text="Not signed in. Credentials stay in memory for this command only." TextWrapping="Wrap"/>
+            <TextBlock Text="Open-model rows use the local CollaborationCache without APS sign-in. Separately browsed Desktop Connector files are copied on demand. Prefix mappings must point to the SAME configured source hierarchy, including Shared/Consumed. Never map a consumed source to WIP. For exact cloud downloads, sign in and select a published model/version. Read-only access requires an APS native app provisioned by your ACC administrator." TextWrapping="Wrap" Foreground="#536273"/>
+            <ListBox x:Name="Mappings" Height="65" DisplayMemberPath="Name"/>
+            <WrapPanel><Button Content="Add exact prefix mapping..." Click="add_mapping"/><Button Content="Remove mapping" Click="remove_mapping"/></WrapPanel>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="5  Upgrade and cleanup — package copies only">
           <StackPanel>
             <CheckBox x:Name="Upgrade" Content="Upgrade package models to this running Revit version"/>
             <CheckBox x:Name="Cleanup" Content="Enable cleanup (older package models will also be upgraded)" Click="cleanup_toggle"/>
@@ -83,7 +99,7 @@
               <Button Content="Select view types to retain..." Click="select_view_types" HorizontalAlignment="Left"/>
               <TextBlock x:Name="ViewTypesLabel" Text="No additional view types selected" TextWrapping="Wrap"/>
             </StackPanel>
-            <CheckBox x:Name="SaveSettings" Content="Remember destination and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
+            <CheckBox x:Name="SaveSettings" Content="Remember destination, mappings and collection preferences (not destructive cleanup settings)" IsChecked="True"/>
           </StackPanel>
         </GroupBox>
       </StackPanel>

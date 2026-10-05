@@ -43,8 +43,6 @@ def package_load_state(row):
 
 
 class Backend(object):
-    mark_transmitted_rows_supported = True
-
     def __init__(self, DB, application, package_root, cancelled=None):
         self.DB, self.app, self.root, self.cancelled = DB, application, package_root, cancelled
         self.staging_root = None
@@ -67,12 +65,6 @@ class Backend(object):
         return not any(r.get('special') == 'image' or
                        (r.get('kind') == 'RevitLink' and
                         (not r.get('td') or cache_sources.reference_identity(r))) for r in rows)
-
-    def requires_final_host_open(self, record, rows, options):
-        """True cloud/external Revit links need one final document API conversion."""
-        if not record.get('is_primary_host') or not options.get('repath'): return False
-        return any(r.get('target') and r.get('kind')=='RevitLink' and
-                   (not r.get('td') or cache_sources.reference_identity(r)) for r in rows)
 
     def acquire_file(self, source, target, owner='', cancelled=None, pulse=None):
         self.guard(target)
@@ -209,14 +201,14 @@ class Backend(object):
         current=f.text(getattr(self.app,'VersionNumber',''))
         if current.isdigit() and info['version'].isdigit() and int(info['version'])>int(current):
             raise model_payload.PayloadError('Saved Revit '+info['version']+' requires that version or newer; running '+current+'.')
-        result=dict(references=[],issues=[],version=info['version'],opened_in_revit=False,is_workshared=info['workshared'])
+        result=dict(references=[],issues=[],version=info['version'],opened_in_revit=False)
         if getattr(self, 'payloads', None): self.payloads.bind_stage(stage, source)
         if info.get('metadata_warning'):
             result['issues'].append(issue('BASIC_METADATA_FALLBACK',source,info['metadata_warning']))
         base=info.get('central') if info.get('workshared') and f.absolute(info.get('central', '')) else source
         try: result['references']=self.rows(stage, base)
         except Exception as exc: result['issues'].append(issue('SAVED_REFERENCE_SCAN_FAILED',source,exc,'error'))
-        if not f.host_processing_allowed(options) or not options.get('deep',True):
+        if not options.get('deep',True):
             result['issues'].append(issue('METADATA_ONLY_SCAN',source,
                                          'Image/PDF, cloud, point-cloud and some other dependencies can be absent from saved reference metadata.'))
             return result
@@ -474,89 +466,6 @@ class Backend(object):
         except Exception:
             dispose(opts); raise
 
-    def mark_transmitted_package(self, path, rows=None):
-        """Mark a closed packaged workshared RVT transmitted without opening it.
-
-        Preserve TransmissionData-backed reference paths/load states explicitly,
-        because Revit applies desired reference data when a transmitted file opens.
-        External-server references (including true ACC resources) are not contained
-        in TransmissionData and are therefore left untouched.
-        """
-        self.guard(path)
-        if not self.basic(path).get('workshared'):
-            return None
-        model_path=self.mp(path);td=None
-        intended={}
-        for row in rows or []:
-            if row.get('kind')!='RevitLink':
-                continue
-            state=package_load_state(row)
-            if state is not None:
-                intended[f.text(row.get('element_id',row.get('id','')))]=bool(state)
-        try:
-            td=self.DB.TransmissionData.ReadTransmissionData(model_path)
-            if td is None:return False
-            already=bool(td.IsTransmitted)
-            for ident in td.GetAllExternalFileReferenceIds():
-                f.check(self.cancelled)
-                ref=ref_path=None
-                try:
-                    ref=td.GetDesiredReferenceData(ident) if already else None
-                    if ref is None:ref=td.GetLastSavedReferenceData(ident)
-                    if ref is None:continue
-                    ref_path=ref.GetPath()
-                    status_text=f.text(ref.GetLinkedFileStatus())
-                    ident_key=(f.text(ident) if isinstance(ident,f.string_types) else eid(ident))
-                    should_load=intended.get(ident_key)
-                    if should_load is None:
-                        should_load=load_intent(status_text)
-                    if should_load is None:should_load=(status_text!='Unloaded')
-                    td.SetDesiredReferenceData(ident,ref_path,ref.PathType,bool(should_load))
-                finally:
-                    dispose(ref_path);dispose(ref)
-            td.IsTransmitted=True
-            self.DB.TransmissionData.WriteTransmissionData(model_path,td)
-        finally:
-            dispose(td);dispose(model_path)
-        check=getattr(self.DB.TransmissionData,'IsDocumentTransmitted',None)
-        model_path=self.mp(path);verify=None
-        try:
-            if check is not None:
-                try:return bool(check(model_path))
-                except Exception:pass
-            verify=self.DB.TransmissionData.ReadTransmissionData(model_path)
-            return bool(verify is not None and verify.IsTransmitted)
-        finally:
-            dispose(verify);dispose(model_path)
-
-    def _transmission_load_state(self, td, ident, row):
-        """Preserve load intent when the live inventory has no load flag.
-
-        CAD/PDF/other TransmissionData references do not always expose a useful
-        loaded value through the same API surface as RevitLinkType. Re-read the
-        exact saved TransmissionData record instead of skipping repath.
-        """
-        state=package_load_state(row)
-        if state is not None:
-            return bool(state)
-        ref=None
-        try:
-            ref=td.GetDesiredReferenceData(ident) if bool(td.IsTransmitted) else None
-            if ref is None:
-                ref=td.GetLastSavedReferenceData(ident)
-            if ref is None:
-                return None
-            status_text=f.text(ref.GetLinkedFileStatus())
-            state=load_intent(status_text)
-            if state is None and status_text:
-                state=(status_text!='Unloaded')
-            return state
-        except Exception:
-            return None
-        finally:
-            dispose(ref)
-
-
     def apply_metadata(self, path, target, rows, relative=True):
         self.guard(path); self.guard(target)
         for row in rows:
@@ -567,67 +476,18 @@ class Backend(object):
             ids=dict((eid(i),i) for i in td.GetAllExternalFileReferenceIds())
             for row in rows:
                 ident_key=row.get('element_id',row['id'])
-                if not row.get('target') or ident_key not in ids: continue
+                if not row.get('target') or ident_key not in ids or package_load_state(row) is None: continue
                 # Cloud references need the resource-server conversion first,
                 # even if a native API representation also supplied a TD id.
                 if cache_sources.reference_identity(row) and row.get('repath')!='API_LOCAL_LINK':continue
-                desired_load=self._transmission_load_state(td,ids[ident_key],row)
-                if desired_load is None:
-                    continue
                 value=relative_path(row['target'],os.path.dirname(target)) if relative else row['target']
                 typ=self.DB.PathType.Relative if relative else self.DB.PathType.Absolute
-                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(desired_load))
-                if row.get('kind')=='RevitLink' and package_load_state(row) is None:
-                    row['package_loaded']=bool(desired_load)
+                td.SetDesiredReferenceData(ids[ident_key],self.mp(value),typ,bool(package_load_state(row)))
                 row['repath']='TRANSMISSION_DATA' if relative else 'STAGING_ABSOLUTE'
             td.IsTransmitted=True
             self.DB.TransmissionData.WriteTransmissionData(self.mp(path),td)
             return True
         finally: dispose(td)
-
-    def _verify_document(self, doc, target, rows, options):
-        issues=[]
-        from System import Int64,Int32
-        for row in rows:
-            if not row.get('target') or row.get('skip_repath'): continue
-            kind=row.get('kind')
-            if kind not in ('RevitLink','CADLink') and row.get('special')!='image': continue
-            row.pop('verification',None)
-            f.check(self.cancelled)
-            try:
-                number=int(row['element_id'])
-                ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
-                element=doc.GetElement(ident)
-                if element is None:
-                    if options.get('cleanup'): continue
-                    raise RuntimeError('Original reference element is missing from the packaged model.')
-                if kind=='RevitLink':
-                    reference=element.GetExternalFileReference()
-                    actual_path=None
-                    try:
-                        actual_path=reference.GetAbsolutePath()
-                        actual=self.visible(actual_path)
-                    finally:
-                        dispose(actual_path)
-                    expected_load=package_load_state(row)
-                    if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
-                        raise RuntimeError('Packaged Revit link load state does not match the requested state.')
-                elif kind=='CADLink':
-                    reference=self.DB.ExternalFileUtils.GetExternalFileReference(doc,ident)
-                    actual_path=None
-                    try:
-                        actual_path=reference.GetAbsolutePath()
-                        actual=self.visible(actual_path)
-                    finally:
-                        dispose(actual_path)
-                else:
-                    actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
-                if f.canonical(actual)!=f.canonical(row['target']):
-                    raise RuntimeError('Packaged reference still points elsewhere: '+actual)
-                row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
-            except Exception as exc:
-                issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
-        return issues
 
     @performance.timed('repath', 'revit_process', file_index=1)
     def finish(self, stage, target, rows, options):
@@ -694,27 +554,6 @@ class Backend(object):
                         save.SetWorksharingOptions(ws)
                     performance.call('repath','revit_save_as',target,doc.SaveAs,target,save)
                 finally: dispose(ws); dispose(save)
-                needs_resave=False
-                if options.get('repath') and external:
-                    # SaveAs establishes the final package base. Reload cloud/external
-                    # links once more as RELATIVE local resources so this same open
-                    # document can be the final verification pass.
-                    for row in external:
-                        f.check(self.cancelled)
-                        number=int(row['element_id'])
-                        ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
-                        link=doc.GetElement(ident);resource=result=model_path=None
-                        try:
-                            model_path=self.mp(row['target'])
-                            resource=self.DB.ExternalResourceReference.CreateLocalResource(doc,
-                                self.DB.ExternalResourceTypes.BuiltInExternalResourceTypes.RevitLink,
-                                model_path,self.DB.PathType.Relative)
-                            result=link.LoadFrom(resource,None)
-                            if f.text(result.LoadResult) not in ('LinkLoaded','LinkAlreadyLoaded'):
-                                raise RuntimeError('Relative packaged Revit link reload failed: '+f.text(result.LoadResult))
-                            if package_load_state(row) is False: link.Unload(None)
-                            row['repath']='API_LOCAL_LINK_RELATIVE';needs_resave=True
-                        finally:dispose(result);dispose(resource);dispose(model_path)
                 if options.get('repath') and special:
                     # SaveAs has established the correct final base. Revit may
                     # accept a short relative path when the absolute dependency
@@ -735,7 +574,7 @@ class Backend(object):
                             if row.get('loaded') is False: image.Unload()
                             if tx.Commit()!=self.DB.TransactionStatus.Committed:
                                 raise RuntimeError('Relative image reload not committed.')
-                            row['repath']='API_IMAGE_RELATIVE';needs_resave=True
+                            row['repath']='API_IMAGE_RELATIVE'
                         except f.Cancelled: raise
                         except Exception as exc:
                             if tx.GetStatus()==self.DB.TransactionStatus.Started: tx.RollBack()
@@ -743,13 +582,7 @@ class Backend(object):
                             issues.append(issue('IMAGE_REPATH_FAILED',row.get('source',''),exc,'error'))
                         finally:
                             dispose(tx); dispose(opts)
-                if needs_resave:
                     performance.call('repath','revit_save',target,doc.Save)
-                verified_in_process=False
-                if options.get('verify_in_process'):
-                    verify_issues=self._verify_document(doc,target,rows,options)
-                    issues.extend(verify_issues)
-                    verified_in_process=not any(x.get('severity')=='error' for x in verify_issues)
             finally:
                 if doc is not None:
                     if not performance.call('repath','revit_close',target,doc.Close,False): raise RuntimeError('Temporary output model could not be closed.')
@@ -766,8 +599,6 @@ class Backend(object):
                     issues.append(issue('REPATH_NOT_AVAILABLE',row.get('source',''),
                                         'Source copied, but this reference cannot be repathed safely by the exposed API. '
                                         'Repair in the packaged model and verify after moving the package.'))
-        if options.get('verify_in_process'):
-            return dict(issues=issues,verified_in_process=bool(locals().get('verified_in_process',False)))
         return issues
 
     @performance.timed('verification', 'host_verify', file_index=1)
@@ -787,7 +618,33 @@ class Backend(object):
         issues=[]
         try:
             doc=self.open_copy(target)
-            issues.extend(self._verify_document(doc,target,rows,options))
+            from System import Int64,Int32
+            for row in rows:
+                if not row.get('target') or row.get('skip_repath'): continue
+                kind=row.get('kind')
+                if kind!='RevitLink' and row.get('special')!='image': continue
+                row.pop('verification',None)
+                f.check(self.cancelled)
+                try:
+                    number=int(row['element_id'])
+                    ident=self.DB.ElementId(Int64(number) if int(self.app.VersionNumber)>=2024 else Int32(number))
+                    element=doc.GetElement(ident)
+                    if element is None:
+                        if options.get('cleanup'): continue
+                        raise RuntimeError('Original reference element is missing from the packaged model.')
+                    if kind=='RevitLink':
+                        reference=element.GetExternalFileReference()
+                        actual=self.visible(reference.GetAbsolutePath())
+                        expected_load=package_load_state(row)
+                        if expected_load is not None and bool(self.DB.RevitLinkType.IsLoaded(doc,ident))!=bool(expected_load):
+                            raise RuntimeError('Packaged Revit link load state does not match the requested state.')
+                    else:
+                        actual=f.resolve_source(f.text(element.Path),target) or f.text(element.Path)
+                    if f.canonical(actual)!=f.canonical(row['target']):
+                        raise RuntimeError('Packaged reference still points elsewhere: '+actual)
+                    row['verification']='PATH_AND_LOAD_CHECKED' if kind=='RevitLink' else 'PATH_CHECKED'
+                except Exception as exc:
+                    issues.append(issue('LINK_VERIFICATION_FAILED',row.get('source',''),exc,'error'))
         except f.Cancelled: raise
         except Exception as exc:
             issues.append(issue('MODEL_OPEN_VERIFICATION_FAILED',target,exc,'error'))

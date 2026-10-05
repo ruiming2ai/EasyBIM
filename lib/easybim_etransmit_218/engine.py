@@ -25,13 +25,6 @@ def issue(code, source, message, severity='warning'):
     return row
 
 
-def normalize_processing_result(value):
-    """Keep legacy backend list results while allowing one-pass final verification metadata."""
-    if isinstance(value, dict):
-        return list(value.get('issues') or []), bool(value.get('verified_in_process'))
-    return list(value or []), False
-
-
 class StagingSourceError(ValueError):
     pass
 
@@ -138,11 +131,6 @@ def completion_message(results, requested, cancelled=False):
         *(sum(c[k] for c in counts) for k in ('revit_links_requested','revit_links_copied','revit_links_verified'))))
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
     for result in results:
-        for record in result['files']:
-            if record.get('is_primary_host') and record.get('status')=='COPIED' and record.get('transmission_status'):
-                lines.append('Transmission status: '+f.text(record['transmission_status'])+
-                             ' | '+f.text(record.get('relative','')))
-    for result in results:
         if link_discovery_status(result).startswith(('NOT_PERFORMED', 'INCOMPLETE')):
             lines.append('Revit link discovery: '+link_discovery_status(result))
     issues=sorted(issues,key=lambda i:(i['severity']!='error',not i['code'].startswith('HOST_')))
@@ -167,9 +155,6 @@ def transmit(models, root, backend, options=None, extras=None, cancelled=None, p
         entry=registry.get(source) if registry else None
         if entry and entry.get('discovery_performance'):
             initial.append(dict(source=source, timing=entry['discovery_performance']))
-        if entry:
-            for capture in entry.get('preflight_timings',[]):
-                initial.append(dict(source=source,scope='preflight_session',timing=capture))
     result['performance']['initial_discovery']=initial
     result['performance']['measured_total_seconds']=round(result['performance']['elapsed_seconds']+
         sum(x['timing']['elapsed_seconds'] for x in initial),6)
@@ -248,7 +233,6 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
     def add_inventory(source, record, scan):
         record['inventory_status']='PARTIAL' if scan.get('open_failed') else ('NEEDS_REVIEW' if scan.get('issues') else 'SCANNED')
         record['revit_version']=scan.get('version','')
-        record['is_workshared']=scan.get('is_workshared',False)
         record['opened_in_revit']=scan.get('opened_in_revit',False)
         record['inspection_status']=scan.get('inspection_status') or ('OPENED' if scan.get('opened_in_revit') else 'METADATA_ONLY')
         if scan.get('source_mode'): record['source_mode']=scan['source_mode']
@@ -257,8 +241,9 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
         for ref in scan.get('references',[]):
             ref=dict(ref);ref.update(owner=source,status='PENDING')
             if ref.get('kind')=='RevitLink':
-                ref['original_loaded']=ref.get('original_loaded',ref.get('loaded'))
-                ref['package_loaded']=ref.get('original_loaded',ref.get('loaded'))
+                ref['original_loaded']=ref.get('loaded')
+                ref['package_loaded']=(True if opts.get('repath') and opts.get('load_unloaded_files',True)
+                                       and ref.get('loaded') is False else ref.get('loaded'))
             edges.append(ref);queue.append((ref.get('source',''),source,False,ref))
 
     def organize(recover=False):
@@ -370,95 +355,11 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if isinstance(diagnostic.get(field), f.string_types):
                     for old, new in sorted(stage_paths.items(), key=lambda item: -len(item[0])):
                         diagnostic[field] = diagnostic[field].replace(old, new)
-        # True external/cloud resources cannot be converted by TransmissionData alone.
-        # Defer that unavoidable document open until all package files are in final
-        # locations, then convert, save and verify in the same open document.
-        for record in reversed(result['files']):
-            if not record.get('finalize_after_delivery') or record.get('status')!='COPIED': continue
-            rows=[r for r in edges if f.canonical(r['owner'])==f.canonical(record['source']) and not r.get('skip_repath')]
-            if any((r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target') for r in rows):
-                record['processing_status']='HOST_PRESERVED_LINKS_UNAVAILABLE'
-                record['model_verification']='DEFERRED'
-                add_issue('MODEL_VERIFICATION_DEFERRED',record['source'],
-                          'A linked model was not delivered; finalization was deferred to prevent source/cloud fallback.','error')
-                continue
-            stage=f.temporary_path(work); backup=f.temporary_path(work)
-            try:
-                notify('FINALIZING ACC LINKS | '+record['source'],0,1)
-                f.copy_file(record['target'],backup,delivery_cancel)
-                f.copy_file(record['target'],stage,delivery_cancel)
-                final_options=dict(opts);final_options['verify_in_process']=True
-                final_options['reference_target']=record['target']
-                final_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
-                raw=performance.call('verification','finalize_and_verify_host',record['source'],
-                                     backend.finish,stage,record['target'],rows,final_options)
-                problems,verified=normalize_processing_result(raw)
-                result['issues'].extend(problems)
-                record['verified_in_process']=verified
-                record['processing_status']='NEEDS_REVIEW' if problems else 'PROCESSED'
-                record['model_verification']=('FAILED' if any(p.get('severity')=='error' for p in problems)
-                                               else 'OPENED_AND_REFERENCES_CHECKED' if verified else 'DEFERRED')
-                record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
-                record['verified_signature']=f.signature(record['target'])
-            except f.Cancelled:
-                result['status']='CANCELLED';record['processing_status']='ROLLED_BACK';record['model_verification']='DEFERRED'
-                try: shutil.copyfile(backup,record['target'])
-                except Exception as exc:add_issue('HOST_ROLLBACK_FAILED',record['source'],exc,'error')
-            except Exception as exc:
-                record['processing_status']='FAILED';record['model_verification']='FAILED'
-                try: shutil.copyfile(backup,record['target'])
-                except Exception as rollback_exc:add_issue('HOST_ROLLBACK_FAILED',record['source'],rollback_exc,'error')
-                add_issue('MODEL_PROCESSING_FAILED',record['source'],
-                          'Final ACC/package processing failed; copied files were retained or restored: '+f.text(exc),'error')
-            finally:
-                for path in (stage,backup):
-                    try:
-                        if os.path.isfile(path):os.remove(path)
-                    except Exception:pass
-
-        # Make final primary workshared hosts behave like eTransmit files without
-        # opening/saving them. The Revit backend preserves existing file-based
-        # reference path/load intent while setting TransmissionData.IsTransmitted.
-        transmitter=getattr(backend,'mark_transmitted_package',None)
-        if transmitter:
-            for record in result['files']:
-                if (record.get('status')!='COPIED' or not record.get('is_primary_host')
-                        or not record.get('is_workshared') or not record.get('target')
-                        or not record['target'].lower().endswith('.rvt')):
-                    continue
-                try:
-                    model_rows=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])]
-                    if bool(getattr(backend,'mark_transmitted_rows_supported',False)):
-                        state=performance.call('metadata','mark_host_transmitted',record['source'],
-                                               transmitter,record['target'],model_rows)
-                    else:
-                        state=performance.call('metadata','mark_host_transmitted',record['source'],
-                                               transmitter,record['target'])
-                    if state is True:
-                        record['transmission_status']='TRANSMITTED'
-                        record['pre_transmission_sha256']=record.get('packaged_sha256') or record.get('sha256')
-                        record['packaged_sha256']=f.digest(record['target'],delivery_cancel)
-                        record['verified_signature']=f.signature(record['target'])
-                    elif state is None:
-                        record['transmission_status']='NOT_WORKSHARED'
-                    else:
-                        record['transmission_status']='TRANSMIT_UNAVAILABLE'
-                        add_issue('WORKSHARING_COPY_NOT_TRANSMITTED',record['source'],
-                                  'The packaged workshared host could not be marked transmitted without opening it. '
-                                  'Open this copy with Detach from Central and Preserve Worksets; never synchronize it to the source central.')
-                except Exception as exc:
-                    record['transmission_status']='TRANSMIT_UNAVAILABLE'
-                    add_issue('WORKSHARING_COPY_NOT_TRANSMITTED',record['source'],
-                              'The packaged workshared host could not be marked transmitted without opening it: '+f.text(exc)+
-                              '. Open this copy with Detach from Central and Preserve Worksets; never synchronize it to the source central.')
-
         verifier = getattr(backend, 'verify_package', None)
         for record in reversed(result['files']):
             if record['status'] != 'COPIED' or not record['source'].lower().endswith('.rvt'): continue
             if record.get('inventory_status')=='NOT_INSPECTED_LINK_FILE' and not record.get('is_primary_host'):
                 record['model_verification']='FILE_INTEGRITY_ONLY'; continue
-            if record.get('verified_in_process') and record.get('transmission_status')!='TRANSMITTED':
-                record['model_verification']='OPENED_AND_REFERENCES_CHECKED'; continue
             if not opts.get('repath') or not verifier:
                 record['model_verification'] = 'NOT_ATTEMPTED'; continue
             if result['status'] == 'CANCELLED' or (cancelled and cancelled()):
@@ -475,7 +376,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 add_issue('MODEL_VERIFICATION_DEFERRED', record['source'], 'A linked model was not delivered; final opening is deferred to prevent source/cloud fallback.', 'error')
                 continue
             try:
-                notify('PACKAGE BUILT — VERIFYING FINAL PACKAGE | '+record['source'],0,1)
+                notify('Checking delivered model '+record['source'],0,1)
                 f.validate_destination_path(record['target'])
                 problems = performance.call('verification','verify_final_host',record['source'],
                     verifier,record['target'], rows, opts) or []
@@ -767,7 +668,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 if record.get('inventory_status') in ('FAILED','RUNNING','UNSTABLE','PARTIAL'):
                     record['processing_status']='SKIPPED_INVENTORY_FAILURE'
                     continue
-                if record.get('is_primary_host') and opts.get('repath'):
+                if record.get('is_primary_host'):
                     missing=[r for r in edges if f.canonical(r.get('owner',''))==f.canonical(record['source'])
                              and (r.get('kind')=='RevitLink' or r.get('category')=='revit') and not r.get('target')]
                     if missing:
@@ -777,20 +678,15 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                                   'The collected host is retained unchanged. Repath/cleanup and link-opening verification were deferred because linked RVT files are not packaged.')
                         continue
                 target = record['target']
-                model_edges = [r for r in edges
-                               if f.canonical(r['owner']) == f.canonical(record['source'])
-                               and not r.get('skip_repath')]
-                finalizer=getattr(backend,'requires_final_host_open',None)
-                if record.get('is_primary_host') and finalizer and finalizer(record,model_edges,opts):
-                    record['processing_status']='FINALIZATION_DEFERRED'
-                    record['finalize_after_delivery']=True
-                    continue
                 # Backend.finish receives the final target explicitly and stages absolute
                 # references before opening. Internal paths need not repeat the source tree.
                 stage = f.temporary_path(work)
                 backup = f.temporary_path(work)
                 f.copy_file(target, backup, cancelled)
                 f.copy_file(target, stage, cancelled)
+                model_edges = [r for r in edges
+                               if f.canonical(r['owner']) == f.canonical(record['source'])
+                               and not r.get('skip_repath')]
                 try:
                     notify('Repath / cleanup ' + record['source'], 0, 1)
                     processing_options=dict(opts)
@@ -798,11 +694,9 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                         processing_options['reference_target']=f.destination(root,record['relative'])
                     processing_options['normalize_saved_cache']=record.get('copy_method')=='COLLABORATION_CACHE_READ_ONLY'
                     f.validate_destination_path(target)
-                    raw_processing=performance.call('repath','process_host',record['source'],
-                        backend.finish,stage, target, model_edges, processing_options)
-                    processing_issues,verified_in_process=normalize_processing_result(raw_processing)
+                    processing_issues=performance.call('repath','process_host',record['source'],
+                        backend.finish,stage, target, model_edges, processing_options) or []
                     result['issues'].extend(processing_issues)
-                    record['verified_in_process']=verified_in_process
                     record['processing_status']='NEEDS_REVIEW' if processing_issues else 'PROCESSED'
                     record['packaged_sha256'] = f.digest(target, cancelled)
                     record['verified_signature'] = f.signature(target)
@@ -857,8 +751,7 @@ def _transmit(models, root, backend, options=None, extras=None, cancelled=None, 
                 try:
                     rec['packaged_sha256'] = f.verified_hash(rec['target'],rec)
                     rec['packaged_size'] = rec['verified_signature'][0]
-                    if (rec.get('is_primary_host') and rec.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW')
-                            and rec.get('transmission_status')!='TRANSMITTED'):
+                    if rec.get('is_primary_host') and rec.get('processing_status') not in ('PROCESSED','NEEDS_REVIEW'):
                         if rec['packaged_sha256']!=rec['sha256']:
                             raise IOError('Unprocessed/restored host differs from the acquired copy.')
                 except Exception as exc:
@@ -901,18 +794,6 @@ def _write_reports_at(result, root):
         result['performance']=performance.current().snapshot()
     result['counts']=package_counts(result)
     result['link_discovery_status']=link_discovery_status(result)
-    for record in result['files']:
-        context=record.get('source_context',{})
-        workshared=bool(record.get('is_workshared') or context.get('is_workshared'))
-        if workshared:
-            transmitted=record.get('transmission_status')=='TRANSMITTED'
-            record['opening_guidance']=('OPEN_AS_TRANSMITTED_MODEL' if transmitted
-                                        else 'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
-            record['original_central_association_preserved']=(True if transmitted else
-                (bool(record.get('saved_state_sha256') and
-                      record.get('packaged_sha256',record.get('sha256'))==record['saved_state_sha256']) or None))
-        if record.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED':
-            record['verification_open_mode']='DETACH_IF_WORKSHARED'
     with io.open(os.path.join(root, 'manifest.json'), 'w', encoding='utf-8') as out:
         out.write(f.text(json.dumps(result, ensure_ascii=False, indent=2)))
     hosts = []
@@ -930,17 +811,6 @@ def _write_reports_at(result, root):
              'File structure: '+layout.mode(result['options'].get('file_structure')),
              'Packaged RVTs opened and references checked: {0}'.format(sum(1 for r in result['files'] if r.get('model_verification')=='OPENED_AND_REFERENCES_CHECKED')), '', 'HOST MODELS:'] + hosts
     if not hosts: lines.append('No host model was copied. This is NOT a completed transmittal.')
-    for record in result['files']:
-        if record.get('is_primary_host') and record.get('status')=='COPIED':
-            lines.append('Transmission status: '+f.text(record.get('transmission_status','NOT_APPLICABLE'))+
-                         ' | '+f.text(record.get('relative','')))
-    if not result['options'].get('repath'):
-        lines.append('Repath was not selected: host references were not changed. Recipients may need Reload From.')
-    lines.extend(['', 'OPENING WORKSHARED / ACC CACHE COPIES:',
-        'When the host report says TRANSMITTED, open the packaged RVT normally. Revit opens detached from its central model because the packaged workshared file is marked transmitted, and may show transmitted-model handling.',
-        'If transmission status is unavailable, use Revit File > Open > Detach from Central, then Preserve Worksets.',
-        'Marking a copy transmitted changes opening/worksharing behavior; it does not repath external links or rewrite ACC external-resource references.',
-        'Do not synchronize package copies to the original central.'])
     if result.get('recovery_directory'): lines.append('Undelivered/recovery files retained at: '+result['recovery_directory'])
     for record in result['files']:
         if record.get('recovery_path'):
@@ -952,10 +822,7 @@ def _write_reports_at(result, root):
                 lines.append('Host acquisition checksum: '+record.get('sha256','NOT_ACQUIRED'))
                 lines.extend(cache_diagnostic_lines(context.get('cache_evidence', {})))
             if context.get('saved_state_only'):
-                events=context.get('preflight_events',[])
-                lines.append('Unsaved edits are excluded unless the user explicitly saved first. Export uses saved RVT bytes. Source Save/reload occurs only when explicitly selected in preflight; no source SaveAs, Sync, Publish, Close or relocation.')
-                for event in events:
-                    lines.append('Preflight: '+f.text(event.get('action',''))+' | '+f.text(event.get('link',event.get('model',''))))
+                lines.append('Unsaved edits are excluded. Open/source models were not saved, synchronized, published, reloaded or relocated.')
                 metadata=context.get('cache_metadata',{})
                 if metadata.get('cache_path'):
                     lines.append('Read-only cached source: '+metadata['cache_path'])
@@ -992,7 +859,7 @@ def _write_reports_at(result, root):
     if result.get('performance'):
         timing_rows=[dict(row,scope='package') for row in result['performance']['operations']]
         for capture in result['performance'].get('initial_discovery',[]):
-            timing_rows.extend(dict(row,scope=capture.get('scope','initial_discovery')) for row in capture['timing']['operations'])
+            timing_rows.extend(dict(row,scope='initial_discovery') for row in capture['timing']['operations'])
         f.write_csv(os.path.join(root,'timings.csv'),timing_rows,
             ['scope','phase','operation','file','target','start_seconds','seconds','self_seconds','status','bytes','mib_per_second','copy_method','error_type'])
     with io.open(os.path.join(root, 'START_HERE.txt'), 'w', encoding='utf-8') as out:
@@ -1000,7 +867,7 @@ def _write_reports_at(result, root):
     if result['options'].get('reports', True):
         with io.open(os.path.join(root, 'REPORT.txt'),'w',encoding='utf-8') as out: out.write('\n'.join(lines))
         f.write_csv(os.path.join(root, 'files.csv'), result['files'],
-                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','verification_open_mode','transmission_status','opening_guidance','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','pre_transmission_sha256','packaged_sha256'])
+                    ['source','requested','relative','category','status','inventory_status','inspection_status','processing_status','preparation_verification','delivery_status','model_verification','collision_separated','acquisition_container','verification_status','size','packaged_size','delivery_method','sha256','packaged_sha256'])
         f.write_csv(os.path.join(root, 'references.csv'), result['references'],
                     ['owner','id','element_id','kind','link_name','source','local','target','loaded','original_loaded','package_loaded','status','repath','preparation_verification','verification','cloud_identity','note'])
         f.write_csv(os.path.join(root, 'issues.csv'), result['issues'], ['severity','code','source','owner','element_id','kind','operation','exception_type','message'])
