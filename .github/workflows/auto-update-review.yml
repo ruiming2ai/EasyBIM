@@ -2,7 +2,7 @@ name: Auto Update review validation
 on:
   push:
     branches: [codex/auto-update-review-20261004]
-    paths: [.github/review-ready]
+    paths: [.github/review-ready, .github/workflows/auto-update-review.yml]
 permissions:
   contents: read
 jobs:
@@ -70,9 +70,12 @@ jobs:
         shell: bash
         run: |
           test "$GITHUB_REF_NAME" = "$REVIEW_BRANCH"
+          # Actions cannot publish workflow changes. The GitHub connector will
+          # publish that exact tested workflow blob separately with main.
+          git restore --source=HEAD --staged --worktree -- .github/workflows/auto-update-tests.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Repair Auto Update wake-up, recovery and verified cross-session reloads' -m 'Apply the exact manifest-verified 18-file candidate after the full regression suite passes. Add timer-to-ExternalEvent scheduling, bounded reload recovery, clean local verification, native handle cleanup, mutex-protected reload validation, regression tests, and history review. This is an isolated validation commit; main is not changed.'
+          git commit -m 'Repair Auto Update wake-up, recovery and verified cross-session reloads' -m 'Apply the manifest-verified source candidate after the full regression suite passes. Add timer-to-ExternalEvent scheduling, bounded reload recovery, clean local verification, native handle cleanup, mutex-protected reload validation, regression tests, and history review. This isolated validation commit excludes the workflow edit, which must be published through the GitHub connector; main is unchanged.'
           git push origin "HEAD:$REVIEW_BRANCH"
           echo "candidate=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   native-windows:
