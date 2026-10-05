@@ -1,0 +1,46 @@
+name: Auto Update review validation
+on:
+  push:
+    branches: [codex/auto-update-review-20261004]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: History and contracts
+        shell: bash
+        run: |
+          echo '=== ALL UPDATER HISTORY ==='
+          git log --all --date=iso-strict --format='%h %ad %s' -- '*auto_update.py' '*Auto Update*' '*auto-update*' startup.py lib/easybim/idling.py
+          echo '=== TRACKED REVIEW AND TEST FILES ==='
+          git ls-files | grep -Ei 'agents.md|auto.?update|idling|startup'
+          echo '=== UPDATE FILE HISTORY WITH RENAMES ==='
+          git log --follow --date=iso-strict --format='%H %ad %s' -- lib/easybim/auto_update.py
+          echo '=== NATIVE TEST RUNNER ==='
+          cat 'Development Space/tests/run_auto_update_native.ps1'
+          echo '=== BUTTON ==='
+          cat 'EasyBIM.tab/Misc Tools.panel/Auto Update.pushbutton/script.py'
+          cat 'EasyBIM.tab/Misc Tools.panel/Auto Update.pushbutton/bundle.yaml'
+          echo '=== REMAINING UPDATER SOURCE ==='
+          sed -n '630,1000p' lib/easybim/auto_update.py
+      - name: Full regression suite
+        run: python -B -m unittest discover -s 'Development Space/tests' -v
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Real IronPython and LibGit2Sharp tests
+        shell: powershell
+        run: "& './Development Space/tests/run_auto_update_native.ps1'"
