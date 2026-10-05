@@ -1,0 +1,4 @@
+Auto Update cross-session repair ready for validation.
+Patch SHA-256: 4fa94b8fae3e9b2cd63a4e6bdc5ad767488457913f13b5f308b11c7f3b2ef894
+Local full regression result: 2725 tests, OK, 4 skipped.
+Main publication is separate and must include only the 18 manifest-verified repair files.
