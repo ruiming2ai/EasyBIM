@@ -2,20 +2,88 @@ name: Auto Update review validation
 on:
   push:
     branches: [codex/auto-update-review-20261004]
+    paths: [.github/review-ready]
 permissions:
   contents: read
 jobs:
-  snapshot:
+  prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      candidate: ${{ steps.publish.outputs.candidate }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Pack source and history
-        run: tar -czf /tmp/easybim-review.tar.gz --exclude=.git/hooks .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: easybim-review-source
-          path: /tmp/easybim-review.tar.gz
-          retention-days: 3
+          python-version: '3.12'
+      - name: Apply and verify exact repair
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, hashlib, lzma, os, pathlib, subprocess
+          expected = {
+            '.github/workflows/auto-update-tests.yml': 'f9e794c625a7e252eec9800e304c3c6a778d94b9',
+            'Development Space/docs/auto-update-cross-session-review-2026-10-04.md': '71ea1d28d6917964c30a686a7dde3c5fe5b23920',
+            'Development Space/docs/plans/2026-10-04-auto-update-wakeup.md': '143cf97965e560cfeb1398ff9b5fe8605ed89c8a',
+            'Development Space/tests/fixtures/UpdateWakeupHost.cs': '04dfb8702099477a3a807087918f187fb72c7e4f',
+            'Development Space/tests/native_update_wakeup.py': 'aee17d05982b924d9e7efc05e1afa80860859240',
+            'Development Space/tests/run_auto_update_native.ps1': '90267d13609c802119e1bac1f54cedcc93d4094c',
+            'Development Space/tests/test_auto_update.py': '07bead5579215f06e601874c35fb061c58f724f4',
+            'Development Space/tests/test_auto_update_recovery.py': 'c1c59b7a24c50f9f0cadc4c9048591d57672464f',
+            'Development Space/tests/test_auto_update_sessions.py': 'd5d2cd5cd9a1685be63863aceef13568bfd65343',
+            'Development Space/tests/test_automation.py': 'f57f1b9f6b6dfa73a52a44f8048387f8c455c261',
+            'Development Space/tests/test_coordination_review_passive.py': '29835092335b085bcb10a7b9da0cc2cc5f22ce28',
+            'Development Space/tests/test_startup_job_reentrancy.py': 'cc94489db2b79641e3e6ce58cf171d261bf71e18',
+            'Development Space/tests/test_update_wakeup.py': '10c1c308410303639f16a06e5c09ca73a37ace94',
+            'EasyBIM.tab/Misc Tools.panel/Auto Update.pushbutton/bundle.yaml': '16144d8c8b106f3d01f67957e822ee9ac809c138',
+            'README.md': '8afcbb57a38c35a7f53401ab8b88ea197279ac5e',
+            'lib/easybim/auto_update.py': '88d3e8e08e0b1f3296816a23c38737ffc1fd5f93',
+            'lib/easybim/idling.py': '28a2e812d098e0083430be2107951a0c7c67a37a',
+            'lib/easybim/update_wakeup.py': '82daca49f84ecb9097a3e455e980890220977c3a',
+          }
+          encoded = ''.join(pathlib.Path('.github/review-patch-part-%s.txt' % i).read_text().strip() for i in (1, 2, 3))
+          patch = lzma.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '4fa94b8fae3e9b2cd63a4e6bdc5ad767488457913f13b5f308b11c7f3b2ef894', 'Patch transport checksum failed'
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'easybim-repair.patch'
+          target.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--index', '--check', str(target)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(target)], check=True)
+          paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '-z']).decode().rstrip('\0').split('\0')
+          assert set(paths) == set(expected), 'Unexpected repair paths'
+          for path, sha in expected.items():
+              actual = subprocess.check_output(['git', 'rev-parse', ':' + path]).decode().strip()
+              assert actual == sha, (path, actual, sha)
+              print(actual, path)
+          print('All 18 exact candidate blobs verified.')
+          PY
+          git diff --cached --check
+      - name: Full regression suite
+        run: python -B -m unittest discover -s 'Development Space/tests' -q
+      - name: Publish tested candidate only to review branch
+        id: publish
+        env:
+          REVIEW_BRANCH: codex/auto-update-review-20261004
+        shell: bash
+        run: |
+          test "$GITHUB_REF_NAME" = "$REVIEW_BRANCH"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Repair Auto Update wake-up, recovery and verified cross-session reloads' -m 'Apply the exact manifest-verified 18-file candidate after the full regression suite passes. Add timer-to-ExternalEvent scheduling, bounded reload recovery, clean local verification, native handle cleanup, mutex-protected reload validation, regression tests, and history review. This is an isolated validation commit; main is not changed.'
+          git push origin "HEAD:$REVIEW_BRANCH"
+          echo "candidate=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  native-windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+          persist-credentials: false
+      - name: Real IronPython Git timer and mutex validation
+        shell: powershell
+        run: "& './Development Space/tests/run_auto_update_native.ps1'"
