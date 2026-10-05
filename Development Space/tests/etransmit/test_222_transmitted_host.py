@@ -80,61 +80,41 @@ class TransmittedBoundary(unittest.TestCase):
         self.assertEqual(self.read,[]);self.assertEqual(self.writes,[])
 
 
-class EngineIndependentDelivery(unittest.TestCase):
+class EngineTransmittedDelivery(unittest.TestCase):
     def setUp(self):
         self.root=tempfile.mkdtemp(prefix='ET_222_');self.addCleanup(shutil.rmtree,self.root);self.src=os.path.join(self.root,'Host.rvt');self.out=os.path.join(self.root,'out')
         with io.open(self.src,'wb') as out:out.write(b'host')
         self.calls=[]
         parent=self
         class Backend(object):
-            independent_host_supported=True
             def scan(self,source,stage,options): return dict(references=[],issues=[],version='2024',is_workshared=True)
-            def finish(self,stage,target,rows,options):
-                parent.assertTrue(options.get('independent_host'))
-                parent.assertEqual(rows,[])
-                parent.assertTrue(os.path.isfile(stage))
-                parent.assertTrue(os.path.isfile(target))
-                parent.calls.append(target)
-                return dict(issues=[],host_finalized=True,saved_references_checked=True,
-                            independent_package_central=True,verified_in_process=False)
-            def mark_transmitted_package(self,*args): parent.fail('primary hosts must remain ordinary independent models')
-            def verify_package(self,*args): parent.fail('finalized hosts must not be opened again by the parent')
-        self.backend=Backend();self.opts=dict(f.defaults(), simple_repath=False);self.opts.update(repath=False,cleanup=False,upgrade=False,per_model=False)
+            def mark_transmitted_package(self,target): parent.calls.append(target);return True
+        self.backend=Backend();self.opts=f.defaults();self.opts.update(repath=False,cleanup=False,upgrade=False,per_model=False)
 
-    def test_collect_only_finalizes_primary_host_and_reports_normal_independent_opening(self):
+    def test_collect_only_marks_only_final_primary_host_and_reports_transmitted_opening(self):
         result=engine.transmit([self.src],self.out,self.backend,self.opts)
         host=result['files'][0]
         self.assertEqual(self.calls,[host['target']])
-        self.assertTrue(host.get('host_finalized'))
-        self.assertTrue(host.get('saved_references_checked'))
-        self.assertEqual(host.get('transmission_status'),'NOT_TRANSMITTED')
-        self.assertEqual(host.get('model_verification'),'SAVED_REFERENCES_CHECKED')
-        self.assertEqual(host.get('opening_guidance'),'OPEN_NORMALLY_INDEPENDENT_PACKAGE')
-        self.assertIs(host.get('original_central_association_preserved'),False)
+        self.assertEqual(host.get('transmission_status'),'TRANSMITTED')
+        self.assertEqual(host.get('opening_guidance'),'OPEN_AS_TRANSMITTED_MODEL')
         with io.open(os.path.join(self.out,'START_HERE.txt'),encoding='utf-8') as inp:text=inp.read()
-        self.assertIn('Transmission status: NOT_TRANSMITTED',text)
-        self.assertNotIn('opens detached',text.lower())
+        self.assertIn('Transmission status: TRANSMITTED',text)
+        self.assertIn('opens detached',text.lower())
 
-    def test_finalization_failure_keeps_original_in_recovery_and_removes_delivery(self):
-        def fail(*args):raise RuntimeError('package central cannot be saved')
-        self.backend.finish=fail
+    def test_mark_failure_keeps_detach_guidance(self):
+        self.backend.mark_transmitted_package=lambda target:False
         result=engine.transmit([self.src],self.out,self.backend,self.opts)
         host=result['files'][0]
-        self.assertFalse(host.get('host_finalized'))
-        self.assertEqual(host.get('transmission_status'),'NOT_FINALIZED')
-        self.assertEqual(host.get('model_verification'),'FAILED')
-        self.assertFalse(os.path.isfile(host['target']))
-        self.assertTrue(os.path.isfile(host['recovery_path']))
-        self.assertEqual(f.digest(host['recovery_path']),f.digest(self.src))
-        self.assertTrue(any(i['code']=='MODEL_PROCESSING_FAILED' for i in result['issues']))
+        self.assertEqual(host.get('transmission_status'),'TRANSMIT_UNAVAILABLE')
+        self.assertEqual(host.get('opening_guidance'),'DETACH_RECOMMENDED_FOR_WORKSHARED_COPY')
+        self.assertTrue(any(i['code']=='WORKSHARING_COPY_NOT_TRANSMITTED' for i in result['issues']))
 
-    def test_expected_independent_host_save_is_not_reported_as_host_corruption(self):
+    def test_expected_transmission_metadata_change_is_not_reported_as_host_corruption(self):
         original=f.digest(self.src)
-        finish=self.backend.finish
-        def save_independent(stage,target,rows,options):
-            with io.open(target,'ab') as out: out.write(b'-independent-central')
-            return finish(stage,target,rows,options)
-        self.backend.finish=save_independent
+        def mark(target):
+            with io.open(target,'ab') as out: out.write(b'-transmitted-metadata')
+            return True
+        self.backend.mark_transmitted_package=mark
         result=engine.transmit([self.src],self.out,self.backend,self.opts)
         host=result['files'][0]
         self.assertEqual(f.digest(self.src),original)

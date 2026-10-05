@@ -179,7 +179,7 @@ class PathRegression(unittest.TestCase):
         dialog.categories = [ui.Choice(label, key) for key, label in f.CATEGORIES]
         dialog.Output = types.SimpleNamespace(Text=str(self.base))
         dialog.DeepScan = flag(True); dialog.Repath = flag(True); dialog.SkipCloudLinks = flag(True)
-        dialog.LoadUnloadedFiles = flag(True); dialog.SimpleRepath = flag(True)
+        dialog.LoadUnloadedFiles = flag(True)
         dialog.FileStructure = types.SimpleNamespace(SelectedItem=types.SimpleNamespace(Key='categories'))
         dialog.Cleanup = flag(False); dialog.Upgrade = flag(False)
         dialog.DiscardWorksets = flag(False); dialog.Purge = flag(False)

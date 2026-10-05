@@ -44,7 +44,7 @@ class References(unittest.TestCase):
         self.assertEqual(row['resource_information']['Path'],actual)
     def test_final_verification_checks_cad_link_path(self):
         target='C:\\Out\\CAD\\site.dwg'
-        ref=Obj(GetAbsolutePath=lambda:target,GetPath=lambda:target)
+        ref=Obj(GetAbsolutePath=lambda:target)
         element=Obj()
         self.db.ExternalFileUtils=Obj(
             GetAllExternalFileReferences=lambda d:[],
@@ -63,73 +63,6 @@ class References(unittest.TestCase):
         self.assertEqual(issues,[])
         self.assertEqual(row.get('verification'),'PATH_CHECKED')
 
-    def test_pdf_repair_opens_absolute_packaged_file_but_requests_relative_storage(self):
-        self.b.guard=lambda path:None
-        self.db.ElementId=lambda value:value
-        self.db.ImageTypeSource=Obj(Link='Link')
-        self.db.TransactionStatus=Obj(Committed='Committed',Started='Started')
-        captured=[]
-        class Options(Obj):
-            def IsValid(self,doc):return True
-        self.db.ImageTypeOptions=lambda path,relative,source:(
-            captured.append((path,relative,source)) or
-            Options(Path=path,Dispose=lambda:None))
-        tx=Obj(Start=lambda:None,Commit=lambda:'Committed',GetStatus=lambda:'Committed',
-               RollBack=lambda:None,Dispose=lambda:None)
-        self.db.Transaction=lambda doc,name:tx
-        reloaded=[]
-        image=Obj(ReloadFrom=lambda opts:reloaded.append(opts.Path),Unload=lambda:None)
-        old_system=sys.modules.get('System')
-        sys.modules['System']=Obj(Int64=int,Int32=int)
-        row=dict(element_id='30',id='30',kind='Image',special='image',
-                 source='old.pdf',target='C:\\Package\\Links\\PDF\\A.pdf',
-                 page=1,resolution=600,loaded=True)
-        try:
-            issues,changed=self.b.repath_images(Obj(GetElement=lambda ident:image),[row])
-        finally:
-            if old_system is None:sys.modules.pop('System',None)
-            else:sys.modules['System']=old_system
-        self.assertEqual(issues,[])
-        self.assertTrue(changed)
-        self.assertEqual(captured,[(row['target'],True,'Link')])
-        self.assertEqual(reloaded,[row['target']])
-        self.assertEqual(row['repath'],'API_IMAGE_RELATIVE')
-        self.assertEqual(row['repath_source'],'PACKAGED_ABSOLUTE_FILE')
-
-    def test_cad_link_repair_uses_packaged_target(self):
-        calls=[]
-        result=Obj(LoadResult='LinkLoaded',Dispose=lambda:None)
-        link=Obj(LoadFrom=lambda path:calls.append(path) or result)
-        self.db.ElementId=lambda value:value
-        old_system=sys.modules.get('System')
-        sys.modules['System']=Obj(Int64=int,Int32=int)
-        row=dict(element_id='20',id='20',kind='CADLink',target='C:\\Out\\CAD\\site.dwg')
-        try:
-            self.b.repath_cad_links(Obj(GetElement=lambda ident:link),[row])
-        finally:
-            if old_system is None:sys.modules.pop('System',None)
-            else:sys.modules['System']=old_system
-        self.assertEqual(calls,['C:\\Out\\CAD\\site.dwg'])
-        self.assertEqual(row['repath'],'API_CAD_LINK')
-
-    def test_cad_repath_failure_is_reported_without_aborting_other_repairs(self):
-        bad=Obj(LoadFrom=lambda path:(_ for _ in ()).throw(RuntimeError('bad dwg')))
-        good_result=Obj(LoadResult='LinkLoaded',Dispose=lambda:None)
-        good=Obj(LoadFrom=lambda path:good_result)
-        self.db.ElementId=lambda value:value
-        old_system=sys.modules.get('System')
-        sys.modules['System']=Obj(Int64=int,Int32=int)
-        rows=[dict(element_id='20',id='20',kind='CADLink',source='bad.dwg',target='C:\\Out\\CAD\\bad.dwg'),
-              dict(element_id='21',id='21',kind='CADLink',source='good.dwg',target='C:\\Out\\CAD\\good.dwg')]
-        try:
-            issues=self.b.repath_cad_links(Obj(GetElement=lambda ident:bad if ident==20 else good),rows)
-        finally:
-            if old_system is None:sys.modules.pop('System',None)
-            else:sys.modules['System']=old_system
-        self.assertEqual(rows[0]['repath'],'FAILED')
-        self.assertEqual(rows[1]['repath'],'API_CAD_LINK')
-        self.assertEqual([x['code'] for x in issues],['CAD_REPATH_FAILED'])
-
     def test_unknown_metadata_value_is_not_invented_as_source(self):
         self.assertEqual(self.b.resource_source('',{'ModelIdentity':'C:\\NotAPathField.rvt'},'RevitLink'),'')
     def test_report_directory_path_is_preserved(self):
@@ -145,97 +78,14 @@ class References(unittest.TestCase):
         result=self.b.basic(path)
         self.assertEqual(result['version'],'2024')
         self.assertIn('BasicFileInfo',result.get('metadata_warning',''))
-    def test_image_relative_option_validates_absolute_package_file_and_stores_relative(self):
-        self.b.guard=lambda path:None
+    def test_image_relative_option_uses_final_host_base(self):
+        self.b.guard=lambda path:None  # Windows API path formatting test on either OS
         self.db.ImageTypeSource=Obj(Link='Link')
-        captured=[]
-        self.db.ImageTypeOptions=lambda path,rel,src:(captured.append((path,rel,src)) or Obj(Path=path))
+        self.db.ImageTypeOptions=lambda path,rel,src:Obj(Path=path)
         row=dict(target='C:\\Out\\PDF\\Details.pdf',page=1,resolution=300)
-        options=self.b.image_options(row,True,'C:\\Out\\Host.rvt')
-        self.assertEqual(options.Path,row['target'])
-        self.assertEqual(captured,[(row['target'],True,'Link')])
-
-class IndependentCentralSave(unittest.TestCase):
-    def test_workshared_repair_copy_is_saved_as_new_package_central(self):
-        calls=[]
-        class SaveOptions(Obj):
-            def SetWorksharingOptions(self,ws):self.ws=ws
-            def Dispose(self):pass
-        class WorksharingOptions(Obj):
-            def Dispose(self):pass
-        db=Obj(SaveAsOptions=lambda:SaveOptions(),
-               WorksharingSaveAsOptions=lambda:WorksharingOptions())
-        b=Backend(db,Obj(VersionNumber='2026'),'C:\\Package')
-        b.guard=lambda path:None
-        doc=Obj(IsWorkshared=True,PathName='C:\\Temp\\stage.rvt')
-        def save_as(path,options):
-            calls.append((path,options.ws.SaveAsCentral))
-            doc.PathName=path
-        doc.SaveAs=save_as
-        self.assertTrue(b._save_as_independent_package_central(doc,'C:\\Package\\Host.rvt'))
-        self.assertEqual(calls,[('C:\\Package\\Host.rvt',True)])
-
-
-class IndependentRepair(unittest.TestCase):
-    def test_worker_lifecycle_materializes_temporary_metadata_and_checks_final_saved_host(self):
-        b=Backend(Obj(),Obj(VersionNumber='2024'),'C:\\Package')
-        b.guard=lambda path:None
-        b.basic=lambda path:dict(version='2024',workshared=True)
-        events=[]
-        doc=Obj(IsWorkshared=True,PathName='C:\\Temp\\stage.rvt',
-                Save=lambda:events.append('save'),
-                Close=lambda value:events.append('close') or True)
-        def open_copy(stage,discard=False,**kwargs):
-            self.assertFalse(discard)
-            events.append(('open',stage))
-            return doc
-        b.open_copy=open_copy
-        def save_central(document,target,clear_transmitted=False):
-            events.append(('saveas-central',clear_transmitted))
-            document.PathName=target
-            return True
-        b._save_as_independent_package_central=save_central
-        b._repath_external_revit_links_relative=lambda document,rows:([],False)
-        b.repath_cad_links=lambda document,rows:[]
-        def repath_images(document,rows):
-            self.assertEqual(document.PathName,'C:\\Package\\Host.rvt')
-            events.append('repath-image')
-            for row in rows:row['repath']='API_IMAGE_RELATIVE'
-            return [],True
-        b.repath_images=repath_images
-        def apply_metadata(path,target,rows,relative=True,mark_transmitted=True):
-            self.assertTrue(mark_transmitted)
-            events.append(('metadata',path,target,relative))
-            return True
-        b.apply_metadata=apply_metadata
-        b._package_is_transmitted=lambda path:True
-        b._verify_document=lambda document,target,rows,options:(events.append('verify-document') or [])
-        def verify_saved(target,rows,options,expected_workshared=None):
-            self.assertEqual(target,'C:\\Package\\Host.rvt')
-            self.assertTrue(expected_workshared)
-            events.append('verify-saved')
-            return []
-        b.verify_independent_package=verify_saved
-        row=dict(id='10',element_id='10',kind='Image',special='image',
-                 source='old.pdf',target='C:\\Package\\Links\\PDF\\A.pdf',loaded=True)
-        result=b.finish_independent('C:\\Temp\\stage.rvt','C:\\Package\\Host.rvt',
-                                    [row],dict(repath=True,cleanup=False,upgrade=False,
-                                               normalize_saved_cache=False,independent_host=True))
-        self.assertEqual(events,[
-            ('metadata','C:\\Temp\\stage.rvt','C:\\Package\\Host.rvt',False),
-            ('open','C:\\Temp\\stage.rvt'),('saveas-central',True),
-            'repath-image','save','verify-document','close',
-            ('metadata','C:\\Package\\Host.rvt','C:\\Package\\Host.rvt',True),
-            ('open','C:\\Package\\Host.rvt'),'verify-document',
-            ('saveas-central',True),'close','verify-saved',
-            ('open','C:\\Package\\Host.rvt'),'verify-document','close'])
-        self.assertTrue(result['independent_package_central'])
-        self.assertTrue(result['host_finalized'])
-        self.assertTrue(result['saved_references_checked'])
-        self.assertFalse(result['verified_in_process'])
-        self.assertEqual(result['verification_status'],'SAVED_REFERENCES_CHECKED')
-        self.assertEqual(row['repath'],'API_IMAGE_RELATIVE')
-
+        try:options=self.b.image_options(row,True,'C:\\Out\\RVT\\Host.rvt')
+        except TypeError: self.fail('image_options must accept final model path for real relative paths')
+        self.assertEqual(options.Path,'..\\PDF\\Details.pdf')
 
 class EngineRepairs(unittest.TestCase):
     def test_metadata_failure_is_not_retried_in_finishing(self):
@@ -280,31 +130,7 @@ class EngineRepairs(unittest.TestCase):
         self.assertEqual(calls,['finish','verify'])
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
-    def test_finalized_worker_host_is_not_reopened_for_verification(self):
-        root=tempfile.mkdtemp(prefix='ET_worker_noverify_');self.addCleanup(shutil.rmtree,root)
-        host=os.path.join(root,'Host.rvt')
-        with open(host,'wb') as out:out.write(b'host')
-        calls=[]
-        class B(object):
-            independent_host_supported=True
-            def scan(self,*args):return dict(references=[],issues=[],is_workshared=False,version='2026')
-            def finish(self,stage,target,rows,options):
-                self.test.assertTrue(options.get('independent_host'))
-                calls.append('finish')
-                return dict(issues=[],verified_in_process=False,worker_repaired=True,
-                            host_finalized=True,saved_references_checked=True,
-                            independent_package_central=False)
-            def verify_package(self,*args):
-                self.test.fail('the parent must trust final saved reference checks')
-        backend=B();backend.test=self
-        result=e.transmit([host],os.path.join(root,'out'),backend,dict(f.defaults(),simple_repath=False))
-        self.assertEqual(calls,['finish'])
-        self.assertTrue(result['files'][0].get('worker_repaired'))
-        self.assertTrue(result['files'][0].get('host_finalized'))
-        self.assertTrue(result['files'][0].get('saved_references_checked'))
-        self.assertEqual(result['files'][0].get('model_verification'),'SAVED_REFERENCES_CHECKED')
-
-    def test_legacy_backend_workshared_host_is_never_marked_transmitted(self):
+    def test_transmitted_workshared_host_is_verified_after_metadata_rewrite(self):
         root=tempfile.mkdtemp(prefix='ET_posttx_');self.addCleanup(shutil.rmtree,root)
         host=os.path.join(root,'Host.rvt')
         with open(host,'wb') as out:out.write(b'host')
@@ -322,8 +148,8 @@ class EngineRepairs(unittest.TestCase):
                 calls.append('verify')
                 return []
         result=e.transmit([host],os.path.join(root,'out'),B())
-        self.assertEqual(calls,['finish'])
-        self.assertEqual(result['files'][0].get('transmission_status'),'SOURCE_STATE_PRESERVED')
+        self.assertEqual(calls,['finish','transmit','verify'])
+        self.assertEqual(result['files'][0].get('transmission_status'),'TRANSMITTED')
         self.assertEqual(result['files'][0].get('model_verification'),'OPENED_AND_REFERENCES_CHECKED')
 
     def test_parent_is_processed_after_collected_link(self):

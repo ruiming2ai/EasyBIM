@@ -3,26 +3,27 @@ from __future__ import unicode_literals
 import os,sys,unittest,tempfile,shutil
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..','..'))
 sys.path.insert(0,os.path.join(ROOT,'lib'))
-from easybim_etransmit import session as s,engine,files as f,batch,worker
+from easybim_etransmit import session as s,engine,files as f,batch
 import test_211_host_safety as fixtures
 Obj=fixtures.Obj
 
 class ExtraHostChecks(fixtures.HostSafety):
     # Inherit the same setup; explicitly add only these scenarios to this suite.
-    def test_processing_failure_retains_original_outside_package(self):
+    def test_processing_failure_restores_main_without_packaged_baseline(self):
         key=self.live();self.authorize(key)
-        def finalize(application,stage,target,rows,options,**kwargs):
-            self.assertTrue(options['independent_host'])
-            with open(target,'wb') as out:out.write(b'bad processor result')
-            raise RuntimeError('repath failed')
-        worker.run_separate_revit=finalize
         class B(s.SessionBackend):
+            def finish(inner,stage,target,*args):
+                with open(target,'wb') as out:out.write(b'bad processor result')
+                raise RuntimeError('repath failed')
             def verify_package(inner,*args):self.fail('failed processing must not be opened')
         out=os.path.join(self.root,'out')
-        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),dict(f.defaults(), simple_repath=False))
-        rec=self.assert_retained_original(result)
+        result=engine.transmit([key],out,B(self.db,self.app,out,self.r),f.defaults())
+        rec=result['files'][0]
+        with open(rec['target'],'rb') as inp:self.assertEqual(inp.read(),self.current)
+        self.assertEqual(f.digest(rec['target']),rec['current_state_sha256'])
+        self.assertFalse(os.path.exists(os.path.join(out,'_HostState')))
+        self.assertEqual(rec['current_state_integrity'],'VERIFIED')
         self.assertEqual(rec['processing_status'],'FAILED')
-        self.assertTrue(any(i['code']=='MODEL_PROCESSING_FAILED' for i in result['issues']))
     def test_postsave_mutation_is_not_claimed_as_current_snapshot(self):
         old=self.doc.SaveAs
         def save(path,opts):old(path,opts);self.doc.IsModified=True

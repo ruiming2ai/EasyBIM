@@ -57,7 +57,7 @@ class PackageRevitOperations(unittest.TestCase):
             self.loads.append(resource)
             return Obj(LoadResult='LinkLoaded')
         self.link=Obj(IsFromLocalPath=False,LoadFrom=load,Unload=lambda x:self.unloads.append(True),
-            GetExternalFileReference=lambda:Obj(GetAbsolutePath=lambda:self.link_path,GetPath=lambda:self.link_path))
+            GetExternalFileReference=lambda:Obj(GetAbsolutePath=lambda:self.link_path))
         def save(path,options):
             self.saves.append(path)
             with open(path,'wb') as out:out.write(b'processed copy')
@@ -105,12 +105,9 @@ class PackageRevitOperations(unittest.TestCase):
         with self.assertRaises(RuntimeError):self.b.finish(self.stage,self.target,[self.row],dict(repath=True))
         self.assertEqual(self.saves,[]);self.assertEqual(self.closed,[False])
 
-    def test_bare_cached_rvt_is_copied_without_independent_SaveAs(self):
-        with open(self.stage,'wb') as out:out.write(b'cached host')
-        result=self.b.finish(self.stage,self.target,[],dict(repath=True,normalize_saved_cache=True))
-        self.assertTrue(result['metadata_repathed'])
-        self.assertEqual(self.saves,[])
-        with open(self.target,'rb') as inp:self.assertEqual(inp.read(),b'cached host')
+    def test_bare_cached_rvt_is_saved_as_independent_copy(self):
+        self.b.finish(self.stage,self.target,[],dict(repath=True,normalize_saved_cache=True))
+        self.assertEqual(self.saves,[self.target])
 
     def test_verifier_checks_requested_loaded_state(self):
         self.loaded=False
@@ -133,7 +130,6 @@ class PackageRevitOperations(unittest.TestCase):
                SetDesiredReferenceData=lambda *args:calls.append(args))
         self.db.TransmissionData=Obj(ReadTransmissionData=lambda p:td,WriteTransmissionData=lambda *a:None)
         self.row['resource_information']={}
-        self.row['repath']='API_LOCAL_LINK'
         # Use the real method, not the finishing-test stub.
         revit.Backend.apply_metadata(self.b,self.stage,self.target,[self.row])
         self.assertTrue(calls[0][3]);self.assertFalse(self.row['loaded'])

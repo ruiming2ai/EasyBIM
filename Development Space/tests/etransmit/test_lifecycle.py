@@ -51,12 +51,11 @@ class Lifecycle(unittest.TestCase):
         self.row=dict(id='200',element_id='200',special='image',kind='PDF',page=3,resolution=240,
                       target=self.image_path,source='original.pdf',loaded=True)
     def test_image_save_lifecycle_and_page_resolution(self):
-        opts=f.defaults();opts['simple_repath']=False
         with patch.dict(sys.modules,{'System':NS(Int32=int,Int64=int)}):
-            issues=self.backend.finish(self.stage,self.target,[self.row],opts)
+            issues=self.backend.finish(self.stage,self.target,[self.row],f.defaults())
         self.assertEqual(self.closed,[False]);self.assertEqual(self.saved,[self.target,self.target])
         self.assertEqual([x['Relative'] for x in self.reloads],[True])
-        self.assertEqual(self.reloads[0]['Path'],self.image_path)
+        self.assertEqual(self.reloads[0]['Path'],'details.pdf')
         self.assertTrue(all(x['Resolution']==240 and x['PageNumber']==3 for x in self.reloads))
         self.assertEqual(self.row['repath'],'API_IMAGE_RELATIVE');self.assertEqual(issues,[])
     def test_one_image_failure_does_not_roll_back_other_image_repaths(self):
@@ -64,9 +63,8 @@ class Lifecycle(unittest.TestCase):
         old=self.doc.GetElement
         def failed(opts): raise IOError('image could not reload')
         self.doc.GetElement=lambda ident:NS(ReloadFrom=failed) if ident.Value==201 else self.image
-        opts=f.defaults();opts['simple_repath']=False
         with patch.dict(sys.modules,{'System':NS(Int32=int,Int64=int)}):
-            issues=self.backend.finish(self.stage,self.target,[bad,self.row],opts)
+            issues=self.backend.finish(self.stage,self.target,[bad,self.row],f.defaults())
         self.assertEqual(self.row['repath'],'API_IMAGE_RELATIVE')
         self.assertEqual(bad['repath'],'FAILED')
         self.assertEqual([i['code'] for i in issues],['IMAGE_REPATH_FAILED'])
@@ -75,9 +73,8 @@ class Lifecycle(unittest.TestCase):
     def test_save_failure_closes_temporary_document(self):
         def fail(*args): raise IOError('save failed')
         self.doc.SaveAs=fail
-        opts=f.defaults();opts['simple_repath']=False
         with patch.dict(sys.modules,{'System':NS(Int32=int,Int64=int)}):
-            with self.assertRaises(IOError):self.backend.finish(self.stage,self.target,[self.row],opts)
+            with self.assertRaises(IOError):self.backend.finish(self.stage,self.target,[self.row],f.defaults())
         self.assertEqual(self.closed,[False]);self.assertFalse(Path(self.target).exists())
     def test_repath_disabled_copies_saved_bytes_without_open(self):
         self.backend.open_copy=lambda *args:self.fail('Disabled cleanup/repath must not open document')

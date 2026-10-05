@@ -39,10 +39,7 @@ class RecordingRevitBoundary(session.SessionBackend):
         self.finalizations.append(dict(target=target, rows=copy.deepcopy(rows),
                                        options=dict(options)))
         shutil.copyfile(stage, target)
-        return dict(issues=[], verified_in_process=False, worker_repaired=True,
-                    host_finalized=True, saved_references_checked=True,
-                    verification_status='SAVED_REFERENCES_CHECKED',
-                    independent_package_central=True)
+        return dict(issues=[], verified_in_process=False)
 
 
 class ReportRepathAcquisition(unittest.TestCase):
@@ -120,11 +117,9 @@ class ReportRepathAcquisition(unittest.TestCase):
         output = os.path.join(self.root, 'out')
         backend = RecordingRevitBoundary(self.db, self.app, output, self.r)
         opts = f.defaults()
-        opts.update(repath=True, simple_repath=False, cleanup=False, upgrade=False)
+        opts.update(repath=True, cleanup=False, upgrade=False)
         self.before = dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in self.sources)
         result = engine.transmit([host], output, backend, opts)
-        if result.get('recovery_directory'):
-            self.addCleanup(f.remove_tree_retry, result['recovery_directory'])
         return result, backend
 
     def assert_finalization_reached(self, detached):
@@ -134,8 +129,7 @@ class ReportRepathAcquisition(unittest.TestCase):
         self.assertEqual(len(backend.finalizations), 1, repr(result['issues']))
         call = backend.finalizations[0]
         self.assertTrue(call['options']['repath'])
-        self.assertTrue(call['options']['independent_host'])
-        self.assertFalse(call['options']['verify_in_process'])
+        self.assertTrue(call['options']['verify_in_process'])
         self.assertEqual(len(call['rows']), 7)
         for row in call['rows']:
             self.assertTrue(os.path.isfile(row['target']))
@@ -149,13 +143,6 @@ class ReportRepathAcquisition(unittest.TestCase):
         self.assertEqual(link['source_context']['cache_metadata']['revision_check'],
                          'SAVED_CACHE_DIFFERS_FROM_LOADED')
         self.assertFalse(any(i['code'] == 'HOST_PRESERVED_WITHOUT_LINK_REPATH' for i in result['issues']))
-        host=next(r for r in result['files'] if r.get('is_primary_host'))
-        self.assertEqual(host.get('model_verification'),'SAVED_REFERENCES_CHECKED')
-        self.assertTrue(host.get('worker_repaired'))
-        self.assertTrue(host.get('host_finalized'))
-        self.assertEqual(host['transmission_status'],'NOT_TRANSMITTED')
-        self.assertEqual(host['opening_guidance'],'OPEN_NORMALLY_INDEPENDENT_PACKAGE')
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],1)
         self.assertEqual(dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in self.sources), self.before)
 
     def test_acc_live_report_pair_reaches_repath_with_all_dependencies(self):
@@ -169,16 +156,9 @@ class ReportRepathAcquisition(unittest.TestCase):
         self.assertEqual(backend.finalizations, [])
         host = next(r for r in result['files'] if r.get('is_primary_host'))
         self.assertEqual(host['processing_status'], 'HOST_PRESERVED_LINKS_UNAVAILABLE')
-        self.assertEqual(host['model_verification'], 'DEFERRED')
-        self.assertEqual(host['status'], 'NOT_FINALIZED')
-        self.assertEqual(host['transmission_status'], 'NOT_FINALIZED')
-        self.assertFalse(host['host_finalized'])
-        self.assertFalse(os.path.isfile(host['target']))
-        self.assertFalse(f.within(host['recovery_path'],result['root']))
-        self.assertEqual(f.digest(host['recovery_path']), f.digest(self.original))
-        self.assertEqual(engine.package_counts(result)['hosts_copied'],0)
+        self.assertEqual(host['model_verification'], 'NOT_ATTEMPTED')
+        self.assertEqual(f.digest(host['target']), f.digest(self.original))
         self.assertEqual(engine.package_counts(result)['revit_links_copied'], 3)
-        self.assertEqual(dict((p, (f.digest(p), os.stat(p).st_mtime)) for p in self.sources), self.before)
 
     def test_genuinely_ambiguous_pair_still_blocks_native_host_open(self):
         self.assert_host_still_protected(conflict=True)

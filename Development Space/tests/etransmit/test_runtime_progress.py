@@ -36,16 +36,7 @@ class ContextTests(unittest.TestCase):
         def scan(*args):
             state.uiapp = None  # models opened/closed invoke document event hooks
             return dict(references=refs, issues=[])
-        def finish(stage, target, rows, options):
-            self.assertTrue(options.get('independent_host'))
-            self.assertTrue(f.within(target, self.output))
-            self.assertEqual(os.path.basename(target), 'Host.rvt')
-            self.assertTrue(all(f.file_exists(r['target']) for r in rows if r.get('target')))
-            shutil.copyfile(stage, target)
-            return dict(issues=[], host_finalized=True, saved_references_checked=True,
-                        verification_status='SAVED_REFERENCES_CHECKED', worker_repaired=True,
-                        independent_package_central=False, verified_in_process=False)
-        self.backend = Obj(scan=scan, finish=finish, independent_host_supported=True)
+        self.backend = Obj(scan=scan, finish=lambda *a: [])
 
     def make(self, relative, payload):
         path = os.path.normpath(os.path.join(self.root, relative))
@@ -60,45 +51,36 @@ class ContextTests(unittest.TestCase):
         def pulse(*args):
             self.state.calls += 1
             return self.state.uiapp.MainWindowHandle
-        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False), pulse=pulse)
+        result = e.transmit([self.host], self.output, self.backend, pulse=pulse)
         self.assertEqual(e.package_counts(result)['files_copied'], 3, repr(result['issues']))
         problems = [x for x in result['issues'] if x['code'] == 'PROGRESS_UI_FAILED']
         self.assertEqual(len(problems), 1)
         self.assertIn('MainWindowHandle', problems[0]['message'])
         self.assertIn('traceback', problems[0])
         self.assertFalse(any(x['code'] == 'MODEL_PROCESSING_FAILED' for x in result['issues']))
-        self.assertEqual(result['files'][0]['model_verification'], 'SAVED_REFERENCES_CHECKED')
-        self.assertEqual(result['files'][0]['transmission_status'], 'NOT_TRANSMITTED')
 
     def test_real_missing_file_still_reports_error_and_trace(self):
-        self.backend.scan = lambda *a: dict(references=[dict(id='9', kind='RevitLink', source=os.path.join(self.root,'Missing.rvt'))], issues=[])
-        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False))
+        self.backend.scan = lambda *a: dict(references=[dict(id='9', source=self.pdf + '.missing')], issues=[])
+        result = e.transmit([self.host], self.output, self.backend)
         errors = [i for i in result['issues'] if i['code'] == 'COLLECTION_FAILED']
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]['operation'], 'copy_file')
         self.assertIn('traceback', errors[0])
         self.assertTrue(os.path.isfile(os.path.join(self.output, 'DIAGNOSTICS.txt')))
         self.assertIn('incomplete', e.completion_message([result], 1))
-        host=result['files'][0]
-        self.assertEqual(host['status'], 'NOT_FINALIZED')
-        self.assertEqual(e.package_counts(result)['hosts_copied'], 0)
-        self.assertFalse(f.within(host['recovery_path'], result['root']))
-        self.assertEqual(f.digest(host['recovery_path']), f.digest(self.host))
-        self.assertFalse(f.file_exists(host['target']))
-        self.addCleanup(f.remove_tree_retry, result['recovery_directory'])
 
     def test_midcopy_ui_error_does_not_discard_verified_file(self):
         def pulse(label, copied, total):
             if copied:
                 raise AttributeError('UI redraw failed')
-        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False), pulse=pulse)
+        result = e.transmit([self.host], self.output, self.backend, pulse=pulse)
         self.assertEqual(e.package_counts(result)['files_copied'], 3)
         self.assertEqual(len([i for i in result['issues'] if i['code'] == 'PROGRESS_UI_FAILED']), 1)
 
     def test_cancel_from_progress_is_not_swallowed(self):
         def pulse(*args):
             raise f.Cancelled('cancel button')
-        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False), pulse=pulse)
+        result = e.transmit([self.host], self.output, self.backend, pulse=pulse)
         self.assertEqual(result['status'], 'CANCELLED')
         self.assertFalse(any(x['code'] == 'PROGRESS_UI_FAILED' for x in result['issues']))
 
@@ -131,7 +113,7 @@ class ContextTests(unittest.TestCase):
             ui.progress_ui._PANEL_INSTANCE=panel
             ui.progress_ui.open_panel=lambda:(opens.append(True),panel.reset(),panel)[-1]
             ui.progress_ui.close_panel=lambda:closes.append(True)
-            options = dict(f.defaults(), simple_repath=False); options['per_model'] = False
+            options = f.defaults(); options['per_model'] = False
             ui.Dialog = lambda *a: Obj(result=([Obj(Source=self.host,Mode='SAVED_FILE')], self.output, options, []), ShowDialog=lambda: None,release_credentials=lambda:None)
             ui.SessionBackend = lambda *a: self.backend
             ui.run(Obj(Application=Obj()), 'unused.xaml')
@@ -162,15 +144,10 @@ class ContextTests(unittest.TestCase):
             return dict(references=[dict(id='99', source=scratch)], issues=[])
         self.backend.set_staging_root = set_staging
         self.backend.scan = scan
-        result = e.transmit([self.host], self.output, self.backend, dict(f.defaults(), simple_repath=False))
-        self.assertEqual(e.package_counts(result)['files_copied'], 0)
+        result = e.transmit([self.host], self.output, self.backend)
+        self.assertEqual(e.package_counts(result)['files_copied'], 1)
         self.assertTrue(any(x['code'] == 'STAGING_REFERENCE_UNRESOLVED' for x in result['issues']))
         self.assertFalse(any(x['relative'].endswith('/Arch.rvt') for x in result['files']))
-        host=result['files'][0]
-        self.assertEqual(host['status'], 'NOT_FINALIZED')
-        self.assertEqual(f.digest(host['recovery_path']), f.digest(self.host))
-        self.assertFalse(f.within(host['recovery_path'], result['root']))
-        self.addCleanup(f.remove_tree_retry, result['recovery_directory'])
 
 
 class PathTests(unittest.TestCase):

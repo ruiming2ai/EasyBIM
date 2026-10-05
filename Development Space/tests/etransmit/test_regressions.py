@@ -53,12 +53,6 @@ class APIBoundary(unittest.TestCase):
         self.backend.apply_metadata(self.stage,self.target,rows)
         self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',False))
         self.assertTrue(self.td.IsTransmitted); self.assertTrue(self.td.disposed)
-    def test_worker_metadata_normalization_keeps_independent_central_untransmitted(self):
-        rows=[dict(id='100',target=str(self.root/'Consumed'/'a.rvt'),loaded=True)]
-        self.backend.apply_metadata(self.stage,self.target,rows,mark_transmitted=False)
-        self.assertFalse(self.td.IsTransmitted)
-        self.assertEqual(self.td.writes[0][1:],(os.path.join('Consumed','a.rvt'),'Relative',True))
-
     def test_cad_transmission_reference_repaths_even_without_live_loaded_flag(self):
         rows=[dict(id='100',element_id='100',kind='CADLink',
                    target=str(self.root/'CAD'/'site.dwg'))]
@@ -107,14 +101,13 @@ class APIBoundary(unittest.TestCase):
     def test_workshared_without_td_warns_about_original_central(self):
         self.db.TransmissionData.ReadTransmissionData=lambda p:None
         self.backend.basic=lambda p:dict(version='2026',workshared=True,central='source.rvt')
-        issues=self.backend.finish(self.stage,self.target,[],f.defaults())['issues']
+        issues=self.backend.finish(self.stage,self.target,[],f.defaults())
         self.assertTrue(any(i['code']=='WORKSHARING_COPY_NOT_DETACHED' for i in issues))
     def test_no_implicit_upgrade_for_image_repath(self):
         self.backend.basic=lambda p:dict(version='2023',workshared=False,central='')
         self.backend.open_copy=lambda *a: self.fail('Must not open for saving without upgrade consent')
         rows=[dict(id='200',target=str(self.root/'page.pdf'),source='page.pdf',special='image',loaded=True)]
-        options=f.defaults();options['simple_repath']=False
-        issues=self.backend.finish(self.stage,self.target,rows,options)
+        issues=self.backend.finish(self.stage,self.target,rows,f.defaults())
         self.assertTrue(any(i['code']=='UPGRADE_CONSENT_REQUIRED' for i in issues))
         self.assertEqual(Path(self.target).read_bytes(),b'original')
 

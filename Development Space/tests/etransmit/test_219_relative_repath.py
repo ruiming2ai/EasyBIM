@@ -21,5 +21,5 @@ class RelativeRepath(unittest.TestCase):
         rows=self.rows();self.b.apply_metadata(self.stage,self.host,rows,relative=True);self.assertEqual([os.path.basename(r['target']) for r in rows],['Architecture.rvt','Architecture.rvt'])
         values=[c[1] for c in self.calls];self.assertNotEqual(values[0],values[1]);self.assertTrue(values[0].replace('\\','/').endswith('Links/Revit/A/Architecture.rvt'));self.assertTrue(values[1].replace('\\','/').endswith('Links/Revit/B/Architecture.rvt'));self.assertEqual([c[2] for c in self.calls],['Relative','Relative'])
     def test_metadata_only_finish_does_not_open_or_save_document(self):
-        rows=self.rows()[:1];result=self.b.finish(self.stage,self.host,rows,dict(repath=True));self.assertEqual(result['issues'],[]);self.assertTrue(result['metadata_repathed']);self.assertTrue(os.path.isfile(self.host));self.assertEqual(rows[0]['repath'],'TRANSMISSION_DATA')
+        rows=self.rows()[:1];issues=self.b.finish(self.stage,self.host,rows,dict(repath=True));self.assertEqual(issues,[]);self.assertTrue(os.path.isfile(self.host));self.assertEqual(rows[0]['repath'],'TRANSMISSION_DATA')
 if __name__=='__main__':unittest.main(verbosity=2)
