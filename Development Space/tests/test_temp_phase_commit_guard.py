@@ -1,4 +1,4 @@
-"""Temp Phase must never let a synchronization send temporary phases to central."""
+"""Temp Phase must never let a sync or save write temporary phases out."""
 
 import pathlib
 import unittest
@@ -20,7 +20,7 @@ class FakeSyncArgs(FakeClosingArgs):
     """DocumentSynchronizingWithCentralEventArgs: same Document/Cancel surface."""
 
 
-class TempPhaseSyncGuardTests(unittest.TestCase):
+class TempPhaseCommitGuardTests(unittest.TestCase):
     def setUp(self):
         self.runtime = _load_runtime()
         self.doc = FakeDocument(workshared=True)
@@ -64,13 +64,13 @@ class TempPhaseSyncGuardTests(unittest.TestCase):
 
         return restore
 
-    def _sync(self, restore_ok, has_work=True, cancellable=True):
+    def _sync(self, restore_ok, has_work=True, cancellable=True, action="sync"):
         args = FakeSyncArgs(self.doc)
         args.Cancellable = cancellable
         with mock.patch.object(
             self.runtime, "collect_tvp_summary", return_value=self._summary(has_work)
         ), mock.patch.object(self.runtime, "restore_tvp_summary", side_effect=self._restore(restore_ok)):
-            result = self.runtime.handle_sync_requested(self.uiapp, args)
+            result = self.runtime.handle_commit_requested(self.uiapp, args, action=action)
         return args, result
 
     def _idle(self, has_work=True, restore_ok=True):
@@ -122,7 +122,7 @@ class TempPhaseSyncGuardTests(unittest.TestCase):
         self.assertEqual(len(self.alerts), 1)
         self.assertIn("was stopped", self.alerts[0])
         self.assertIn("Synchronize again", self.alerts[0])
-        self.assertEqual(self.runtime._get_state()["sync_restores"], {})
+        self.assertEqual(self.runtime._get_state()["guard_restores"], {})
         self.assertEqual(self.view_state["armed_documents"], {})
 
     def test_uncancellable_sync_is_still_followed_by_the_restore(self):
@@ -139,18 +139,53 @@ class TempPhaseSyncGuardTests(unittest.TestCase):
     def test_idle_restore_that_keeps_failing_gives_up_with_manual_steps(self):
         self._sync(restore_ok=False)
         for _ in range(self.runtime.MAX_RESTORE_ATTEMPTS):
-            record = self.runtime._get_state()["sync_restores"].get("id|42")
+            record = self.runtime._get_state()["guard_restores"].get("id|42")
             if record is not None:
                 record["next_try_at"] = 0.0
             self._idle(restore_ok=False)
 
-        self.assertEqual(self.runtime._get_state()["sync_restores"], {})
+        self.assertEqual(self.runtime._get_state()["guard_restores"], {})
         self.assertEqual(len(self.alerts), 1)
         self.assertIn("Restore All Views", self.alerts[0])
 
-    def test_guard_exception_never_escapes_the_sync_delegate(self):
+    def test_save_restores_temporary_phases_in_place(self):
+        args, result = self._sync(restore_ok=True, action="save")
+
+        self.assertTrue(result)
+        self.assertEqual(self.restore_calls, 1)
+        self.assertEqual(args.cancel_calls, 0, "the restore rides in the user's own save")
+
+        self._idle()
+        self.assertEqual(len(self.alerts), 1)
+        self.assertIn("restored before saving", self.alerts[0])
+        self.assertIn("the saved file keeps the original phases", self.alerts[0])
+
+    def test_refused_restore_cancels_the_save_and_asks_to_save_again(self):
+        args, result = self._sync(restore_ok=False, action="save")
+
+        self.assertTrue(result)
+        self.assertEqual(args.cancel_calls, 1)
+
+        self._idle(restore_ok=True)
+        self.assertEqual(len(self.alerts), 1)
+        self.assertIn("Saving sample.rvt was stopped", self.alerts[0])
+        self.assertIn("Save again", self.alerts[0])
+
+    def test_save_and_save_as_delegates_route_to_the_save_guard(self):
+        calls = []
         with mock.patch.object(
-            self.runtime, "handle_sync_requested", side_effect=RuntimeError("boom")
+            self.runtime,
+            "handle_commit_requested",
+            side_effect=lambda uiapp, event_args, action: calls.append(action),
+        ):
+            self.runtime.document_saving_handler(self.uiapp, FakeSyncArgs(self.doc))
+            self.runtime.document_saving_as_handler(self.uiapp, FakeSyncArgs(self.doc))
+            self.runtime.document_synchronizing_with_central_handler(self.uiapp, FakeSyncArgs(self.doc))
+        self.assertEqual(calls, ["save", "save", "sync"])
+
+    def test_guard_exception_never_escapes_the_delegate(self):
+        with mock.patch.object(
+            self.runtime, "handle_commit_requested", side_effect=RuntimeError("boom")
         ):
             self.assertFalse(
                 self.runtime.document_synchronizing_with_central_handler(
@@ -158,7 +193,7 @@ class TempPhaseSyncGuardTests(unittest.TestCase):
                 )
             )
 
-    def test_the_pre_sync_event_is_attached_and_detached(self):
+    def test_the_pre_commit_events_are_attached_and_detached(self):
         class FakeEvent(object):
             def __init__(self):
                 self.handlers = []
@@ -171,19 +206,27 @@ class TempPhaseSyncGuardTests(unittest.TestCase):
                 self.handlers.remove(handler)
                 return self
 
+        names = ("DocumentSynchronizingWithCentral", "DocumentSaving", "DocumentSavingAs")
+
         class FakeApp(object):
-            DocumentSynchronizingWithCentral = FakeEvent()
+            pass
 
         app = FakeApp()
-        self.runtime._attach_completion(app, "DocumentSynchronizingWithCentral", "handler")
-        self.assertEqual(app.DocumentSynchronizingWithCentral.handlers, ["handler"])
-        self.runtime._detach_completion(app, "DocumentSynchronizingWithCentral", "handler")
-        self.assertEqual(app.DocumentSynchronizingWithCentral.handlers, [])
+        for name in names:
+            setattr(app, name, FakeEvent())
+            self.runtime._attach_completion(app, name, "handler")
+            self.assertEqual(getattr(app, name).handlers, ["handler"], name)
+            self.runtime._detach_completion(app, name, "handler")
+            self.assertEqual(getattr(app, name).handlers, [], name)
 
-    def test_install_registers_the_pre_sync_guard(self):
+    def test_install_registers_the_pre_commit_guard(self):
         source = pathlib.Path(self.runtime.__file__).read_text(encoding="utf-8")
-        self.assertIn('"DocumentSynchronizingWithCentralEventArgs"', source)
-        self.assertIn("document_synchronizing_with_central_handler,", source)
+        for args_name in (
+            "DocumentSynchronizingWithCentralEventArgs",
+            "DocumentSavingEventArgs",
+            "DocumentSavingAsEventArgs",
+        ):
+            self.assertIn('"{0}"'.format(args_name), source)
 
 
 if __name__ == "__main__":

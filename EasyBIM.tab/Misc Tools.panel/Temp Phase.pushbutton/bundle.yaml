@@ -9,9 +9,9 @@ tooltip: >-
   restores every tracked view and clears Temporary View Properties in
   one transaction before closing.
 
-  Synchronize with Central does the same restore first, so temporary
-  phases never reach the central model. Click Temp Phase again after
-  the sync to re-apply one.
+  Synchronize with Central, Save and Save As do the same restore first,
+  so temporary phases never reach the central model or a saved file.
+  Click Temp Phase again afterwards to re-apply one.
 author: Ruiming Liu
 min_revit_version: 2015
 max_revit_version: 2027
