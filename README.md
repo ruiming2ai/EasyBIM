@@ -74,6 +74,17 @@ single `Idling` delegate installed at startup (`lib/easybim/idling.py`),
 coordinate the per-document trigger/state and prevent duplicate close reposts.
 Using Temp Phase in one file does not arm close recovery for other open files.
 
+Synchronize with Central is guarded the same way, so temporary phases never
+reach the central model even if the file is later closed without another sync.
+When an armed file is synchronized, EasyBIM runs the same restore transaction
+on `DocumentSynchronizingWithCentral`, so the sync the user started carries the
+original phases; a short notice confirms what was restored, and the button can
+re-apply a temporary phase afterwards. If Revit refuses the restore at that
+moment, the sync is cancelled, the restore runs on the next idle tick, and the
+user is asked to synchronize again. A sync Revit does not let EasyBIM cancel is
+still followed by the restore, with a prompt to synchronize again so central is
+corrected.
+
 Normal users only need to update EasyBIM from GitHub and reload pyRevit. No DLL
 staging, build step, or cache clearing is required. The standalone C# fallback
 add-in and its source have been removed from the repository; the Python command

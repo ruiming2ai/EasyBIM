@@ -276,6 +276,119 @@ def handle_doc_closing(uiapp=None, event_args=None):
     return True
 
 
+def handle_sync_requested(uiapp=None, event_args=None):
+    """Keep temporary phases out of central by restoring them before a sync.
+
+    Runs on DocumentSynchronizingWithCentral, where Revit lets handlers modify
+    the document, so the restore lands in the very sync the user started.  If
+    Revit refuses the transaction anyway, the sync is cancelled and the restore
+    is retried from Idling; a sync that cannot be cancelled is still followed by
+    the restore, so the user's next sync replaces what central received.
+    """
+    uiapp, event_args = _normalize_event_call(uiapp, event_args)
+    if event_args is None:
+        return False
+
+    uiapp = _get_uiapp(uiapp)
+    doc = _resolve_doc_from_event_args(event_args, uiapp)
+    if not _is_doc_valid(doc) or not _is_doc_supported(doc):
+        return False
+
+    doc_key = _doc_key(doc)
+    doc_runtime_id = _extract_doc_runtime_id(event_args, doc)
+    token = _identity_token(doc_key, doc_runtime_id)
+    view_state = _get_view_state()
+    if not _is_document_armed(view_state, doc_key=doc_key, doc_runtime_id=doc_runtime_id):
+        return False
+
+    summary = collect_tvp_summary(uiapp=uiapp, doc=doc, view_state=view_state)
+    if not summary.get("has_restore_work"):
+        _disarm_restored_document(doc_key, doc_runtime_id)
+        return False
+
+    title = _doc_title(doc)
+    result = restore_tvp_summary(uiapp=uiapp, doc=doc, summary=summary)
+    state = _get_state()
+    if result.get("ok"):
+        _disarm_restored_document(doc_key, doc_runtime_id)
+        state["sync_notices"][token] = {
+            "title": title,
+            "restored_phase_views": _to_int(result.get("restored_phase_views")) or 0,
+            "disabled_untracked_tvp_views": _to_int(result.get("disabled_untracked_tvp_views")) or 0,
+        }
+        _save_state(state)
+        _log("TempPhaseSyncRestoredBeforeSync token={0}".format(token))
+        return True
+
+    cancelled = _event_is_cancellable(event_args) and _try_cancel_event(event_args)
+    state["sync_restores"][token] = {
+        "doc_key": _safe_text(doc_key),
+        "doc_runtime_id": _to_int(doc_runtime_id),
+        "title": title,
+        "sync_cancelled": bool(cancelled),
+        "attempts": 0,
+        "next_try_at": 0.0,
+    }
+    _save_state(state)
+    _log(
+        "TempPhaseSyncRestoreDeferred token={0} syncCancelled={1}".format(
+            token,
+            bool(cancelled),
+        )
+    )
+    return bool(cancelled)
+
+
+def _disarm_restored_document(doc_key, doc_runtime_id):
+    """Stop scanning this document's views on every later sync and close."""
+    view_state = _get_view_state()
+    if _has_tracked_sessions_for_identity(view_state, doc_key, doc_runtime_id):
+        return False
+    _drop_doc_sessions_for_identities(view_state, [(doc_key, doc_runtime_id)])
+    return True
+
+
+def _sync_notice_message(notice):
+    title = _safe_text(notice.get("title")) or "this document"
+    return "\n".join(
+        [
+            "Temporary phases and view settings in {0} were restored before "
+            "synchronizing, so central keeps the original phases.".format(title),
+            "",
+            "Views returned to their original phase: {0}".format(
+                _to_int(notice.get("restored_phase_views")) or 0
+            ),
+            "Additional views with temporary settings cleared: {0}".format(
+                _to_int(notice.get("disabled_untracked_tvp_views")) or 0
+            ),
+            "",
+            "Click Temp Phase again to re-apply a temporary phase.",
+        ]
+    )
+
+
+def _sync_retry_message(record):
+    title = _safe_text(record.get("title")) or "this document"
+    if record.get("sync_cancelled"):
+        headline = (
+            "Synchronization of {0} was stopped so temporary phases would not "
+            "reach central.".format(title)
+        )
+    else:
+        headline = (
+            "The synchronization of {0} may have sent temporary phases to "
+            "central.".format(title)
+        )
+    return "\n".join(
+        [
+            headline,
+            "",
+            "The original phases and view settings are now restored. "
+            "Synchronize again to send them to central.",
+        ]
+    )
+
+
 def handle_idling(uiapp=None, event_args=None):
     """Restore pending documents and finish Save/Sync-before-close commits.
 
@@ -303,12 +416,16 @@ def handle_idling(uiapp=None, event_args=None):
             or state.get("commit_operations")
             or state.get("pending_commit_closes")
             or state.get("closing_identities")
+            or state.get("sync_restores")
+            or state.get("sync_notices")
         ):
             state["pending_closes"] = {}
             state["commit_operations"] = {}
             state["pending_commit_closes"] = {}
             state["commit_failures"] = {}
             state["closing_identities"] = {}
+            state["sync_restores"] = {}
+            state["sync_notices"] = {}
             _save_state(state)
         _log("AppIdlingSkippedShutdown")
         return False
@@ -330,7 +447,17 @@ def handle_idling(uiapp=None, event_args=None):
         commit_failures = {}
         state["commit_failures"] = commit_failures
 
-    if not pending and not commit_operations and not commit_pending and not commit_failures:
+    sync_restores = state["sync_restores"]
+    sync_notices = state["sync_notices"]
+
+    if (
+        not pending
+        and not commit_operations
+        and not commit_pending
+        and not commit_failures
+        and not sync_restores
+        and not sync_notices
+    ):
         # The quiet-session path: only write state back when the expiry sweep
         # actually removed or added something.
         if _expire_repost_guards(state):
@@ -338,6 +465,57 @@ def handle_idling(uiapp=None, event_args=None):
         return False
 
     changed = False
+
+    # Every record is retired before its modal opens: Revit keeps raising
+    # Idling behind a dialog, and a re-entrant tick must not show it twice.
+    for token, notice in list(sync_notices.items()):
+        sync_notices.pop(token, None)
+        changed = True
+        if isinstance(notice, dict):
+            _show_alert(TITLE, _sync_notice_message(notice))
+            _log("TempPhaseSyncNoticeShown token={0}".format(token))
+
+    for token, record in list(sync_restores.items()):
+        if not isinstance(record, dict):
+            sync_restores.pop(token, None)
+            changed = True
+            continue
+        if now < float(record.get("next_try_at", 0.0) or 0.0):
+            continue
+
+        doc = _find_doc_by_identity(
+            uiapp,
+            doc_key=record.get("doc_key"),
+            doc_runtime_id=record.get("doc_runtime_id"),
+        )
+        if not _is_doc_valid(doc):
+            sync_restores.pop(token, None)
+            changed = True
+            _log("TempPhaseSyncRestoreDocumentUnavailable token={0}".format(token))
+            continue
+
+        summary = collect_tvp_summary(uiapp=uiapp, doc=doc, view_state=_get_view_state())
+        if summary.get("has_restore_work"):
+            result = restore_tvp_summary(uiapp=uiapp, doc=doc, summary=summary)
+            if not result.get("ok"):
+                if _retry_pending_close(record, now):
+                    changed = True
+                    continue
+                sync_restores.pop(token, None)
+                changed = True
+                _show_alert(
+                    TITLE,
+                    "Temporary phases could not be restored before synchronizing.\n\n"
+                    "Click Temp Phase > Restore All Views, then synchronize again.",
+                )
+                _log("TempPhaseSyncRestoreFailedGivingUp token={0}".format(token))
+                continue
+
+        sync_restores.pop(token, None)
+        changed = True
+        _disarm_restored_document(record.get("doc_key"), record.get("doc_runtime_id"))
+        _show_alert(TITLE, _sync_retry_message(record))
+        _log("TempPhaseSyncRestoredAfterSync token={0}".format(token))
 
     # Completion handlers run on Revit's application event thread, so failures
     # are queued and the user-facing TaskDialog is shown from Idling instead.
@@ -708,6 +886,17 @@ def document_synchronized_with_central_handler(sender, args):
     return handle_commit_completed(sender, args, action="sync")
 
 
+def document_synchronizing_with_central_handler(sender, args):
+    """Restore temporary phases before Revit sends the model to central."""
+    # Raw .NET delegate on the sync path: an escaping exception must never be
+    # what stops a user's synchronization.
+    try:
+        return handle_sync_requested(uiapp=sender, event_args=args)
+    except Exception as ex:
+        log_hook_exception("TempPhaseSyncGuardException", ex)
+        return False
+
+
 def handle_document_saved(sender, event_args):
     """Compatibility-friendly name for the post-Save completion delegate."""
     return document_saved_handler(sender, event_args)
@@ -724,12 +913,13 @@ def handle_document_synchronized_with_central(sender, event_args):
 
 
 def install_completion_handlers():
-    """Install only post-operation completion handlers.
+    """Install the Save/Sync completion handlers and the pre-sync guard.
 
-    This deliberately subscribes only to post-operation completion events.
-    Save and synchronization are initiated by an explicit command link after
-    restoration; these handlers merely observe completion before the guarded
-    Close command is posted.
+    Save and synchronization for a close are initiated by an explicit command
+    link after restoration; the completion handlers merely observe them before
+    the guarded Close command is posted.  The one pre-operation handler,
+    DocumentSynchronizingWithCentral, restores temporary phases so no sync -
+    the user's own or the close flow's - sends them to central.
     """
     try:
         from pyrevit import DB, HOST_APP, framework
@@ -754,6 +944,11 @@ def install_completion_handlers():
             "DocumentSynchronizedWithCentralEventArgs",
             document_synchronized_with_central_handler,
         ),
+        (
+            "DocumentSynchronizingWithCentral",
+            "DocumentSynchronizingWithCentralEventArgs",
+            document_synchronizing_with_central_handler,
+        ),
     )
     handlers = {}
     try:
@@ -774,7 +969,7 @@ def install_completion_handlers():
     _store_completion_registration({"app": app, "handlers": handlers})
     _log(
         "TempPhaseCommitHandlersInstalled events=DocumentSaved,DocumentSavedAs,"
-        "DocumentSynchronizedWithCentral"
+        "DocumentSynchronizedWithCentral,DocumentSynchronizingWithCentral"
     )
     return True
 
@@ -1481,6 +1676,8 @@ def _attach_completion(app, event_name, handler):
         app.DocumentSavedAs += handler
     elif event_name == "DocumentSynchronizedWithCentral":
         app.DocumentSynchronizedWithCentral += handler
+    elif event_name == "DocumentSynchronizingWithCentral":
+        app.DocumentSynchronizingWithCentral += handler
 
 
 def _detach_completion(app, event_name, handler):
@@ -1491,6 +1688,8 @@ def _detach_completion(app, event_name, handler):
             app.DocumentSavedAs -= handler
         elif event_name == "DocumentSynchronizedWithCentral":
             app.DocumentSynchronizedWithCentral -= handler
+        elif event_name == "DocumentSynchronizingWithCentral":
+            app.DocumentSynchronizingWithCentral -= handler
     except Exception:
         pass
 
@@ -1798,6 +1997,8 @@ def _get_state():
     state.setdefault("pending_commit_closes", {})
     state.setdefault("commit_failures", {})
     state.setdefault("closing_identities", {})
+    state.setdefault("sync_restores", {})
+    state.setdefault("sync_notices", {})
     state.setdefault("next_generation", 0)
     state.setdefault("last_idling_at", 0.0)
     if not isinstance(state.get("pending_closes"), dict):
@@ -1809,6 +2010,8 @@ def _get_state():
         "pending_commit_closes",
         "commit_failures",
         "closing_identities",
+        "sync_restores",
+        "sync_notices",
     ):
         if not isinstance(state.get(key), dict):
             state[key] = {}
