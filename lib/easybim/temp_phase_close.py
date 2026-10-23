@@ -638,8 +638,8 @@ def handle_idling(uiapp=None, event_args=None):
             )
         )
 
-    # A successful Save/Sync completion is converted into one guarded Close
-    # request.  Keep retrying briefly when the target document is inactive;
+    # A restored document (or a completed Save/Sync) is converted into one
+    # guarded Close request.  Keep retrying briefly when the target document is inactive;
     # command availability failures eventually leave the document open.
     for token, record in list(commit_pending.items()):
         if not isinstance(record, dict):
@@ -652,7 +652,7 @@ def handle_idling(uiapp=None, event_args=None):
             changed = True
             _show_alert(
                 TITLE,
-                "The restored file was committed, but Revit did not allow the "
+                "Temporary phases were restored, but Revit did not allow the "
                 "document to close. The file remains open.",
             )
             _log("TempPhaseCommitCloseExpired token={0}".format(token))
@@ -688,7 +688,7 @@ def handle_idling(uiapp=None, event_args=None):
         changed = True
         _show_alert(
             TITLE,
-            "The restored file was committed, but Revit could not post its Close "
+            "Temporary phases were restored, but Revit could not post its Close "
             "command. The document remains open.",
         )
         _log("TempPhaseCommitClosePostFailed token={0}".format(token))
@@ -754,41 +754,18 @@ def handle_idling(uiapp=None, event_args=None):
                 )
             )
 
-        # Preserve the counts discovered at DocumentClosing when another hook
-        # has already disabled TVP by the time Idling runs.
-        if not summary.get("tracked_restore_views") and not summary.get("untracked_tvp_views"):
-            summary["tracked_restore_count"] = _to_int(record.get("tracked_restore_count")) or 0
-            summary["untracked_tvp_count"] = _to_int(record.get("untracked_tvp_count")) or 0
-        if "doc_is_workshared" not in summary:
-            summary["doc_is_workshared"] = bool(record.get("doc_is_workshared"))
-        # Retire the pending record BEFORE showing the modal.  Revit can keep
-        # raising Idling behind a dialog, and the state dict handed back by
-        # pyRevit is live, so a re-entrant tick would otherwise still see this
-        # token queued and open a second close-decision dialog.  Every other
-        # alert in this function already pops first.
+        # Saves and syncs restore temporary phases on their own, so no written
+        # copy can hold one and the close needs no Save/Sync step: hand the
+        # restored document straight to the guarded Close repost.
         pending.pop(token, None)
+        commit_pending[token] = dict(
+            record,
+            attempts=0,
+            next_try_at=0.0,
+            expires_at=now + COMMIT_GUARD_SEC,
+        )
         changed = True
-        decision = _show_close_decision(summary, record)
-
-        if decision == "save_close":
-            _log("TempPhaseSaveCloseSelected token={0}".format(token))
-            if not _begin_commit_close(uiapp, state, token, record, "save"):
-                _show_alert(
-                    TITLE,
-                    "The restored file remains open because Revit could not start its "
-                    "Save command.",
-                )
-        elif decision == "sync_close":
-            _log("TempPhaseSyncCloseSelected token={0}".format(token))
-            if not _begin_commit_close(uiapp, state, token, record, "sync"):
-                _show_alert(
-                    TITLE,
-                    "The restored file remains open because Revit could not start "
-                    "synchronization with central.",
-                )
-        else:
-            _log("TempPhaseCloseKeptOpen token={0}".format(token))
-            _log("IdlingCloseCancelledByUser token={0}".format(token))
+        _log("TempPhaseRestoredClosing token={0}".format(token))
 
     if _expire_repost_guards(state):
         changed = True

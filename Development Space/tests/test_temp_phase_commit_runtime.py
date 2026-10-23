@@ -111,13 +111,6 @@ class FakeClosingArgs(object):
         self.cancel_calls += 1
 
 
-class FakeCompletionArgs(object):
-    def __init__(self, doc, status="Succeeded"):
-        self.Document = doc
-        self.DocumentId = doc.DocumentId
-        self.Status = status
-
-
 class FakeDialog(object):
     def __init__(self, result):
         self.result = result
@@ -192,8 +185,8 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
         self.runtime._save_view_state = lambda state: None
         self.runtime._int_to_eid = lambda value: value
 
-    def _queue_restore_and_choose(self, decision, workshared=False):
-        """Queue a cancelled close and drive it through the decision dialog."""
+    def _queue_close_and_restore(self, workshared=False):
+        """Cancel a close and run the Idling tick that restores the document."""
         if workshared:
             self.doc.IsWorkshared = True
         closing = FakeClosingArgs(self.doc)
@@ -202,26 +195,22 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
         for record in state["pending_closes"].values():
             record["next_try_at"] = 0
 
-        summary = {
-            "has_restore_work": False,
-            "doc_is_workshared": bool(workshared),
-            "doc_title": "sample.rvt",
-            "dialog_view_lines": [],
-        }
+        summary = {"has_restore_work": False, "doc_title": "sample.rvt"}
         with mock.patch.object(
             self.runtime, "collect_tvp_summary", return_value=summary
         ), mock.patch.object(
-            self.runtime, "_show_close_decision", return_value=decision
+            self.runtime,
+            "_show_close_decision",
+            side_effect=AssertionError("closing must not ask to Save or Sync"),
         ), mock.patch.object(
             self.runtime, "_get_ui", return_value=self.command_ui
         ):
-            self.runtime.handle_app_idling(self.uiapp)
+            self._idle()
         return state
 
-    def _set_idle_ready(self, state):
-        del state
-        # The idle throttle lives in a module global now, not in the state.
+    def _idle(self):
         self.runtime._LAST_IDLE_AT[0] = 0.0
+        self.runtime.handle_app_idling(self.uiapp)
 
     def test_non_workshared_dialog_exposes_save_and_keep_open_only(self):
         ui = FakeUi(FakeUi.TaskDialogResult.CommandLink1)
@@ -279,94 +268,38 @@ class TempPhaseCommitRuntimeTests(unittest.TestCase):
             self.runtime.handle_app_idling(self.uiapp)
         get_state.assert_not_called()
 
-    def test_keep_open_choice_does_not_start_commit(self):
-        state = self._queue_restore_and_choose("cancel")
+    def test_restored_close_completes_without_a_save_or_sync_step(self):
+        state = self._queue_close_and_restore(workshared=True)
+        self.assertFalse(state.get("pending_closes"))
+        self.assertFalse(state.get("commit_operations"), "no Save/Sync is started")
+        self.assertEqual(1, len(state.get("pending_commit_closes", {})))
+
+        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi(None)):
+            self._idle()
+        self.assertEqual([("command-id", FakeUi.PostableCommand.Close)], self.uiapp.posted)
+
+        # The reposted close is let through once instead of being cancelled again.
+        self.assertFalse(self.runtime.handle_doc_closing(self.uiapp, FakeClosingArgs(self.doc)))
+        self.assertFalse(state.get("pending_closes"))
+
+        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi(None)):
+            self._idle()
+        self.assertEqual(1, len(self.uiapp.posted), "the Close is posted once")
+
+    def test_close_that_revit_will_not_post_leaves_the_file_open_and_says_so(self):
+        state = self._queue_close_and_restore()
+        self.uiapp.CanPostCommand = lambda command_id: False
+        alerts = []
+        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi(None)), mock.patch.object(
+            self.runtime, "_show_alert", side_effect=lambda title, message: alerts.append(message)
+        ):
+            self._idle()
+
         self.assertFalse(self.uiapp.posted)
-        self.assertFalse(state.get("commit_operations"))
         self.assertFalse(state.get("pending_commit_closes"))
-
-    def test_save_success_posts_close_once_after_completion(self):
-        state = self._queue_restore_and_choose("save_close")
-        self.assertEqual(
-            [("command-id", FakeUi.PostableCommand.Save)], self.uiapp.posted
-        )
-        self.assertEqual(1, len(state.get("commit_operations", {})))
-
-        args = FakeCompletionArgs(self.doc, "Succeeded")
-        self.runtime.document_saved_handler(self.uiapp, args)
-        self.assertFalse(state.get("commit_operations"))
-        self.assertEqual(1, len(state.get("pending_commit_closes", {})))
-
-        self._set_idle_ready(state)
-        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi(None)):
-            self.runtime.handle_app_idling(self.uiapp)
-        self.assertEqual(
-            [
-                ("command-id", FakeUi.PostableCommand.Save),
-                ("command-id", FakeUi.PostableCommand.Close),
-            ],
-            self.uiapp.posted,
-        )
-
-        # A duplicate completion event must not create a second Close post.
-        self.runtime.document_saved_handler(self.uiapp, args)
-        self._set_idle_ready(state)
-        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi(None)):
-            self.runtime.handle_app_idling(self.uiapp)
-        self.assertEqual(2, len(self.uiapp.posted))
-
-    def test_document_saved_as_is_accepted_for_save_flow(self):
-        state = self._queue_restore_and_choose("save_close")
-        self.runtime.document_saved_as_handler(
-            self.uiapp, FakeCompletionArgs(self.doc, "Succeeded")
-        )
-        self.assertFalse(state.get("commit_operations"))
-        self.assertEqual(1, len(state.get("pending_commit_closes", {})))
-
-    def test_cancelled_save_leaves_restored_document_open(self):
-        state = self._queue_restore_and_choose("save_close")
-        self.runtime.document_saved_handler(
-            self.uiapp, FakeCompletionArgs(self.doc, "Cancelled")
-        )
-        self.assertFalse(state.get("commit_operations"))
-        self.assertFalse(state.get("pending_commit_closes"))
-        self._set_idle_ready(state)
-        with mock.patch.object(self.runtime, "_show_alert"):
-            self.runtime.handle_app_idling(self.uiapp)
-        self.assertEqual(1, len(self.uiapp.posted))
-
-    def test_sync_success_posts_close_once_after_completion(self):
-        state = self._queue_restore_and_choose("sync_close", workshared=True)
-        self.assertEqual(
-            [("command-id", FakeUi.PostableCommand.SynchronizeAndModifySettings)],
-            self.uiapp.posted,
-        )
-        self.runtime.document_synchronized_with_central_handler(
-            self.uiapp, FakeCompletionArgs(self.doc, "Succeeded")
-        )
-        self.assertFalse(state.get("commit_operations"))
-        self.assertEqual(1, len(state.get("pending_commit_closes", {})))
-
-        self._set_idle_ready(state)
-        with mock.patch.object(self.runtime, "_get_ui", return_value=FakeUi(None)):
-            self.runtime.handle_app_idling(self.uiapp)
-        self.assertEqual(
-            [
-                ("command-id", FakeUi.PostableCommand.SynchronizeAndModifySettings),
-                ("command-id", FakeUi.PostableCommand.Close),
-            ],
-            self.uiapp.posted,
-        )
-
-    def test_cancelled_sync_leaves_document_open(self):
-        state = self._queue_restore_and_choose("sync_close", workshared=True)
-        self.runtime.document_synchronized_with_central_handler(
-            self.uiapp, FakeCompletionArgs(self.doc, "Cancelled")
-        )
-        self.assertFalse(state.get("commit_operations"))
-        self.assertFalse(state.get("pending_commit_closes"))
-        self.assertEqual(1, len(self.uiapp.posted))
-
+        self.assertEqual(1, len(alerts))
+        self.assertIn("Temporary phases were restored", alerts[0])
+        self.assertIn("remains open", alerts[0])
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,25 +61,18 @@ phases, and clears every tracked or discoverable Temporary View Property in one
 transaction. Close-Stop is armed per document only after the button applies a
 temporary phase, so files where the button has not been used close normally.
 
-After restoration, the Close-Stop dialog explains that the cleanup is currently
-only in the open session. Choose one of the following actions:
+Once everything is restored, EasyBIM posts the close again and lets it through,
+so the file closes with no extra EasyBIM prompt. No Save or Sync step is needed:
+Save, Save As and Sync restore temporary phases on their own (below), so no
+saved copy or central model can still hold one. Revit's own "save changes?"
+prompt may appear because the restore changed the open model; any save chosen
+there writes the original phases.
 
-- **Save and Close** — save the restored project, then close it
-  only after Revit reports that the save completed successfully. Save As cases
-  are handled through the same completion flow.
-- **Synchronize and Close** — available for workshared files;
-  opens Revit's normal Synchronize with Central/options command and closes only
-  after `DocumentSynchronizedWithCentral` reports success. Synchronizing is
-  required when the restored state must be reflected in the central model.
-- **Keep File Open** — leave the restored document open. It remains restored in
-  the current session, but it is not permanent until the file is saved (and, for
-  a local workshared file, synchronized with central).
-
-Save or synchronization cancellation, failure, unavailable commands, Revit
-shutdown, and unsupported/non-cancellable close contexts leave the restored
-document open. The Python `doc-closing` and `doc-closed` hooks, together with a
-single `Idling` delegate installed at startup (`lib/easybim/idling.py`),
-coordinate the per-document trigger/state and prevent duplicate close reposts.
+If Revit will not post the Close, or the close happens during shutdown or in an
+unsupported/non-cancellable context, the restored document stays open. The
+Python `doc-closing` and `doc-closed` hooks, together with a single `Idling`
+delegate installed at startup (`lib/easybim/idling.py`), coordinate the
+per-document trigger/state and prevent duplicate close reposts.
 Using Temp Phase in one file does not arm close recovery for other open files.
 
 Synchronize with Central, Save and Save As are guarded the same way, so
