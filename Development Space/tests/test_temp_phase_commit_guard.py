@@ -46,6 +46,8 @@ class TempPhaseCommitGuardTests(unittest.TestCase):
         self.runtime._is_document_armed = lambda view_state, doc_key, doc_runtime_id: bool(
             view_state.get("armed_documents")
         )
+        # A temporary phase is applied with TVP on; the fakes carry no DB.
+        self.runtime._is_tvp_active = lambda view: view.tvp_active
         self.alerts = []
         self.runtime._show_alert = lambda title, message: self.alerts.append(message)
         self.restore_calls = 0

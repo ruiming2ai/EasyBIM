@@ -48,6 +48,14 @@ state is only in the open session until the model is saved or synchronized.
 The window still opens on a view that cannot take a temporary phase — the
 phase list and Apply are disabled, so the restore options stay reachable.
 
+Apply turns Temporary View Properties on as the marker of a temporary phase, so
+switching TVP off from the view control bar is treated as "done with this
+view": that view alone goes back to its original phase, and other views keep
+their temporary phases. Revit raises no event for the TVP toggle, so the
+existing Idling delegate checks the tracked views about twice a second, and only
+while a Temp Phase session exists. If the restore fails, a single warning points
+to Temp Phase > Restore, and close, save and sync recovery still cover the view.
+
 When a file close is requested, EasyBIM cancels the close, restores tracked
 phases, and clears every tracked or discoverable Temporary View Property in one
 transaction. Close-Stop is armed per document only after the button applies a

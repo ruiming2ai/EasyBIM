@@ -59,6 +59,8 @@ COMMIT_GUARD_SEC = 60.0
 # later document that happens to reuse an event id.
 CLOSING_IDENTITY_GUARD_SEC = 120.0
 IDLE_THROTTLE_SEC = 0.10
+TVP_WATCH_INTERVAL_SEC = 0.5
+_LAST_TVP_WATCH_AT = [0.0]
 
 # Idling fires continuously, so the throttle lives in a module global rather
 # than in the stored state: checking it costs one subtraction and no envvar
@@ -372,6 +374,71 @@ def _disarm_restored_document(doc_key, doc_runtime_id):
     return True
 
 
+def _restore_views_whose_tvp_was_turned_off(uiapp, now):
+    """Restore a tracked view's phase once its Temporary View Properties go off.
+
+    Apply turns TVP on as the marker of a temporary phase.  Revit raises no
+    event when the user switches TVP off from the view control bar, so tracked
+    views are polled from Idling, and only that view is restored.
+    """
+    if now - _LAST_TVP_WATCH_AT[0] < TVP_WATCH_INTERVAL_SEC:
+        return False
+    _LAST_TVP_WATCH_AT[0] = now
+
+    view_state = _get_view_state()
+    sessions = view_state.get("view_sessions") or {}
+    if not sessions:
+        return False
+
+    restored_any = False
+    for view_key, session in list(sessions.items()):
+        if not isinstance(session, dict):
+            continue
+        if not (view_state.get("last_seen_tvp") or {}).get(view_key):
+            continue
+        doc = _find_doc_by_identity(uiapp, session.get("doc_key"), session.get("doc_runtime_id"))
+        if not _is_doc_valid(doc):
+            continue
+        view_id = _to_int(session.get("view_id"))
+        view = _get_doc_element(doc, view_id) if view_id is not None else None
+        if not _is_view_valid(view) or _is_tvp_active(view):
+            continue
+
+        view_name = _view_name(view, session)
+        summary = {
+            "tracked_restore_views": [
+                {
+                    "key": view_key,
+                    "session": session,
+                    "view": view,
+                    "view_id": view_id,
+                    "view_name": view_name,
+                }
+            ],
+            "untracked_tvp_views": [],
+        }
+        result = restore_tvp_summary(uiapp=uiapp, doc=doc, summary=summary)
+        if result.get("ok"):
+            restored_any = True
+            _disarm_restored_document(session.get("doc_key"), session.get("doc_runtime_id"))
+            _log("TempPhaseTvpOffRestored view={0}".format(view_name))
+            continue
+
+        # Stop watching this view so a failing restore cannot alert on every
+        # tick; the session stays, so Restore, close, save and sync still undo it.
+        view_state = _get_view_state()
+        view_state["last_seen_tvp"][view_key] = False
+        _save_view_state(view_state)
+        _log("TempPhaseTvpOffRestoreFailed view={0}".format(view_name))
+        _show_alert(
+            TITLE,
+            "Temporary View Properties was turned off on view {0}, but its "
+            "original phase could not be restored.\n\n"
+            "Click Temp Phase > Restore to try again.".format(view_name),
+        )
+    return restored_any
+
+
 def _guard_words(record):
     return _GUARD_WORDS.get(_safe_text(record.get("action")), _GUARD_WORDS["sync"])
 
@@ -449,6 +516,12 @@ def handle_idling(uiapp=None, event_args=None):
             _save_state(state)
         _log("AppIdlingSkippedShutdown")
         return False
+
+    try:
+        _restore_views_whose_tvp_was_turned_off(uiapp, now)
+    except Exception as ex:
+        log_hook_exception("TempPhaseTvpWatchException", ex)
+
     pending = state.get("pending_closes")
     if not isinstance(pending, dict):
         pending = {}

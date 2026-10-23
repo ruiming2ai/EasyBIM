@@ -5,6 +5,8 @@ tooltip: >-
 
   The window shows Apply (set the selected phase), Restore (undo the
   active view) and Restore All Views (undo every view in the document).
+  Turning Temporary View Properties off on a view also restores that
+  view's original phase.
   When a file with temporary phases is closed, EasyBIM automatically
   restores every tracked view and clears Temporary View Properties in
   one transaction before closing.
