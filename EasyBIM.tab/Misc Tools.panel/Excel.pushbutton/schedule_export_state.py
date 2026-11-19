@@ -126,6 +126,127 @@ def order_elements_by_ids(element_id_pairs, ordered_ids):
     return ordered_elements, unmatched_elements
 
 
+def _norm_cell(value):
+    return _safe_text(value).strip()
+
+
+def _split_body_rows(lines, column_count, headings=None):
+    """Return [(row_index, [cells])] for lines that look like body rows."""
+    heading_cells = [_norm_cell(h) for h in headings or []]
+    rows = []
+    for line in lines or []:
+        cells = [_norm_cell(cell) for cell in _safe_text(line).split("\t")]
+        if len(cells) < column_count or column_count <= 0:
+            continue
+        cells = cells[:column_count]
+        if not any(cells):
+            continue
+        if heading_cells and cells == heading_cells[:column_count]:
+            continue
+        rows.append((len(rows), cells))
+    return rows
+
+
+def order_elements_by_row_values(lines, element_cells, column_count,
+                                 headings=None, candidate_cap=2000):
+    """Order elements by matching their field values to exported rows.
+
+    Read-only alternative to the token approach (nothing is written to the
+    model). ``element_cells`` is [(element, [expected cell text or None])]
+    aligned with the schedule's visible columns. Each element is placed at
+    the body row sharing the most cell values with it; ties prefer a row no
+    other element took yet, then the earliest row. Returns
+    (ordered_elements, unmatched_elements); both keep collector order for
+    ties.
+    """
+    rows = _split_body_rows(lines, column_count, headings)
+    index = [dict() for _ in range(column_count)]
+    for row_index, cells in rows:
+        for col, value in enumerate(cells):
+            if value:
+                index[col].setdefault(value, []).append(row_index)
+
+    taken = {}
+    placed = []
+    unmatched = []
+    row_cells = []
+    for order, (element, expected) in enumerate(element_cells or []):
+        expected = [
+            None if value is None else _norm_cell(value)
+            for value in list(expected or [])[:column_count]
+        ]
+        bucket = None
+        for col, value in enumerate(expected):
+            if not value:
+                continue
+            hits = index[col].get(value)
+            if hits and (bucket is None or len(hits) < len(bucket)):
+                bucket = hits
+        if not bucket:
+            unmatched.append(element)
+            continue
+
+        best_score = 0
+        best_rows = []
+        for row_index in bucket[:candidate_cap]:
+            cells = rows[row_index][1]
+            score = 0
+            for col, value in enumerate(expected):
+                if value and cells[col] == value:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_rows = [row_index]
+            elif score == best_score:
+                best_rows.append(row_index)
+        if not best_rows:
+            unmatched.append(element)
+            continue
+        chosen = best_rows[0]
+        for row_index in best_rows:
+            if not taken.get(row_index):
+                chosen = row_index
+                break
+        taken[chosen] = taken.get(chosen, 0) + 1
+        placed.append((chosen, order, element))
+
+    placed.sort(key=lambda item: (item[0], item[1]))
+    row_cells = [list(rows[item[0]][1]) for item in placed]
+    return [item[2] for item in placed], unmatched, row_cells
+
+
+def cells_by_field_id(cells, field_ids):
+    """{field_id: cell text} for a body row aligned with visible field ids."""
+    cells = list(cells or [])
+    result = {}
+    for index, field_id in enumerate(field_ids or []):
+        if index < len(cells):
+            result[field_id] = _norm_cell(cells[index])
+    return result
+
+
+def map_token_rows(lines, field_ids):
+    """{element id value: {field_id: cell text}} from a tokened text export.
+
+    Rows whose cell count does not cover every visible field are ignored.
+    """
+    field_ids = list(field_ids or [])
+    mapping = {}
+    for line in lines or []:
+        text = _safe_text(line)
+        match = TOKEN_PATTERN.search(text)
+        if match is None:
+            continue
+        id_value = _safe_int(match.group(1), fallback=None)
+        if id_value is None or id_value in mapping:
+            continue
+        cells = text.split("\t")
+        if len(cells) < len(field_ids):
+            continue
+        mapping[id_value] = cells_by_field_id(cells, field_ids)
+    return mapping
+
+
 def strip_rvt_suffix(title):
     text = _safe_text(title).strip()
     if text.lower().endswith(".rvt"):

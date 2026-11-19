@@ -67,16 +67,16 @@ def _run_export(doc, selected_options):
     results = []
     for option in selected_options:
         try:
-            elements, ordering_note = get_display_ordered_elements(
-                doc, option.schedule
-            )
+            elements, ordering_note, row_text = \
+                get_display_ordered_elements(doc, option.schedule)
             filename = build_export_filename(
                 option.name, model_name, cleaner=_clean_filename,
                 extension=extension,
             )
             file_path = os.path.join(folder_path, filename)
             row_count = schedule_export_xlsx.export_schedule_to_xlsx(
-                doc, option.schedule, elements, file_path
+                doc, option.schedule, elements, file_path,
+                row_text=row_text,
             )
             results.append(ScheduleExportResult(
                 option.name,
@@ -93,7 +93,23 @@ def _run_export(doc, selected_options):
                 message=str(export_error),
             ))
 
-    TaskDialog.Show(__title__, build_export_summary_text(results, folder_path))
+    open_errors = []
+    for result in results:
+        if not result.ok:
+            continue
+        try:
+            os.startfile(result.path)  # pylint: disable=no-member
+        except Exception as open_error:
+            open_errors.append("- {}: {}".format(result.name, open_error))
+
+    needs_summary = bool(open_errors) or any(
+        not result.ok or result.ordering_note for result in results
+    )
+    if needs_summary:
+        summary = build_export_summary_text(results, folder_path)
+        if open_errors:
+            summary += "\n\nExcel could not open:\n" + "\n".join(open_errors)
+        TaskDialog.Show(__title__, summary)
 
 
 def _get_header_row(sheet_rows):

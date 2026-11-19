@@ -500,6 +500,23 @@ class ImportExcelStateTests(unittest.TestCase):
         )
 
 
+class RelatedColumnTests(unittest.TestCase):
+    def test_related_element_columns_are_ignored_on_import(self):
+        module = _load_state_module()
+        metadata = module.parse_metadata_rows([
+            (1, ["Parameter Name", "ForgeTypeId", "UnitTypeId",
+                 "SymbolTypeId", "IsScheduleOverride", "IsTypeParameter",
+                 "IsReferenceOnly"]),
+            (2, ["Mark", "", "", "", "Yes", "No", "No"]),
+            (3, ["Space: Number", "", "", "", "Yes", "No", "Yes"]),
+        ])
+        _, columns, ignored = module.classify_columns(
+            ["ElementId", "Mark", "Space: Number"], metadata
+        )
+        self.assertEqual([c.param_name for c in columns], ["Mark"])
+        self.assertIn("Space: Number", ignored)
+
+
 class ImportExcelBundleTests(unittest.TestCase):
     def test_xaml_windows_expose_required_buttons(self):
         self.assertTrue(PREVIEW_XAML_PATH.exists(), "ImportPreviewWindow.xaml is missing")

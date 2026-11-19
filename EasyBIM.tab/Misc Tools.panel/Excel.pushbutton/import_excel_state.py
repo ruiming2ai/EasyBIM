@@ -40,7 +40,7 @@ class MetaEntry(object):
     """One _metadata row describing an exported column."""
 
     def __init__(self, forge_type_id="", unit_type_id="", symbol_type_id="",
-                 is_schedule_override=False, is_type=None):
+                 is_schedule_override=False, is_type=None, is_related=False):
         self.forge_type_id = _safe_text(forge_type_id)
         self.unit_type_id = _safe_text(unit_type_id)
         self.symbol_type_id = _safe_text(symbol_type_id)
@@ -48,6 +48,9 @@ class MetaEntry(object):
         # True/False from the IsTypeParameter column; None = unknown
         # (legacy export) -> the Revit layer probes at runtime.
         self.is_type = is_type
+        # Column read from a related element (e.g. "Space: Number"):
+        # exported for reference only, never imported.
+        self.is_related = bool(is_related)
 
 
 class ColumnSpec(object):
@@ -146,6 +149,7 @@ def parse_metadata_rows(sheet_rows):
             symbol_type_id=_cell(3),
             is_schedule_override=_cell(4).lower() == "yes",
             is_type=is_type,
+            is_related=_cell(6).lower() == "yes",
         )
     return entries
 
@@ -188,9 +192,11 @@ def classify_columns(header_values, metadata):
         if not param_name:
             ignored.append(header)
             continue
-        columns.append(ColumnSpec(
-            col_index, header, param_name, (metadata or {}).get(param_name)
-        ))
+        meta = (metadata or {}).get(param_name)
+        if meta is not None and getattr(meta, "is_related", False):
+            ignored.append(header)
+            continue
+        columns.append(ColumnSpec(col_index, header, param_name, meta))
     return id_col_index, columns, ignored
 
 

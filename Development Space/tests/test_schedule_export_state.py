@@ -281,7 +281,10 @@ class ScheduleExportBundleTests(unittest.TestCase):
         self.assertIn("GetTypeId", source)
         self.assertIn("_lookup_row_param", source)
         self.assertIn("istype=istype", source)
-        self.assertNotIn("istype=False", source)
+        # Only display-text columns (no parameter at all) may hard-code it.
+        self.assertEqual(source.count("istype=False"), 1)
+        text_col_at = source.index("def _add_text_column")
+        self.assertGreater(source.index("istype=False"), text_col_at)
 
     def test_xlsx_writer_has_type_conflict_interlock(self):
         self.assertTrue(XLSX_MODULE_PATH.exists(), "schedule_export_xlsx.py is missing")
@@ -392,6 +395,95 @@ class ScheduleExportBundleTests(unittest.TestCase):
                     ast.JoinedStr,
                     "f-string found in {}".format(module_path.name),
                 )
+
+
+class RowValueOrderingTests(unittest.TestCase):
+    def setUp(self):
+        self.module = _load_state_module()
+
+    def test_orders_elements_by_matching_row_values(self):
+        lines = [
+            "<Heat Recovery Unit Summary>",
+            "Space: Number\tSpace: Name\tMark\tLevel",
+            "",
+            "102\tCafe Kitchen\tHRU102\tL1",
+            "L1",
+            "105\tRetail\tHRU105A\tL1",
+            "105\tRetail\tHRU105B\tL1",
+        ]
+        cells = [
+            ("b", ["105", "Retail", "HRU105B", "L1"]),
+            ("a", ["105", "Retail", "HRU105A", "L1"]),
+            ("c", ["102", "Cafe Kitchen", "HRU102", "L1"]),
+            ("x", ["999", "", "NOPE", None]),
+        ]
+        ordered, unmatched, row_cells = \
+            self.module.order_elements_by_row_values(
+                lines, cells, 4,
+                headings=["Space: Number", "Space: Name", "Mark", "Level"],
+            )
+        self.assertEqual(ordered, ["c", "a", "b"])
+        self.assertEqual(unmatched, ["x"])
+        self.assertEqual(row_cells[0], ["102", "Cafe Kitchen", "HRU102", "L1"])
+
+    def test_identical_rows_are_shared_in_collector_order(self):
+        lines = ["A\t1", "A\t1", "B\t2"]
+        cells = [("e3", ["B", "2"]), ("e1", ["A", "1"]), ("e2", ["A", "1"])]
+        ordered, unmatched, _ = self.module.order_elements_by_row_values(
+            lines, cells, 2
+        )
+        self.assertEqual(ordered, ["e1", "e2", "e3"])
+        self.assertEqual(unmatched, [])
+
+    def test_non_itemized_rows_group_elements(self):
+        lines = ["Type A\t3", "Type B\t1"]
+        cells = [("b", ["Type B", None]), ("a1", ["Type A", None]),
+                 ("a2", ["Type A", None])]
+        ordered, _, row_cells = self.module.order_elements_by_row_values(
+            lines, cells, 2
+        )
+        self.assertEqual(ordered, ["a1", "a2", "b"])
+        self.assertEqual(row_cells[2], ["Type B", "1"])
+
+    def test_map_token_rows_aligns_cells_with_field_ids(self):
+        lines = [
+            "Title",
+            "Mark\tComments\tCount",
+            "A1\tEBIMORD:12\t1",
+            "A2\tEBIMORD:7\t1",
+            "Group",
+        ]
+        mapping = self.module.map_token_rows(lines, [3, 9, 4])
+        self.assertEqual(mapping[12], {3: "A1", 9: "EBIMORD:12", 4: "1"})
+        self.assertEqual(sorted(mapping), [7, 12])
+
+
+class ScheduleExportBehaviourSourceTests(unittest.TestCase):
+    def test_workshared_export_does_not_write_tokens(self):
+        source = REVIT_MODULE_PATH.read_text()
+        self.assertIn("IsWorkshared", source)
+        workshared_at = source.index('getattr(doc, "IsWorkshared"')
+        tokens_at = source.index("_write_tokens_and_export(\n            doc")
+        self.assertLess(workshared_at, tokens_at)
+
+    def test_related_space_fields_are_exported(self):
+        source = XLSX_MODULE_PATH.read_text()
+        self.assertIn('"Space"', source)
+        self.assertIn("IsReferenceOnly", source)
+
+    def test_unresolved_fields_fall_back_to_schedule_text(self):
+        source = XLSX_MODULE_PATH.read_text()
+        self.assertIn("text_field_id=field_id_key(field)", source)
+        self.assertNotIn("Skipping calculated field", source)
+        self.assertIn("row_text=row_text", SCRIPT_MODULE_PATH.read_text())
+
+    def test_export_opens_workbooks(self):
+        self.assertIn("os.startfile(result.path)", SCRIPT_MODULE_PATH.read_text())
+
+    def test_window_min_width_fits_buttons(self):
+        xaml = XAML_PATH.read_text()
+        self.assertIn('MinWidth="700"', xaml)
+        self.assertNotIn("DockPanel", xaml)
 
 
 if __name__ == "__main__":

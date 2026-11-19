@@ -109,7 +109,12 @@ REFERENCE_ONLY_BIP_NAMES = (
 
 
 def _is_reference_only_param(param_def):
-    """True for Family / Type / Family and Type columns."""
+    """True for Family / Type / Family and Type, related-element and
+    display-text columns."""
+    if getattr(param_def, "related_kind", None):
+        return True
+    if getattr(param_def, "text_field_id", None) is not None:
+        return True
     try:
         definition_bip = getattr(param_def.definition, "BuiltInParameter", None)
     except Exception:
@@ -140,8 +145,15 @@ ParamDef = namedtuple(
         "storagetype",
         "forge_type_id",
         "unit_type_id",
+        "related_kind",
+        "text_field_id",
     ],
 )
+
+# Schedule fields read from a related element (e.g. "Space: Number" on
+# equipment). They are exported for reference only: importing them would
+# write to the room/space, not to the scheduled element.
+RELATED_FIELD_KINDS = ("Room", "FromRoom", "ToRoom", "Space", "ProjectInfo")
 
 
 def get_unit_label_and_value(param, forge_type_id, field, project_units):
@@ -205,8 +217,36 @@ def _bip_from_id_value(id_value):
         return None
 
 
+def _field_related_kind(field):
+    """'Space', 'Room', ... for fields read from a related element; else None."""
+    try:
+        kind = str(field.FieldType)
+    except Exception:
+        return None
+    return kind if kind in RELATED_FIELD_KINDS else None
+
+
+def _param_definition_for_id(doc, param_id_value):
+    """Definition of a shared/project parameter (positive id) or None."""
+    try:
+        if param_id_value is None or int(param_id_value) < 0:
+            return None
+        param_elem = doc.GetElement(DB.ElementId(int(param_id_value)))
+        return param_elem.GetDefinition() if param_elem is not None else None
+    except Exception:
+        try:
+            param_elem = doc.GetElement(DB.ElementId(System.Int64(
+                int(param_id_value))))
+            return param_elem.GetDefinition() \
+                if param_elem is not None else None
+        except Exception:
+            return None
+
+
 def _lookup_field_param(owner, field, param_id_value):
     """Find the parameter backing a schedule field on the given element."""
+    if owner is None:
+        return None
     bip = _bip_from_id_value(param_id_value)
     if bip is not None:
         try:
@@ -215,13 +255,150 @@ def _lookup_field_param(owner, field, param_id_value):
                 return param
         except Exception:
             pass
+    else:
+        definition = _param_definition_for_id(owner.Document, param_id_value)
+        if definition is not None:
+            try:
+                param = owner.get_Parameter(definition)
+                if param is not None:
+                    return param
+            except Exception:
+                pass
     field_name = _field_name(field)
-    if field_name:
+    names = [field_name]
+    if _field_related_kind(field) and ": " in field_name:
+        # "Space: Number" -> "Number"
+        names.append(field_name.split(": ", 1)[1])
+    for name in names:
+        if not name:
+            continue
         try:
-            return owner.LookupParameter(field_name)
+            param = owner.LookupParameter(name)
+            if param is not None:
+                return param
+        except Exception:
+            continue
+    return None
+
+
+def _schedule_phase(schedule):
+    try:
+        param = schedule.get_Parameter(BIP.VIEW_PHASE)
+        if param is not None:
+            return schedule.Document.GetElement(param.AsElementId())
+    except Exception:
+        pass
+    return None
+
+
+def _location_point(element):
+    try:
+        location = element.Location
+        point = getattr(location, "Point", None)
+        if point is not None:
+            return point
+        curve = getattr(location, "Curve", None)
+        if curve is not None:
+            return curve.Evaluate(0.5, True)
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_related_element(doc, element, kind, phase):
+    """Return the room/space/project info a related schedule field reads."""
+    if kind == "ProjectInfo":
+        try:
+            return doc.ProjectInformation
         except Exception:
             return None
+    accessor = {
+        "Room": "Room", "FromRoom": "FromRoom",
+        "ToRoom": "ToRoom", "Space": "Space",
+    }.get(kind)
+    if accessor is None:
+        return None
+    if phase is not None:
+        try:
+            related = getattr(element, "get_" + accessor)(phase)
+            if related is not None:
+                return related
+        except Exception:
+            pass
+    try:
+        related = getattr(element, accessor, None)
+        if related is not None and not callable(related):
+            return related
+    except Exception:
+        pass
+    if kind in ("Room", "Space"):
+        point = _location_point(element)
+        if point is not None:
+            getter = doc.GetSpaceAtPoint if kind == "Space" \
+                else doc.GetRoomAtPoint
+            try:
+                if phase is not None:
+                    return getter(point, phase)
+                return getter(point)
+            except Exception:
+                return None
     return None
+
+
+class RelatedElementCache(object):
+    """Caches related-element lookups for one schedule export."""
+
+    def __init__(self, doc, schedule):
+        self.doc = doc
+        self.phase = _schedule_phase(schedule)
+        self._cache = {}
+
+    def get(self, element, kind):
+        key = (get_elementid_value(element.Id), kind)
+        if key not in self._cache:
+            self._cache[key] = _resolve_related_element(
+                self.doc, element, kind, self.phase
+            )
+        return self._cache[key]
+
+
+def field_display_text(doc, element, field, type_cache, related_cache):
+    """Approximate text the schedule shows for ``field`` on ``element``.
+
+    Used to match schedule rows to elements without editing the model.
+    Returns None when the field has no backing parameter (calculated,
+    count, ...).
+    """
+    try:
+        if field.IsCalculatedField:
+            return None
+        param_id = field.ParameterId
+        if not param_id or param_id == DB.ElementId.InvalidElementId:
+            return None
+    except Exception:
+        return None
+    param_id_value = get_elementid_value(param_id)
+    kind = _field_related_kind(field)
+    if kind:
+        owner = related_cache.get(element, kind)
+        param = _lookup_field_param(owner, field, param_id_value)
+    else:
+        param = _lookup_field_param(element, field, param_id_value)
+        if param is None:
+            param = _lookup_field_param(
+                _get_type_element(doc, element, type_cache),
+                field, param_id_value,
+            )
+    if param is None:
+        return ""
+    try:
+        if not param.HasValue:
+            return ""
+        if param.StorageType == DB.StorageType.String:
+            return param.AsString() or ""
+        return param.AsValueString() or ""
+    except Exception:
+        return None
 
 
 def _lookup_param_by_def(owner, param_def):
@@ -502,13 +679,44 @@ def _write_legend_sheet(workbook, legend_sheet):
     legend_sheet.protect("")
 
 
-def collect_schedule_param_defs(schedule, elements):
-    """Build ParamDefs for the schedule's visible non-calculated fields.
+def field_id_key(field_or_id):
+    """Stable int key for a ScheduleField / ScheduleFieldId."""
+    try:
+        field_id = getattr(field_or_id, "FieldId", field_or_id)
+        return int(field_id.IntegerValue)
+    except Exception:
+        return None
+
+
+def _unique_column_name(field, used_names):
+    candidates = [_field_name(field)]
+    try:
+        candidates.append(field.ColumnHeading)
+    except Exception:
+        pass
+    for candidate in candidates:
+        candidate = (candidate or "").strip()
+        if candidate and candidate not in used_names:
+            return candidate
+    base = (candidates[0] or "Column").strip() or "Column"
+    index = 2
+    while "{} ({})".format(base, index) in used_names:
+        index += 1
+    return "{} ({})".format(base, index)
+
+
+def collect_schedule_param_defs(schedule, elements, row_text=None):
+    """Build ParamDefs for every visible schedule field.
 
     Columns follow GetFieldOrder(); each ParamDef is derived from the first
     element (or, for type parameters, the first element type) carrying the
-    field's parameter. Returns (param_defs, field_mapping).
+    field's parameter. Fields with no readable parameter (calculated, count,
+    material, related elements Revit does not expose, ...) are exported as
+    read-only "display text" columns filled from ``row_text`` (the schedule's
+    own text, {element id value: {field id key: text}}).
+    Returns (param_defs, field_mapping, related_cache).
     """
+    has_row_text = bool(row_text)
     schedule_def = schedule.Definition
     doc = schedule.Document
 
@@ -518,29 +726,90 @@ def collect_schedule_param_defs(schedule, elements):
     non_storage_type = coreutils.get_enum_none(DB.StorageType)
     processed_params = set()
     type_cache = {}
+    related_cache = RelatedElementCache(doc, schedule)
 
     for field_id in schedule_def.GetFieldOrder():
         field = schedule_def.GetField(field_id)
         if field.IsHidden:
             continue
-
-        if field.IsCalculatedField:
-            LOGGER.warning(
-                "Skipping calculated field: {}".format(_field_name(field))
-            )
-            continue
-
-        param_id = field.ParameterId
-        if param_id and param_id != DB.ElementId.InvalidElementId:
-            visible_fields.append(field)
+        visible_fields.append(field)
 
     if not elements:
         raise ValueError("No elements found in schedule")
 
+    def _add_text_column(field):
+        """Fallback column using the schedule's displayed text."""
+        if not has_row_text:
+            LOGGER.warning(
+                "Skipping field with no matching parameter: {}".format(
+                    _field_name(field)
+                )
+            )
+            return
+        name = _unique_column_name(field, processed_params)
+        param_defs_list.append(ParamDef(
+            name=name,
+            istype=False,
+            definition=None,
+            isreadonly=True,
+            isunit=False,
+            storagetype=DB.StorageType.String,
+            forge_type_id=None,
+            unit_type_id=None,
+            related_kind=None,
+            text_field_id=field_id_key(field),
+        ))
+        processed_params.add(name)
+
     for field in visible_fields:
+        try:
+            param_id = field.ParameterId
+            no_param = field.IsCalculatedField or not param_id or \
+                param_id == DB.ElementId.InvalidElementId
+        except Exception:
+            no_param = True
+        if no_param:
+            _add_text_column(field)
+            continue
+
         param_id_value = get_elementid_value(field.ParameterId)
         param = None
         istype = False
+        related_kind = _field_related_kind(field)
+
+        if related_kind:
+            for el in elements:
+                param = _lookup_field_param(
+                    related_cache.get(el, related_kind), field, param_id_value
+                )
+                if param is not None:
+                    break
+            if param is None or param.StorageType == non_storage_type:
+                _add_text_column(field)
+                continue
+            # Named after the field ("Space: Number") so it never collides
+            # with the scheduled element's own "Number".
+            def_name = _field_name(field) or param.Definition.Name
+            if def_name in processed_params:
+                continue
+            param_data_type = get_parameter_data_type(param.Definition)
+            param_defs_list.append(ParamDef(
+                name=def_name,
+                istype=istype,
+                definition=param.Definition,
+                isreadonly=True,
+                isunit=(
+                    measurable(param_data_type) if param_data_type else False
+                ),
+                storagetype=param.StorageType,
+                forge_type_id=param_data_type,
+                unit_type_id=None,
+                related_kind=related_kind,
+                text_field_id=None,
+            ))
+            field_mapping[def_name] = field
+            processed_params.add(def_name)
+            continue
 
         for el in elements:
             param = _lookup_field_param(el, field, param_id_value)
@@ -563,11 +832,7 @@ def collect_schedule_param_defs(schedule, elements):
                     break
 
         if param is None or param.StorageType == non_storage_type:
-            LOGGER.warning(
-                "Skipping field with no matching parameter: {}".format(
-                    _field_name(field)
-                )
-            )
+            _add_text_column(field)
             continue
 
         def_name = param.Definition.Name
@@ -598,6 +863,8 @@ def collect_schedule_param_defs(schedule, elements):
             storagetype=param.StorageType,
             forge_type_id=param_data_type,
             unit_type_id=unit_type_id,
+            related_kind=None,
+            text_field_id=None,
         ))
         field_mapping[def_name] = field
         processed_params.add(def_name)
@@ -605,7 +872,7 @@ def collect_schedule_param_defs(schedule, elements):
     if not param_defs_list:
         raise ValueError("No valid parameters found in schedule")
 
-    return param_defs_list, field_mapping
+    return param_defs_list, field_mapping, related_cache
 
 
 def create_dropdown_validation(doc, worksheet, workbook, col_idx, param,
@@ -616,6 +883,8 @@ def create_dropdown_validation(doc, worksheet, workbook, col_idx, param,
     also flag pasted values that bypassed the dropdown, or None.
     """
     storage_type = param.storagetype
+    if _is_reference_only_param(param):
+        return None
 
     if storage_type == DB.StorageType.Integer:
         if param.definition.BuiltInParameter == BIP.ELEM_PARTITION_PARAM:
@@ -742,7 +1011,9 @@ def create_dropdown_validation(doc, worksheet, workbook, col_idx, param,
 
 
 def _write_workbook(doc, src_elements, valid_params, field_mapping,
-                    workbook, project_units, has_vba=False):
+                    workbook, project_units, has_vba=False,
+                    related_cache=None, row_text=None):
+    row_text_by_id = row_text or {}
     worksheet = workbook.add_worksheet("Export")
     if has_vba:
         try:
@@ -792,6 +1063,9 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
     metadata_sheet.write(0, 3, "SymbolTypeId", bold)
     metadata_sheet.write(0, 4, "IsScheduleOverride", bold)
     metadata_sheet.write(0, 5, "IsTypeParameter", bold)
+    # Yes = exported for reference only (related-element or display-text
+    # column); Import skips it.
+    metadata_sheet.write(0, 6, "IsReferenceOnly", bold)
 
     for col_idx, param in enumerate(valid_params):
         postfix = ""
@@ -865,6 +1139,11 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
             col_idx + 1, 4, "Yes" if is_schedule_override else "No"
         )
         metadata_sheet.write(col_idx + 1, 5, "Yes" if param.istype else "No")
+        metadata_sheet.write(
+            col_idx + 1, 6,
+            "Yes" if (param.related_kind or param.text_field_id is not None)
+            else "No"
+        )
 
     type_col = len(valid_params) + 1
     rowid_col = type_col + 1
@@ -875,7 +1154,8 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
     type_cache = {}
 
     for row_idx, el in enumerate(src_elements, start=1):
-        element_id_text = str(get_elementid_value(el.Id))
+        element_id_value = get_elementid_value(el.Id)
+        element_id_text = str(element_id_value)
         worksheet.write(row_idx, 0, element_id_text, locked)
         worksheet.write_string(row_idx, type_col, _type_key_text(el), locked)
         # Untouched copy of the id so an edited column A can be spotted.
@@ -883,8 +1163,27 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
 
         for col_idx, param in enumerate(valid_params):
             param_name = param.name
-            param_el = _lookup_row_param(doc, el, param, type_cache)
+            if param.text_field_id is not None:
+                val = (row_text_by_id.get(element_id_value) or {}).get(
+                    param.text_field_id, ""
+                )
+                worksheet.write_string(row_idx, col_idx + 1, val, locked)
+                if len(val) > max_widths[col_idx + 1]:
+                    max_widths[col_idx + 1] = min(len(val), 50)
+                continue
+            if param.related_kind:
+                related_el = related_cache.get(el, param.related_kind)
+                param_el = _lookup_field_param(
+                    related_el, field_mapping.get(param_name),
+                    get_elementid_value(
+                        field_mapping[param_name].ParameterId
+                    ),
+                ) if related_el is not None else None
+            else:
+                param_el = _lookup_row_param(doc, el, param, type_cache)
             val = "<does not exist>"
+            if param.related_kind and param_el is None:
+                val = ""
             cell_format = locked
             if param_el:
                 val = ""
@@ -907,7 +1206,10 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
                             if get_elementid_value(param_el.Id) == \
                                     int(BIP.ELEM_PARTITION_PARAM):
                                 val = str(
-                                    revit.query.get_element_workset(el).Name
+                                    revit.query.get_element_workset(
+                                        related_el if param.related_kind
+                                        else el
+                                    ).Name
                                 )
                             elif is_yesno_parameter(param.definition):
                                 val = "Yes" if param_el.AsInteger() else "No"
@@ -982,8 +1284,13 @@ def _write_workbook(doc, src_elements, valid_params, field_mapping,
     )
 
 
-def export_schedule_to_xlsx(doc, schedule, ordered_elements, file_path):
-    """Write one workbook for the schedule; returns the written row count."""
+def export_schedule_to_xlsx(doc, schedule, ordered_elements, file_path,
+                            row_text=None):
+    """Write one workbook for the schedule; returns the written row count.
+
+    ``row_text`` ({element id value: {field id key: text}}) fills columns
+    that have no readable parameter with the schedule's displayed text.
+    """
     if not XLSXWRITER_AVAILABLE:
         raise Exception("The 'xlsxwriter' module is not available.")
 
@@ -993,8 +1300,8 @@ def export_schedule_to_xlsx(doc, schedule, ordered_elements, file_path):
             continue
         src_elements.append(el)
 
-    param_defs, field_mapping = collect_schedule_param_defs(
-        schedule, src_elements
+    param_defs, field_mapping, related_cache = collect_schedule_param_defs(
+        schedule, src_elements, row_text=row_text
     )
 
     valid_params = []
@@ -1024,7 +1331,8 @@ def export_schedule_to_xlsx(doc, schedule, ordered_elements, file_path):
     try:
         _write_workbook(
             doc, src_elements, valid_params, field_mapping,
-            workbook, project_units, has_vba=has_vba
+            workbook, project_units, has_vba=has_vba,
+            related_cache=related_cache, row_text=row_text,
         )
     except Exception as write_error:
         body_error = write_error
