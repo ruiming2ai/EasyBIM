@@ -1605,10 +1605,14 @@ class SheetManagerWindow(forms.WPFWindow):
                         title="Sheet Manager")
             return
         self._remember_workbook(file_path)
-        self._alert(
-            "Exported {0} sheet row(s) (all visible columns, staged "
-            "values) to:\n{1}".format(count, file_path),
-            title="Export to Excel")
+        try:
+            os.startfile(file_path)  # pylint: disable=no-member
+        except Exception as err:
+            self._alert(
+                "Exported {0} sheet row(s) (all visible columns, staged "
+                "values) to:\n{1}".format(count, file_path),
+                sub_msg=u"Excel could not be opened: {0}".format(err),
+                title="Export to Excel")
 
     def import_from_excel(self, sender, args):
         del sender, args

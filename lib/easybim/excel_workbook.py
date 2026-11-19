@@ -51,7 +51,7 @@ def _safe_text(value):
 
 
 def _byte_string(raw):
-    """``raw`` (a bytearray) as the type io.BytesIO takes on this engine.
+    """``raw`` (a bytearray) as the type memory_file takes on this engine.
 
     IronPython 2.7 has a separate ``bytes`` type that its io.BytesIO and
     zipfile reject ("expected str, got bytes"); there, file data is ``str``.
@@ -59,6 +59,19 @@ def _byte_string(raw):
     if sys.version_info[0] < 3:
         return str(raw)
     return bytes(raw)
+
+
+def memory_file(data):
+    """Seekable in-memory file over ``data`` for zipfile.
+
+    IronPython 2.7's io.BytesIO reads back its separate ``bytes`` type,
+    which the 2.7 zipfile code rejects ("expected str, got bytes");
+    StringIO reads back ``str``.
+    """
+    if sys.version_info[0] < 3:
+        from StringIO import StringIO
+        return StringIO(data)
+    return io.BytesIO(data)
 
 
 def read_file_bytes(path):
@@ -219,7 +232,7 @@ def read_workbook_sheets(excel_path, sheet_names=None):
     (same OOXML zip format). Raises UnsupportedWorkbook on unreadable files.
     """
     try:
-        workbook = zipfile.ZipFile(io.BytesIO(read_file_bytes(excel_path)))
+        workbook = zipfile.ZipFile(memory_file(read_file_bytes(excel_path)))
     except Exception as open_error:
         raise UnsupportedWorkbook(u"{0}\n\n{1}".format(
             _safe_text(open_error), traceback.format_exc()))

@@ -5,6 +5,7 @@ import io
 import os
 import posixpath
 import re
+import sys
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
@@ -413,9 +414,19 @@ def _read_file_bytes(excel_path):
     return read_file_bytes(excel_path)
 
 
+def _memory_file(data):
+    # IronPython 2.7's io.BytesIO reads back bytes, which its zipfile
+    # rejects ("expected str, got bytes"); StringIO reads back str.
+    if sys.version_info[0] < 3:
+        from StringIO import StringIO
+        return StringIO(data)
+    return io.BytesIO(data)
+
+
 def _read_visible_rows_from_ooxml(excel_path):
     try:
-        workbook = zipfile.ZipFile(io.BytesIO(_read_file_bytes(excel_path)))
+        workbook = zipfile.ZipFile(
+            _memory_file(_read_file_bytes(excel_path)))
     except Exception as open_err:
         raise UnsupportedExcelFile(str(open_err))
 
