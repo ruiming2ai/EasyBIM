@@ -200,6 +200,23 @@ class ExcelWorkbookTests(unittest.TestCase):
                 os.path.join(self.tempdir, "absent.xlsx")
             )
 
+    def test_read_file_bytes_returns_whole_file(self):
+        with open(self.workbook_path, "rb") as handle:
+            expected = handle.read()
+        self.assertEqual(
+            self.module.read_file_bytes(self.workbook_path), expected)
+
+    def test_reading_leaves_no_temp_copy(self):
+        # A temp copy is what IronPython left locked ("being used by
+        # another process"); reading must happen in memory.
+        before = set(os.listdir(tempfile.gettempdir()))
+        self.module.read_workbook_sheets(self.workbook_path, ["Export"])
+        after = set(os.listdir(tempfile.gettempdir()))
+        self.assertEqual(
+            [name for name in after - before if name.endswith(".xlsx")], [])
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("import tempfile", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,9 +48,11 @@ from pyrevit import revit
 from pyrevit import script
 
 from easybim import excel_print_sets
+from easybim import excel_running
 from easybim import excel_workbook
 from easybim import external_events
 from easybim import link_reload
+from easybim import local_settings
 from easybim import print_sets
 from easybim.compat import eid_to_int
 
@@ -1503,12 +1505,93 @@ class SheetManagerWindow(forms.WPFWindow):
         # Modeless window: file dialogs and alerts must run in API context.
         self._run_in_revit("Export to Excel", self._export_to_excel_work)
 
+    # ------------------------------------------- remembered Excel workbook
+
+    def _workbook_key(self):
+        try:
+            path_name = self._doc.PathName
+        except Exception:
+            path_name = u""
+        return smxlsx.workbook_key(path_name, self._doc_title)
+
+    def _load_workbook_settings(self):
+        settings, _ = local_settings.load(
+            smxlsx.WORKBOOK_SETTINGS_ID, smxlsx.default_workbook_settings,
+            smxlsx.normalize_workbook_settings)
+        return settings
+
+    def _remembered_workbook(self):
+        path = self._load_workbook_settings()["workbooks"].get(
+            self._workbook_key())
+        if path and os.path.isfile(path):
+            return path
+        return None
+
+    def _remember_workbook(self, file_path):
+        settings = self._load_workbook_settings()
+        settings["workbooks"][self._workbook_key()] = file_path
+        local_settings.save(
+            smxlsx.WORKBOOK_SETTINGS_ID, settings,
+            smxlsx.normalize_workbook_settings,
+            smxlsx.WORKBOOK_SETTINGS_SCHEMA)
+
+    def _choose_import_workbook(self):
+        """The remembered workbook if the user confirms it, else a pick."""
+        remembered = self._remembered_workbook()
+        init_dir = u""
+        if remembered:
+            saved = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(os.path.getmtime(remembered)))
+            choice = self._alert(
+                u"Import from '{0}'?".format(os.path.basename(remembered)),
+                sub_msg=u"{0}\nLast saved {1}".format(
+                    os.path.dirname(remembered), saved),
+                options=["Import this file", "Choose another file...",
+                         "Cancel"],
+                title="Import from Excel")
+            if choice == "Import this file":
+                return remembered
+            if choice != "Choose another file...":
+                return None
+            init_dir = os.path.dirname(remembered)
+        return forms.pick_file(
+            files_filter="Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm"
+                         "|All files (*.*)|*.*",
+            init_dir=init_dir)
+
+    def _confirm_saved_in_excel(self, file_path):
+        """False when the user cancels because Excel holds unsaved edits."""
+        name = os.path.basename(file_path)
+        while excel_running.is_open_in_excel(file_path):
+            unsaved = excel_running.workbook_has_unsaved_changes(file_path)
+            if unsaved is False:
+                return True
+            if unsaved is None:
+                choice = self._alert(
+                    u"'{0}' is open in Excel.".format(name),
+                    sub_msg="Only changes saved to the file are imported. "
+                            "If you have edits, save them in Excel first.",
+                    options=["Continue", "Cancel"],
+                    title="Import from Excel")
+                return choice == "Continue"
+            choice = self._alert(
+                u"'{0}' has unsaved changes in Excel.".format(name),
+                sub_msg="Save it in Excel, then click Retry.",
+                options=["Retry", "Import last saved version", "Cancel"],
+                title="Import from Excel")
+            if choice != "Retry":
+                return choice == "Import last saved version"
+        return True
+
     def _export_to_excel_work(self, uiapp):
         self._require_doc(uiapp, must_be_active=False)
         doc_title = self._doc_title
         default_name = smxlsx.build_export_filename(doc_title)
-        file_path = forms.save_file(file_ext="xlsx",
-                                    default_name=default_name)
+        remembered = self._remembered_workbook()
+        file_path = forms.save_file(
+            file_ext="xlsx", default_name=default_name,
+            init_dir=os.path.dirname(remembered) if remembered else u"")
         if not file_path:
             return
         import time
@@ -1520,6 +1603,7 @@ class SheetManagerWindow(forms.WPFWindow):
             self._alert("Export failed.", expanded=str(err),
                         title="Sheet Manager")
             return
+        self._remember_workbook(file_path)
         self._alert(
             "Exported {0} sheet row(s) (all visible columns, staged "
             "values) to:\n{1}".format(count, file_path),
@@ -1536,10 +1620,10 @@ class SheetManagerWindow(forms.WPFWindow):
 
     def _import_from_excel_work(self, uiapp):
         self._require_doc(uiapp, must_be_active=False)
-        file_path = forms.pick_file(
-            files_filter="Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm"
-                         "|All files (*.*)|*.*")
+        file_path = self._choose_import_workbook()
         if not file_path:
+            return
+        if not self._confirm_saved_in_excel(file_path):
             return
         try:
             sheets = excel_workbook.read_workbook_sheets(
@@ -1557,6 +1641,7 @@ class SheetManagerWindow(forms.WPFWindow):
                 "workbook.".format(smxlsx.EXPORT_SHEET_NAME),
                 title="Import from Excel")
             return
+        self._remember_workbook(file_path)
         metadata = sheets.get(smxlsx.METADATA_SHEET_NAME)
         plan = smxlsx.plan_import(
             export_data.rows, metadata.rows if metadata else [],

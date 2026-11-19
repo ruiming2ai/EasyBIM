@@ -865,6 +865,15 @@ def export_columns(columns):
             if column.kind not in (KIND_SELECT, KIND_INDEX)]
 
 
+def new_row_editable(column):
+    """Cells a new sheet typed in Excel can fill: the ones an import uses
+    when it creates a sheet (number, name, sheet parameters, revisions)."""
+    if column.is_read_only:
+        return False
+    return column.kind in (KIND_NUMBER, KIND_NAME, KIND_SHEET_PARAM,
+                           KIND_REVISION)
+
+
 def build_export_matrix(columns, rows):
     """WYSIWYG export payload from the staged table.
 

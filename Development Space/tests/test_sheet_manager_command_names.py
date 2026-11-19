@@ -219,14 +219,28 @@ class SheetManagerBundleTests(unittest.TestCase):
             '"Import from Excel", self._import_from_excel_work', ui_source)
         self.assertIn(
             '"Export to Excel", self._export_to_excel_work', ui_source)
-        for handler, work in (
-                ("def import_from_excel", "def _import_from_excel_work"),
-                ("def export_to_excel", "def _export_to_excel_work")):
+        for handler in ("def import_from_excel(", "def export_to_excel("):
             start = ui_source.index(handler)
-            work_start = ui_source.index(work)
-            handler_body = ui_source[start:work_start]
+            end = ui_source.index("\n    def ", start + 1)
+            handler_body = ui_source[start:end]
             self.assertNotIn("forms.pick_file", handler_body)
             self.assertNotIn("forms.save_file", handler_body)
+
+    def test_import_offers_remembered_workbook_and_checks_excel(self):
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        start = ui_source.index("def _import_from_excel_work(")
+        end = ui_source.index("\n    def ", start + 1)
+        body = ui_source[start:end]
+        choose = body.index("self._choose_import_workbook()")
+        confirm = body.index("self._confirm_saved_in_excel(file_path)")
+        read = body.index("read_workbook_sheets(")
+        self.assertLess(choose, confirm)
+        self.assertLess(confirm, read)
+        self.assertIn("self._remember_workbook(file_path)", body)
+        self.assertIn("excel_running.workbook_has_unsaved_changes",
+                      ui_source)
+        self.assertIn('"Import last saved version"', ui_source)
 
     def test_customized_excel_load_stays_a_sheet_table_source(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(

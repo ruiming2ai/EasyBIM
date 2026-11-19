@@ -198,6 +198,37 @@ class PlanImportTests(unittest.TestCase):
         self.assertEqual(plan.skipped_rows[0][0], "A102")
         self.assertIn("Duplicate", plan.skipped_rows[0][1])
 
+    def test_new_rows_with_blank_revisions_and_params_are_created(self):
+        export_rows, metadata_rows = export_rows_fixture(
+            self.columns, self.rows)
+        # Only number + name typed: Excel stores no trailing cells.
+        export_rows.append((4, ["", "A300", "Typed Short"]))
+        # Cells present but left blank.
+        export_rows.append((5, ["", "A301", "Typed Blank", "", "", ""]))
+        plan = sx.plan_import(export_rows, metadata_rows, self.rows,
+                              self.columns)
+        self.assertEqual(plan.skipped_rows, [])
+        self.assertEqual([item["number"] for item in plan.creatable],
+                         ["A300", "A301"])
+        for item in plan.creatable:
+            self.assertEqual(item["revisions"], set())
+            self.assertEqual(item["values"].get("p:Drawn By", ""), "")
+
+    def test_new_row_editable_columns(self):
+        editable = dict((column.key, st.new_row_editable(column))
+                        for column in sx.state.export_columns(self.columns))
+        self.assertTrue(editable["number"])
+        self.assertTrue(editable["name"])
+        self.assertTrue(editable["p:Drawn By"])
+        self.assertTrue(editable["rev:11"])
+        readonly = st.ColumnSpec(
+            "p:Locked", st.KIND_SHEET_PARAM, "Locked", "p9",
+            param_name="Locked", is_read_only=True)
+        tb_param = st.ColumnSpec(
+            "t:Scale", st.KIND_TB_PARAM, "Scale", "t0", param_name="Scale")
+        self.assertFalse(st.new_row_editable(readonly))
+        self.assertFalse(st.new_row_editable(tb_param))
+
     def test_header_fallback_without_metadata(self):
         export_rows, _ = export_rows_fixture(self.columns, self.rows)
         export_rows[1] = (2, ["101", "A101", "Plan EDITED", "AB",
@@ -206,6 +237,21 @@ class PlanImportTests(unittest.TestCase):
         self.assertEqual(
             [(c.key, v) for _, c, v in plan.cell_edits],
             [("name", "Plan EDITED")])
+
+
+class WorkbookSettingsTests(unittest.TestCase):
+    def test_workbook_key_prefers_path_and_ignores_case(self):
+        self.assertEqual(sx.workbook_key(r"C:\Jobs\Tower.rvt", "Tower"),
+                         r"c:\jobs\tower.rvt")
+        self.assertEqual(sx.workbook_key("", "Tower"), "tower")
+
+    def test_normalize_drops_bad_entries(self):
+        self.assertEqual(sx.normalize_workbook_settings("junk"),
+                         {"workbooks": {}})
+        self.assertEqual(
+            sx.normalize_workbook_settings(
+                {"workbooks": {"a": r"C:\x.xlsx", "": "y", "b": ""}}),
+            {"workbooks": {"a": r"C:\x.xlsx"}})
 
 
 @unittest.skipUnless(sx.XLSXWRITER_AVAILABLE,

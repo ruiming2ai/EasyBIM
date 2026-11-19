@@ -31,6 +31,7 @@ FORMAT_VERSION = 1
 METADATA_HEADERS = ["ColumnKey", "Kind", "Header", "ParamName",
                     "ParamIdValue", "RevisionId", "RevisionSeq", "ReadOnly"]
 MAX_COLUMN_WIDTH = 50
+NEW_ROW_SLOTS = 300
 
 _TRUTHY_CELLS = ("yes", "y", "true", "1", "x")
 
@@ -44,6 +45,31 @@ def build_export_filename(doc_title):
     else:
         name = u"Sheet Manager Export.xlsx"
     return re.sub(r'[\\/:*?"<>|]+', u"_", name)
+
+
+WORKBOOK_SETTINGS_ID = "sheet_manager_excel"
+WORKBOOK_SETTINGS_SCHEMA = 1
+
+
+def workbook_key(doc_path_name, doc_title):
+    """Per-document key for the remembered round-trip workbook."""
+    return u"{0}".format(doc_path_name or doc_title or u"").strip().lower()
+
+
+def default_workbook_settings():
+    return {"workbooks": {}}
+
+
+def normalize_workbook_settings(raw):
+    workbooks = {}
+    source = raw.get("workbooks") if isinstance(raw, dict) else None
+    if isinstance(source, dict):
+        for key, path in source.items():
+            key = u"{0}".format(key or u"").strip()
+            path = u"{0}".format(path or u"").strip()
+            if key and path:
+                workbooks[key] = path
+    return {"workbooks": workbooks}
 
 
 def export_table_to_xlsx(doc_title, columns, rows, file_path,
@@ -94,10 +120,19 @@ def export_table_to_xlsx(doc_title, columns, rows, file_path,
                     widths[col_pos] = max(widths[col_pos],
                                           len(text or u""))
 
+        # Unlocked blank rows so new sheets can be typed under the table;
+        # blank revision/parameter cells import as "No"/blank.
+        new_row_cols = [pos + 1 for pos, column in enumerate(cols)
+                        if state.new_row_editable(column)]
+        first_new = len(data_rows) + 1
+        for row_pos in range(first_new, first_new + NEW_ROW_SLOTS):
+            for col_pos in new_row_cols:
+                worksheet.write_blank(row_pos, col_pos, None, unlocked)
+
         for col_pos, width in enumerate(widths):
             worksheet.set_column(col_pos, col_pos,
                                  min(width + 3, MAX_COLUMN_WIDTH))
-        worksheet.autofilter(0, 0, len(data_rows),
+        worksheet.autofilter(0, 0, len(data_rows) + NEW_ROW_SLOTS,
                              len(header_cells) - 1)
         worksheet.protect(
             "",
@@ -108,6 +143,7 @@ def export_table_to_xlsx(doc_title, columns, rows, file_path,
                 "format_columns": True,
                 "format_rows": True,
                 "delete_columns": True,
+                "insert_rows": True,
                 "delete_rows": True,
                 "select_locked_cells": True,
                 "select_unlocked_cells": True,
