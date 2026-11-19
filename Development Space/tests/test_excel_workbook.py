@@ -216,6 +216,20 @@ class ExcelWorkbookTests(unittest.TestCase):
             self.workbook_path, ["Export", "_metadata"])
         self.assertEqual(sorted(sheets.keys()), ["Export", "_metadata"])
 
+    def test_memory_file_round_trips(self):
+        handle = self.module.memory_file(b"PK\x03\x04data")
+        self.assertEqual(handle.read(), b"PK\x03\x04data")
+
+    def test_zip_readers_use_str_memory_file_on_python2(self):
+        # IronPython 2.7's io.BytesIO reads back bytes, which its zipfile
+        # rejects ("expected str, got bytes"); that path can't run here.
+        print_sets = (MODULE_PATH.parent / "excel_print_sets.py").read_text(
+            encoding="utf-8")
+        for source in (MODULE_PATH.read_text(encoding="utf-8"), print_sets):
+            self.assertIn("from StringIO import StringIO", source)
+            self.assertNotIn("zipfile.ZipFile(io.BytesIO", source)
+            self.assertNotIn("ZipFile(\n            io.BytesIO", source)
+
     def test_parse_xml_strips_bom(self):
         root = self.module.parse_xml(b"\xef\xbb\xbf<a><b/></a>")
         self.assertEqual(root.tag, "a")

@@ -226,6 +226,15 @@ class SheetManagerBundleTests(unittest.TestCase):
             self.assertNotIn("forms.pick_file", handler_body)
             self.assertNotIn("forms.save_file", handler_body)
 
+    def test_export_opens_the_workbook_in_excel(self):
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        start = ui_source.index("def _export_to_excel_work(")
+        end = ui_source.index("\n    def ", start + 1)
+        body = ui_source[start:end]
+        self.assertLess(body.index("self._remember_workbook(file_path)"),
+                        body.index("os.startfile(file_path)"))
+
     def test_import_offers_remembered_workbook_and_checks_excel(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
             encoding="utf-8")
