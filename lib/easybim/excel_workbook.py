@@ -11,6 +11,7 @@ import io
 import posixpath
 import re
 import sys
+import traceback
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -93,16 +94,29 @@ def _safe_int(value, fallback=0):
         return fallback
 
 
+def parse_xml(data):
+    """ElementTree root from a zip part's raw data.
+
+    Decoded to text first: IronPython's XML parser rejects bytes
+    ("expected str, got bytes"), and every runtime accepts text.
+    """
+    if not isinstance(data, str):
+        data = data.decode("utf-8-sig")
+    elif data.startswith(u"﻿"):
+        data = data[1:]
+    return ET.fromstring(data)
+
+
 def _read_xml(workbook, name):
     try:
-        return ET.fromstring(workbook.read(name))
+        return parse_xml(workbook.read(name))
     except KeyError:
         raise UnsupportedWorkbook("Missing workbook part: {}".format(name))
 
 
 def _read_shared_strings(workbook):
     try:
-        root = ET.fromstring(workbook.read("xl/sharedStrings.xml"))
+        root = parse_xml(workbook.read("xl/sharedStrings.xml"))
     except KeyError:
         return []
 
@@ -207,7 +221,8 @@ def read_workbook_sheets(excel_path, sheet_names=None):
     try:
         workbook = zipfile.ZipFile(io.BytesIO(read_file_bytes(excel_path)))
     except Exception as open_error:
-        raise UnsupportedWorkbook(_safe_text(open_error))
+        raise UnsupportedWorkbook(u"{0}\n\n{1}".format(
+            _safe_text(open_error), traceback.format_exc()))
 
     try:
         shared_strings = _read_shared_strings(workbook)

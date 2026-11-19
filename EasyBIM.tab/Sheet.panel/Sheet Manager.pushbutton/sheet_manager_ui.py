@@ -11,6 +11,7 @@ from __future__ import print_function
 
 import os
 import time
+import traceback
 
 import clr
 
@@ -1631,7 +1632,9 @@ class SheetManagerWindow(forms.WPFWindow):
                             smxlsx.METADATA_SHEET_NAME])
         except Exception as err:
             self._alert("Could not read the workbook.",
-                        expanded=str(err), title="Import from Excel")
+                        expanded=u"{0}\n\n{1}".format(
+                            err, traceback.format_exc()),
+                        title="Import from Excel")
             return
         export_data = sheets.get(smxlsx.EXPORT_SHEET_NAME)
         if export_data is None or not export_data.rows:

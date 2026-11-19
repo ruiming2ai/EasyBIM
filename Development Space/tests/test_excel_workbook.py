@@ -200,6 +200,27 @@ class ExcelWorkbookTests(unittest.TestCase):
                 os.path.join(self.tempdir, "absent.xlsx")
             )
 
+    def test_xml_reaches_parser_as_text(self):
+        # IronPython's ElementTree rejects bytes: "expected str, got bytes".
+        real_fromstring = self.module.ET.fromstring
+
+        def text_only_fromstring(data):
+            if not isinstance(data, str):
+                raise TypeError("expected str, got bytes")
+            return real_fromstring(data)
+
+        self.module.ET.fromstring = text_only_fromstring
+        self.addCleanup(setattr, self.module.ET, "fromstring",
+                        real_fromstring)
+        sheets = self.module.read_workbook_sheets(
+            self.workbook_path, ["Export", "_metadata"])
+        self.assertEqual(sorted(sheets.keys()), ["Export", "_metadata"])
+
+    def test_parse_xml_strips_bom(self):
+        root = self.module.parse_xml(b"\xef\xbb\xbf<a><b/></a>")
+        self.assertEqual(root.tag, "a")
+        self.assertEqual(self.module.parse_xml(u"﻿<a/>").tag, "a")
+
     def test_read_file_bytes_returns_whole_file(self):
         with open(self.workbook_path, "rb") as handle:
             expected = handle.read()

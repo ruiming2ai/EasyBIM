@@ -429,16 +429,25 @@ def _read_visible_rows_from_ooxml(excel_path):
     return ExcelReadResult(rows, warning=FALLBACK_WARNING, reader="ooxml")
 
 
+def _parse_xml(data):
+    # IronPython's XML parser rejects bytes ("expected str, got bytes").
+    if not isinstance(data, str):
+        data = data.decode("utf-8-sig")
+    elif data.startswith(u"﻿"):
+        data = data[1:]
+    return ET.fromstring(data)
+
+
 def _read_xml(workbook, name):
     try:
-        return ET.fromstring(workbook.read(name))
+        return _parse_xml(workbook.read(name))
     except KeyError:
         raise UnsupportedExcelFile("Missing workbook part: {}".format(name))
 
 
 def _read_shared_strings(workbook):
     try:
-        root = ET.fromstring(workbook.read("xl/sharedStrings.xml"))
+        root = _parse_xml(workbook.read("xl/sharedStrings.xml"))
     except KeyError:
         return []
 
