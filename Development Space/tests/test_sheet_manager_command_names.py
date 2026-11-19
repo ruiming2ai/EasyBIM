@@ -210,6 +210,24 @@ class SheetManagerBundleTests(unittest.TestCase):
         # Selection happens silently: no prompt asking to close.
         self.assertNotIn("Close and select", ui_source)
 
+    def test_excel_round_trip_runs_in_revit_api_context(self):
+        # A modeless window must not open file dialogs or let exceptions
+        # escape a click handler: that crashes Revit.
+        ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
+            encoding="utf-8")
+        self.assertIn(
+            '"Import from Excel", self._import_from_excel_work', ui_source)
+        self.assertIn(
+            '"Export to Excel", self._export_to_excel_work', ui_source)
+        for handler, work in (
+                ("def import_from_excel", "def _import_from_excel_work"),
+                ("def export_to_excel", "def _export_to_excel_work")):
+            start = ui_source.index(handler)
+            work_start = ui_source.index(work)
+            handler_body = ui_source[start:work_start]
+            self.assertNotIn("forms.pick_file", handler_body)
+            self.assertNotIn("forms.save_file", handler_body)
+
     def test_customized_excel_load_stays_a_sheet_table_source(self):
         ui_source = (COMMAND_DIR / "sheet_manager_ui.py").read_text(
             encoding="utf-8")

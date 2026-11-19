@@ -1500,6 +1500,11 @@ class SheetManagerWindow(forms.WPFWindow):
             self._alert("There are no rows to export.",
                         title="Sheet Manager")
             return
+        # Modeless window: file dialogs and alerts must run in API context.
+        self._run_in_revit("Export to Excel", self._export_to_excel_work)
+
+    def _export_to_excel_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
         doc_title = self._doc_title
         default_name = smxlsx.build_export_filename(doc_title)
         file_path = forms.save_file(file_ext="xlsx",
@@ -1525,6 +1530,12 @@ class SheetManagerWindow(forms.WPFWindow):
         self._commit_pending_edit()
         if self._block_if_staged_changes("Import from Excel"):
             return
+        # Modeless window: file dialogs and alerts must run in API context,
+        # and the bridge contains any exception instead of crashing Revit.
+        self._run_in_revit("Import from Excel", self._import_from_excel_work)
+
+    def _import_from_excel_work(self, uiapp):
+        self._require_doc(uiapp, must_be_active=False)
         file_path = forms.pick_file(
             files_filter="Excel Workbooks (*.xlsx;*.xlsm)|*.xlsx;*.xlsm"
                          "|All files (*.*)|*.*")
@@ -1534,7 +1545,7 @@ class SheetManagerWindow(forms.WPFWindow):
             sheets = excel_workbook.read_workbook_sheets(
                 file_path, [smxlsx.EXPORT_SHEET_NAME,
                             smxlsx.METADATA_SHEET_NAME])
-        except excel_workbook.UnsupportedWorkbook as err:
+        except Exception as err:
             self._alert("Could not read the workbook.",
                         expanded=str(err), title="Import from Excel")
             return
