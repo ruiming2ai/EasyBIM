@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Helpers for loading ordered native print sets from visible Excel rows."""
 
+import io
 import os
 import posixpath
 import re
@@ -402,9 +403,19 @@ def _first_visible_com_worksheet(workbook):
     return None
 
 
+def _read_file_bytes(excel_path):
+    try:
+        from easybim.excel_workbook import read_file_bytes
+    except Exception:
+        # Loaded standalone by a desktop test, without the package.
+        with open(excel_path, "rb") as handle:
+            return handle.read()
+    return read_file_bytes(excel_path)
+
+
 def _read_visible_rows_from_ooxml(excel_path):
     try:
-        workbook = zipfile.ZipFile(excel_path, "r")
+        workbook = zipfile.ZipFile(io.BytesIO(_read_file_bytes(excel_path)))
     except Exception as open_err:
         raise UnsupportedExcelFile(str(open_err))
 
