@@ -10,6 +10,7 @@ column. Pure stdlib (zipfile + ElementTree); no Excel installation needed.
 import io
 import posixpath
 import re
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -48,6 +49,17 @@ def _safe_text(value):
         return ""
 
 
+def _byte_string(raw):
+    """``raw`` (a bytearray) as the type io.BytesIO takes on this engine.
+
+    IronPython 2.7 has a separate ``bytes`` type that its io.BytesIO and
+    zipfile reject ("expected str, got bytes"); there, file data is ``str``.
+    """
+    if sys.version_info[0] < 3:
+        return str(raw)
+    return bytes(raw)
+
+
 def read_file_bytes(path):
     """Whole file as bytes, readable while Excel has it open.
 
@@ -67,7 +79,7 @@ def read_file_bytes(path):
         buffer = MemoryStream()
         try:
             stream.CopyTo(buffer)
-            return bytes(bytearray(buffer.ToArray()))
+            return _byte_string(bytearray(buffer.ToArray()))
         finally:
             buffer.Dispose()
     finally:
